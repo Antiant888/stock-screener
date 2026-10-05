@@ -67,12 +67,14 @@ def service(session_factory):
 
 
 def _payload(service, tool_name: str, arguments: dict) -> dict:
+    """Call an MCP tool and return the envelope, asserting it did not error."""
     result = service.call_tool(tool_name, arguments)
     assert result.get("isError") is not True
     return result["structuredContent"]
 
 
 def _explain_result(service, symbol: str, depth: str = "full") -> dict:
+    """Return the ``result`` payload of an ``explain_symbol`` call."""
     return _payload(service, "explain_symbol", {"symbol": symbol, "depth": depth})["result"]
 
 
@@ -275,6 +277,7 @@ def test_vcp_num_bases_is_none_when_the_stored_path_is_incomplete(details):
 
 
 def _vcp_details(num_bases):
+    """Build the persisted details blob the VCP base count is read from."""
     return {
         "details": {
             "screeners": {

@@ -61,6 +61,7 @@ def test_map_feature_to_scan_result_projects_the_persisted_screener_ratings():
 
 
 def _vcp_row(details_block: dict) -> StockFeatureDaily:
+    """Build a feature-store row carrying one persisted ``details`` block."""
     return StockFeatureDaily(
         run_id=12,
         symbol="ALAI",
