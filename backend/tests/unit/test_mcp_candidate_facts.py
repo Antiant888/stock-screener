@@ -300,3 +300,13 @@ def test_vcp_num_bases_reads_the_stored_integer(value, expected):
 def test_vcp_num_bases_rejects_a_fractional_count():
     """A fractional float is not a base count and must not be truncated."""
     assert _vcp_num_bases_from_details(_vcp_details(2.5)) is None
+
+
+@pytest.mark.parametrize("value", [pytest.param(-1, id="int"), pytest.param(-1.0, id="float")])
+def test_vcp_num_bases_rejects_a_negative_count(value):
+    """A count is never negative; both numeric branches must reject it.
+
+    A negative stored value would otherwise reach ``extended_fields`` on both
+    scan mappers and be handed to MCP clients as a base count.
+    """
+    assert _vcp_num_bases_from_details(_vcp_details(value)) is None

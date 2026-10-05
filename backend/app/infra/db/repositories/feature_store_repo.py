@@ -244,7 +244,8 @@ def _vcp_num_bases_from_details(d: dict[str, Any]) -> int | None:
     helper only walks that stored path — it never infers a count from
     ``vcp_detected`` nor from the length of any candidate list, and it never
     recomputes the pattern. A missing intermediate object, a non-mapping node,
-    or a non-integral ``num_bases`` yields ``None``.
+    or a non-integral ``num_bases`` yields ``None``. A base count is a count, so
+    a negative value is rejected as well; zero stays valid.
     """
     node: Any = d
     for key in (
@@ -263,10 +264,12 @@ def _vcp_num_bases_from_details(d: dict[str, Any]) -> int | None:
     if isinstance(node, bool):
         return None
     if isinstance(node, int):
-        return node
-    if isinstance(node, float) and node.is_integer():
-        return int(node)
-    return None
+        count = node
+    elif isinstance(node, float) and node.is_integer():
+        count = int(node)
+    else:
+        return None
+    return count if count >= 0 else None
 
 
 def _upsert_stmt(session: Session, values: list[dict[str, Any]]):
