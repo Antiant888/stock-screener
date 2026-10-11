@@ -1868,6 +1868,7 @@ def test_combine_market_artifacts_builds_manifest_from_subset(tmp_path):
         "session_date": "2026-04-04",
         "session_lag": 0,
         "state": "current",
+        "late_after": None,  # this calendar fake has no session closes
     }
     assert manifest["markets"]["HK"]["publication"]["session_lag"] == 1
     assert manifest["markets"]["HK"]["publication"]["state"] == "stale"

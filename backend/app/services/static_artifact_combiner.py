@@ -11,7 +11,7 @@ from typing import Any
 from app.services.atomic_directory_publisher import AtomicDirectoryPublisher
 from app.services.static_group_matrix import validate_group_matrix_asset
 from app.services.breadth.types import CURRENT_BREADTH_CALCULATION_REVISION
-from app.services.market_session_lag import market_session_lag
+from app.services.market_session_lag import market_session_lag, publication_late_after
 from app.services.static_advertised_paths import (
     StaticAdvertisedPathError,
     validate_advertised_paths,
@@ -675,10 +675,12 @@ def annotate_publication_lag(manifest: dict[str, Any], calendar: Any) -> None:
     ``state`` is ``current`` at lag 0, ``stale`` above it, and ``unknown``
     when the session date or the market calendar cannot decide. Freshness is
     judged against the last completed session, so a run during a session that
-    serves today's partial bar counts as current.
+    serves today's partial bar counts as current. ``late_after``: see
+    ``publication_late_after`` (#503).
     """
     for market, entry in (manifest.get("markets") or {}).items():
         publication = entry.setdefault("publication", {})
+        publication["late_after"] = publication_late_after(calendar, market, publication.get("session_date"))
         try:
             session = date.fromisoformat(str(publication.get("session_date"))[:10])
             lag: int | None = max(

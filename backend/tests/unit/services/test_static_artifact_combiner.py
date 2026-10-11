@@ -1,5 +1,5 @@
 import json
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -614,6 +614,9 @@ class _Calendar:
     def trading_days(self, market, start, end):
         return [d for d in self.sessions if start <= d <= end]
 
+    def session_close(self, market, day):
+        return datetime(day.year, day.month, day.day, 20, tzinfo=timezone.utc)
+
 
 def test_publication_lag_marks_current_stale_and_unknown() -> None:
     sessions = [date(2026, 4, 9), date(2026, 4, 10), date(2026, 4, 13)]
@@ -635,12 +638,60 @@ def test_publication_lag_marks_current_stale_and_unknown() -> None:
         "session_date": "2026-04-13",
         "session_lag": 0,
         "state": "current",
+        "late_after": None,  # no later session in the calendar yet
     }
     assert manifest["markets"]["HK"]["publication"]["session_lag"] == 2
     assert manifest["markets"]["HK"]["publication"]["state"] == "stale"
     for market in ("JP", "KR"):
         assert manifest["markets"][market]["publication"]["session_lag"] is None
         assert manifest["markets"][market]["publication"]["state"] == "unknown"
+
+
+def test_publication_late_after_is_the_next_session_close_plus_grace() -> None:
+    # A page whose publishing stops must turn late on its own (#503): after the
+    # next session closes and the grace passes, the served date is behind.
+    sessions = [date(2026, 4, 9), date(2026, 4, 10), date(2026, 4, 13)]
+    manifest = {
+        "markets": {
+            "US": {"publication": {"source": "current", "session_date": "2026-04-10"}},
+            "KR": {"publication": {"source": "fallback", "session_date": None}},
+        }
+    }
+
+    annotate_publication_lag(manifest, _Calendar(date(2026, 4, 10), sessions))
+
+    # Next session after Fri Apr 10 is Mon Apr 13, closing 20:00 UTC.
+    assert manifest["markets"]["US"]["publication"]["late_after"] == "2026-04-14T20:00:00Z"
+    assert manifest["markets"]["KR"]["publication"]["late_after"] is None
+
+
+def test_publication_late_after_searches_only_verified_calendar_coverage() -> None:
+    # Near year end the 21-day search passes a market's verified coverage; the
+    # deadline must still come from the sessions that are covered.
+    from app.services.market_calendar_service import CalendarCoverageExpired
+
+    class _CoveredCalendar(_Calendar):
+        def trading_days(self, market, start, end):
+            if end > date(2026, 12, 31):
+                raise CalendarCoverageExpired(
+                    market=market,
+                    requested_date=end,
+                    verified_through=date(2026, 12, 31),
+                    source_url="",
+                    operations_doc="",
+                )
+            return super().trading_days(market, start, end)
+
+    sessions = [date(2026, 12, 23), date(2026, 12, 24), date(2026, 12, 28)]
+    manifest = {
+        "markets": {
+            "HK": {"publication": {"source": "current", "session_date": "2026-12-24"}},
+        }
+    }
+
+    annotate_publication_lag(manifest, _CoveredCalendar(date(2026, 12, 24), sessions))
+
+    assert manifest["markets"]["HK"]["publication"]["late_after"] == "2026-12-29T20:00:00Z"
 
 
 def test_publication_lag_counts_a_session_newer_than_the_close_as_current() -> None:

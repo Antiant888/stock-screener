@@ -82,3 +82,64 @@ describe('StaticLayout market selector', () => {
     expect(screen.getByTestId('page')).toBeInTheDocument();
   });
 });
+
+describe('StaticLayout publication status chip (#503)', () => {
+  const setPublication = (publication) => {
+    manifest.markets.US.publication = publication;
+  };
+
+  afterEach(() => {
+    delete manifest.markets.US.publication;
+    vi.useRealTimers();
+  });
+
+  it('shows a current market with its served session', () => {
+    vi.useFakeTimers({ now: new Date('2026-10-10T12:00:00Z'), toFake: ['Date'] });
+    setPublication({ state: 'current', session_date: '2026-10-09', late_after: '2026-10-13T20:00:00Z' });
+    renderLayout();
+
+    expect(screen.getByRole('status', { name: /^US data status/ })).toHaveTextContent('Current · 2026-10-09');
+  });
+
+  it('turns late on its own once the deadline passes with no new publish', () => {
+    vi.useFakeTimers({ now: new Date('2026-10-13T20:00:01Z'), toFake: ['Date'] });
+    setPublication({ state: 'current', session_date: '2026-10-09', late_after: '2026-10-13T20:00:00Z' });
+    renderLayout();
+
+    expect(screen.getByRole('status', { name: /^US data status/ })).toHaveTextContent('Late · 2026-10-09');
+  });
+
+  it('shows a market published behind its session as late', () => {
+    setPublication({ state: 'stale', session_date: '2026-10-08', session_lag: 1, late_after: null });
+    renderLayout();
+
+    expect(screen.getByRole('status', { name: /^US data status/ })).toHaveTextContent('Late · 2026-10-08');
+  });
+
+  it('announces the status itself, not just the market', () => {
+    setPublication({ state: 'stale', session_date: '2026-10-08', session_lag: 1, late_after: null });
+    renderLayout();
+
+    expect(screen.getByRole('status', { name: 'US data status: Late · 2026-10-08' })).toBeInTheDocument();
+  });
+
+  it('says unknown rather than current when a current publish has no deadline', () => {
+    setPublication({ state: 'current', session_date: '2026-12-31', late_after: null });
+    renderLayout();
+
+    expect(screen.getByRole('status', { name: /^US data status/ })).toHaveTextContent('Status unknown');
+  });
+
+  it('says unknown rather than current when freshness cannot be decided', () => {
+    setPublication({ state: 'unknown', session_date: null, late_after: null });
+    renderLayout();
+
+    expect(screen.getByRole('status', { name: /^US data status/ })).toHaveTextContent('Status unknown');
+  });
+
+  it('shows nothing for a manifest without a publication block', () => {
+    renderLayout();
+
+    expect(screen.queryByRole('status', { name: /^US data status/ })).not.toBeInTheDocument();
+  });
+});

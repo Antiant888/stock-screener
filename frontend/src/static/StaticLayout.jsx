@@ -1,4 +1,4 @@
-import { useContext } from 'react';
+import { useContext, useEffect, useState } from 'react';
 import {
   Alert,
   AppBar,
@@ -39,6 +39,29 @@ const NAV_ITEMS = [
   { path: '/groups', label: 'Groups' },
 ];
 
+// Late once the publish says so, or once its deadline passes with nothing new
+// published: a stalled pipeline must not leave a market "current" (#503).
+const publicationStatus = (publication, now) => {
+  if (!publication) return null;
+  const session = publication.session_date;
+  if (publication.state === 'unknown' || !session) return { label: 'Status unknown', color: 'default' };
+  const deadline = publication.late_after ? Date.parse(publication.late_after) : NaN;
+  if (publication.state === 'stale') return { label: `Late · ${session}`, color: 'warning' };
+  // No deadline means nothing could turn this late: unknown, never Current forever.
+  if (!Number.isFinite(deadline)) return { label: 'Status unknown', color: 'default' };
+  if (now > deadline) return { label: `Late · ${session}`, color: 'warning' };
+  return { label: `Current · ${session}`, color: 'success' };
+};
+
+const useMinuteClock = () => {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 60_000);
+    return () => clearInterval(timer);
+  }, []);
+  return now;
+};
+
 function StaticLayout({ children }) {
   const location = useLocation();
   const theme = useTheme();
@@ -49,6 +72,8 @@ function StaticLayout({ children }) {
   const { selectedMarket, setSelectedMarket } = useStaticMarket();
   const marketEntry = resolveStaticMarketEntry(manifestQuery.data, selectedMarket);
   const selectedUnavailable = getStaticUnavailableMarkets(manifestQuery.data).includes(selectedMarket);
+  const now = useMinuteClock();
+  const status = selectedUnavailable ? null : publicationStatus(marketEntry.publication, now);
   const navItems = isStaticOptionsAvailable(marketEntry)
     ? [...NAV_ITEMS, { path: '/options', label: 'Options', matchPrefix: true }]
     : NAV_ITEMS;
@@ -107,6 +132,16 @@ function StaticLayout({ children }) {
               </Select>
             </FormControl>
           </Box>
+          {status && (
+            <Chip
+              label={status.label}
+              color={status.color}
+              size="small"
+              role="status"
+              aria-label={`${marketEntry.market} data status: ${status.label}`}
+              sx={{ ml: 1, height: 22, fontSize: '11px' }}
+            />
+          )}
           <Box sx={{ flexGrow: 1 }} />
           <Tabs
             value={navItems.find((item) => (
