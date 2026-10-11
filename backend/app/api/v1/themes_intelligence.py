@@ -214,7 +214,7 @@ def backfill_developments(request: BackfillRequest, db: DbSession):
     return {"queued": queued, "item_ids": ids}
 
 
-@router.get("/{theme_id}/developments")
+@router.get("/{theme_id}/developments", dependencies=[Depends(reject_legacy_theme_reads)])
 def theme_developments(
     theme_id: int, db: DbSession, limit: int = Query(50, ge=1, le=200)
 ):
