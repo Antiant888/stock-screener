@@ -230,7 +230,8 @@ something checkable.
 - Frontend: `ThemesPageContainer.jsx:114-129` switches on
   `generation.authority_mode`. The legacy review, settings, sources and article
   dialogs render only in the legacy branch (after line 522). This means the
-  content-source management UI disappears in economic mode.
+  content-source management UI disappears in economic mode. *Since #471 the
+  economic branch renders the content-source manager too.*
 
 ### Readers with no routing (they read legacy tables in every mode)
 
@@ -247,10 +248,10 @@ something checkable.
 | Social publication preparation: `social_signal_writer.prepare_run()` and `publish()` (`social_signal_writer.py:716`, `:784`) → `SocialThemeProjectionService.prepare_application()` (`social_theme_projection_service.py:153-175`, `:189-226`) | `ThemeCluster`, `ThemeMention`, `ThemeAlias`, `ThemeConstituent`, `SocialThemeAssociation` | **Legacy, shadow and dual modes:** runs for every live Social run, before `apply_live` makes its economic-mode check (`:433`); Social publication in these modes still needs the legacy tables. **Economic authority (since #515):** preparation maps theme keys through the economic catalog, reads accepted economic memberships and reads no legacy theme table; the processor applies automatic acceptance. Retirement is not blocked here once a deployment serves economic authority. |
 | One-off `theme_pipeline_state_backfill_service` (`:122-130`; CLI `scripts/backfill_theme_pipeline_state.py`) | `ThemeMention`, to infer status | Writes only shared `ContentItemPipelineState`, so the G2 fence must **not** block it; adapt it before `ThemeMention` is removed |
 | **Economic** reader snapshot builder (`economic_taxonomy_snapshot_builder.py:698-717`) | `ThemeDevelopmentTheme`, mapped to economic themes | **The economic side itself depends on legacy development links.** Retirement must migrate these links first |
-| `GET /themes/pipeline/state-health`, `/themes/pipeline/observability` (`themes_content_pipeline.py:215-245`, via `theme_pipeline_state_service.py:338-352`, `:430-475`) | `ThemeMention`, `ThemeCluster`, `ThemeMergeSuggestion` | Serves legacy-only diagnostics. *Since #557 these return 409 (`economic_generation_endpoint_required`) under economic authority.* |
+| `GET /themes/pipeline/state-health`, `/themes/pipeline/observability` (`themes_content_pipeline.py:230-260`, via `theme_pipeline_state_service.py:338-352`, `:430-475`) | `ThemeMention`, `ThemeCluster`, `ThemeMergeSuggestion` | Serves legacy-only diagnostics. *Since #557 these return 409 (`economic_generation_endpoint_required`) under economic authority.* |
 | `SocialSignalOperationsService.snapshot` (`social_signal_operations_service.py:106-111`), used by `GET /operations/social-signals` and `GET /social-signals/admin/health` | counts `SocialThemeAssociation` | Counts legacy Social associations |
 | `GET /social-signals/admin/associations` (`social_signals.py:422-442`) | `SocialThemeAssociation` joined to `ThemeCluster` | Serves legacy associations; the decision endpoint beside it is mode-aware, but this list is not. *Since #515 the list serves economic associations under economic authority without reading `SocialThemeAssociation`.* |
-| `theme_development_preparation`, `theme_platform/content_browser_queries`, `social_refresh_support` | legacy clusters and mentions | Serves legacy data |
+| `theme_development_preparation`, `theme_platform/content_browser_queries`, `social_refresh_support` | legacy clusters and mentions | Serves legacy data. *Since #557 the content browser's routes (`/themes/content`, `/content/export`) return 409 under economic authority.* |
 
 `ContentItem` and content-source endpoints are shared ingestion inputs, not
 legacy authority. Retirement must keep them.
