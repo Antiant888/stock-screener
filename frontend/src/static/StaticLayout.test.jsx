@@ -123,6 +123,13 @@ describe('StaticLayout publication status chip (#503)', () => {
     expect(screen.getByRole('status', { name: 'US data status: Late · 2026-10-08' })).toBeInTheDocument();
   });
 
+  it('says unknown rather than current when a current publish has no deadline', () => {
+    setPublication({ state: 'current', session_date: '2026-12-31', late_after: null });
+    renderLayout();
+
+    expect(screen.getByRole('status', { name: /^US data status/ })).toHaveTextContent('Status unknown');
+  });
+
   it('says unknown rather than current when freshness cannot be decided', () => {
     setPublication({ state: 'unknown', session_date: null, late_after: null });
     renderLayout();

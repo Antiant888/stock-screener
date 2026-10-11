@@ -46,7 +46,10 @@ const publicationStatus = (publication, now) => {
   const session = publication.session_date;
   if (publication.state === 'unknown' || !session) return { label: 'Status unknown', color: 'default' };
   const deadline = publication.late_after ? Date.parse(publication.late_after) : NaN;
-  if (publication.state === 'stale' || now > deadline) return { label: `Late · ${session}`, color: 'warning' };
+  if (publication.state === 'stale') return { label: `Late · ${session}`, color: 'warning' };
+  // No deadline means nothing could turn this late: unknown, never Current forever.
+  if (!Number.isFinite(deadline)) return { label: 'Status unknown', color: 'default' };
+  if (now > deadline) return { label: `Late · ${session}`, color: 'warning' };
   return { label: `Current · ${session}`, color: 'success' };
 };
 

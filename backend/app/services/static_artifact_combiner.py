@@ -4,15 +4,14 @@ import json
 import shutil
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
 from app.services.atomic_directory_publisher import AtomicDirectoryPublisher
 from app.services.static_group_matrix import validate_group_matrix_asset
 from app.services.breadth.types import CURRENT_BREADTH_CALCULATION_REVISION
-from app.services.market_calendar_service import CalendarCoverageExpired
-from app.services.market_session_lag import market_session_lag
+from app.services.market_session_lag import market_session_lag, publication_late_after
 from app.services.static_advertised_paths import (
     StaticAdvertisedPathError,
     validate_advertised_paths,
@@ -676,14 +675,12 @@ def annotate_publication_lag(manifest: dict[str, Any], calendar: Any) -> None:
     ``state`` is ``current`` at lag 0, ``stale`` above it, and ``unknown``
     when the session date or the market calendar cannot decide. Freshness is
     judged against the last completed session, so a run during a session that
-    serves today's partial bar counts as current.
-
-    ``late_after`` (UTC) is when the served session stops being current even
-    if nothing publishes again, so the browser can show it late (#503).
+    serves today's partial bar counts as current. ``late_after``: see
+    ``publication_late_after`` (#503).
     """
     for market, entry in (manifest.get("markets") or {}).items():
         publication = entry.setdefault("publication", {})
-        publication["late_after"] = _late_after(calendar, market, publication.get("session_date"))
+        publication["late_after"] = publication_late_after(calendar, market, publication.get("session_date"))
         try:
             session = date.fromisoformat(str(publication.get("session_date"))[:10])
             lag: int | None = max(
@@ -701,35 +698,3 @@ def annotate_publication_lag(manifest: dict[str, Any], calendar: Any) -> None:
         publication["state"] = (
             "unknown" if lag is None else "current" if lag == 0 else "stale"
         )
-
-
-# One grace for every market; make it per market if schedules diverge.
-PUBLICATION_GRACE = timedelta(hours=24)
-
-
-def _later_sessions(calendar: Any, market: str, session: date) -> list[date]:
-    start, end = session + timedelta(days=1), session + timedelta(days=21)
-    try:
-        return calendar.trading_days(market, start, end)
-    except CalendarCoverageExpired as exc:
-        # Near year end the window passes verified coverage; search what is covered.
-        if exc.verified_through < start:
-            return []
-        return calendar.trading_days(market, start, exc.verified_through)
-
-
-def _late_after(calendar: Any, market: str, session_date: Any) -> str | None:
-    """Close of the session after ``session_date`` plus the grace.
-
-    None when there is no session date, or the calendar cannot name the next
-    session (for example, it lies past verified coverage).
-    """
-    try:
-        session = date.fromisoformat(str(session_date)[:10])
-        later = _later_sessions(calendar, market, session)
-        if not later:
-            return None
-        deadline = calendar.session_close(market, later[0]) + PUBLICATION_GRACE
-    except Exception:  # noqa: BLE001 - an unknown deadline must not block publication
-        return None
-    return deadline.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
