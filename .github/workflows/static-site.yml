@@ -54,11 +54,17 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
-          cache: pip
-          cache-dependency-path: backend/requirements.txt
+
+      # uv with a cache installs in seconds; pip took ~2 minutes (#504).
+      - uses: astral-sh/setup-uv@v10.2.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: |
+            backend/requirements.txt
+            backend/requirements-server.txt
 
       - name: Install pinned backend dependencies
-        run: pip install -r backend/requirements.txt
+        run: uv pip install --system -r backend/requirements.txt
 
       - name: Audit official Market calendar coverage
         run: |
@@ -175,11 +181,17 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
-          cache: pip
-          cache-dependency-path: backend/requirements.txt
+
+      # uv with a cache installs in seconds; pip took ~2 minutes (#504).
+      - uses: astral-sh/setup-uv@v10.2.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: |
+            backend/requirements.txt
+            backend/requirements-server.txt
 
       - name: Install backend dependencies
-        run: pip install -r backend/requirements.txt
+        run: uv pip install --system -r backend/requirements.txt
 
       - name: Refresh and export global COT artifact
         run: |
@@ -251,11 +263,17 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
-          cache: pip
-          cache-dependency-path: backend/requirements.txt
+
+      # uv with a cache installs in seconds; pip took ~2 minutes (#504).
+      - uses: astral-sh/setup-uv@v10.2.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: |
+            backend/requirements.txt
+            backend/requirements-server.txt
 
       - name: Install backend dependencies
-        run: pip install -r backend/requirements.txt
+        run: uv pip install --system -r backend/requirements.txt
 
       - name: Import weekly reference bundle
         env:
