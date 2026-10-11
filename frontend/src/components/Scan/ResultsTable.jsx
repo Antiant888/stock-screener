@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState, useCallback, memo } from 'react';
+import { useEffect, useMemo, useRef, useState, useCallback, memo } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import {
   Table,
@@ -15,11 +15,15 @@ import {
   Box,
   CircularProgress,
   IconButton,
+  MenuItem,
+  TextField,
   styled,
 } from '@mui/material';
 import CheckIcon from '@mui/icons-material/Check';
 import CloseIcon from '@mui/icons-material/Close';
 import ShowChartIcon from '@mui/icons-material/ShowChart';
+import ArrowDownwardIcon from '@mui/icons-material/ArrowDownward';
+import ArrowUpwardIcon from '@mui/icons-material/ArrowUpward';
 import RSSparkline from './RSSparkline';
 import PriceSparkline from './PriceSparkline';
 import FieldAvailabilityChip from './FieldAvailabilityChip';
@@ -27,6 +31,9 @@ import MarketBadge from './MarketBadge';
 import MarketThemesList from '../Stock/MarketThemesList';
 import AddToWatchlistMenu from '../common/AddToWatchlistMenu';
 import OpportunityEvidenceDrawer from '../shared/OpportunityEvidenceDrawer';
+import ActionStateBadge from '../shared/ActionStateBadge';
+import StockRowCard from '../shared/StockRowCard';
+import { useIsMobileShell } from '../Layout/shellNav';
 import OpportunityResultCells from './OpportunityResultCells';
 import { useOpportunityEvidenceSelection } from './useOpportunityEvidenceSelection';
 import {
@@ -46,6 +53,19 @@ import {
 
 // Row height constant for virtualization
 const ROW_HEIGHT = 48;
+// Phone layout: one StockRowCard per result (fixed height keeps the virtualizer exact).
+const MOBILE_CARD_HEIGHT = 76;
+// Sorts offered by the phone sort picker; the active sort is always included.
+const MOBILE_SORT_FIELDS = [
+  ['composite_score', 'Composite score'],
+  ['minervini_score', 'Minervini'],
+  ['canslim_score', 'CANSLIM'],
+  ['se_setup_score', 'Setup score'],
+  ['rs_rating', 'RS rating'],
+  ['price_change_1d', '1D change'],
+  ['ibd_group_rank', 'Group rank'],
+  ['symbol', 'Symbol'],
+];
 const SYMBOL_COLUMN_WIDTH = 210;
 const OPPORTUNITY_COLUMNS_WIDTH = 153;
 const TABLE_MIN_WIDTH = Object.freeze({
@@ -626,6 +646,7 @@ function ResultsTable({
   // MCap column display mode — kept as local state; scan-level persistence
   // can lift this up later if users want it to survive navigation.
   const [mcapDisplay, setMcapDisplay] = useState(MCAP_DISPLAY.USD);
+  const isMobile = useIsMobileShell();
   const {
     selectedRow: opportunityRow,
     openEvidence: handleOpenOpportunity,
@@ -669,9 +690,13 @@ function ResultsTable({
   const rowVirtualizer = useVirtualizer({
     count: results?.length || 0,
     getScrollElement: () => parentRef.current,
-    estimateSize: () => ROW_HEIGHT,
+    estimateSize: () => (isMobile ? MOBILE_CARD_HEIGHT : ROW_HEIGHT),
     overscan: 10, // Render 10 extra rows above/below viewport
   });
+  // Row height changes with the layout (e.g. rotating a tablet); drop cached sizes.
+  useEffect(() => {
+    rowVirtualizer.measure();
+  }, [isMobile, rowVirtualizer]);
 
   // Memoize virtual items to prevent recalculation
   const virtualRows = rowVirtualizer.getVirtualItems();
@@ -690,6 +715,104 @@ function ResultsTable({
         <Typography variant="body1" color="text.secondary">
           No results found
         </Typography>
+      </Paper>
+    );
+  }
+
+  const pagination = (
+    <TablePagination
+      rowsPerPageOptions={[10, 25, 50, 100]}
+      component="div"
+      count={total}
+      rowsPerPage={perPage}
+      page={page - 1} // Material-UI uses 0-based pages
+      onPageChange={handleChangePage}
+      onRowsPerPageChange={(e) => {
+        const nextPerPage = Number(e.target.value);
+        onPerPageChange?.(nextPerPage);
+        onPageChange(1); // Reset to first page when changing per-page
+      }}
+    />
+  );
+  const opportunityDrawer = (
+    <OpportunityEvidenceDrawer
+      open={showOpportunityState && Boolean(opportunityRow)}
+      row={opportunityRow}
+      onClose={handleCloseOpportunity}
+      opportunityTelemetrySurface={opportunityTelemetrySurface}
+    />
+  );
+
+  if (isMobile) {
+    const sortOptions = MOBILE_SORT_FIELDS.some(([id]) => id === sortBy)
+      ? MOBILE_SORT_FIELDS
+      : [...MOBILE_SORT_FIELDS, [sortBy, columns.find((column) => column.id === sortBy)?.label || sortBy]];
+    return (
+      <Paper elevation={1}>
+        {sortingEnabled ? (
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, px: 1.5, py: 1, borderBottom: 1, borderColor: 'divider' }}>
+            <TextField
+              select
+              size="small"
+              label="Sort by"
+              value={sortBy}
+              onChange={(event) => onSortChange(event.target.value, sortOrder)}
+              sx={{ minWidth: 170 }}
+            >
+              {sortOptions.map(([id, label]) => <MenuItem key={id} value={id}>{label}</MenuItem>)}
+            </TextField>
+            <IconButton
+              aria-label={sortOrder === 'asc' ? 'Sorted ascending; switch to descending' : 'Sorted descending; switch to ascending'}
+              onClick={() => onSortChange(sortBy, sortOrder === 'asc' ? 'desc' : 'asc')}
+            >
+              {sortOrder === 'asc' ? <ArrowUpwardIcon fontSize="small" /> : <ArrowDownwardIcon fontSize="small" />}
+            </IconButton>
+          </Box>
+        ) : null}
+        <Box ref={parentRef} role="list" aria-label="Scan results" sx={{ maxHeight: 'calc(100dvh - 300px)', minHeight: 240, overflow: 'auto' }}>
+          <Box sx={{ height: rowVirtualizer.getTotalSize(), position: 'relative' }}>
+            {virtualRows.map((virtualRow) => {
+              const row = results[virtualRow.index];
+              const chartEnabled = row.is_scannable !== false &&
+                (isChartEnabled ? isChartEnabled(row.symbol) : Boolean(onOpenChart));
+              return (
+                <Box
+                  key={row.symbol}
+                  role="listitem"
+                  sx={{
+                    position: 'absolute',
+                    top: 0,
+                    left: 0,
+                    right: 0,
+                    height: MOBILE_CARD_HEIGHT,
+                    transform: `translateY(${virtualRow.start}px)`,
+                    borderBottom: 1,
+                    borderColor: 'divider',
+                    overflow: 'hidden',
+                  }}
+                >
+                  <StockRowCard
+                    row={row}
+                    badge={showOpportunityState ? (
+                      <ActionStateBadge
+                        state={row.action_state}
+                        onClick={row.opportunity_state
+                          ? (event) => {
+                            event.stopPropagation();
+                            handleOpenOpportunity(row);
+                          }
+                          : undefined}
+                      />
+                    ) : null}
+                    onOpen={chartEnabled ? () => handleRowClick(row.symbol) : null}
+                  />
+                </Box>
+              );
+            })}
+          </Box>
+        </Box>
+        {pagination}
+        {opportunityDrawer}
       </Paper>
     );
   }
@@ -788,26 +911,9 @@ function ResultsTable({
         </Table>
       </TableContainer>
 
-      <TablePagination
-        rowsPerPageOptions={[10, 25, 50, 100]}
-        component="div"
-        count={total}
-        rowsPerPage={perPage}
-        page={page - 1} // Material-UI uses 0-based pages
-        onPageChange={handleChangePage}
-        onRowsPerPageChange={(e) => {
-          const nextPerPage = Number(e.target.value);
-          onPerPageChange?.(nextPerPage);
-          onPageChange(1); // Reset to first page when changing per-page
-        }}
-      />
+      {pagination}
 
-      <OpportunityEvidenceDrawer
-        open={showOpportunityState && Boolean(opportunityRow)}
-        row={opportunityRow}
-        onClose={handleCloseOpportunity}
-        opportunityTelemetrySurface={opportunityTelemetrySurface}
-      />
+      {opportunityDrawer}
     </Paper>
   );
 }

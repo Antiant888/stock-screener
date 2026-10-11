@@ -1,4 +1,4 @@
-import { fireEvent, screen } from '@testing-library/react';
+import { fireEvent, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { renderWithProviders } from '../../test/renderWithProviders';
 import {
@@ -28,6 +28,7 @@ vi.mock('@tanstack/react-virtual', () => ({
         key: i,
       })),
     getTotalSize: () => count * 32,
+    measure: () => {},
   }),
 }));
 vi.mock('./RSSparkline', () => ({
@@ -553,5 +554,50 @@ describe('ResultsTable', () => {
 
     // Stage 2 = success.main in the dark test theme (#2ebd85).
     expect(screen.getByText('S2')).toHaveStyle({ backgroundColor: 'rgb(46, 189, 133)' });
+  });
+
+  describe('on a phone-width screen', () => {
+    beforeEach(() => {
+      // useMediaQuery(breakpoints.down('md')) matches.
+      window.matchMedia = vi.fn().mockReturnValue({
+        matches: true,
+        addListener: vi.fn(),
+        removeListener: vi.fn(),
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+      });
+    });
+
+    afterEach(() => {
+      delete window.matchMedia;
+    });
+
+    it('lists results as cards with a sort picker instead of a wide table', async () => {
+      const onSortChange = vi.fn();
+      const onOpenChart = vi.fn();
+      renderWithProviders(
+        <ResultsTable {...defaultProps} onSortChange={onSortChange} onOpenChart={onOpenChart} />,
+      );
+
+      expect(screen.queryByRole('table')).not.toBeInTheDocument();
+      const list = screen.getByRole('list', { name: 'Scan results' });
+      expect(within(list).getAllByRole('listitem')).toHaveLength(1);
+
+      fireEvent.click(screen.getByRole('button', { name: `Open ${fullSeRow.symbol} chart` }));
+      expect(onOpenChart).toHaveBeenCalledWith(fullSeRow.symbol);
+
+      fireEvent.click(screen.getByRole('button', { name: /Sorted descending/ }));
+      expect(onSortChange).toHaveBeenLastCalledWith('composite_score', 'asc');
+
+      await userEvent.click(screen.getByRole('combobox', { name: 'Sort by' }));
+      await userEvent.click(screen.getByRole('option', { name: 'RS rating' }));
+      expect(onSortChange).toHaveBeenLastCalledWith('rs_rating', 'desc');
+    });
+
+    it('keeps an active sort that the picker does not list', () => {
+      renderWithProviders(<ResultsTable {...defaultProps} sortBy="beta" />);
+
+      expect(screen.getByRole('combobox', { name: 'Sort by' })).toHaveTextContent('β');
+    });
   });
 });

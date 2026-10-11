@@ -34,6 +34,7 @@ vi.mock('@tanstack/react-virtual', () => ({
       key: index,
     })),
     getTotalSize: () => count * 48,
+    measure: () => {},
   }),
 }));
 
