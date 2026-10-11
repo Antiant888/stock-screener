@@ -25,6 +25,7 @@ import { useRuntimeActivity } from '../../../hooks/useRuntimeActivity';
 import { useRuntime } from '../../../contexts/RuntimeContext';
 import { useMarket } from '../../../contexts/MarketContext';
 import { useStrategyProfileData } from '../../../contexts/StrategyProfileContext';
+import { scanBootstrapQuery as latestScanBootstrapQuery } from '../../../pageBootstrapQueries';
 import { DEFAULT_SCAN_DEFAULTS } from '../../../constants/scanDefaults';
 import { buildDefaultScanFilters } from '../defaultFilters';
 import { normalizeScanFilterOptions } from '../filterOptions';
@@ -353,13 +354,8 @@ function ScanPage() {
   });
 
   const scanBootstrapQuery = useQuery({
-    // Market-scoped so the first load selects and seeds the selected market's
-    // scans, never another market's newest scan.
-    queryKey: ['scanBootstrap', 'latest', globalMarket ?? null],
-    queryFn: () => getScanBootstrap(null, globalMarket ?? null),
+    ...latestScanBootstrapQuery(globalMarket),
     enabled: snapshotEnabled && !currentScanId && !initialBootstrapSettled,
-    retry: false,
-    staleTime: 60_000,
   });
 
   useEffect(() => {

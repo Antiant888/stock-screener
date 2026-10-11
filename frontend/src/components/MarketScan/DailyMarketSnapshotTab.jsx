@@ -17,8 +17,8 @@ import {
   Typography,
 } from '@mui/material';
 
-import { getDailySnapshot } from '../../api/marketScan';
 import { getScanResults } from '../../api/scans';
+import { dailySnapshotQuery } from '../../pageBootstrapQueries';
 import KeyMarketCard from './KeyMarketCard';
 import MarketHealthExposure from './MarketHealthExposure';
 import ChartViewerModal from '../Scan/ChartViewerModalLazy';
@@ -48,11 +48,7 @@ function formatNumber(value, digits = 0) {
 
 function DailyMarketSnapshotTab({ showSocialSignals = false, onOpenSocialSignals }) {
   const { selectedMarket } = useMarket();
-  const snapshotQuery = useQuery({
-    queryKey: ['dailySnapshot', selectedMarket],
-    queryFn: () => getDailySnapshot(selectedMarket),
-    staleTime: 60_000,
-  });
+  const snapshotQuery = useQuery(dailySnapshotQuery(selectedMarket));
   const snapshot = snapshotQuery.data;
   const scanId = snapshot?.scan_id ?? null;
   const freshness = snapshot?.freshness ?? {};

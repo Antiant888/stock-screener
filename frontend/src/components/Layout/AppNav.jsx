@@ -27,6 +27,14 @@ const isActive = (item, pathname) => (
   item.matchPrefix ? pathname.startsWith(item.path) : pathname === item.path
 );
 
+// Hover, keyboard focus or a touch says a link is about to be followed; the
+// live shell passes `onIntent` to prefetch the page, the static shell does not.
+const intentHandlers = (onIntent, path) => (onIntent ? {
+  onMouseEnter: () => onIntent(path),
+  onFocus: () => onIntent(path),
+  onTouchStart: () => onIntent(path),
+} : {});
+
 export function BrandMark({ label }) {
   return (
     <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexShrink: 0 }}>
@@ -72,7 +80,7 @@ export function ColorModeListItem({ onDone }) {
   );
 }
 
-export function DesktopNav({ items }) {
+export function DesktopNav({ items, onIntent }) {
   const { pathname } = useLocation();
   return (
     <Box component="nav" aria-label="Main" sx={{ display: 'flex', alignSelf: 'stretch' }}>
@@ -83,6 +91,7 @@ export function DesktopNav({ items }) {
             key={item.path}
             component={RouterLink}
             to={item.path}
+            {...intentHandlers(onIntent, item.path)}
             aria-current={active ? 'page' : undefined}
             sx={{
               color: active ? 'text.primary' : 'text.secondary',
@@ -104,7 +113,7 @@ export function DesktopNav({ items }) {
 }
 
 // The first four items sit in the bar; the rest, plus `extras(close)`, go in the "More" sheet.
-export function MobileBottomNav({ items, extras }) {
+export function MobileBottomNav({ items, extras, onIntent }) {
   const { pathname } = useLocation();
   const [moreOpen, setMoreOpen] = useState(false);
   const close = () => setMoreOpen(false);
@@ -150,6 +159,7 @@ export function MobileBottomNav({ items, extras }) {
               key={item.path}
               component={RouterLink}
               to={item.path}
+              {...intentHandlers(onIntent, item.path)}
               value={item.path}
               label={item.label}
               icon={item.icon}
@@ -184,6 +194,7 @@ export function MobileBottomNav({ items, extras }) {
               key={item.path}
               component={RouterLink}
               to={item.path}
+              {...intentHandlers(onIntent, item.path)}
               selected={isActive(item, pathname)}
               onClick={close}
             >

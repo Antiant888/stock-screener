@@ -1,4 +1,5 @@
-import { lazy, Suspense, useState } from 'react';
+import { lazy, Suspense, useCallback, useState } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import {
   AppBar,
   Box,
@@ -19,7 +20,7 @@ import {
   IconButton,
   useTheme,
 } from '@mui/material';
-import { useLocation, useNavigate } from 'react-router-dom';
+import { matchPath, useLocation, useNavigate } from 'react-router-dom';
 import CandlestickChartIcon from '@mui/icons-material/CandlestickChart';
 import AutoAwesomeIcon from '@mui/icons-material/AutoAwesome';
 import CheckIcon from '@mui/icons-material/Check';
@@ -39,10 +40,19 @@ import {
 } from './AppNav';
 import { CORE_NAV_ITEMS, mobileNavOffset, safeGutters, useIsMobileShell } from './shellNav';
 import { useRuntime } from '../../contexts/RuntimeContext';
-import { useMarket } from '../../contexts/MarketContext';
+import { useMarket, useMarketForCapability } from '../../contexts/MarketContext';
 import { usePipeline } from '../../contexts/usePipeline';
 import { useStrategyProfile, useStrategyProfileData } from '../../contexts/StrategyProfileContext';
 import { isLiveOptionsAvailable } from '../../features/options/optionsAvailability';
+import { loadStockDetails, loaderForPath } from '../../pageLoaders';
+import {
+  BREADTH_MARKET_FALLBACKS,
+  GROUP_RANKING_MARKET_FALLBACKS,
+  breadthBootstrapQuery,
+  dailySnapshotQuery,
+  groupsBootstrapQuery,
+  scanBootstrapQuery,
+} from '../../pageBootstrapQueries';
 
 const AssistantDrawerContent = lazy(() => import('../AssistantChat/AssistantDrawerContent'));
 const PipelineProgressCard = lazy(() => import('../PipelineProgressCard'));
@@ -160,6 +170,52 @@ function StrategyProfileControl() {
   );
 }
 
+// The early fetch is the page's one attempt, as the route's own import would
+// be: browsers keep a failed dynamic import for the session, so the route
+// shows the same error it would have shown on main. Nothing to handle here.
+const loadQuietly = (loader) => loader?.().catch(() => {});
+
+/**
+ * Start a page's code and first-paint data on hover, focus or touch, so a tab
+ * switch does not wait for code, then data, after the click. The data only
+ * goes where the page itself would look: same key, market and snapshot flag.
+ * The nav renders once the capabilities request has settled, and with auth
+ * required only after sign-in; the server checks every request regardless.
+ */
+function useNavPrefetch() {
+  const queryClient = useQueryClient();
+  const location = useLocation();
+  const { uiSnapshots } = useRuntime();
+  const { selectedMarket } = useMarket();
+  const { market: groupsMarket } = useMarketForCapability(
+    'group_rankings',
+    GROUP_RANKING_MARKET_FALLBACKS,
+  );
+  const { market: breadthMarket } = useMarketForCapability('breadth', BREADTH_MARKET_FALLBACKS);
+
+  return useCallback((path) => {
+    loadQuietly(loaderForPath(path));
+    // The open page owns its queries: the Scan page re-applies any new
+    // latest-scan bootstrap, which would replace the scan the user picked.
+    // matchPath follows the router (trailing slash, any casing).
+    if (matchPath(path, location.pathname)) return;
+    let query = null;
+    if (path === '/') query = dailySnapshotQuery(selectedMarket);
+    else if (path === '/scan' && uiSnapshots?.scan) query = scanBootstrapQuery(selectedMarket);
+    else if (path === '/groups' && uiSnapshots?.groups) {
+      query = groupsBootstrapQuery(queryClient, groupsMarket);
+    } else if (path === '/breadth' && uiSnapshots?.breadth) {
+      query = breadthBootstrapQuery(queryClient, breadthMarket);
+    }
+    if (!query) return;
+    // A query without data is always stale, so a failed one would be asked
+    // again on every hover; wait out its staleTime instead.
+    const state = queryClient.getQueryState(query.queryKey);
+    if (state?.status === 'error' && Date.now() - state.errorUpdatedAt < query.staleTime) return;
+    queryClient.prefetchQuery(query);
+  }, [breadthMarket, groupsMarket, location.pathname, queryClient, selectedMarket, uiSnapshots]);
+}
+
 function TickerSearch() {
   const navigate = useNavigate();
   const [tickerInput, setTickerInput] = useState('');
@@ -178,6 +234,7 @@ function TickerSearch() {
       value={tickerInput}
       onChange={(e) => setTickerInput(e.target.value)}
       onKeyDown={handleTickerSubmit}
+      onFocus={() => loadQuietly(loadStockDetails)}
       placeholder="Ticker"
       size="small"
       inputProps={{ 'aria-label': 'Go to ticker', enterKeyHint: 'go', autoCapitalize: 'characters' }}
@@ -209,6 +266,7 @@ function Layout({ children }) {
   const { selectedMarket } = useMarket();
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [assistantOpen, setAssistantOpen] = useState(false);
+  const prefetchPage = useNavPrefetch();
 
   const assistantAvailable = features.chatbot && (!auth?.required || auth?.authenticated);
   const canSignOut = auth?.required && auth?.authenticated;
@@ -262,7 +320,7 @@ function Layout({ children }) {
           {!isMobile && (
             <>
               <Box sx={{ flexGrow: 1 }} />
-              <DesktopNav items={navItems} />
+              <DesktopNav items={navItems} onIntent={prefetchPage} />
               <StrategyProfileControl />
               {features.tasks && (
                 <IconButton
@@ -294,7 +352,7 @@ function Layout({ children }) {
         {children}
       </Container>
 
-      {isMobile && <MobileBottomNav items={navItems} extras={mobileExtras} />}
+      {isMobile && <MobileBottomNav items={navItems} extras={mobileExtras} onIntent={prefetchPage} />}
 
       {features.themes && <PipelineProgressOverlay />}
 

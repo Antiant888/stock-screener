@@ -29,23 +29,45 @@ import {
   shouldDehydratePersistedQuery,
 } from './appQueryPersistence';
 import { isLiveOptionsAvailable } from './features/options/optionsAvailability';
+import {
+  loadBreadthPage,
+  loadChatbotPage,
+  loadGroupRankingsPage,
+  loadMarketScanPage,
+  loadOperationsPage,
+  loadOptionsPage,
+  loadOptionsSymbolPage,
+  loadScanPage,
+  loadStockDetails,
+  loadThemesPage,
+  loadValidationPage,
+  loaderForPath,
+} from './pageLoaders';
 
 // All pages are lazy-loaded so the initial bundle stays free of heavy
 // page-specific chunks (MarketScanPage alone pulls in recharts, ~400KB).
 const BootstrapSetupScreen = lazy(() => import('./components/App/BootstrapSetupScreen'));
 const ServerLoginScreen = lazy(() => import('./components/App/ServerLoginScreen'));
-const MarketScanPage = lazy(() => import('./pages/MarketScanPage'));
-const ScanPage = lazy(() => import('./pages/ScanPage'));
-const StockDetails = lazy(() => import('./components/Stock/StockDetails'));
-const BreadthPage = lazy(() => import('./pages/BreadthPage'));
-const GroupRankingsPage = lazy(() => import('./pages/GroupRankingsPage'));
-const ValidationPage = lazy(() => import('./pages/ValidationPage'));
-const ThemesPage = lazy(() => import('./pages/ThemesPage'));
-const ChatbotPage = lazy(() => import('./pages/ChatbotPage'));
-const OperationsPage = lazy(() => import('./pages/OperationsPage'));
-const OptionsPage = lazy(() => import('./pages/OptionsPage'));
-const OptionsSymbolPage = lazy(() => import('./pages/OptionsSymbolPage'));
+const MarketScanPage = lazy(loadMarketScanPage);
+const ScanPage = lazy(loadScanPage);
+const StockDetails = lazy(loadStockDetails);
+const BreadthPage = lazy(loadBreadthPage);
+const GroupRankingsPage = lazy(loadGroupRankingsPage);
+const ValidationPage = lazy(loadValidationPage);
+const ThemesPage = lazy(loadThemesPage);
+const ChatbotPage = lazy(loadChatbotPage);
+const OperationsPage = lazy(loadOperationsPage);
+const OptionsPage = lazy(loadOptionsPage);
+const OptionsSymbolPage = lazy(loadOptionsSymbolPage);
 const StaticAppShell = lazy(() => import('./static/StaticAppShell'));
+
+// Fetch the landing page's code alongside /app-capabilities rather than after
+// it: the router only asks for it once capabilities confirm the app renders.
+// A failed fetch surfaces through lazy() when the route renders, so it is
+// dropped here.
+if (!STATIC_SITE_MODE && typeof window !== 'undefined') {
+  loaderForPath(window.location.pathname)?.().catch(() => {});
+}
 
 function LiveOptionsRoute({ detail = false }) {
   const { features, marketCatalog, primaryMarket } = useRuntime();

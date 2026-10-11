@@ -33,9 +33,11 @@ export default defineConfig(({ mode }) => {
       },
     },
     build: {
-      // Manual chunks for better caching and smaller initial bundle
       rollupOptions: {
         output: {
+          // MUI and recharts are left to Rollup: a named vendor chunk holds
+          // every component any page imports and loads eagerly, while
+          // automatic splitting ships only what the entry needs at boot.
           manualChunks: {
             // Core React ecosystem
             // Query's React adapters share React's initialization boundary.
@@ -45,14 +47,13 @@ export default defineConfig(({ mode }) => {
               '@tanstack/react-query', '@tanstack/react-virtual',
               '@tanstack/react-query-persist-client', '@tanstack/query-sync-storage-persister',
             ],
-            // MUI components (large library)
-            'mui-vendor': ['@mui/material', '@mui/icons-material'],
-            // Data visualization: recharts powers the always-visible
-            // sparklines; lightweight-charts only loads with the (lazy)
-            // candlestick chart modals.
-            'charts-vendor': ['recharts'],
+            // Only loads with the (lazy) candlestick chart modals.
             'price-charts-vendor': ['lightweight-charts'],
           },
+          // Fold the many small chunks automatic splitting leaves behind into
+          // chunks that always load with them; the boot set is unchanged and
+          // a route needs about a third fewer requests (matters on HTTP/1.1).
+          experimentalMinChunkSize: 20_000,
         },
       },
       // Increase chunk size warning limit

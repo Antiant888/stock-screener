@@ -171,10 +171,11 @@ def _frontend_scan_scope_options() -> dict[str, list[tuple[str, str]]]:
 
 
 def _frontend_breadth_object_market_keys(object_name: str) -> list[str]:
-    breadth_page = REPO_ROOT / "frontend" / "src" / "pages" / "BreadthPage.jsx"
-    source = breadth_page.read_text()
+    # BreadthPage and the nav prefetcher share these from one module.
+    module = REPO_ROOT / "frontend" / "src" / "pageBootstrapQueries.js"
+    source = module.read_text()
     match = re.search(rf"const {object_name} = \{{(?P<body>.*?)\n\}};", source, re.S)
-    assert match is not None, f"{object_name} is missing from BreadthPage"
+    assert match is not None, f"{object_name} is missing from {module.name}"
     return re.findall(r"^\s*([A-Z]{2}):", match.group("body"), re.M)
 
 

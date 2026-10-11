@@ -4,6 +4,7 @@ import { act } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import Layout from './Layout';
+import { MarketProvider } from '../../contexts/MarketContext';
 import { renderWithProviders } from '../../test/renderWithProviders';
 
 const runtimeState = {
@@ -39,12 +40,181 @@ vi.mock('../../hooks/useRuntimeActivity', () => ({
   useRuntimeActivity: (...args) => useRuntimeActivityMock(...args),
 }));
 
+const loadedPaths = vi.hoisted(() => []);
+const api = vi.hoisted(() => ({
+  getBreadthBootstrap: vi.fn(),
+  getDailySnapshot: vi.fn(),
+  getGroupsBootstrap: vi.fn(),
+  getScanBootstrap: vi.fn(),
+}));
+
+vi.mock('../../pageLoaders', async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    loaderForPath: (path) => {
+      const loader = actual.loaderForPath(path);
+      return loader && (() => {
+        loadedPaths.push(path);
+        return loader();
+      });
+    },
+  };
+});
+vi.mock('../../pages/BreadthPage', () => ({ default: () => null }));
+vi.mock('../../pages/MarketScanPage', () => ({ default: () => null }));
+vi.mock('../../pages/GroupRankingsPage', () => ({ default: () => null }));
+vi.mock('../../pages/ScanPage', () => ({ default: () => null }));
+vi.mock('../../api/scans', async (importOriginal) => ({
+  ...(await importOriginal()),
+  getScanBootstrap: api.getScanBootstrap,
+}));
+vi.mock('../../api/breadth', async (importOriginal) => ({
+  ...(await importOriginal()),
+  getBreadthBootstrap: api.getBreadthBootstrap,
+}));
+vi.mock('../../api/marketScan', async (importOriginal) => ({
+  ...(await importOriginal()),
+  getDailySnapshot: api.getDailySnapshot,
+}));
+vi.mock('../../api/groups', async (importOriginal) => ({
+  ...(await importOriginal()),
+  getGroupsBootstrap: api.getGroupsBootstrap,
+}));
+
+function renderInApp(path = '/scan') {
+  return renderWithProviders(
+    <MemoryRouter initialEntries={[path]}>
+      <MarketProvider>
+        <Layout><div>content</div></Layout>
+      </MarketProvider>
+    </MemoryRouter>,
+  );
+}
+
 describe('Layout', () => {
   beforeEach(() => {
     useRuntimeActivityMock.mockReset();
+    Object.values(api).forEach((mock) => mock.mockReset().mockResolvedValue(null));
+    loadedPaths.length = 0;
+    window.localStorage.clear();
     runtimeState.features = { chatbot: false, themes: false, tasks: false };
     runtimeState.marketCatalog = { markets: [] };
     runtimeState.primaryMarket = 'US';
+    runtimeState.enabledMarkets = undefined;
+    runtimeState.uiSnapshots = undefined;
+  });
+
+  it("loads a page's code and snapshot when its nav link is hovered", async () => {
+    useRuntimeActivityMock.mockReturnValue({ data: null });
+    runtimeState.enabledMarkets = ['US', 'HK'];
+    runtimeState.primaryMarket = 'HK';
+    runtimeState.uiSnapshots = { breadth: true };
+    renderInApp();
+
+    fireEvent.mouseEnter(screen.getByRole('link', { name: 'Breadth' }));
+
+    expect(loadedPaths).toEqual(['/breadth']);
+    await vi.waitFor(() => expect(api.getBreadthBootstrap).toHaveBeenCalledWith('HK'));
+  });
+
+  it('prefetches the scan bootstrap for the selected market from another page', async () => {
+    useRuntimeActivityMock.mockReturnValue({ data: null });
+    runtimeState.enabledMarkets = ['US', 'HK'];
+    runtimeState.primaryMarket = 'HK';
+    runtimeState.uiSnapshots = { scan: true };
+    renderInApp('/');
+
+    fireEvent.mouseEnter(screen.getByRole('link', { name: 'Scan' }));
+
+    await vi.waitFor(() => expect(api.getScanBootstrap).toHaveBeenCalledWith(null, 'HK'));
+  });
+
+  it.each(['/scan', '/scan/', '/SCAN'])("leaves the open page's data to that page at %s", async (openPath) => {
+    // The mounted Scan page re-applies any new latest-scan bootstrap, which
+    // would replace the scan the user picked or just started. The router
+    // renders it for a trailing slash or other casing too.
+    useRuntimeActivityMock.mockReturnValue({ data: null });
+    runtimeState.uiSnapshots = { scan: true };
+    renderInApp(openPath);
+
+    fireEvent.mouseEnter(screen.getByRole('link', { name: 'Scan' }));
+    await act(async () => {});
+
+    expect(api.getScanBootstrap).not.toHaveBeenCalled();
+  });
+
+  it('resolves capability-limited pages to the market they would show', async () => {
+    useRuntimeActivityMock.mockReturnValue({ data: null });
+    // SG is selected, but group rankings and breadth fall back to US for it.
+    runtimeState.enabledMarkets = ['SG', 'US'];
+    runtimeState.primaryMarket = 'SG';
+    runtimeState.uiSnapshots = { breadth: true, groups: true };
+    renderInApp();
+
+    fireEvent.mouseEnter(screen.getByRole('link', { name: 'Breadth' }));
+    fireEvent.mouseEnter(screen.getByRole('link', { name: 'Groups' }));
+    fireEvent.mouseEnter(screen.getByRole('link', { name: 'Daily' }));
+
+    await vi.waitFor(() => expect(api.getDailySnapshot).toHaveBeenCalledWith('SG'));
+    expect(api.getBreadthBootstrap).toHaveBeenCalledWith('US');
+    expect(api.getGroupsBootstrap).toHaveBeenCalledWith('US');
+  });
+
+  it('does not retry a failed prefetch on every hover', async () => {
+    useRuntimeActivityMock.mockReturnValue({ data: null });
+    runtimeState.uiSnapshots = { scan: true };
+    api.getScanBootstrap.mockRejectedValue(new Error('404'));
+    renderInApp('/');
+    const scanLink = screen.getByRole('link', { name: 'Scan' });
+
+    fireEvent.mouseEnter(scanLink);
+    await vi.waitFor(() => expect(api.getScanBootstrap).toHaveBeenCalledTimes(1));
+    await act(async () => {});
+    fireEvent.mouseEnter(scanLink);
+    await act(async () => {});
+
+    expect(api.getScanBootstrap).toHaveBeenCalledTimes(1);
+  });
+
+  it('skips the snapshot a page would not request', async () => {
+    useRuntimeActivityMock.mockReturnValue({ data: null });
+    runtimeState.uiSnapshots = { breadth: false };
+    renderInApp();
+
+    fireEvent.mouseEnter(screen.getByRole('link', { name: 'Breadth' }));
+    await act(async () => {});
+
+    expect(api.getBreadthBootstrap).not.toHaveBeenCalled();
+  });
+
+  it('prefetches the daily snapshot for the selected market on focus', async () => {
+    useRuntimeActivityMock.mockReturnValue({ data: null });
+    runtimeState.enabledMarkets = ['US', 'HK'];
+    runtimeState.primaryMarket = 'HK';
+    renderInApp();
+
+    fireEvent.focus(screen.getByRole('link', { name: 'Daily' }));
+
+    await vi.waitFor(() => expect(api.getDailySnapshot).toHaveBeenCalledWith('HK'));
+  });
+
+  it('seeds the same caches as the page when it prefetches a groups snapshot', async () => {
+    useRuntimeActivityMock.mockReturnValue({ data: null });
+    runtimeState.uiSnapshots = { groups: true };
+    const rankings = { date: '2026-10-09', rankings: [] };
+    api.getGroupsBootstrap.mockResolvedValue({
+      is_stale: false,
+      payload: { rankings, movers: { gainers: [] } },
+    });
+    const { queryClient } = renderInApp();
+
+    fireEvent.mouseEnter(screen.getByRole('link', { name: 'Groups' }));
+
+    await vi.waitFor(() => (
+      expect(queryClient.getQueryData(['groupRankings', 'US', '2026-10-09'])).toEqual(rankings)
+    ));
+    expect(queryClient.getQueryData(['groupMovers', '1w', 'US', '2026-10-09'])).toEqual({ gainers: [] });
   });
 
   it('defers the header runtime activity request until after initial paint', () => {
@@ -248,6 +418,26 @@ describe('Layout', () => {
 
       expect(screen.queryByText('Markets ready')).not.toBeInTheDocument();
       expect(screen.getByRole('link', { name: 'Markets ready: View operations' })).toBeInTheDocument();
+    });
+
+    it('prefetches a page when its bottom-bar item is touched', async () => {
+      runtimeState.uiSnapshots = { breadth: true };
+      renderInApp('/');
+
+      const nav = screen.getByRole('navigation', { name: 'Main' });
+      fireEvent.touchStart(within(nav).getByRole('link', { name: 'Breadth' }));
+
+      expect(loadedPaths).toEqual(['/breadth']);
+      await vi.waitFor(() => expect(api.getBreadthBootstrap).toHaveBeenCalledWith('US'));
+    });
+
+    it('loads a More-sheet page when its link is touched', () => {
+      renderInApp('/');
+
+      fireEvent.click(within(screen.getByRole('navigation', { name: 'Main' })).getByRole('button', { name: 'More' }));
+      fireEvent.touchStart(within(screen.getByRole('list', { name: 'More' })).getByRole('link', { name: 'Backtest' }));
+
+      expect(loadedPaths).toEqual(['/validation']);
     });
   });
 });
