@@ -45,13 +45,14 @@ import {
 
 const GroupMatrixPanel = lazy(() => import('../../features/groups/matrix/GroupMatrixPanel'));
 
-function SortableTableCell({ field, label, align = 'left', orderBy, order, onSort }) {
+function SortableTableCell({ field, label, description, align = 'left', orderBy, order, onSort }) {
   return (
     <TableCell align={align}>
       <TableSortLabel
         active={orderBy === field}
         direction={orderBy === field ? order : 'asc'}
         onClick={() => onSort(field)}
+        title={description}
       >
         {label}
       </TableSortLabel>
@@ -183,6 +184,7 @@ function GroupsTableView({ movers, moversPeriod, rankings, onSelectGroup }) {
                     key={column.field}
                     field={column.field}
                     label={column.staticLabel || column.label}
+                    description={column.description}
                     align={column.staticAlign || column.align}
                     orderBy={orderBy}
                     order={order}

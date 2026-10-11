@@ -53,6 +53,7 @@ const SortableHeaderCell = ({ column, order, orderBy, onSort }) => (
       active={orderBy === column.field}
       direction={orderBy === column.field ? order : 'asc'}
       onClick={() => onSort(column.field)}
+      title={column.description}
     >
       {column.label}
     </TableSortLabel>

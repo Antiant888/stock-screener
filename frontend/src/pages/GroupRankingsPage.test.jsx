@@ -243,6 +243,9 @@ describe('GroupRankingsPage', () => {
     expect(screen.getByText('61.8')).toBeInTheDocument();
     expect(screen.getByText('86.3')).toBeInTheDocument();
     const table = screen.getByRole('columnheader', { name: '1M RS' }).closest('table');
+    // #305: the overall RS header explains its horizon blend.
+    expect(within(within(table).getByRole('columnheader', { name: 'RS' })).getByRole('button'))
+      .toHaveAttribute('title', expect.stringMatching(/up to 12 months.*sort by 1M or 3M RS/i));
     const headers = within(table).getAllByRole('columnheader').map((cell) => cell.textContent.trim());
     expect(headers.slice(0, 10)).toEqual([
       'Rank',

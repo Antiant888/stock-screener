@@ -3,6 +3,8 @@ export const GROUP_RS_FIELDS = Object.freeze([
     field: 'avg_rs_rating',
     label: 'RS',
     staticLabel: 'Avg RS',
+    description:
+      'Blends relative strength over up to 12 months, weighted toward the most recent quarter, so it reflects lasting leadership and lags sharp recent moves. For recent momentum, sort by 1M or 3M RS.',
     align: 'right',
     staticAlign: 'center',
     kind: 'rs',
