@@ -12,48 +12,14 @@ from app.models.institutional_ownership import InstitutionalOwnershipHistory
 from app.schemas.strategy_profile import StrategyProfileDetail
 from app.services.price_cache_service import PriceCacheService
 from app.services.strategy_profile_service import DEFAULT_PROFILE, StrategyProfileService
-from app.utils.market_hours import EASTERN, to_eastern_date
+from app.services.yahoo_earnings_calendar import persisted_next_earnings_date
+from app.utils.market_hours import to_eastern_date
 
 
 def _round_or_none(value: float | None, digits: int = 4) -> float | None:
     if value is None:
         return None
     return round(float(value), digits)
-
-
-def _normalize_timestamp(value: Any) -> datetime | None:
-    if value is None:
-        return None
-    try:
-        timestamp = pd.Timestamp(value)
-    except Exception:
-        return None
-    if pd.isna(timestamp):
-        return None
-    if timestamp.tzinfo is None:
-        return timestamp.tz_localize(EASTERN).to_pydatetime()
-    return timestamp.tz_convert(EASTERN).to_pydatetime()
-
-
-def _normalize_date(value: Any) -> date | None:
-    timestamp = _normalize_timestamp(value)
-    if timestamp is None:
-        return None
-    return timestamp.date()
-
-
-def _clean_column_name(value: str) -> str:
-    return "".join(ch for ch in value.lower() if ch.isalnum())
-
-
-def _find_record_value(record: dict[str, Any], candidates: tuple[str, ...]) -> Any:
-    if not record:
-        return None
-    lowered = {_clean_column_name(str(key)): value for key, value in record.items()}
-    for candidate in candidates:
-        if candidate in lowered:
-            return lowered[candidate]
-    return None
 
 
 def _normalize_price_history(df: pd.DataFrame | None) -> pd.DataFrame | None:
@@ -79,11 +45,12 @@ class StockEventContextService:
         *,
         price_cache: PriceCacheService | None = None,
         profile_service: StrategyProfileService | None = None,
+        yfinance_service: Any = None,
     ) -> None:
         from app.wiring.bootstrap import get_price_cache, get_yfinance_service
 
         self._price_cache = price_cache or get_price_cache()
-        self._yfinance_service = get_yfinance_service()
+        self._yfinance_service = yfinance_service or get_yfinance_service()
         self._profile_service = profile_service or StrategyProfileService()
 
     def build(
@@ -96,19 +63,27 @@ class StockEventContextService:
         profile: str | None = None,
         fundamentals: dict[str, Any] | None = None,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
-        effective_as_of_date = as_of_date or to_eastern_date(datetime.now(UTC))
+        today = to_eastern_date(datetime.now(UTC))
+        effective_as_of_date = as_of_date or today
         profile_detail = self._profile_service.get_profile(profile or DEFAULT_PROFILE)
 
-        earnings_history = self._get_earnings_history(symbol)
-        recent_earnings = self._normalize_earnings_history(earnings_history, effective_as_of_date)
-        upcoming_earnings_dates = self._get_upcoming_earnings_dates(symbol)
-        next_earnings_date = self._select_next_earnings_date(upcoming_earnings_dates, effective_as_of_date)
+        # No stored source yet. Yahoo's earnings_history is keyed by fiscal
+        # quarter, not report date, and never matched the report-date parsing
+        # this payload needs; reported earnings have to be persisted by the
+        # fundamentals refresh before beat/miss and drift can be computed.
+        recent_earnings: list[dict[str, Any]] = []
+        # The fundamentals refresh stores the calendar; never ask Yahoo here.
+        # Judged against today: the published run can be days older than the
+        # latest observation, which would then look like it came from the future.
+        next_earnings_date, _observed = persisted_next_earnings_date(
+            fundamentals, as_of_date=today
+        )
         days_until_earnings = (
-            (next_earnings_date - effective_as_of_date).days if next_earnings_date is not None else None
+            (next_earnings_date - today).days if next_earnings_date is not None else None
         )
 
         notes: list[str] = []
-        if earnings_history is None or len(recent_earnings) == 0:
+        if not recent_earnings:
             notes.append("Recent earnings history is unavailable.")
         if next_earnings_date is None:
             notes.append("Upcoming earnings date is unavailable.")
@@ -118,15 +93,17 @@ class StockEventContextService:
             profile_detail=profile_detail,
         )
 
-        price_history = _normalize_price_history(
-            self._price_cache.get_cached_only(symbol.upper(), period="2y")
-        )
-        avg_gap_pct, avg_return_5s_pct = self._compute_post_earnings_price_effects(
-            recent_earnings,
-            price_history,
-        )
-        if price_history is None and recent_earnings:
-            notes.append("Cached price history is unavailable for post-earnings drift analysis.")
+        avg_gap_pct = avg_return_5s_pct = None
+        if recent_earnings:
+            price_history = _normalize_price_history(
+                self._price_cache.get_cached_only(symbol.upper(), period="2y")
+            )
+            avg_gap_pct, avg_return_5s_pct = self._compute_post_earnings_price_effects(
+                recent_earnings,
+                price_history,
+            )
+            if price_history is None:
+                notes.append("Cached price history is unavailable for post-earnings drift analysis.")
 
         ownership_current, ownership_delta_90d = self._load_institutional_ownership(
             db,
@@ -199,48 +176,6 @@ class StockEventContextService:
             (next_earnings_date - effective_as_of_date).days,
             True,
         )
-
-    def _get_earnings_history(self, symbol: str) -> pd.DataFrame | None:
-        return self._yfinance_service.get_earnings_history(symbol.upper())
-
-    def _get_upcoming_earnings_dates(self, symbol: str) -> list[date]:
-        return self._yfinance_service.get_upcoming_earnings_dates(symbol.upper())
-
-    def _normalize_earnings_history(
-        self,
-        earnings_history: pd.DataFrame | None,
-        as_of_date: date,
-    ) -> list[dict[str, Any]]:
-        if earnings_history is None or earnings_history.empty:
-            return []
-
-        normalized = earnings_history.reset_index()
-        records: list[dict[str, Any]] = []
-        for row in normalized.to_dict("records"):
-            earnings_date = _normalize_date(
-                _find_record_value(row, ("earningsdate", "date", "reporteddate", "quarterending"))
-                or row.get("Date")
-                or row.get("index")
-            )
-            if earnings_date is None or earnings_date > as_of_date:
-                continue
-            surprise_percent = _find_record_value(
-                row,
-                ("surprisepercent", "surprisepct", "surprise", "epssurprisepercent"),
-            )
-            try:
-                surprise_value = float(surprise_percent) if surprise_percent is not None else None
-            except (TypeError, ValueError):
-                surprise_value = None
-            records.append(
-                {
-                    "earnings_date": earnings_date,
-                    "surprise_percent": surprise_value,
-                }
-            )
-
-        records.sort(key=lambda item: item["earnings_date"], reverse=True)
-        return records[:4]
 
     def _select_next_earnings_date(
         self,

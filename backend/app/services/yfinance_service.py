@@ -321,32 +321,6 @@ class YFinanceService:
 
         return result
 
-    def get_earnings_history(self, symbol: str) -> Optional[pd.DataFrame]:
-        """
-        Get earnings history.
-
-        Args:
-            symbol: Stock ticker symbol
-
-        Returns:
-            DataFrame with earnings history
-        """
-        try:
-            self._wait_for_yfinance_rate_limit()
-
-            ticker = yf.Ticker(symbol)
-            earnings = ticker.earnings_history
-
-            if earnings is None or earnings.empty:
-                logger.warning(f"No earnings history for {symbol}")
-                return None
-
-            return earnings
-
-        except Exception as e:
-            logger.error(f"Error fetching earnings history for {symbol}: {e}")
-            return None
-
     def _get_upcoming_earnings_dates_from_ticker(
         self,
         ticker: Any,
