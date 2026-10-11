@@ -1,4 +1,5 @@
-import { lazy, Suspense, useContext, useState } from 'react';
+import { lazy, Suspense, useCallback, useContext, useState } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import {
   AppBar,
   Box,
@@ -27,10 +28,19 @@ import { ColorModeContext } from '../../contexts/ColorModeContext';
 import MarketSelector from './MarketSelector';
 import RuntimeActivityStatusButton from './RuntimeActivityStatusButton';
 import { useRuntime } from '../../contexts/RuntimeContext';
-import { useMarket } from '../../contexts/MarketContext';
+import { useMarket, useMarketForCapability } from '../../contexts/MarketContext';
 import { usePipeline } from '../../contexts/usePipeline';
 import { useStrategyProfile, useStrategyProfileData } from '../../contexts/StrategyProfileContext';
 import { isLiveOptionsAvailable } from '../../features/options/optionsAvailability';
+import { loadStockDetails, loaderForPath } from '../../pageLoaders';
+import {
+  BREADTH_MARKET_FALLBACKS,
+  GROUP_RANKING_MARKET_FALLBACKS,
+  breadthBootstrapQuery,
+  dailySnapshotQuery,
+  groupsBootstrapQuery,
+  scanBootstrapQuery,
+} from '../../pageBootstrapQueries';
 
 const AssistantDrawerContent = lazy(() => import('../AssistantChat/AssistantDrawerContent'));
 const PipelineProgressCard = lazy(() => import('../PipelineProgressCard'));
@@ -120,6 +130,39 @@ function StrategyProfileControl() {
   );
 }
 
+// A failed early fetch is retried, and surfaced, by the route's lazy() import.
+const loadQuietly = (loader) => loader?.().catch(() => {});
+
+/**
+ * Start a page's code and first-paint data on hover, focus or touch, so a tab
+ * switch does not wait for code, then data, after the click. The data only
+ * goes where the page itself would look: same key, market and snapshot flag.
+ * The nav only renders once live capabilities have confirmed access.
+ */
+function useNavPrefetch() {
+  const queryClient = useQueryClient();
+  const { uiSnapshots } = useRuntime();
+  const { selectedMarket } = useMarket();
+  const { market: groupsMarket } = useMarketForCapability(
+    'group_rankings',
+    GROUP_RANKING_MARKET_FALLBACKS,
+  );
+  const { market: breadthMarket } = useMarketForCapability('breadth', BREADTH_MARKET_FALLBACKS);
+
+  return useCallback((path) => {
+    loadQuietly(loaderForPath(path));
+    let query = null;
+    if (path === '/') query = dailySnapshotQuery(selectedMarket);
+    else if (path === '/scan' && uiSnapshots?.scan) query = scanBootstrapQuery(selectedMarket);
+    else if (path === '/groups' && uiSnapshots?.groups) {
+      query = groupsBootstrapQuery(queryClient, groupsMarket);
+    } else if (path === '/breadth' && uiSnapshots?.breadth) {
+      query = breadthBootstrapQuery(queryClient, breadthMarket);
+    }
+    if (query) queryClient.prefetchQuery(query);
+  }, [breadthMarket, groupsMarket, queryClient, selectedMarket, uiSnapshots]);
+}
+
 function TickerSearch() {
   const navigate = useNavigate();
   const [tickerInput, setTickerInput] = useState('');
@@ -138,6 +181,7 @@ function TickerSearch() {
       value={tickerInput}
       onChange={(e) => setTickerInput(e.target.value)}
       onKeyDown={handleTickerSubmit}
+      onFocus={() => loadQuietly(loadStockDetails)}
       placeholder="TICKER"
       size="small"
       inputProps={{ 'aria-label': 'Go to ticker' }}
@@ -167,6 +211,7 @@ function Layout({ children }) {
   const { selectedMarket } = useMarket();
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [assistantOpen, setAssistantOpen] = useState(false);
+  const prefetchPage = useNavPrefetch();
 
   const assistantAvailable = features.chatbot && (!auth?.required || auth?.authenticated);
   const optionsAvailable = isLiveOptionsAvailable({
@@ -210,6 +255,9 @@ function Layout({ children }) {
                 color="inherit"
                 component={RouterLink}
                 to={item.path}
+                onMouseEnter={() => prefetchPage(item.path)}
+                onFocus={() => prefetchPage(item.path)}
+                onTouchStart={() => prefetchPage(item.path)}
                 size="small"
                 sx={{
                   backgroundColor: isActive ? 'rgba(255, 255, 255, 0.15)' : 'transparent',

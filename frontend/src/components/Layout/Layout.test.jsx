@@ -1,9 +1,10 @@
 import { MemoryRouter } from 'react-router-dom';
-import { screen } from '@testing-library/react';
+import { fireEvent, screen } from '@testing-library/react';
 import { act } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import Layout from './Layout';
+import { MarketProvider } from '../../contexts/MarketContext';
 import { renderWithProviders } from '../../test/renderWithProviders';
 
 const runtimeState = {
@@ -39,12 +40,105 @@ vi.mock('../../hooks/useRuntimeActivity', () => ({
   useRuntimeActivity: (...args) => useRuntimeActivityMock(...args),
 }));
 
+const requestedPages = vi.hoisted(() => new Set());
+const api = vi.hoisted(() => ({
+  getBreadthBootstrap: vi.fn(),
+  getDailySnapshot: vi.fn(),
+  getGroupsBootstrap: vi.fn(),
+}));
+
+vi.mock('../../pages/BreadthPage', () => {
+  requestedPages.add('BreadthPage');
+  return { default: () => null };
+});
+vi.mock('../../pages/MarketScanPage', () => ({ default: () => null }));
+vi.mock('../../pages/GroupRankingsPage', () => ({ default: () => null }));
+vi.mock('../../api/breadth', async (importOriginal) => ({
+  ...(await importOriginal()),
+  getBreadthBootstrap: api.getBreadthBootstrap,
+}));
+vi.mock('../../api/marketScan', async (importOriginal) => ({
+  ...(await importOriginal()),
+  getDailySnapshot: api.getDailySnapshot,
+}));
+vi.mock('../../api/groups', async (importOriginal) => ({
+  ...(await importOriginal()),
+  getGroupsBootstrap: api.getGroupsBootstrap,
+}));
+
+function renderInApp(path = '/scan') {
+  return renderWithProviders(
+    <MemoryRouter initialEntries={[path]}>
+      <MarketProvider>
+        <Layout><div>content</div></Layout>
+      </MarketProvider>
+    </MemoryRouter>,
+  );
+}
+
 describe('Layout', () => {
   beforeEach(() => {
     useRuntimeActivityMock.mockReset();
+    Object.values(api).forEach((mock) => mock.mockReset().mockResolvedValue(null));
+    window.localStorage.clear();
     runtimeState.features = { chatbot: false, themes: false, tasks: false };
     runtimeState.marketCatalog = { markets: [] };
     runtimeState.primaryMarket = 'US';
+    runtimeState.enabledMarkets = undefined;
+    runtimeState.uiSnapshots = undefined;
+  });
+
+  it("loads a page's code and snapshot when its nav link is hovered", async () => {
+    useRuntimeActivityMock.mockReturnValue({ data: null });
+    runtimeState.enabledMarkets = ['US', 'HK'];
+    runtimeState.primaryMarket = 'HK';
+    runtimeState.uiSnapshots = { breadth: true };
+    renderInApp();
+
+    fireEvent.mouseEnter(screen.getByRole('link', { name: 'Breadth' }));
+
+    await vi.waitFor(() => expect(requestedPages).toContain('BreadthPage'));
+    expect(api.getBreadthBootstrap).toHaveBeenCalledWith('HK');
+  });
+
+  it('skips the snapshot a page would not request', async () => {
+    useRuntimeActivityMock.mockReturnValue({ data: null });
+    runtimeState.uiSnapshots = { breadth: false };
+    renderInApp();
+
+    fireEvent.mouseEnter(screen.getByRole('link', { name: 'Breadth' }));
+    await act(async () => {});
+
+    expect(api.getBreadthBootstrap).not.toHaveBeenCalled();
+  });
+
+  it('prefetches the daily snapshot for the selected market on focus', async () => {
+    useRuntimeActivityMock.mockReturnValue({ data: null });
+    runtimeState.enabledMarkets = ['US', 'HK'];
+    runtimeState.primaryMarket = 'HK';
+    renderInApp();
+
+    fireEvent.focus(screen.getByRole('link', { name: 'Daily' }));
+
+    await vi.waitFor(() => expect(api.getDailySnapshot).toHaveBeenCalledWith('HK'));
+  });
+
+  it('seeds the same caches as the page when it prefetches a groups snapshot', async () => {
+    useRuntimeActivityMock.mockReturnValue({ data: null });
+    runtimeState.uiSnapshots = { groups: true };
+    const rankings = { date: '2026-10-09', rankings: [] };
+    api.getGroupsBootstrap.mockResolvedValue({
+      is_stale: false,
+      payload: { rankings, movers: { gainers: [] } },
+    });
+    const { queryClient } = renderInApp();
+
+    fireEvent.mouseEnter(screen.getByRole('link', { name: 'Groups' }));
+
+    await vi.waitFor(() => (
+      expect(queryClient.getQueryData(['groupRankings', 'US', '2026-10-09'])).toEqual(rankings)
+    ));
+    expect(queryClient.getQueryData(['groupMovers', '1w', 'US', '2026-10-09'])).toEqual({ gainers: [] });
   });
 
   it('defers the header runtime activity request until after initial paint', () => {

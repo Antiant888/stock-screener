@@ -33,7 +33,6 @@ import TrendingDownIcon from '@mui/icons-material/TrendingDown';
 import CloseIcon from '@mui/icons-material/Close';
 import RefreshIcon from '@mui/icons-material/Refresh';
 import {
-  getGroupsBootstrap,
   getGroupMatrix,
   getCurrentRankings,
   getRankMovers,
@@ -58,6 +57,10 @@ import {
 } from 'recharts';
 import { useRuntime } from '../contexts/RuntimeContext';
 import { useMarketForCapability } from '../contexts/MarketContext';
+import {
+  GROUP_RANKING_MARKET_FALLBACKS,
+  groupsBootstrapQuery as groupsBootstrapQueryOptions,
+} from '../pageBootstrapQueries';
 import PriceSparkline from '../components/Scan/PriceSparkline';
 import RSSparkline from '../components/Scan/RSSparkline';
 import GroupChartsGrid from '../components/Charts/GroupChartsGrid';
@@ -68,7 +71,6 @@ import { sortGroupRankings } from '../features/groups/groupRankingSort';
 
 const GroupMatrixPanel = lazy(() => import('../features/groups/matrix/GroupMatrixPanel'));
 
-const GROUP_RANKING_MARKET_FALLBACKS = ['US', 'HK', 'IN', 'JP', 'KR', 'TW', 'CN', 'CA'];
 const EMPTY_AS_OF_ARGS = [];
 const REASON_HINTS = {
   warmup_incomplete: 'Wait for the post-close cache warmup to finish, then retry.',
@@ -513,32 +515,10 @@ function GroupRankingsPage() {
     setSelectedGroup(null);
   }, [selectedMarket]);
 
-  // The snapshot fast-path: the bootstrap queryFn seeds the live query
-  // caches synchronously for this exact market — key and payload come from
-  // the same fetch closure, so cross-market mixups are structurally
-  // impossible (no seeding effect, no settled flag).
   const groupsBootstrapQuery = useQuery({
-    queryKey: ['groupsBootstrap', selectedMarket],
-    queryFn: async () => {
-      const snapshot = await getGroupsBootstrap(selectedMarket);
-      if (snapshot && !snapshot.is_stale) {
-        const payload = snapshot.payload ?? {};
-        const rankingDate = payload.rankings?.date ?? null;
-        queryClient.setQueryData(
-          ['groupRankings', selectedMarket, rankingDate],
-          payload.rankings ?? null,
-        );
-        queryClient.setQueryData(
-          ['groupMovers', '1w', selectedMarket, rankingDate],
-          payload.movers ?? null,
-        );
-      }
-      return snapshot;
-    },
+    ...groupsBootstrapQueryOptions(queryClient, selectedMarket),
     enabled: snapshotEnabled,
-    retry: false,
     refetchInterval: 60_000,
-    staleTime: 60_000,
   });
   const groupsBootstrapPayload = (
     groupsBootstrapQuery.data && !groupsBootstrapQuery.data.is_stale

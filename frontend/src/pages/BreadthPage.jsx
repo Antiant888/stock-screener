@@ -12,7 +12,6 @@ import {
 import { format, parseISO } from 'date-fns';
 
 import {
-  getBreadthBootstrap,
   getBreadthContributorIndex,
   getBreadthContributors,
   getBreadthSummary,
@@ -27,36 +26,13 @@ import { useBreadthContributors } from '../components/Breadth/useBreadthContribu
 import BreadthChart from '../components/Charts/BreadthChart';
 import { useMarketForCapability } from '../contexts/MarketContext';
 import { useRuntime } from '../contexts/RuntimeContext';
-
-const getDateRange = (range) => {
-  const endDate = new Date();
-  const startDate = new Date();
-  if (range === '1M') startDate.setMonth(startDate.getMonth() - 1);
-  else if (range === '3M') startDate.setMonth(startDate.getMonth() - 3);
-  else if (range === '6M') startDate.setMonth(startDate.getMonth() - 6);
-  else startDate.setFullYear(startDate.getFullYear() - 1);
-  return {
-    startDate: startDate.toISOString().split('T')[0],
-    endDate: endDate.toISOString().split('T')[0],
-  };
-};
-
-const MARKET_LIVE_BENCHMARK_SYMBOLS = {
-  US: 'SPY',
-  HK: '2800.HK',
-  IN: 'NIFTYBEES.NS',
-  JP: '1306.T',
-  KR: '069500.KS',
-  TW: '0050.TW',
-  CN: '000300.SS',
-  CA: 'XIU.TO',
-  DE: '^GDAXI',
-  SG: 'ES3.SI',
-  AU: 'IOZ.AX',
-  MY: '^KLSE',
-};
-
-const BREADTH_MARKET_FALLBACKS = ['US', 'HK', 'IN', 'JP', 'KR', 'TW', 'CN', 'CA', 'DE'];
+import {
+  BREADTH_MARKET_FALLBACKS,
+  MARKET_LIVE_BENCHMARK_SYMBOLS,
+  breadthBootstrapQuery,
+  breadthHistoryWindow,
+  getBreadthDateRange,
+} from '../pageBootstrapQueries';
 
 function BreadthPage() {
   const { runtimeReady, uiSnapshots } = useRuntime();
@@ -67,61 +43,18 @@ function BreadthPage() {
   );
   const [chartTimeRange, setChartTimeRange] = useState('1M');
   const snapshotEnabled = runtimeReady && Boolean(uiSnapshots?.breadth);
-  const chartDateRange = getDateRange(chartTimeRange);
-  const defaultChartDateRange = getDateRange('1M');
-  const endDate = new Date().toISOString().split('T')[0];
-  const startDate = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000)
-    .toISOString()
-    .split('T')[0];
+  const chartDateRange = getBreadthDateRange(chartTimeRange);
+  const { startDate, endDate } = breadthHistoryWindow();
   const periodMap = { '1M': '1mo', '3M': '3mo', '6M': '6mo', '1Y': '1y' };
   const benchmarkPeriod = periodMap[chartTimeRange] || '1y';
   const benchmarkSymbol = MARKET_LIVE_BENCHMARK_SYMBOLS[selectedMarket] || null;
 
-  const breadthBootstrapQuery = useQuery({
-    queryKey: ['breadthBootstrap', selectedMarket],
-    queryFn: async () => {
-      const snapshot = await getBreadthBootstrap(selectedMarket);
-      if (snapshot && !snapshot.is_stale) {
-        const payload = snapshot.payload ?? {};
-        queryClient.setQueryData(
-          ['breadth', 'current', selectedMarket],
-          payload.current ?? null,
-        );
-        queryClient.setQueryData(
-          ['breadth', 'historical', selectedMarket, startDate, endDate],
-          payload.history_90d ?? [],
-        );
-        queryClient.setQueryData(
-          ['breadth', 'summary', selectedMarket],
-          payload.summary ?? {},
-        );
-        if (payload.chart_range === '1M') {
-          queryClient.setQueryData(
-            [
-              'breadth',
-              'chart',
-              selectedMarket,
-              defaultChartDateRange.startDate,
-              defaultChartDateRange.endDate,
-            ],
-            payload.chart_data ?? [],
-          );
-          if (benchmarkSymbol) {
-            queryClient.setQueryData(
-              ['benchmark', 'history', selectedMarket, benchmarkSymbol, '1mo'],
-              payload.benchmark_overlay ?? payload.spy_overlay ?? [],
-            );
-          }
-        }
-      }
-      return snapshot;
-    },
+  const breadthBootstrap = useQuery({
+    ...breadthBootstrapQuery(queryClient, selectedMarket),
     enabled: snapshotEnabled,
-    retry: false,
-    staleTime: 60_000,
   });
   const liveQueriesEnabled = runtimeReady && (
-    !snapshotEnabled || breadthBootstrapQuery.isSuccess || breadthBootstrapQuery.isError
+    !snapshotEnabled || breadthBootstrap.isSuccess || breadthBootstrap.isError
   );
   const contributorDrilldown = useBreadthContributors({
     market: selectedMarket,

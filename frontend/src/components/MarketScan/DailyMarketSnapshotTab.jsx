@@ -19,8 +19,8 @@ import {
 import TrendingUpIcon from '@mui/icons-material/TrendingUp';
 import TrendingDownIcon from '@mui/icons-material/TrendingDown';
 
-import { getDailySnapshot } from '../../api/marketScan';
 import { getScanResults } from '../../api/scans';
+import { dailySnapshotQuery } from '../../pageBootstrapQueries';
 import PriceSparkline from '../Scan/PriceSparkline';
 import MarketHealthExposure from './MarketHealthExposure';
 import ChartViewerModal from '../Scan/ChartViewerModalLazy';
@@ -48,11 +48,7 @@ function formatNumber(value, digits = 0) {
 
 function DailyMarketSnapshotTab({ showSocialSignals = false, onOpenSocialSignals }) {
   const { selectedMarket } = useMarket();
-  const snapshotQuery = useQuery({
-    queryKey: ['dailySnapshot', selectedMarket],
-    queryFn: () => getDailySnapshot(selectedMarket),
-    staleTime: 60_000,
-  });
+  const snapshotQuery = useQuery(dailySnapshotQuery(selectedMarket));
   const snapshot = snapshotQuery.data;
   const scanId = snapshot?.scan_id ?? null;
   const freshness = snapshot?.freshness ?? {};
