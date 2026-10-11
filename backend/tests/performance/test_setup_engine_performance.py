@@ -18,6 +18,7 @@ though no SE test uses it. The overhead is negligible (~50-100ms).
 
 from __future__ import annotations
 
+import gc
 import time
 
 import numpy as np
@@ -34,6 +35,23 @@ from app.analysis.patterns.readiness import compute_breakout_readiness_features
 from app.analysis.patterns.technicals import resample_ohlcv
 from app.scanners.base_screener import StockData
 from app.scanners.setup_engine_screener import SetupEngineScanner
+
+
+@pytest.fixture(autouse=True)
+def _no_gc_pauses():
+    """Time the code, not a full garbage collection.
+
+    Importing the app leaves about a million tracked objects; a full
+    collection of them takes hundreds of ms on a CI runner and lands in
+    whichever single-shot measurement crosses the threshold. timeit
+    disables collection while timing for the same reason.
+    """
+    gc.collect()
+    gc.disable()
+    try:
+        yield
+    finally:
+        gc.enable()
 
 # ---------------------------------------------------------------------------
 # Budget constants
