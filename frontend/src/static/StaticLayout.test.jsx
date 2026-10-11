@@ -100,6 +100,13 @@ describe('StaticLayout repo link and page title', () => {
     expect(document.title).toBe('Breadth · US · Stock Scanner Daily');
   });
 
+  it('names the Options page even when the market has no options nav item', () => {
+    renderLayout('/options/AAPL');
+
+    expect(screen.queryByRole('link', { name: 'Options' })).not.toBeInTheDocument();
+    expect(document.title).toBe('Options · US · Stock Scanner Daily');
+  });
+
   it('keeps the descriptive search title on the landing page', () => {
     renderLayout('/');
 

@@ -72,11 +72,11 @@ function StaticLayout({ children }) {
   const selectedUnavailable = getStaticUnavailableMarkets(manifestQuery.data).includes(selectedMarket);
   const now = useMinuteClock();
   const status = selectedUnavailable ? null : publicationStatus(marketEntry.publication, now);
-  const navItems = isStaticOptionsAvailable(marketEntry)
-    ? [...CORE_NAV_ITEMS, { path: '/options', label: 'Options', matchPrefix: true, icon: <CandlestickChartIcon /> }]
-    : CORE_NAV_ITEMS;
+  const allNavItems = [...CORE_NAV_ITEMS, { path: '/options', label: 'Options', matchPrefix: true, icon: <CandlestickChartIcon /> }];
+  const navItems = isStaticOptionsAvailable(marketEntry) ? allNavItems : CORE_NAV_ITEMS;
   const { pathname } = useLocation();
-  const pageLabel = navItems.find((item) => (
+  // Title from every route: /options still renders (an unavailable notice) when its nav item is hidden.
+  const pageLabel = allNavItems.find((item) => (
     item.matchPrefix ? pathname.startsWith(item.path) : pathname === item.path
   ))?.label;
   const titleMarket = selectedUnavailable ? selectedMarket : marketEntry.market;
