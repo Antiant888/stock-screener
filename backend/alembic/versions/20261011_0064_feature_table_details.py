@@ -23,6 +23,11 @@ each one for those statements. They are built without CONCURRENTLY: the new
 column is NULL on every existing row, so a build reads only the narrow heap,
 never the details, and building inside the migration's transaction keeps the
 revision all-or-nothing, with no invalid index left to recover.
+
+Locking: ADD COLUMN takes an ACCESS EXCLUSIVE lock that the migration
+transaction holds through the index builds, blocking reads and writes of the
+table for those seconds. The backend migrates before it serves, and the
+workers wait for it to be healthy, so nothing else is reading the table then.
 """
 
 from __future__ import annotations

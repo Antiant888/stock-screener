@@ -140,8 +140,20 @@ def test_table_page_sorts_the_run_before_reading_details(db_session, run_state):
         )
     )
 
+    # A bare column only passes its TOAST pointer through the Sort; any
+    # expression over it there is evaluated, and detoasted, per row of the run.
     outputs = _sort_subtree_outputs(_plan(db_session, *_page_statement(captured)))
-    assert not [output for output in outputs if "jsonb" in output], outputs
+    computed = [
+        output
+        for output in outputs
+        if "details_json" in output
+        and output
+        not in (
+            "stock_feature_daily.details_json",
+            "stock_feature_daily.table_details_json",
+        )
+    ]
+    assert computed == [], outputs
 
     assert [item.symbol for item in page.items] == [
         "S049", "S048", "S047", "S046", "S045", "S044", "S043", "S042", "S041", "S040",
@@ -197,14 +209,24 @@ def _seed_indexable_run(db_session, numeric_fields, *, rows: int = 200) -> Featu
     return run
 
 
-def _plans_mention(db_session, captured, index_name: str) -> bool:
-    # A 200-row table rarely earns an index scan while a seq scan is allowed;
-    # with it disabled, only a matching expression puts this index in a plan.
+def _index_serves(db_session, captured, index_name: str, key: str) -> bool:
+    """Whether a statement filtering on *key* searches *index_name* by it.
+
+    Only the index condition counts: a plan can also reach the same index for
+    its leading ``run_id`` alone (the readiness probe does), which says nothing
+    about whether the indexed expression matches the filter's.
+    """
+    # A 200-row table rarely earns an index scan while a seq scan is allowed.
     db_session.connection().exec_driver_sql("SET LOCAL enable_seqscan = off")
-    return any(
-        index_name in str(_plan(db_session, statement, parameters))
-        for statement, parameters in captured
-    )
+    for statement, parameters in captured:
+        if f"->> '{key}'" not in statement:
+            continue
+        for node in _subtree(_plan(db_session, statement, parameters)):
+            if node.get("Index Name") == index_name and f"'{key}'" in node.get(
+                "Index Cond", ""
+            ):
+                return True
+    return False
 
 
 def _public_name(details_key: str) -> str:
@@ -231,21 +253,27 @@ def test_table_details_indexes_serve_the_filters_the_repository_emits(
             PageSpec(page=1, per_page=50),
         )
 
+    # index name -> (indexed details key, a repository call filtering on it)
     queries = {
-        f"ix_sfd_td_{key}": symbols_matching(RangeFilter(_public_name(key), min_value=195))
+        f"ix_sfd_td_{key}": (
+            key,
+            symbols_matching(RangeFilter(_public_name(key), min_value=195)),
+        )
         for key in migration._NUMERIC_FIELDS
     }
-    queries["ix_sfd_td_correction_survivor"] = symbols_matching(
-        BooleanFilter("correction_survivor", True)
+    queries["ix_sfd_td_correction_survivor"] = (
+        "correction_survivor",
+        symbols_matching(BooleanFilter("correction_survivor", True)),
     )
-    queries["ix_sfd_td_ibd_industry_group"] = lambda: repo.get_peers_by_industry_for_run(
-        run.id, "G07"
+    queries["ix_sfd_td_ibd_industry_group"] = (
+        "ibd_industry_group",
+        lambda: repo.get_peers_by_industry_for_run(run.id, "G07"),
     )
     assert set(queries) == set(migration._INDEXES), "every index needs a query here"
 
     unused = []
-    for index_name, run_query in queries.items():
+    for index_name, (key, run_query) in queries.items():
         _result, captured = _capture_statements(run_query)
-        if not _plans_mention(db_session, captured, index_name):
+        if not _index_serves(db_session, captured, index_name, key):
             unused.append(index_name)
     assert unused == [], f"PostgreSQL cannot use {unused} for the repository's SQL"

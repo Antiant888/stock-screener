@@ -19,6 +19,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.sql import func
 from sqlalchemy.orm import deferred, relationship
+from sqlalchemy.orm.attributes import flag_modified
 
 from app.database import Base
 
@@ -113,8 +114,9 @@ class StockFeatureDaily(Base):
     rs_line_new_high_date = Column(Text, nullable=True, index=True)
     details_json = Column(JSON, nullable=True)
     # details_json minus the setup payload (~6 kB vs ~64 kB a row): what JSON
-    # filters, sorts and table pages read. Derived on every ORM write by
-    # _store_table_details; Core writers must set it via table_details().
+    # filters, sorts and table pages read. _store_table_details derives it on
+    # unit-of-work flushes; Core statements and ORM bulk operations skip mapper
+    # events, so they must set it via table_details().
     # NULL on rows written before 20261011_0064; such runs read details_json.
     table_details_json = deferred(
         Column(JSON().with_variant(JSONB(), "postgresql"), nullable=True)
@@ -154,6 +156,9 @@ def table_details(details):
 def _store_table_details(_mapper, _connection, target) -> None:
     if inspect(target).attrs.details_json.history.has_changes():
         target.table_details_json = table_details(target.details_json)
+        # Without a setup payload the copy is the details object itself, so
+        # an in-place edit leaves no history on it; always write it.
+        flag_modified(target, "table_details_json")
 
 
 class FeatureRunPointer(Base):

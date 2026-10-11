@@ -15,10 +15,12 @@ from datetime import date
 import pytest
 from sqlalchemy import create_engine, event, null, select, update
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import flag_modified
 
 from app.database import Base
 from app.domain.common.query import (
     CategoricalFilter,
+    FilterSpec,
     PageSpec,
     RangeFilter,
     SortOrder,
@@ -158,6 +160,26 @@ def test_replacing_details_refreshes_the_stored_copy(session):
     assert stored == {"ibd_industry_group": "Comp-Peripherals", "setup_engine": {}}
 
 
+def test_flagging_an_in_place_details_change_refreshes_the_copy(session):
+    """Details without a setup payload share their dict with the copy."""
+    row = StockFeatureDaily(
+        run_id=1,
+        symbol="AAPL",
+        as_of_date=AS_OF,
+        details_json={"ibd_industry_group": "Old"},
+    )
+    session.add(row)
+    session.flush()
+
+    row.details_json["ibd_industry_group"] = "New"
+    flag_modified(row, "details_json")
+    session.flush()
+    session.expire_all()
+
+    stored = session.execute(select(StockFeatureDaily.table_details_json)).scalar_one()
+    assert stored == {"ibd_industry_group": "New"}
+
+
 def test_upserting_a_snapshot_stores_and_refreshes_the_copy(session):
     """Publishing writes through the Core upsert, not the ORM."""
     session.add(FeatureRun(id=1, as_of_date=AS_OF, run_type="daily_snapshot", status="running"))
@@ -271,6 +293,30 @@ def test_sector_peers(session, run_id, sql):
     )
 
     assert [peer.symbol for peer in peers] == ["AAPL", "MSFT"]
+    _assert_reads_expected_column(session, sql)
+
+
+def test_feature_page(session, run_id, sql):
+    filters = FilterSpec()
+    filters.add_range("adr_percent", min_value=2)
+    page = SqlFeatureStoreRepository(session).query_run(
+        run_id,
+        filters=filters,
+        sort=SortSpec(field="rs_rating", order=SortOrder.DESC),
+        page=PageSpec(page=1, per_page=10),
+    )
+
+    assert [row.symbol for row in page.items] == ["AAPL", "XOM", "GOOGL"]
+    assert page.total == 3
+    _assert_reads_expected_column(session, sql)
+
+
+def test_details_by_filter(session, run_id, sql):
+    filters = FilterSpec()
+    filters.add_range("rs_rating", max_value=82)
+    rows = SqlFeatureStoreRepository(session).query_run_details(run_id, filters)
+
+    assert sorted(symbol for symbol, _details in rows) == ["GOOGL", "MSFT"]
     _assert_reads_expected_column(session, sql)
 
 
