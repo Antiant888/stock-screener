@@ -69,7 +69,7 @@ This rolling release is a static-build continuity mechanism only. The live app c
 ## Maintaining Static Assets
 
 - Keep the static page tour GIF aligned with the exported static routes.
-- Static builds (`VITE_STATIC_SITE=true`) get search and link-preview `<meta>` tags from `staticSiteMetaPlugin` in `frontend/vite.config.js`; the live app's `index.html` is unchanged. `og:image` points at `frontend/public/og-image.png` (1200×630) under `VITE_SITE_URL`, which the publish workflow sets. Retake the image when the Daily page changes noticeably.
+- Static builds (`VITE_STATIC_SITE=true`) get search and link-preview `<meta>` tags from `staticSiteMetaPlugin` in `frontend/vite.config.js`, using the title and description in `frontend/src/static/siteMeta.js`; the live app's `index.html` is unchanged. `og:image` points at `frontend/public/og-image.png` (1200×630) under `VITE_SITE_URL`, which the publish workflow sets. Retake the image when the Daily page changes noticeably.
 - Use `frontend/scripts/capture-static-site-tour.sh` or `frontend/scripts/capture-static-site-tour.mjs` when screenshots/GIFs need refreshing.
 - Keep captions explicit that the static site is a reduced-functionality demo.
 - If a live-only feature appears in the README, do not imply it exists in static mode unless the static export has a corresponding read-only view.

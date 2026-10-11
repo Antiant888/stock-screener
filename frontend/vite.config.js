@@ -4,9 +4,7 @@ import { fileURLToPath } from 'node:url';
 
 import { optionsValidatorsPlugin } from './build/optionsValidatorsPlugin.js';
 
-const STATIC_TITLE = 'Stock Scanner Daily: free daily stock scans, breadth and group rankings';
-const STATIC_DESCRIPTION = 'Free, open-source daily stock scans for 12 markets: Minervini, CANSLIM and VCP screens, '
-  + 'market breadth, IBD-style group rankings and relative rotation. Updated after each market close.';
+import { SITE_DESCRIPTION as STATIC_DESCRIPTION, SITE_NAME, SITE_TITLE as STATIC_TITLE } from './src/static/siteMeta.js';
 
 // Search and link-preview tags for the public static demo only; the self-hosted
 // app keeps its plain index.html. og:image must be absolute, so it needs VITE_SITE_URL.
@@ -16,7 +14,7 @@ const staticSiteMetaPlugin = (siteUrl) => ({
     const meta = [
       ['name', 'description', STATIC_DESCRIPTION],
       ['property', 'og:type', 'website'],
-      ['property', 'og:site_name', 'Stock Scanner Daily'],
+      ['property', 'og:site_name', SITE_NAME],
       ['property', 'og:title', STATIC_TITLE],
       ['property', 'og:description', STATIC_DESCRIPTION],
       ['name', 'twitter:card', 'summary_large_image'],

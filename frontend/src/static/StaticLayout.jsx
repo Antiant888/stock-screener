@@ -35,6 +35,7 @@ import {
   useStaticManifest,
 } from './dataClient';
 import { useStaticGenerationLifecycle } from './useStaticGenerationLifecycle';
+import { REPO_URL, SITE_NAME, SITE_TITLE } from './siteMeta';
 import { marketFlag } from '../utils/marketFlags';
 import { isStaticOptionsAvailable } from '../features/options/optionsAvailability';
 
@@ -51,10 +52,6 @@ const publicationStatus = (publication, now) => {
   if (now > deadline) return { label: `Late · ${session}`, color: 'warning' };
   return { label: `Current · ${session}`, color: 'success' };
 };
-
-// ponytail: forks link upstream too; the demo exists to send people to this repo.
-const REPO_URL = 'https://github.com/xang1234/stock-screener';
-const SITE_NAME = 'Stock Scanner Daily';
 
 const useMinuteClock = () => {
   const [now, setNow] = useState(() => Date.now());
@@ -84,8 +81,11 @@ function StaticLayout({ children }) {
   ))?.label;
   const titleMarket = selectedUnavailable ? selectedMarket : marketEntry.market;
   useEffect(() => {
-    document.title = [pageLabel, titleMarket, SITE_NAME].filter(Boolean).join(' · ');
-  }, [pageLabel, titleMarket]);
+    // The landing page is the only URL search engines see (hash routes), so it keeps the descriptive title.
+    document.title = pathname === '/'
+      ? SITE_TITLE
+      : [pageLabel, titleMarket, SITE_NAME].filter(Boolean).join(' · ');
+  }, [pathname, pageLabel, titleMarket]);
 
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', minHeight: '100vh' }}>
@@ -152,9 +152,11 @@ function StaticLayout({ children }) {
                 color="inherit"
                 variant="outlined"
                 startIcon={<GitHubIcon />}
-                sx={{ textTransform: 'none', borderRadius: 2 }}
+                aria-label="Star on GitHub (opens in a new tab)"
+                // Icon-only until lg: the bar already scrolls sideways around 900-1200px.
+                sx={{ textTransform: 'none', borderRadius: 2, minWidth: 0, '& .MuiButton-startIcon': { mr: { md: 0, lg: 1 } } }}
               >
-                Star on GitHub
+                <Box component="span" sx={{ display: { md: 'none', lg: 'inline' } }}>Star on GitHub</Box>
               </Button>
               <ColorModeButton />
             </>
@@ -199,7 +201,14 @@ function StaticLayout({ children }) {
                 <ListItemIcon><LockOutlinedIcon /></ListItemIcon>
                 <ListItemText primary="Read-only" secondary="A published daily snapshot; nothing here can be changed." />
               </ListItem>
-              <ListItemButton component="a" href={REPO_URL} target="_blank" rel="noopener noreferrer" onClick={close}>
+              <ListItemButton
+                component="a"
+                href={REPO_URL}
+                target="_blank"
+                rel="noopener noreferrer"
+                aria-label="Star on GitHub (opens in a new tab)"
+                onClick={close}
+              >
                 <ListItemIcon><GitHubIcon /></ListItemIcon>
                 <ListItemText primary="Star on GitHub" secondary="Open source. Self-host it for live scans." />
               </ListItemButton>

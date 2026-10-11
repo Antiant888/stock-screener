@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { renderWithProviders } from '../test/renderWithProviders';
 import { STATIC_MARKET_STORAGE_KEY, StaticMarketProvider } from './StaticMarketContext';
 import StaticLayout from './StaticLayout';
+import { SITE_TITLE } from './siteMeta';
 import { STATIC_GENERATION_EXPIRED_EVENT } from './dataClient';
 
 const manifest = {
@@ -97,6 +98,18 @@ describe('StaticLayout repo link and page title', () => {
     renderLayout('/breadth');
 
     expect(document.title).toBe('Breadth · US · Stock Scanner Daily');
+  });
+
+  it('keeps the descriptive search title on the landing page', () => {
+    renderLayout('/');
+
+    expect(document.title).toBe(SITE_TITLE);
+  });
+
+  it('says the repo link opens a new tab', () => {
+    renderLayout();
+
+    expect(screen.getByRole('link', { name: 'Star on GitHub (opens in a new tab)' })).toBeInTheDocument();
   });
 });
 
