@@ -4,7 +4,7 @@ export const GROUP_RS_FIELDS = Object.freeze([
     label: 'RS',
     staticLabel: 'Avg RS',
     description:
-      'Blends 1–12 month relative strength (half the weight on the last 3 months), so it reflects lasting leadership and lags sharp recent moves. For recent momentum, sort by 1M or 3M RS.',
+      'Blends relative strength over up to 12 months, weighted toward the most recent quarter, so it reflects lasting leadership and lags sharp recent moves. For recent momentum, sort by 1M or 3M RS.',
     align: 'right',
     staticAlign: 'center',
     kind: 'rs',

@@ -118,13 +118,13 @@ describe('StaticGroupsPage', () => {
     expect(screen.getByText('+3')).toBeInTheDocument();
   });
 
-  it('explains that the overall RS blends 1–12 month horizons (#305)', async () => {
+  it('explains that the overall RS blends horizons up to 12 months (#305)', async () => {
     renderPage();
 
     const header = await screen.findByRole('columnheader', { name: 'Avg RS' });
     expect(within(header).getByRole('button')).toHaveAttribute(
       'title',
-      expect.stringMatching(/1.?12 month.*sort by 1M or 3M RS/i),
+      expect.stringMatching(/up to 12 months.*sort by 1M or 3M RS/i),
     );
   });
 
