@@ -1,31 +1,43 @@
-import { lazy, Suspense, useContext, useState } from 'react';
+import { lazy, Suspense, useState } from 'react';
 import {
   AppBar,
   Box,
   Button,
   CircularProgress,
   Container,
+  Divider,
   Drawer,
   Fab,
   InputBase,
+  ListItemButton,
+  ListItemIcon,
   ListItemText,
+  ListSubheader,
   Menu,
   MenuItem,
   Toolbar,
-  Typography,
   IconButton,
   useTheme,
 } from '@mui/material';
-import { Link as RouterLink, useLocation, useNavigate } from 'react-router-dom';
-import ShowChartIcon from '@mui/icons-material/ShowChart';
-import Brightness4Icon from '@mui/icons-material/Brightness4';
-import Brightness7Icon from '@mui/icons-material/Brightness7';
+import { useLocation, useNavigate } from 'react-router-dom';
+import CandlestickChartIcon from '@mui/icons-material/CandlestickChart';
+import AutoAwesomeIcon from '@mui/icons-material/AutoAwesome';
+import CheckIcon from '@mui/icons-material/Check';
+import HistoryIcon from '@mui/icons-material/History';
+import LogoutIcon from '@mui/icons-material/Logout';
 import SettingsIcon from '@mui/icons-material/Settings';
 import PersonIcon from '@mui/icons-material/Person';
 import SmartToyIcon from '@mui/icons-material/SmartToy';
-import { ColorModeContext } from '../../contexts/ColorModeContext';
 import MarketSelector from './MarketSelector';
 import RuntimeActivityStatusButton from './RuntimeActivityStatusButton';
+import {
+  BrandMark,
+  ColorModeButton,
+  ColorModeListItem,
+  DesktopNav,
+  MobileBottomNav,
+} from './AppNav';
+import { CORE_NAV_ITEMS, mobileNavOffset, useIsMobileShell } from './shellNav';
 import { useRuntime } from '../../contexts/RuntimeContext';
 import { useMarket } from '../../contexts/MarketContext';
 import { usePipeline } from '../../contexts/usePipeline';
@@ -56,7 +68,7 @@ function PipelineProgressOverlay() {
   );
 }
 
-function StrategyProfileMenu({ anchorEl, onClose }) {
+function useProfileOptions() {
   const {
     activeProfile,
     activeProfileDetail,
@@ -66,6 +78,11 @@ function StrategyProfileMenu({ anchorEl, onClose }) {
   const profileOptions = profiles.length
     ? profiles
     : [{ profile: activeProfile, label: activeProfileDetail?.label || activeProfile }];
+  return { activeProfile, profileOptions, setActiveProfile };
+}
+
+function StrategyProfileMenu({ anchorEl, onClose }) {
+  const { activeProfile, profileOptions, setActiveProfile } = useProfileOptions();
 
   return (
     <Menu
@@ -91,6 +108,30 @@ function StrategyProfileMenu({ anchorEl, onClose }) {
   );
 }
 
+// Mounted only while the "More" sheet is open, so profiles load on demand like the desktop menu.
+function MobileProfileItems({ onDone }) {
+  const { activeProfile, profileOptions, setActiveProfile } = useProfileOptions();
+
+  return (
+    <>
+      <ListSubheader disableSticky sx={{ lineHeight: '32px', bgcolor: 'transparent' }}>Strategy profile</ListSubheader>
+      {profileOptions.map((profile) => (
+        <ListItemButton
+          key={profile.profile}
+          selected={profile.profile === activeProfile}
+          onClick={() => {
+            setActiveProfile(profile.profile);
+            onDone();
+          }}
+        >
+          <ListItemIcon>{profile.profile === activeProfile ? <CheckIcon /> : <PersonIcon />}</ListItemIcon>
+          <ListItemText primary={profile.label} />
+        </ListItemButton>
+      ))}
+    </>
+  );
+}
+
 function StrategyProfileControl() {
   const { activeProfile } = useStrategyProfile();
   const [profileMenuAnchor, setProfileMenuAnchor] = useState(null);
@@ -99,14 +140,13 @@ function StrategyProfileControl() {
   return (
     <>
       <IconButton
-        sx={{ ml: 1 }}
         onClick={(event) => setProfileMenuAnchor(event.currentTarget)}
-        color="inherit"
         title={`Profile: ${activeProfile}`}
         aria-label="Select strategy profile"
         aria-haspopup="menu"
         aria-expanded={profileMenuOpen}
         size="small"
+        sx={{ color: 'text.secondary' }}
       >
         <PersonIcon fontSize="small" />
       </IconButton>
@@ -138,21 +178,22 @@ function TickerSearch() {
       value={tickerInput}
       onChange={(e) => setTickerInput(e.target.value)}
       onKeyDown={handleTickerSubmit}
-      placeholder="TICKER"
+      placeholder="Ticker"
       size="small"
-      inputProps={{ 'aria-label': 'Go to ticker' }}
+      inputProps={{ 'aria-label': 'Go to ticker', enterKeyHint: 'go', autoCapitalize: 'characters' }}
       sx={{
-        px: 1.5,
-        py: 0.25,
-        width: 150,
-        fontSize: '15px',
-        backgroundColor: 'rgba(255,255,255,0.15)',
-        borderRadius: 1,
-        color: 'inherit',
+        px: 1.25,
+        height: 32,
+        width: { xs: 88, md: 160 },
+        fontSize: '14px',
+        backgroundColor: 'action.hover',
+        border: 1,
+        borderColor: 'divider',
+        borderRadius: 2,
+        '&.Mui-focused': { borderColor: 'primary.main' },
         '& input::placeholder': {
-          color: 'rgba(255,255,255,0.7)',
+          color: 'text.secondary',
           opacity: 1,
-          letterSpacing: '1px',
         },
       }}
     />
@@ -162,13 +203,14 @@ function TickerSearch() {
 function Layout({ children }) {
   const location = useLocation();
   const theme = useTheme();
-  const colorMode = useContext(ColorModeContext);
+  const isMobile = useIsMobileShell();
   const { auth, features, isLoggingOut, logout, marketCatalog, primaryMarket } = useRuntime();
   const { selectedMarket } = useMarket();
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [assistantOpen, setAssistantOpen] = useState(false);
 
   const assistantAvailable = features.chatbot && (!auth?.required || auth?.authenticated);
+  const canSignOut = auth?.required && auth?.authenticated;
   const optionsAvailable = isLiveOptionsAvailable({
     features,
     marketCatalog,
@@ -177,95 +219,81 @@ function Layout({ children }) {
   });
 
   const navItems = [
-    { path: '/', label: 'Daily' },
-    { path: '/scan', label: 'Scan' },
-    { path: '/breadth', label: 'Breadth' },
-    { path: '/groups', label: 'Groups' },
-    { path: '/validation', label: 'Backtest' },
-    ...(optionsAvailable ? [{ path: '/options', label: 'Options', matchPrefix: true }] : []),
-    ...(features.themes ? [{ path: '/themes', label: 'Themes' }] : []),
-    ...(features.chatbot ? [{ path: '/chatbot', label: 'Assistant' }] : []),
+    ...CORE_NAV_ITEMS,
+    { path: '/validation', label: 'Backtest', icon: <HistoryIcon /> },
+    ...(optionsAvailable ? [{ path: '/options', label: 'Options', matchPrefix: true, icon: <CandlestickChartIcon /> }] : []),
+    ...(features.themes ? [{ path: '/themes', label: 'Themes', icon: <AutoAwesomeIcon /> }] : []),
+    ...(features.chatbot ? [{ path: '/chatbot', label: 'Assistant', icon: <SmartToyIcon /> }] : []),
   ];
+
+  const mobileExtras = (close) => (
+    <>
+      <MobileProfileItems onDone={close} />
+      <Divider sx={{ my: 0.5 }} />
+      {features.tasks && (
+        <ListItemButton onClick={() => { close(); setSettingsOpen(true); }}>
+          <ListItemIcon><SettingsIcon /></ListItemIcon>
+          <ListItemText primary="Scheduled tasks" />
+        </ListItemButton>
+      )}
+      <ColorModeListItem onDone={close} />
+      {canSignOut && (
+        <ListItemButton disabled={isLoggingOut} onClick={() => { close(); logout(); }}>
+          <ListItemIcon><LogoutIcon /></ListItemIcon>
+          <ListItemText primary="Sign out" />
+        </ListItemButton>
+      )}
+    </>
+  );
 
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', minHeight: '100vh' }}>
-      <AppBar position="static" sx={{ minHeight: 48 }}>
-        <Toolbar variant="dense" sx={{ minHeight: 48, overflowX: 'auto', '& > *': { flexShrink: 0 } }}>
-          <ShowChartIcon sx={{ mr: 1, fontSize: 20 }} />
-          <Typography variant="subtitle1" component="div" sx={{ fontWeight: 600 }}>
-            STOCK SCANNER
-          </Typography>
-          <RuntimeActivityStatusButton />
+      <AppBar position="static">
+        <Toolbar
+          variant="dense"
+          sx={{ minHeight: 52, gap: { xs: 1, md: 1.5 }, overflowX: 'auto', '& > *': { flexShrink: 0 } }}
+        >
+          <BrandMark label={isMobile ? null : 'Stock Scanner'} />
+          <RuntimeActivityStatusButton compact={isMobile} />
           <MarketSelector />
           <Box sx={{ flexGrow: 1 }} />
           <TickerSearch />
-          <Box sx={{ flexGrow: 1 }} />
-          {navItems.map((item) => {
-            const isActive = item.matchPrefix
-              ? location.pathname.startsWith(item.path)
-              : location.pathname === item.path;
-            return (
-              <Button
-                key={item.path}
-                color="inherit"
-                component={RouterLink}
-                to={item.path}
-                size="small"
-                sx={{
-                  backgroundColor: isActive ? 'rgba(255, 255, 255, 0.15)' : 'transparent',
-                  borderBottom: isActive ? '2px solid white' : '2px solid transparent',
-                  borderRadius: 0,
-                  fontWeight: isActive ? 600 : 400,
-                  fontSize: '12px',
-                  px: 1.5,
-                  py: 0.5,
-                  '&:hover': {
-                    backgroundColor: 'rgba(255, 255, 255, 0.25)',
-                  },
-                }}
-              >
-                {item.label}
-              </Button>
-            );
-          })}
-          <StrategyProfileControl />
-          {features.tasks && (
-            <IconButton
-              sx={{ ml: 0.5 }}
-              onClick={() => setSettingsOpen(true)}
-              color="inherit"
-              title="Scheduled Tasks"
-              size="small"
-            >
-              <SettingsIcon fontSize="small" />
-            </IconButton>
+          {!isMobile && (
+            <>
+              <Box sx={{ flexGrow: 1 }} />
+              <DesktopNav items={navItems} />
+              <StrategyProfileControl />
+              {features.tasks && (
+                <IconButton
+                  onClick={() => setSettingsOpen(true)}
+                  title="Scheduled Tasks"
+                  size="small"
+                  sx={{ color: 'text.secondary' }}
+                >
+                  <SettingsIcon fontSize="small" />
+                </IconButton>
+              )}
+              {canSignOut && (
+                <Button
+                  size="small"
+                  onClick={() => logout()}
+                  disabled={isLoggingOut}
+                  sx={{ color: 'text.secondary', fontSize: '12px' }}
+                >
+                  Sign out
+                </Button>
+              )}
+              <ColorModeButton />
+            </>
           )}
-          {auth?.required && auth?.authenticated && (
-            <Button
-              color="inherit"
-              size="small"
-              onClick={() => logout()}
-              disabled={isLoggingOut}
-              sx={{ ml: 1, fontSize: '12px' }}
-            >
-              Sign out
-            </Button>
-          )}
-          <IconButton
-            sx={{ ml: 0.5 }}
-            onClick={colorMode.toggleColorMode}
-            color="inherit"
-            title={theme.palette.mode === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
-            size="small"
-          >
-            {theme.palette.mode === 'dark' ? <Brightness7Icon fontSize="small" /> : <Brightness4Icon fontSize="small" />}
-          </IconButton>
         </Toolbar>
       </AppBar>
 
-      <Container maxWidth="xl" sx={{ mt: 1, mb: 1, flex: 1 }}>
+      <Container maxWidth="xl" sx={{ mt: 1, mb: 1, flex: 1, pb: { xs: mobileNavOffset(8), md: 0 } }}>
         {children}
       </Container>
+
+      {isMobile && <MobileBottomNav items={navItems} extras={mobileExtras} />}
 
       {features.themes && <PipelineProgressOverlay />}
 
@@ -281,10 +309,11 @@ function Layout({ children }) {
             color="secondary"
             aria-label="Open assistant"
             onClick={() => setAssistantOpen(true)}
+            size={isMobile ? 'medium' : 'large'}
             sx={{
               position: 'fixed',
-              right: 24,
-              bottom: 24,
+              right: { xs: 16, md: 24 },
+              bottom: { xs: mobileNavOffset(16), md: 24 },
               zIndex: theme.zIndex.drawer - 1,
             }}
           >

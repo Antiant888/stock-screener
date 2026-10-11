@@ -1,4 +1,4 @@
-import { useState, useMemo, lazy, Suspense } from 'react';
+import { useEffect, useState, useMemo, lazy, Suspense } from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { PersistQueryClientProvider, removeOldestQuery } from '@tanstack/react-query-persist-client';
 import { createSyncStoragePersister } from '@tanstack/query-sync-storage-persister';
@@ -10,14 +10,14 @@ import {
   CssBaseline,
   ThemeProvider,
   Toolbar,
-  Typography,
   createTheme,
 } from '@mui/material';
-import ShowChartIcon from '@mui/icons-material/ShowChart';
 
 import { STATIC_SITE_MODE } from './config/runtimeMode';
 
 import Layout from './components/Layout/Layout';
+import { BrandMark } from './components/Layout/AppNav';
+import { getDesignTokens, readColorMode, saveColorMode } from './theme';
 import { PipelineProvider } from './contexts/PipelineContext';
 import { MarketProvider } from './contexts/MarketContext';
 import { useMarket } from './contexts/MarketContext';
@@ -84,12 +84,9 @@ const PageLoadingFallback = () => (
 // whether the app shell, login screen, or bootstrap setup should render.
 const AppLoadingScreen = () => (
   <Box sx={{ display: 'flex', flexDirection: 'column', minHeight: '100vh' }}>
-    <AppBar position="static" sx={{ minHeight: 48 }}>
-      <Toolbar variant="dense" sx={{ minHeight: 48 }}>
-        <ShowChartIcon sx={{ mr: 1, fontSize: 20 }} />
-        <Typography variant="subtitle1" component="div" sx={{ fontWeight: 600 }}>
-          STOCK SCANNER
-        </Typography>
+    <AppBar position="static">
+      <Toolbar variant="dense" sx={{ minHeight: 52 }}>
+        <BrandMark label="Stock Scanner" />
       </Toolbar>
     </AppBar>
     <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', flex: 1 }}>
@@ -151,166 +148,16 @@ const persistOptions = {
   },
 };
 
-// Function to create theme based on mode
-const getDesignTokens = (mode) => ({
-  palette: {
-    mode,
-    primary: {
-      main: '#1976d2',
-    },
-    secondary: {
-      main: '#dc004e',
-    },
-    success: {
-      main: '#2e7d32',
-      light: '#4caf50',
-    },
-    error: {
-      main: '#d32f2f',
-      light: '#f44336',
-    },
-    background: {
-      default: mode === 'light' ? '#f5f5f5' : '#0c0c11',
-      paper: mode === 'light' ? '#ffffff' : '#141419',
-    },
-  },
-  shape: {
-    borderRadius: 10,
-  },
-  typography: {
-    fontFamily: '"Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
-    fontSize: 13,
-    body1: {
-      fontSize: '14px',
-    },
-    body2: {
-      fontSize: '13px',
-      lineHeight: 1.5,
-    },
-    caption: {
-      fontSize: '11px',
-    },
-    h6: {
-      fontSize: '15px',
-      fontWeight: 600,
-    },
-  },
-  components: {
-    MuiTableCell: {
-      styleOverrides: {
-        root: {
-          padding: '4px 6px',
-          fontSize: '11px',
-          lineHeight: 1.3,
-          borderBottom: mode === 'light' ? '1px solid #e0e0e0' : '1px solid #333',
-        },
-        head: {
-          backgroundColor: '#1a1a2e',
-          color: '#ffffff',
-          fontWeight: 600,
-          fontSize: '10px',
-          textTransform: 'uppercase',
-          letterSpacing: '0.5px',
-          padding: '6px 6px',
-          whiteSpace: 'nowrap',
-          borderBottom: '2px solid #333',
-        },
-        sizeSmall: {
-          padding: '3px 5px',
-        },
-      },
-    },
-    MuiTableRow: {
-      styleOverrides: {
-        root: {
-          height: 24,
-          '&:nth-of-type(odd)': {
-            backgroundColor: mode === 'light' ? '#fafafa' : '#1e1e1e',
-          },
-          '&:nth-of-type(even)': {
-            backgroundColor: mode === 'light' ? '#ffffff' : '#252525',
-          },
-          '&:hover': {
-            backgroundColor: mode === 'light' ? '#e3f2fd !important' : '#333 !important',
-          },
-          '&.MuiTableRow-head': {
-            height: 28,
-            '&:nth-of-type(odd)': {
-              backgroundColor: '#1a1a2e',
-            },
-          },
-        },
-      },
-    },
-    MuiTableSortLabel: {
-      styleOverrides: {
-        root: {
-          color: '#ffffff !important',
-          '&:hover': {
-            color: '#90caf9 !important',
-          },
-          '&.Mui-active': {
-            color: '#90caf9 !important',
-          },
-        },
-        icon: {
-          color: '#90caf9 !important',
-        },
-      },
-    },
-    MuiChip: {
-      styleOverrides: {
-        sizeSmall: {
-          height: 18,
-          fontSize: '10px',
-        },
-        labelSmall: {
-          padding: '0 6px',
-        },
-      },
-    },
-    MuiIconButton: {
-      styleOverrides: {
-        sizeSmall: {
-          padding: 2,
-        },
-      },
-    },
-    MuiCardContent: {
-      styleOverrides: {
-        root: {
-          padding: 12,
-          '&:last-child': {
-            paddingBottom: 12,
-          },
-        },
-      },
-    },
-    MuiTab: {
-      styleOverrides: {
-        root: {
-          minHeight: 40,
-          fontSize: '12px',
-        },
-      },
-    },
-    MuiTabs: {
-      styleOverrides: {
-        root: {
-          minHeight: 40,
-        },
-      },
-    },
-  },
-});
-
 function App() {
-  const [mode, setMode] = useState('dark');
+  const [mode, setMode] = useState(readColorMode);
 
   const colorMode = useMemo(
     () => ({
       toggleColorMode: () => {
-        setMode((prevMode) => (prevMode === 'light' ? 'dark' : 'light'));
+        // Saved only on an explicit toggle, so untouched users keep following the OS.
+        const next = mode === 'light' ? 'dark' : 'light';
+        saveColorMode(next);
+        setMode(next);
       },
       mode,
     }),
@@ -318,6 +165,13 @@ function App() {
   );
 
   const theme = useMemo(() => createTheme(getDesignTokens(mode)), [mode]);
+
+  // Keep the pre-React background (index.css) and the mobile browser bar in step.
+  useEffect(() => {
+    document.documentElement.dataset.colorMode = mode;
+    document.querySelector('meta[name="theme-color"]')
+      ?.setAttribute('content', theme.palette.background.paper);
+  }, [mode, theme]);
 
   const appShell = STATIC_SITE_MODE ? (
     <Suspense fallback={<PageLoadingFallback />}>

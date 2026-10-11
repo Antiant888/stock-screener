@@ -1,4 +1,4 @@
-import { useContext, useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   Alert,
   AppBar,
@@ -9,18 +9,17 @@ import {
   FormControl,
   MenuItem,
   Select,
-  Tab,
-  Tabs,
   Toolbar,
-  Typography,
-  IconButton,
-  useTheme,
 } from '@mui/material';
-import { Link as RouterLink, useLocation } from 'react-router-dom';
-import ShowChartIcon from '@mui/icons-material/ShowChart';
-import Brightness4Icon from '@mui/icons-material/Brightness4';
-import Brightness7Icon from '@mui/icons-material/Brightness7';
-import { ColorModeContext } from '../contexts/ColorModeContext';
+import CandlestickChartIcon from '@mui/icons-material/CandlestickChart';
+import {
+  BrandMark,
+  ColorModeButton,
+  ColorModeListItem,
+  DesktopNav,
+  MobileBottomNav,
+} from '../components/Layout/AppNav';
+import { CORE_NAV_ITEMS, mobileNavOffset, useIsMobileShell } from '../components/Layout/shellNav';
 import { useStaticMarket } from './StaticMarketContext';
 import {
   getStaticSupportedMarkets,
@@ -31,13 +30,6 @@ import {
 import { useStaticGenerationLifecycle } from './useStaticGenerationLifecycle';
 import { marketFlag } from '../utils/marketFlags';
 import { isStaticOptionsAvailable } from '../features/options/optionsAvailability';
-
-const NAV_ITEMS = [
-  { path: '/', label: 'Daily' },
-  { path: '/scan', label: 'Scan' },
-  { path: '/breadth', label: 'Breadth' },
-  { path: '/groups', label: 'Groups' },
-];
 
 // Late once the publish says so, or once its deadline passes with nothing new
 // published: a stalled pipeline must not leave a market "current" (#503).
@@ -63,9 +55,7 @@ const useMinuteClock = () => {
 };
 
 function StaticLayout({ children }) {
-  const location = useLocation();
-  const theme = useTheme();
-  const colorMode = useContext(ColorModeContext);
+  const isMobile = useIsMobileShell();
   const manifestQuery = useStaticManifest();
   const { expired } = useStaticGenerationLifecycle();
   const supportedMarkets = getStaticSupportedMarkets(manifestQuery.data);
@@ -75,109 +65,64 @@ function StaticLayout({ children }) {
   const now = useMinuteClock();
   const status = selectedUnavailable ? null : publicationStatus(marketEntry.publication, now);
   const navItems = isStaticOptionsAvailable(marketEntry)
-    ? [...NAV_ITEMS, { path: '/options', label: 'Options', matchPrefix: true }]
-    : NAV_ITEMS;
+    ? [...CORE_NAV_ITEMS, { path: '/options', label: 'Options', matchPrefix: true, icon: <CandlestickChartIcon /> }]
+    : CORE_NAV_ITEMS;
 
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', minHeight: '100vh' }}>
-      <AppBar position="static" sx={{ minHeight: 48 }}>
-        <Toolbar variant="dense" sx={{ minHeight: 48, flexWrap: 'wrap', rowGap: 0.5 }}>
-          <ShowChartIcon sx={{ mr: 1, fontSize: 20 }} />
-          <Typography variant="subtitle1" component="div" sx={{ fontWeight: 600 }}>
-            STOCK SCANNER DAILY
-          </Typography>
-          <Chip
-            label="Read-only"
-            size="small"
-            color="info"
-            sx={{ ml: 1.5, height: 22, fontSize: '11px' }}
-          />
-          <Box sx={{ ml: 1.5, minWidth: 140 }}>
-            <FormControl size="small" fullWidth>
-              <Select
-                value={selectedUnavailable ? selectedMarket : marketEntry.market}
-                onChange={(event) => setSelectedMarket(event.target.value)}
-                displayEmpty
-                sx={{
-                  color: 'inherit',
-                  backgroundColor: 'rgba(255,255,255,0.12)',
-                  height: 30,
-                  '& .MuiOutlinedInput-notchedOutline': {
-                    borderColor: 'rgba(255,255,255,0.35)',
-                  },
-                  '& .MuiSvgIcon-root': {
-                    color: 'inherit',
-                  },
-                }}
-                inputProps={{ 'aria-label': 'Static market selector' }}
-              >
-                {supportedMarkets.map((market) => {
-                  const label = manifestQuery.data?.markets?.[market]?.display_name || market;
-                  const flag = marketFlag(market);
-                  return (
-                    <MenuItem key={market} value={market}>
-                      {flag ? `${flag}  ${label}` : label}
-                    </MenuItem>
-                  );
-                })}
-                {getStaticUnavailableMarkets(manifestQuery.data).map((market) => {
-                  const flag = marketFlag(market);
-                  const label = `${market} — unavailable`;
-                  return (
-                    <MenuItem key={market} value={market} disabled>
-                      {flag ? `${flag}  ${label}` : label}
-                    </MenuItem>
-                  );
-                })}
-              </Select>
-            </FormControl>
-          </Box>
+      <AppBar position="static">
+        <Toolbar variant="dense" sx={{ minHeight: 52, gap: { xs: 1, md: 1.5 } }}>
+          <BrandMark label={isMobile ? null : 'Stock Scanner Daily'} />
+          {!isMobile && <Chip label="Read-only" size="small" variant="outlined" />}
+          <FormControl size="small" sx={{ minWidth: { xs: 0, md: 140 } }}>
+            <Select
+              value={selectedUnavailable ? selectedMarket : marketEntry.market}
+              onChange={(event) => setSelectedMarket(event.target.value)}
+              displayEmpty
+              sx={{ height: 32, fontSize: '13px', fontWeight: 600, borderRadius: 2 }}
+              inputProps={{ 'aria-label': 'Static market selector' }}
+            >
+              {supportedMarkets.map((market) => {
+                const label = manifestQuery.data?.markets?.[market]?.display_name || market;
+                const flag = marketFlag(market);
+                return (
+                  <MenuItem key={market} value={market}>
+                    {flag ? `${flag}  ${label}` : label}
+                  </MenuItem>
+                );
+              })}
+              {getStaticUnavailableMarkets(manifestQuery.data).map((market) => {
+                const flag = marketFlag(market);
+                const label = `${market} — unavailable`;
+                return (
+                  <MenuItem key={market} value={market} disabled>
+                    {flag ? `${flag}  ${label}` : label}
+                  </MenuItem>
+                );
+              })}
+            </Select>
+          </FormControl>
           {status && (
             <Chip
               label={status.label}
               color={status.color}
+              variant="outlined"
               size="small"
               role="status"
               aria-label={`${marketEntry.market} data status: ${status.label}`}
-              sx={{ ml: 1, height: 22, fontSize: '11px' }}
             />
           )}
-          <Box sx={{ flexGrow: 1 }} />
-          <Tabs
-            value={navItems.find((item) => (
-              item.matchPrefix ? location.pathname.startsWith(item.path) : item.path === location.pathname
-            ))?.path || false}
-            variant="scrollable"
-            scrollButtons="auto"
-            allowScrollButtonsMobile
-            textColor="inherit"
-            TabIndicatorProps={{ sx: { bgcolor: 'common.white' } }}
-            sx={{ minHeight: 40, '& .MuiTab-root': { minHeight: 40 } }}
-          >
-            {navItems.map((item) => (
-              <Tab
-                key={item.path}
-                component={RouterLink}
-                to={item.path}
-                value={item.path}
-                label={item.label}
-                sx={{ fontSize: '12px', textTransform: 'none', px: 1.5, py: 0.5 }}
-              />
-            ))}
-          </Tabs>
-          <IconButton
-            sx={{ ml: 0.5 }}
-            onClick={colorMode.toggleColorMode}
-            color="inherit"
-            title={theme.palette.mode === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
-            size="small"
-          >
-            {theme.palette.mode === 'dark' ? <Brightness7Icon fontSize="small" /> : <Brightness4Icon fontSize="small" />}
-          </IconButton>
+          {!isMobile && (
+            <>
+              <Box sx={{ flexGrow: 1 }} />
+              <DesktopNav items={navItems} />
+              <ColorModeButton />
+            </>
+          )}
         </Toolbar>
       </AppBar>
 
-      <Container maxWidth="xl" sx={{ mt: 1.5, mb: 1.5, flex: 1 }}>
+      <Container maxWidth="xl" sx={{ mt: 1.5, mb: 1.5, flex: 1, pb: { xs: mobileNavOffset(8), md: 0 } }}>
         {expired && (
           <Alert
             severity="info"
@@ -204,6 +149,8 @@ function StaticLayout({ children }) {
           </Alert>
         ) : children}
       </Container>
+
+      {isMobile && <MobileBottomNav items={navItems} extras={(close) => <ColorModeListItem onDone={close} />} />}
     </Box>
   );
 }

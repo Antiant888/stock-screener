@@ -363,7 +363,7 @@ describe('App static mode', () => {
     await renderStaticAppAtHash('#/');
 
     expect(await screen.findByRole(
-      'tab',
+      'link',
       { name: 'Options' },
       { timeout: 10000 },
     )).toBeInTheDocument();

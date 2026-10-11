@@ -83,7 +83,7 @@ function AssistantMessageBubble({ message }) {
             alignItems: 'center',
             justifyContent: 'center',
             backgroundColor: isUser ? 'primary.main' : 'secondary.main',
-            color: 'white',
+            color: isUser ? 'primary.contrastText' : 'secondary.contrastText',
           }}
         >
           {isUser ? <PersonIcon fontSize="small" /> : <SmartToyIcon fontSize="small" />}
