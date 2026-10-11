@@ -179,6 +179,7 @@ export const resolveStaticMarketEntry = (manifest, selectedMarket) => {
       pages: marketEntry.pages || {},
       assets: marketEntry.assets || {},
       freshness: marketEntry.freshness || {},
+      publication: marketEntry.publication || null,
     };
   }
 
