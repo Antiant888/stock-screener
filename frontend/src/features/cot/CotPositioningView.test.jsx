@@ -74,7 +74,7 @@ describe('CotPositioningView', () => {
 
   it('renders explicit loading, error, and empty states', () => {
     const { rerender } = render(<CotPositioningView isLoading />);
-    expect(screen.getByText(/Loading COT positioning/i)).toBeInTheDocument();
+    expect(screen.getByRole('status', { name: /Loading COT positioning/i })).toBeInTheDocument();
     rerender(<CotPositioningView error={new Error('failed')} />);
     expect(screen.getByText(/Unable to load COT positioning/i)).toBeInTheDocument();
     rerender(<CotPositioningView catalog={cotCatalogFixture} history={null} />);

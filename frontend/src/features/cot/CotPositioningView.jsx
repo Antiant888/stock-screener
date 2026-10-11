@@ -2,7 +2,6 @@ import { useEffect, useMemo, useState } from 'react';
 import {
   Alert,
   Box,
-  CircularProgress,
   FormControl,
   InputLabel,
   Link,
@@ -18,6 +17,7 @@ import {
 import CotPositioningChart from './CotPositioningChart';
 import CotSummaryStrip from './CotSummaryStrip';
 import { latestFocalSummary, priceStateLabel } from './cotPresentation';
+import { PageSkeleton } from '../../components/common/LoadingSkeletons';
 
 const CotPositioningView = ({
   catalog = null,
@@ -56,7 +56,7 @@ const CotPositioningView = ({
   }, [catalog]);
   const summary = latestFocalSummary(catalog, history);
 
-  if (isLoading) return <Stack direction="row" spacing={1} alignItems="center"><CircularProgress size={18} /><Typography>Loading COT positioning…</Typography></Stack>;
+  if (isLoading) return <PageSkeleton label="Loading COT positioning" />;
   if (error) return <Alert severity="error">Unable to load COT positioning.</Alert>;
   if (!catalog || !history?.weeks?.length) return <Alert severity="info">No COT history is available.</Alert>;
 
