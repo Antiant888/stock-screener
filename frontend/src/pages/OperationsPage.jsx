@@ -624,6 +624,13 @@ export default function OperationsPage() {
           {bootstrap.background_warning}
         </Typography>
       )}
+      {bootstrapStatusQuery.isError && (
+        <Typography variant="body2" color="error" sx={{ mb: 1.5 }}>
+          {bootstrapStatusQuery.data
+            ? 'Failed to refresh publication status. Showing last known status.'
+            : 'Failed to load publication status.'}
+        </Typography>
+      )}
       <UnpublishedDataAlert status={bootstrapStatusQuery.data} />
       {activityQuery.isLoading && !hasMarketActivity ? (
         <CircularProgress size={20} />

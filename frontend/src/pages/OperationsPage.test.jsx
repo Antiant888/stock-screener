@@ -381,4 +381,10 @@ describe('OperationsPage', () => {
     await waitFor(() => expect(getBootstrapStatus).toHaveBeenCalled());
     expect(screen.queryByText('Not yet published')).not.toBeInTheDocument();
   });
+
+  it('says when publication status cannot be loaded instead of looking complete', async () => {
+    getBootstrapStatus.mockRejectedValue(new Error('boom'));
+    renderWithProviders(<OperationsPage />);
+    expect(await screen.findByText('Failed to load publication status.')).toBeInTheDocument();
+  });
 });
