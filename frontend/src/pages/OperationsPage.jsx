@@ -129,7 +129,7 @@ function UnpublishedDataAlert({ status }) {
   if (features.length > 0) lines.push(`Features: ${features.join(', ')}`);
   if (lines.length === 0) return null;
   return (
-    <Alert severity="warning" sx={{ mb: 1.5 }}>
+    <Alert severity="warning" role="status" sx={{ mb: 1.5 }}>
       <Typography variant="body2" fontWeight={700}>Not yet published</Typography>
       {lines.map((line) => (
         <Typography key={line} variant="body2">{line}</Typography>

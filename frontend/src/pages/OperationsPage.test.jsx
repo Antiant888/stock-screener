@@ -370,7 +370,7 @@ describe('OperationsPage', () => {
     expect(await screen.findByText('Not yet published')).toBeInTheDocument();
     expect(screen.getByText('US: breadth, groups')).toBeInTheDocument();
     expect(screen.getByText('Features: cot, social')).toBeInTheDocument();
-    const alert = screen.getByText('Not yet published').closest('[role="alert"]');
+    const alert = screen.getByText('Not yet published').closest('[role="status"]');
     expect(alert).not.toHaveTextContent('HK');
     expect(alert).not.toHaveTextContent('options');
   });
