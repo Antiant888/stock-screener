@@ -13,6 +13,10 @@ import OpenInFullIcon from '@mui/icons-material/OpenInFull';
 import { usePipeline } from '../contexts/usePipeline';
 import { mobileNavOffset } from './Layout/shellNav';
 
+// Sit above the assistant button (same corner; 48px on phones, 56px on desktop).
+const STACK_ABOVE_FAB_MOBILE = 16 + 48 + 12;
+const STACK_ABOVE_FAB_DESKTOP = 24 + 56 + 16;
+
 const PipelineProgressCard = () => {
   const { pipelineStatus, isCardVisible, isMinimized, closePipelineCard, toggleMinimize } = usePipeline();
 
@@ -40,7 +44,7 @@ const PipelineProgressCard = () => {
         elevation={8}
         sx={{
           position: 'fixed',
-          bottom: { xs: mobileNavOffset(16), md: 24 },
+          bottom: { xs: mobileNavOffset(STACK_ABOVE_FAB_MOBILE), md: STACK_ABOVE_FAB_DESKTOP },
           right: { xs: 16, md: 24 },
           width: 180,
           zIndex: (theme) => theme.zIndex.drawer - 1,
@@ -86,7 +90,7 @@ const PipelineProgressCard = () => {
       elevation={8}
       sx={{
         position: 'fixed',
-        bottom: { xs: mobileNavOffset(16), md: 24 },
+        bottom: { xs: mobileNavOffset(STACK_ABOVE_FAB_MOBILE), md: STACK_ABOVE_FAB_DESKTOP },
         right: { xs: 16, md: 24 },
         width: { xs: 'calc(100% - 32px)', sm: 380 },
         zIndex: (theme) => theme.zIndex.drawer - 1,

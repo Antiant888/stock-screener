@@ -167,7 +167,7 @@ function DailyMarketSnapshotTab({ showSocialSignals = false, onOpenSocialSignals
       <Grid container spacing={1.5} sx={{ mb: 2 }}>
         {keyMarkets.map((item) => (
           <Grid item xs={6} sm={4} md={2.4} key={item.symbol} sx={ONE_COLUMN_WHEN_NARROW}>
-            <KeyMarketCard item={item} closes={item.closes} currency={item.currency || 'USD'} />
+            <KeyMarketCard item={item} currency={item.currency || 'USD'} />
           </Grid>
         ))}
       </Grid>

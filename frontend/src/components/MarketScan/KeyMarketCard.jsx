@@ -8,7 +8,13 @@ const signed = (value) => `${value > 0 ? '+' : ''}${Number(value).toFixed(2)}%`;
 // Index/ETF tile on the Daily page. The 1D change and the sparkline's trend are
 // labelled separately: a green day inside a falling window must not read as a
 // contradiction.
-export default function KeyMarketCard({ item, closes, currency }) {
+export default function KeyMarketCard({ item, currency }) {
+  // Keep each close's position so a gap (null close) doesn't shorten the window.
+  const points = (item.history || [])
+    .map((h, index) => ({ index, close: h.close }))
+    .filter((p) => p.close != null);
+  const closes = points.map((p) => p.close);
+  const sessions = points.length > 1 ? points[points.length - 1].index - points[0].index : 0;
   const first = closes[0];
   const last = closes[closes.length - 1];
   const trend = Math.sign(last - first);
@@ -44,12 +50,12 @@ export default function KeyMarketCard({ item, closes, currency }) {
           showChange={false}
         />
       </Box>
-      {periodChange != null && (
+      {periodChange != null && sessions > 0 && (
         <Typography
           variant="caption"
           sx={{ alignSelf: 'flex-end', mt: 0.25, color: toneOf(periodChange), fontWeight: 600 }}
         >
-          {`${closes.length - 1}D ${periodChange >= 0 ? '▲' : '▼'} ${Math.abs(periodChange).toFixed(1)}%`}
+          {`${sessions}D ${periodChange > 0 ? '▲' : periodChange < 0 ? '▼' : '–'} ${Math.abs(periodChange).toFixed(1)}%`}
         </Typography>
       )}
     </Paper>

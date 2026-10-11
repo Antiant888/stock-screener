@@ -37,7 +37,7 @@ export function BrandMark({ label }) {
           borderRadius: '8px',
           display: 'grid',
           placeItems: 'center',
-          color: '#fff',
+          color: theme.palette.primary.contrastText,
           background: `linear-gradient(135deg, ${theme.palette.primary.main}, ${theme.palette.success.main})`,
         })}
       >

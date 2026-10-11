@@ -263,7 +263,7 @@ function StaticHomePage() {
           .filter((item) => item.latest_close != null && item._closes.length > 1)
           .map((item) => (
             <Grid item xs={6} sm={4} lg={2.4} key={item.symbol} sx={ONE_COLUMN_WHEN_NARROW}>
-              <KeyMarketCard item={item} closes={item._closes} currency={item.currency} />
+              <KeyMarketCard item={item} currency={item.currency} />
             </Grid>
           ))}
       </Grid>
