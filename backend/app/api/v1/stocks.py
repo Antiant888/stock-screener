@@ -2,8 +2,10 @@ from __future__ import annotations
 
 """Stock data API endpoints"""
 import logging
+import math
 from datetime import UTC, datetime
 
+import pandas as pd
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import and_, case, func, or_
 from sqlalchemy.orm import Session
@@ -11,6 +13,7 @@ from sqlalchemy.orm import Session
 from ...database import get_db
 from ...infra.serialization import normalize_string_list
 from ...models.market_breadth import MarketBreadth
+from ...models.stock import StockFundamental
 from ...models.stock_universe import StockUniverse
 from ...models.theme import ThemeCluster, ThemeConstituent, ThemeMetrics
 from ...schemas.scanning import ExplainResponse, ScanResultItem
@@ -28,6 +31,7 @@ from ...schemas.stock import (
 )
 from ...schemas.validation import StockValidationResponse
 from ...services.breadth.query import latest_breadth
+from ...services.cache.market_cache_policy import market_cache_policy
 from ...services.economic_theme_read_service import EconomicThemeReader
 from ...services.price_history_symbols import require_valid_price_history_symbol
 from ...services.stock_event_context_service import StockEventContextService
@@ -121,14 +125,116 @@ def _get_stock_info_or_404(symbol: str):
     return info
 
 
-def _get_stock_fundamentals_payload(symbol: str, *, force_refresh: bool = False):
+def _get_stock_fundamentals_payload(
+    symbol: str,
+    *,
+    force_refresh: bool = False,
+    cache_only: bool = False,
+    market: str | None = None,
+):
     cache = get_fundamentals_cache()
-    data = cache.get_fundamentals(symbol.upper(), force_refresh=force_refresh)
+    data = cache.get_fundamentals(
+        symbol.upper(), force_refresh=force_refresh, market=market, cache_only=cache_only
+    )
     if not data:
         return None
     if "symbol" not in data:
         data["symbol"] = symbol.upper()
     return data
+
+
+# The stock page reads only stored data. Mid-session the cached bars may end
+# in a partial bar for today, which the chart, technicals and price share.
+# Bars are judged against the market's last completed session, so a partial
+# bar still unrefreshed after the close is flagged stale; nothing here fetches.
+
+
+def _cached_price_frame(
+    symbol: str, market: str | None
+) -> tuple[pd.DataFrame | None, bool]:
+    """Cached 2-year bars, and whether they cover the market's last completed session."""
+    cache = get_price_cache()
+    fresh = cache.get_cached_only_fresh(symbol.upper(), period="2y", market=market)
+    if fresh is not None:
+        return fresh, True
+    # Stale bars still draw the chart; the caller flags them.
+    return cache.get_cached_only(symbol.upper(), period="2y"), False
+
+
+def _last_close(price_frame: pd.DataFrame | None) -> float | None:
+    if price_frame is None or price_frame.empty:
+        return None
+    closes = price_frame["Close"].dropna()
+    return float(closes.iloc[-1]) if not closes.empty else None
+
+
+def _cached_stock_info(
+    db: Session,
+    symbol: str,
+    *,
+    fundamentals: dict | None,
+    price_frame: pd.DataFrame | None,
+) -> dict | None:
+    """Info card from the universe row, fundamentals and the last cached close."""
+    symbol = symbol.upper()
+    row = (
+        db.query(
+            StockUniverse.name,
+            StockUniverse.sector,
+            StockUniverse.industry,
+            StockUniverse.market,
+            StockUniverse.market_cap,
+        )
+        .filter(StockUniverse.symbol == symbol)
+        .first()
+    )
+    current_price = _last_close(price_frame)
+    if row is None and current_price is None:
+        return None
+    # As of the last weekly refresh. Shares times today's close would look
+    # fresher but is off by the split ratio until shares are refreshed.
+    market_cap = next(
+        (
+            int(value)
+            for value in (
+                (fundamentals or {}).get("market_cap"),
+                row.market_cap if row else None,
+            )
+            if value and math.isfinite(value)
+        ),
+        None,
+    )
+    return {
+        "symbol": symbol,
+        "name": row.name if row else None,
+        "sector": row.sector if row else None,
+        "industry": row.industry if row else None,
+        "market": row.market if row else None,
+        "current_price": current_price,
+        "market_cap": market_cap,
+    }
+
+
+def _cached_technicals(symbol: str, price_frame: pd.DataFrame | None) -> dict | None:
+    """Moving averages and the 52-week range from the cached daily bars."""
+    current_price = _last_close(price_frame)
+    if current_price is None:
+        return None
+    closes = price_frame["Close"].dropna()
+    year = price_frame[price_frame.index >= price_frame.index[-1] - pd.Timedelta(weeks=52)]
+
+    def sma(window: int) -> float | None:
+        return float(closes.iloc[-window:].mean()) if len(closes) >= window else None
+
+    return {
+        "symbol": symbol.upper(),
+        "current_price": current_price,
+        "ma_50": sma(50),
+        "ma_150": sma(150),
+        "ma_200": sma(200),
+        "high_52w": float(year["High"].max()),
+        "low_52w": float(year["Low"].min()),
+    }
 
 
 def _get_stock_technicals_payload(
@@ -650,22 +756,37 @@ def get_stock_decision_dashboard(
     resolved_profile = profile_service.get_profile(profile or DEFAULT_PROFILE)
     degraded_reasons: list[str] = []
 
-    info = _get_stock_info_payload(symbol)
+    # Cached data only: live Yahoo lookups here cost seconds per open behind
+    # the shared 1 req/s limiter.
+    market = resolve_symbol_market(db, symbol)
+    fundamentals = _get_stock_fundamentals_payload(symbol, cache_only=True, market=market)
+    price_frame, prices_fresh = _cached_price_frame(symbol, market)
+    info = _cached_stock_info(
+        db, symbol, fundamentals=fundamentals, price_frame=price_frame
+    )
     if info is None:
         info = _empty_stock_info(symbol)
         degraded_reasons.append("missing_stock_info")
-    fundamentals = _get_stock_fundamentals_payload(symbol)
-    technicals = _get_stock_technicals_payload(symbol, db)
+    technicals = _cached_technicals(symbol, price_frame)
     if fundamentals is None:
         degraded_reasons.append("missing_fundamentals")
+    elif not market_cache_policy.is_datetime_fresh(
+        "fundamentals",
+        db.query(StockFundamental.updated_at)
+        .filter(StockFundamental.symbol == symbol.upper())
+        .scalar(),
+    ):
+        # Served whatever their age; don't let an old row pass as current.
+        degraded_reasons.append("stale_fundamentals")
     if technicals is None:
         degraded_reasons.append("missing_technicals")
 
-    try:
-        price_history = _load_price_history(symbol, period="6mo")
-    except HTTPException:
-        price_history = []
+    price_history = dataframe_to_points(price_frame, PERIOD_DAYS["6mo"])
+    if not price_history:
         degraded_reasons.append("missing_price_history")
+    if price_frame is not None and not prices_fresh:
+        # The price, technicals and chart all end at an old bar.
+        degraded_reasons.append("stale_price_history")
 
     with uow:
         latest_run = _get_latest_feature_run_for_symbol(uow, db, symbol)

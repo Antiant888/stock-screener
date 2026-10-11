@@ -306,6 +306,9 @@ describe('StockDetails', () => {
     expect(screen.getByText('Historical Validation')).toBeInTheDocument();
     expect(screen.getAllByText(/validation is partially degraded/i)).toHaveLength(3);
     expect(screen.getByText('Market regime context is unavailable for this symbol.')).toBeInTheDocument();
+    for (const label of ['Beat Count (4)', 'Miss Count (4)', 'Recent Earnings']) {
+      expect(screen.getByText(label).nextSibling).toHaveTextContent(/^-$/);
+    }
   }, 10000);
 
   it('skips source breakdown sections when stock validation omits them', async () => {

@@ -200,6 +200,7 @@ class FundamentalsCacheService:
         symbol: str,
         force_refresh: bool = False,
         market: Optional[str] = None,
+        cache_only: bool = False,
     ) -> Optional[Dict]:
         """
         Get fundamental data with caching and graceful fallback.
@@ -211,6 +212,8 @@ class FundamentalsCacheService:
                 hold the ``StockUniverse`` row should pass this to avoid an
                 extra per-symbol DB lookup on cache misses. ``None`` falls
                 back to a best-effort DB resolve in ``_fetch_and_cache``.
+            cache_only: Never reach a provider: serve cached data even when
+                stale or incomplete, and None on a miss.
 
         Returns:
             Dict with fundamental metrics or None if unavailable
@@ -222,6 +225,8 @@ class FundamentalsCacheService:
         4. Update cache with fresh data
         5. Return fundamentals dict
         """
+        if force_refresh and cache_only:
+            raise ValueError("force_refresh and cache_only are mutually exclusive")
         if force_refresh:
             logger.info(f"Force refresh requested for {symbol}")
             return self._fetch_and_cache(symbol, market=market)
@@ -239,7 +244,7 @@ class FundamentalsCacheService:
                         if db_data is not None and self._is_data_fresh(last_update):
                             fundamentals = self._merge_fundamentals(fundamentals, db_data)
                             self._store_in_redis_for_market(symbol, fundamentals, market=market)
-                    if self._needs_on_demand_enrichment(fundamentals):
+                    if not cache_only and self._needs_on_demand_enrichment(fundamentals):
                         logger.info(
                             "Cache HIT but incomplete for %s fundamentals - fetching on-demand enrichment",
                             symbol,
@@ -247,7 +252,9 @@ class FundamentalsCacheService:
                         enriched = self._fetch_and_cache(symbol, market=market)
                         if enriched is not None:
                             return enriched
-                    if self._ensure_field_availability_metadata(symbol, fundamentals, market):
+                    if self._ensure_field_availability_metadata(
+                        symbol, fundamentals, market, convert_fx=not cache_only
+                    ):
                         self._store_in_redis_for_market(symbol, fundamentals, market=market)
                     logger.debug(f"Cache HIT for {symbol} (Redis)")
                     return fundamentals
@@ -286,8 +293,9 @@ class FundamentalsCacheService:
 
         if cached_data is not None:
             # Check if data is fresh
-            if self._is_data_fresh(last_update):
-                if self._needs_on_demand_enrichment(cached_data):
+            fresh = self._is_data_fresh(last_update)
+            if fresh or cache_only:
+                if not cache_only and self._needs_on_demand_enrichment(cached_data):
                     logger.info(
                         "Cache HIT but incomplete for %s fundamentals in database - fetching on-demand enrichment",
                         symbol,
@@ -295,17 +303,24 @@ class FundamentalsCacheService:
                     enriched = self._fetch_and_cache(symbol, market=market)
                     if enriched is not None:
                         return enriched
-                self._ensure_field_availability_metadata(symbol, cached_data, market)
+                self._ensure_field_availability_metadata(
+                    symbol, cached_data, market, convert_fx=not cache_only
+                )
                 logger.info(f"Cache HIT for {symbol} (Database, updated: {last_update})")
 
-                # Also store in Redis for faster next access
-                self._store_in_redis_for_market(symbol, cached_data, market=market)
+                # Also store in Redis for faster next access. Never a stale
+                # row: every Redis reader treats a hit as fresh.
+                if fresh:
+                    self._store_in_redis_for_market(symbol, cached_data, market=market)
 
                 return cached_data
             else:
                 # Data is stale - fetch fresh data
                 logger.info(f"Cache HIT but STALE for {symbol} (last update: {last_update}) - fetching fresh data")
                 return self._fetch_and_cache(symbol, market=market)
+
+        if cache_only:
+            return None
 
         # No cached data - fetch from yfinance
         logger.info(f"Cache MISS for {symbol} - fetching fresh data")
@@ -516,8 +531,13 @@ class FundamentalsCacheService:
         data: Dict,
         market: Optional[str],
         currency: Optional[str] = None,
+        *,
+        convert_fx: bool = True,
     ) -> bool:
         """Backfill derived metadata fields for older cache rows.
+
+        ``convert_fx=False`` leaves the USD fields alone: a missing FX rate
+        would otherwise be fetched from a provider.
 
         Returns ``True`` when any field was backfilled.
         """
@@ -561,7 +581,7 @@ class FundamentalsCacheService:
             or data.get("adv_usd") is None
             or not isinstance(data.get("fx_metadata"), dict)
         )
-        if missing_fx_metadata:
+        if missing_fx_metadata and convert_fx:
             self._enrich_with_fx_normalization(
                 data,
                 row_facts.currency,

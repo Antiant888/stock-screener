@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 
 import httpx
+import pandas as pd
 import pytest
 import pytest_asyncio
 from sqlalchemy import create_engine
@@ -17,6 +18,7 @@ from app.domain.feature_store.models import FeatureRow, FeatureRunDomain, RunSta
 from app.domain.scanning.models import ScanResultItemDomain
 from app.main import app
 from app.models.market_breadth import MarketBreadth
+from app.models.stock import StockFundamental
 from app.models.stock_universe import StockUniverse
 from app.models.theme import ThemeCluster, ThemeConstituent, ThemeMetrics
 from app.models.user_watchlist import UserWatchlist, WatchlistItem
@@ -53,6 +55,7 @@ def session():
         engine,
         tables=[
             StockUniverse.__table__,
+            StockFundamental.__table__,
             UserWatchlist.__table__,
             WatchlistItem.__table__,
             MarketBreadth.__table__,
@@ -75,6 +78,7 @@ def session():
                 MarketBreadth.__table__,
                 WatchlistItem.__table__,
                 UserWatchlist.__table__,
+                StockFundamental.__table__,
                 StockUniverse.__table__,
             ],
         )
@@ -189,6 +193,7 @@ def _seed_search_and_import_data(session):
 
 
 def _seed_dashboard_data(session):
+    session.add(StockFundamental(symbol="NVDA", updated_at=datetime.now(UTC)))
     session.add(
         MarketBreadth(
             date=date(2026, 4, 2),
@@ -546,6 +551,173 @@ async def test_stock_industry_endpoint_uses_market_taxonomy_for_non_us_symbols(c
     }
 
 
+class _NoYahoo:
+    def __getattr__(self, name):
+        raise AssertionError(f"the stock page reached a live provider: {name}")
+
+
+class _CachedPrices:
+    def __init__(self, frame, *, fresh=True, market="US"):
+        self._frame = frame
+        self._fresh = fresh
+        self._market = market
+
+    def get_cached_only_fresh(self, symbol, period="2y", *, required_as_of_date=None, market=None):
+        # Freshness follows the symbol's own market calendar.
+        assert market == self._market, market
+        return self._frame if self._fresh else None
+
+    def get_cached_only(self, symbol, period="2y"):
+        return self._frame
+
+
+class _CacheOnlyFundamentals:
+    def __init__(self, data):
+        self._data = data
+
+    def get_fundamentals(self, symbol, force_refresh=False, market=None, cache_only=False):
+        assert cache_only and not force_refresh, "the stock page may only read cached fundamentals"
+        # Redis keys are market-scoped; a missing market reads the US key.
+        assert market == "US", market
+        return self._data
+
+
+def _cached_frame(closes):
+    # Ends today: the chart keeps the last six months counted from now.
+    index = pd.bdate_range(end=pd.Timestamp.today().normalize(), periods=len(closes))
+    return pd.DataFrame(
+        {
+            "Open": closes,
+            "High": [c + 1 for c in closes],
+            "Low": [c - 1 for c in closes],
+            "Close": closes,
+            "Volume": [1_000_000] * len(closes),
+        },
+        index=index,
+    )
+
+
+def _stub_cached_reads(monkeypatch, *, info, fundamentals=None, closes=()):
+    """Stand in for the dashboard's stored-data reads."""
+    monkeypatch.setattr(
+        stocks_module,
+        "_cached_stock_info",
+        lambda db, symbol, **_kw: None if info is None else {"symbol": symbol, **info},
+    )
+    monkeypatch.setattr(
+        stocks_module, "_get_stock_fundamentals_payload", lambda symbol, **_kw: fundamentals
+    )
+    monkeypatch.setattr(
+        stocks_module,
+        "_cached_price_frame",
+        lambda symbol, market: (_cached_frame(list(closes)), True) if closes else (None, False),
+    )
+
+
+@pytest.mark.asyncio
+async def test_decision_dashboard_reads_only_cached_data(client, session, monkeypatch):
+    app.dependency_overrides[get_db] = _override_db(session)
+    app.dependency_overrides[get_uow] = lambda: _FakeUow(None)
+    app.dependency_overrides[stocks_module._get_stock_event_context_service] = lambda: _FakeEventContextService()
+    session.add(
+        StockUniverse(
+            symbol="NVDA",
+            name="NVIDIA Corp",
+            sector="Technology",
+            industry="Semiconductors",
+            market="US",
+            market_cap=2.0e12,
+            is_active=True,
+            status="active",
+        )
+    )
+    session.commit()
+    monkeypatch.setattr(stocks_module, "_get_yfinance_service", lambda: _NoYahoo())
+    monkeypatch.setattr(stocks_module, "_build_data_fetcher", lambda db: _NoYahoo())
+    monkeypatch.setattr(stocks_module, "get_price_cache", lambda: _CachedPrices(_cached_frame([float(c) for c in range(1, 261)])))
+    monkeypatch.setattr(
+        stocks_module,
+        "get_fundamentals_cache",
+        lambda: _CacheOnlyFundamentals({"symbol": "NVDA", "market_cap": 2_300_000_000_000}),
+    )
+
+    response = await client.get("/api/v1/stocks/NVDA/decision-dashboard")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["info"] == {
+        "symbol": "NVDA",
+        "name": "NVIDIA Corp",
+        "sector": "Technology",
+        "industry": "Semiconductors",
+        "current_price": 260.0,
+        "market_cap": 2_300_000_000_000,
+    }
+    assert payload["technicals"]["ma_50"] == 235.5
+    assert payload["fundamentals"]["market_cap"] == 2_300_000_000_000
+    assert payload["chart"]["price_history"][-1]["close"] == 260.0
+    for reason in (
+        "missing_stock_info",
+        "missing_fundamentals",
+        "missing_technicals",
+        "missing_price_history",
+        "stale_price_history",
+    ):
+        assert reason not in payload["degraded_reasons"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fresh", [True, False])
+async def test_decision_dashboard_flags_stale_cached_prices(client, session, monkeypatch, fresh):
+    """Old bars still draw the chart, but their close must not pass as current."""
+    app.dependency_overrides[get_db] = _override_db(session)
+    app.dependency_overrides[get_uow] = lambda: _FakeUow(None)
+    app.dependency_overrides[stocks_module._get_stock_event_context_service] = lambda: _FakeEventContextService()
+    session.add(StockUniverse(symbol="0700.HK", name="Tencent", market="HK", is_active=True, status="active"))
+    session.commit()
+    monkeypatch.setattr(
+        stocks_module,
+        "get_price_cache",
+        lambda: _CachedPrices(_cached_frame([10.0, 11.0]), fresh=fresh, market="HK"),
+    )
+    monkeypatch.setattr(stocks_module, "_get_stock_fundamentals_payload", lambda symbol, **_kw: None)
+
+    response = await client.get("/api/v1/stocks/0700.HK/decision-dashboard")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["info"]["current_price"] == 11.0
+    assert payload["chart"]["price_history"][-1]["close"] == 11.0
+    assert ("stale_price_history" in payload["degraded_reasons"]) is not fresh
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("updated_at", "stale"),
+    [
+        (datetime.now(UTC) - timedelta(days=1), False),
+        (datetime.now(UTC) - timedelta(days=30), True),
+        (None, True),
+    ],
+)
+async def test_decision_dashboard_flags_stale_cached_fundamentals(
+    client, session, monkeypatch, updated_at, stale
+):
+    """Cached fundamentals are served whatever their age, so say when they are old."""
+    app.dependency_overrides[get_db] = _override_db(session)
+    app.dependency_overrides[get_uow] = lambda: _FakeUow(None)
+    app.dependency_overrides[stocks_module._get_stock_event_context_service] = lambda: _FakeEventContextService()
+    if updated_at is not None:
+        session.add(StockFundamental(symbol="NVDA", updated_at=updated_at))
+        session.commit()
+    _stub_cached_reads(monkeypatch, info=None, fundamentals={"symbol": "NVDA", "market_cap": 1})
+
+    response = await client.get("/api/v1/stocks/NVDA/decision-dashboard")
+
+    assert response.status_code == 200
+    assert ("stale_fundamentals" in response.json()["degraded_reasons"]) is stale
+
+
 @pytest.mark.asyncio
 async def test_decision_dashboard_endpoint_returns_normalized_payload(client, session, monkeypatch):
     app.dependency_overrides[get_db] = _override_db(session)
@@ -554,29 +726,23 @@ async def test_decision_dashboard_endpoint_returns_normalized_payload(client, se
     app.dependency_overrides[stocks_module._get_stock_event_context_service] = lambda: _FakeEventContextService()
     _seed_dashboard_data(session)
 
-    monkeypatch.setattr(stocks_module, "_get_stock_info_payload", lambda symbol: {
-        "symbol": symbol,
-        "name": "NVIDIA Corp",
-        "sector": "Technology",
-        "industry": "Semiconductors",
-        "current_price": 921.45,
-        "market_cap": 2.3e12,
-    })
-    monkeypatch.setattr(stocks_module, "_get_stock_fundamentals_payload", lambda symbol, force_refresh=False: {
-        "symbol": symbol,
-        "market_cap": 2.3e12,
-        "eps_growth_quarterly": 54.2,
-        "revenue_growth": 42.1,
-    })
-    monkeypatch.setattr(stocks_module, "_get_stock_technicals_payload", lambda symbol, db, force_refresh=False: {
-        "symbol": symbol,
-        "current_price": 921.45,
-        "high_52w": 974.0,
-        "low_52w": 410.0,
-    })
-    monkeypatch.setattr(stocks_module, "_load_price_history", lambda symbol, period="6mo": [
-        {"date": "2026-04-01", "open": 900.0, "high": 930.0, "low": 890.0, "close": 921.45, "volume": 1000000}
-    ])
+    _stub_cached_reads(
+        monkeypatch,
+        info={
+            "name": "NVIDIA Corp",
+            "sector": "Technology",
+            "industry": "Semiconductors",
+            "current_price": 921.45,
+            "market_cap": 2.3e12,
+        },
+        fundamentals={
+            "symbol": "NVDA",
+            "market_cap": 2.3e12,
+            "eps_growth_quarterly": 54.2,
+            "revenue_growth": 42.1,
+        },
+        closes=(900.0, 921.45),
+    )
 
     response = await client.get("/api/v1/stocks/NVDA/decision-dashboard")
 
@@ -638,10 +804,7 @@ async def test_decision_dashboard_themes_keep_zero_scores_ahead_of_missing_value
     )
     session.commit()
 
-    monkeypatch.setattr(stocks_module, "_get_stock_info_payload", lambda symbol: {"symbol": symbol, "name": "NVIDIA Corp"})
-    monkeypatch.setattr(stocks_module, "_get_stock_fundamentals_payload", lambda symbol, force_refresh=False: None)
-    monkeypatch.setattr(stocks_module, "_get_stock_technicals_payload", lambda symbol, db, force_refresh=False: None)
-    monkeypatch.setattr(stocks_module, "_load_price_history", lambda symbol, period="6mo": [])
+    _stub_cached_reads(monkeypatch, info={"name": "NVIDIA Corp"})
 
     response = await client.get("/api/v1/stocks/NVDA/decision-dashboard")
 
@@ -656,13 +819,7 @@ async def test_decision_dashboard_endpoint_reports_degraded_mode_without_feature
     app.dependency_overrides[get_uow] = lambda: _FakeUow(None)
     app.dependency_overrides[stocks_module._get_stock_event_context_service] = lambda: _FakeEventContextService()
 
-    monkeypatch.setattr(stocks_module, "_get_stock_info_payload", lambda symbol: {
-        "symbol": symbol,
-        "name": "NVIDIA Corp",
-    })
-    monkeypatch.setattr(stocks_module, "_get_stock_fundamentals_payload", lambda symbol, force_refresh=False: None)
-    monkeypatch.setattr(stocks_module, "_get_stock_technicals_payload", lambda symbol, db, force_refresh=False: None)
-    monkeypatch.setattr(stocks_module, "_load_price_history", lambda symbol, period="6mo": [])
+    _stub_cached_reads(monkeypatch, info={"name": "NVIDIA Corp"})
 
     response = await client.get("/api/v1/stocks/NVDA/decision-dashboard")
 
@@ -680,10 +837,7 @@ async def test_decision_dashboard_endpoint_degrades_when_stock_info_is_unavailab
     app.dependency_overrides[get_uow] = lambda: _FakeUow(None)
     app.dependency_overrides[stocks_module._get_stock_event_context_service] = lambda: _FakeEventContextService()
 
-    monkeypatch.setattr(stocks_module, "_get_stock_info_payload", lambda symbol: None)
-    monkeypatch.setattr(stocks_module, "_get_stock_fundamentals_payload", lambda symbol, force_refresh=False: None)
-    monkeypatch.setattr(stocks_module, "_get_stock_technicals_payload", lambda symbol, db, force_refresh=False: None)
-    monkeypatch.setattr(stocks_module, "_load_price_history", lambda symbol, period="6mo": [])
+    _stub_cached_reads(monkeypatch, info=None)
 
     response = await client.get("/api/v1/stocks/NVDA/decision-dashboard")
 
@@ -783,26 +937,19 @@ async def test_decision_dashboard_uses_market_specific_latest_run_pointer_for_no
     app.dependency_overrides[get_uow] = lambda: fake_uow
     app.dependency_overrides[stocks_module._get_stock_event_context_service] = lambda: _FakeEventContextService()
 
-    monkeypatch.setattr(stocks_module, "_get_stock_info_payload", lambda symbol: {
-        "symbol": symbol,
-        "name": "Tencent Holdings",
-        "sector": "Technology",
-        "industry": "Internet Services",
-        "current_price": 410.0,
-        "market_cap": 3.9e12,
-        "market": "HK",
-    })
-    monkeypatch.setattr(stocks_module, "_get_stock_fundamentals_payload", lambda symbol, force_refresh=False: {
-        "symbol": symbol,
-        "market_cap": 3.9e12,
-    })
-    monkeypatch.setattr(stocks_module, "_get_stock_technicals_payload", lambda symbol, db, force_refresh=False: {
-        "symbol": symbol,
-        "current_price": 410.0,
-    })
-    monkeypatch.setattr(stocks_module, "_load_price_history", lambda symbol, period="6mo": [
-        {"date": "2026-04-01", "open": 400.0, "high": 420.0, "low": 398.0, "close": 410.0, "volume": 1000000}
-    ])
+    _stub_cached_reads(
+        monkeypatch,
+        info={
+            "name": "Tencent Holdings",
+            "sector": "Technology",
+            "industry": "Internet Services",
+            "current_price": 410.0,
+            "market_cap": 3.9e12,
+            "market": "HK",
+        },
+        fundamentals={"symbol": "0700.HK", "market_cap": 3.9e12},
+        closes=(400.0, 410.0),
+    )
 
     response = await client.get("/api/v1/stocks/0700.HK/decision-dashboard")
 
