@@ -124,6 +124,9 @@ export const getDesignTokens = (mode) => {
           root: {
             backgroundColor: palette.background.paper,
             borderBottom: `1px solid ${palette.divider}`,
+            // viewport-fit=cover: clear the status bar / notch in standalone or
+            // full-screen mode (0 inside a normal browser tab).
+            paddingTop: 'env(safe-area-inset-top)',
           },
         },
       },
