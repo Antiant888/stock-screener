@@ -47,7 +47,7 @@ function PriceChangeBar({ value, min, max, width = 60, height = 24 }) {
         barLeft: centerPercent,
         barWidth: barPercent,
         centerPercent,
-        color: '#4caf50', // green
+        color: 'success.main',
       };
     } else {
       // Red bar extends left from center
@@ -57,7 +57,7 @@ function PriceChangeBar({ value, min, max, width = 60, height = 24 }) {
         barLeft: centerPercent - barPercent,
         barWidth: barPercent,
         centerPercent,
-        color: '#f44336', // red
+        color: 'error.main',
       };
     }
   }, [value, min, max]);
@@ -71,7 +71,7 @@ function PriceChangeBar({ value, min, max, width = 60, height = 24 }) {
 
   const textColor = useMemo(() => {
     if (value === null || value === undefined) return 'text.disabled';
-    return value >= 0 ? '#4caf50' : '#f44336';
+    return value >= 0 ? 'success.main' : 'error.main';
   }, [value]);
 
   return (
@@ -143,7 +143,7 @@ export function PriceChangeText({ value, showSign = true }) {
     );
   }
 
-  const color = value >= 0 ? '#4caf50' : '#f44336';
+  const color = value >= 0 ? 'success.main' : 'error.main';
   const sign = value >= 0 && showSign ? '+' : '';
 
   return (

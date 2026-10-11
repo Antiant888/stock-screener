@@ -19,7 +19,9 @@ import {
   TableSortLabel,
   Tooltip,
   Typography,
+  useTheme,
 } from '@mui/material';
+import { alpha } from '@mui/material/styles';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import ExpandLessIcon from '@mui/icons-material/ExpandLess';
 import {
@@ -35,9 +37,9 @@ import {
   YAxis,
 } from 'recharts';
 
-const UP_COLOR = '#4caf50';
-const DOWN_COLOR = '#f44336';
-const FLAT_COLOR = '#9e9e9e';
+// Palette keys for sx; the Recharts marks resolve them via useTheme().
+const UP_COLOR = 'success.main';
+const DOWN_COLOR = 'error.main';
 const NO_GROUP_LABEL = 'No Group';
 
 const formatPct = (value) => {
@@ -127,8 +129,9 @@ function SplitBar({ upCount, downCount }) {
 }
 
 function NetTrendSparkline({ data }) {
+  const { palette } = useTheme();
   const latestNet = data?.length ? data[data.length - 1].net : 0;
-  const stroke = latestNet > 0 ? UP_COLOR : latestNet < 0 ? DOWN_COLOR : FLAT_COLOR;
+  const stroke = latestNet > 0 ? palette.success.main : latestNet < 0 ? palette.error.main : palette.text.disabled;
 
   if (!data || data.length === 0) {
     return (
@@ -155,7 +158,7 @@ function NetTrendSparkline({ data }) {
     >
       <ResponsiveContainer width="100%" height="100%">
         <LineChart data={data} margin={{ top: 2, right: 0, left: 0, bottom: 2 }}>
-          <ReferenceLine y={0} stroke="#bdbdbd" strokeWidth={0.5} />
+          <ReferenceLine y={0} stroke={palette.text.disabled} strokeWidth={0.5} />
           <Line
             type="monotone"
             dataKey="net"
@@ -198,6 +201,7 @@ function HeroBarChartTooltip({ active, payload }) {
 }
 
 function GroupActivityBarChart({ topGroups, date }) {
+  const { palette } = useTheme();
   if (!topGroups.length) {
     return null;
   }
@@ -233,7 +237,7 @@ function GroupActivityBarChart({ topGroups, date }) {
             margin={{ top: 4, right: 16, bottom: 4, left: 0 }}
             barCategoryGap={4}
           >
-            <CartesianGrid strokeDasharray="3 3" stroke="#eeeeee" horizontal={false} />
+            <CartesianGrid strokeDasharray="3 3" stroke={palette.divider} horizontal={false} />
             <XAxis type="number" tick={{ fontSize: 10 }} allowDecimals={false} />
             <YAxis
               type="category"
@@ -242,9 +246,9 @@ function GroupActivityBarChart({ topGroups, date }) {
               width={170}
               interval={0}
             />
-            <RechartsTooltip content={<HeroBarChartTooltip />} cursor={{ fill: 'rgba(0,0,0,0.04)' }} />
-            <Bar dataKey="up_count" stackId="activity" fill={UP_COLOR} />
-            <Bar dataKey="down_count" stackId="activity" fill={DOWN_COLOR} />
+            <RechartsTooltip content={<HeroBarChartTooltip />} cursor={{ fill: palette.action.hover }} />
+            <Bar dataKey="up_count" stackId="activity" fill={palette.success.main} />
+            <Bar dataKey="down_count" stackId="activity" fill={palette.error.main} />
           </BarChart>
         </ResponsiveContainer>
       </Box>
@@ -253,6 +257,7 @@ function GroupActivityBarChart({ topGroups, date }) {
 }
 
 function GroupRow({ row, maxAbsNet, trendData }) {
+  const { palette } = useTheme();
   const [open, setOpen] = useState(false);
   const total = totalActivity(row);
   const toggle = () => setOpen((prev) => !prev);
@@ -260,9 +265,9 @@ function GroupRow({ row, maxAbsNet, trendData }) {
   const netIntensity = maxAbsNet > 0 ? Math.min(Math.abs(row.net) / maxAbsNet, 1) : 0;
   const netBgColor =
     row.net > 0
-      ? `rgba(76, 175, 80, ${(netIntensity * 0.32).toFixed(3)})`
+      ? alpha(palette.success.main, netIntensity * 0.32)
       : row.net < 0
-        ? `rgba(244, 67, 54, ${(netIntensity * 0.32).toFixed(3)})`
+        ? alpha(palette.error.main, netIntensity * 0.32)
         : 'transparent';
 
   return (
@@ -496,12 +501,12 @@ function BreadthGroupAttribution({ attribution }) {
           <Chip
             size="small"
             label={`Up 4%+: ${selectedDay.stocks_up_4pct}`}
-            sx={{ bgcolor: 'rgba(76,175,80,0.16)', color: 'success.main', fontWeight: 600 }}
+            sx={{ bgcolor: (theme) => alpha(theme.palette.success.main, 0.16), color: 'success.main', fontWeight: 600 }}
           />
           <Chip
             size="small"
             label={`Down 4%+: ${selectedDay.stocks_down_4pct}`}
-            sx={{ bgcolor: 'rgba(244,67,54,0.16)', color: 'error.main', fontWeight: 600 }}
+            sx={{ bgcolor: (theme) => alpha(theme.palette.error.main, 0.16), color: 'error.main', fontWeight: 600 }}
           />
           <Chip
             size="small"

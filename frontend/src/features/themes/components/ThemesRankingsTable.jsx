@@ -287,8 +287,8 @@ export default function ThemesRankingsTable({
                         sx={{
                           fontSize: '9px',
                           padding: '1px 3px',
-                          backgroundColor: '#1976d2',
-                          color: 'white',
+                          bgcolor: 'primary.main',
+                          color: 'primary.contrastText',
                           borderRadius: '2px',
                         }}
                       >

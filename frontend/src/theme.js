@@ -65,8 +65,11 @@ const PALETTES = {
   light: {
     primary: { main: '#3b5bdb', contrastText: '#ffffff' },
     secondary: { main: '#7048e8', contrastText: '#ffffff' },
-    success: { main: '#0e8a5f' },
-    error: { main: '#d92d3a' },
+    // Darker than the dark-mode tones so they pass 4.5:1 as small text on
+    // every light surface (paper, default and subtle).
+    success: { main: '#0c7d56' },
+    error: { main: '#c92a37' },
+    warning: { main: '#b45309' },
     background: { default: '#f5f6f8', paper: '#ffffff', subtle: '#f2f4f7' },
     divider: '#e3e6ec',
     text: { primary: '#111827', secondary: '#5f6b7f', disabled: '#98a2b3' },

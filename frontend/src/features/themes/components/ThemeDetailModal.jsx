@@ -17,6 +17,7 @@ import {
   TableRow,
   Tooltip,
   Typography,
+  useTheme,
 } from '@mui/material';
 import BubbleChartIcon from '@mui/icons-material/BubbleChart';
 import CloseIcon from '@mui/icons-material/Close';
@@ -51,6 +52,7 @@ function getSafeExternalUrl(url) {
 }
 
 export default function ThemeDetailModal({ themeId, themeName, open, onClose, selectedPipeline }) {
+  const { palette } = useTheme();
   const { data: detail, isLoading: isLoadingDetail } = useQuery({
     queryKey: ['themeDetail', themeId],
     queryFn: () => getThemeDetail(themeId),
@@ -187,8 +189,8 @@ export default function ThemeDetailModal({ themeId, themeName, open, onClose, se
                       <Area
                         type="monotone"
                         dataKey="momentum_score"
-                        stroke="#1976d2"
-                        fill="#1976d2"
+                        stroke={palette.primary.main}
+                        fill={palette.primary.main}
                         fillOpacity={0.2}
                         name="Momentum"
                       />

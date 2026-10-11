@@ -1,5 +1,5 @@
 import { Fragment, useMemo } from 'react';
-import { Box, Chip, Grid, Paper, Typography } from '@mui/material';
+import { Box, Chip, Grid, Paper, Typography, useTheme } from '@mui/material';
 import {
   Area,
   AreaChart,
@@ -25,7 +25,8 @@ const STANCE_COLORS = {
 };
 
 // Follow-through day marker — a deliberate contrast to the stance colors.
-const FTD_COLOR = '#1565c0';
+// Follow-through days use the theme accent: a marker, not a gain/loss state.
+const FTD_COLOR = 'primary.main';
 
 function stanceColor(stance) {
   return STANCE_COLORS[stance] || '#9e9e9e';
@@ -64,6 +65,7 @@ function TimelineTooltip({ active, payload }) {
 }
 
 function MarketHealthExposure({ exposure }) {
+  const { palette } = useTheme();
   const color = stanceColor(exposure?.stance);
 
   const history = useMemo(
@@ -190,8 +192,8 @@ function MarketHealthExposure({ exposure }) {
                     x={p.label}
                     y={p.exposure_score}
                     r={4}
-                    fill={FTD_COLOR}
-                    stroke="#fff"
+                    fill={palette.primary.main}
+                    stroke={palette.background.paper}
                     strokeWidth={1.5}
                     ifOverflow="extendDomain"
                   />

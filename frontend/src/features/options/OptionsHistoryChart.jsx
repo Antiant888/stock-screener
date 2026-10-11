@@ -1,4 +1,4 @@
-import { Box, Paper, Typography } from '@mui/material';
+import { Box, Paper, Typography, useTheme } from '@mui/material';
 import {
   CartesianGrid,
   Line,
@@ -10,6 +10,7 @@ import {
 } from 'recharts';
 
 export default function OptionsHistoryChart({ history }) {
+  const { palette } = useTheme();
   return (
     <Paper variant="outlined" sx={{ p: 1.5, mt: 2 }}>
       <Typography variant="subtitle2">Observed history</Typography>
@@ -24,8 +25,8 @@ export default function OptionsHistoryChart({ history }) {
             <YAxis yAxisId="price" />
             <YAxis yAxisId="gex" orientation="right" />
             <Tooltip />
-            <Line yAxisId="price" dataKey="max_pain" name="Max Pain" stroke="#ffb300" connectNulls={false} />
-            <Line yAxisId="gex" dataKey="net_gex" name="Estimated Net GEX" stroke="#1976d2" connectNulls={false} />
+            <Line yAxisId="price" dataKey="max_pain" name="Max Pain" stroke={palette.secondary.main} connectNulls={false} />
+            <Line yAxisId="gex" dataKey="net_gex" name="Estimated Net GEX" stroke={palette.primary.main} connectNulls={false} />
           </LineChart>
         </ResponsiveContainer>
       </Box>

@@ -1,27 +1,27 @@
 /**
  * Centralized color utility functions for consistent styling across components
  *
- * These functions return color values for various stock metrics like stage,
- * ratings, growth percentages, and industry group rankings.
+ * These functions return MUI palette keys ('success.main', ...) for stock
+ * metrics like stage, ratings, growth percentages, and industry group rankings,
+ * so colours follow the active light/dark theme. Use them in `sx`; for a badge
+ * fill, spread onPalette(key) to get readable text as well.
  */
 
 /**
  * Get color for Minervini stock stage (1-4)
  * @param {number} stage - Stage number (1-4)
- * @returns {string} Hex color code
+ * @returns {string} MUI palette key
  */
 export const getStageColor = (stage) => {
   switch (stage) {
-    case 1:
-      return '#9e9e9e'; // Gray - Basing
     case 2:
-      return '#4caf50'; // Green - Advancing
+      return 'success.main'; // Advancing
     case 3:
-      return '#ff9800'; // Orange - Topping
+      return 'warning.main'; // Topping
     case 4:
-      return '#f44336'; // Red - Declining
+      return 'error.main'; // Declining
     default:
-      return '#9e9e9e';
+      return 'grey.500'; // Basing / unknown
   }
 };
 
@@ -56,19 +56,6 @@ export const getGrowthColor = (value) => {
 };
 
 /**
- * Get hex color for growth percentage (for components requiring hex)
- * @param {number|null} value - Growth percentage
- * @returns {string} Hex color code
- */
-export const getGrowthColorHex = (value) => {
-  if (value == null) return '#9e9e9e';
-  if (value >= 20) return '#4caf50'; // Green
-  if (value >= 0) return '#8bc34a'; // Light Green
-  if (value >= -10) return '#ff9800'; // Orange
-  return '#f44336'; // Red
-};
-
-/**
  * Get color for EPS Rating (0-99 scale, IBD-style)
  * @param {number|null} value - EPS rating value
  * @returns {string} MUI color path
@@ -78,18 +65,6 @@ export const getEpsRatingColor = (value) => {
   if (value >= 80) return 'success.main';
   if (value >= 50) return 'text.primary';
   return 'error.main';
-};
-
-/**
- * Get hex color for EPS Rating (for components requiring hex)
- * @param {number|null} value - EPS rating value
- * @returns {string} Hex color code
- */
-export const getEpsRatingColorHex = (value) => {
-  if (value == null) return '#9e9e9e';
-  if (value >= 80) return '#4caf50'; // Strong - green
-  if (value >= 50) return '#000000'; // Neutral - inherit/black
-  return '#f44336'; // Weak - red
 };
 
 /**
@@ -107,13 +82,17 @@ export const getGroupRankColor = (rank) => {
 /**
  * Background plus readable text for a theme palette key used as a badge fill.
  * '<tone>.main' uses that tone's contrastText; light greys get dark text; any
- * other key (e.g. 'text.secondary') gets the inverse surface colour.
- * @param {string} key - Palette key such as 'success.main' or 'grey.400'
+ * other key (e.g. 'text.secondary') gets the inverse surface colour. A missing
+ * key (e.g. getScoreColor(null)) falls back to a neutral grey.
+ * @param {string|null|undefined} key - Palette key such as 'success.main' or 'grey.400'
  * @returns {{bgcolor: string, color: string}} sx props
  */
-export const onPalette = (key) => ({
-  bgcolor: key,
-  color: key.endsWith('.main')
-    ? key.replace(/\.main$/, '.contrastText')
-    : key.startsWith('grey.') ? 'grey.900' : 'background.paper',
-});
+export const onPalette = (key) => {
+  const fill = key || 'grey.500';
+  return {
+    bgcolor: fill,
+    color: fill.endsWith('.main')
+      ? fill.replace(/\.main$/, '.contrastText')
+      : fill.startsWith('grey.') ? 'grey.900' : 'background.paper',
+  };
+};

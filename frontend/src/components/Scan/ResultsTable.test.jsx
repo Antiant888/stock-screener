@@ -547,4 +547,11 @@ describe('ResultsTable', () => {
       expect(onSortChange).toHaveBeenCalledWith('se_setup_score', 'desc');
     });
   });
+
+  it('fills the stage badge from the theme, overriding the neutral default', () => {
+    renderWithProviders(<ResultsTable {...defaultProps} />);
+
+    // Stage 2 = success.main in the dark test theme (#2ebd85), with its contrast text.
+    expect(screen.getByText('S2')).toHaveStyle({ backgroundColor: 'rgb(46, 189, 133)' });
+  });
 });

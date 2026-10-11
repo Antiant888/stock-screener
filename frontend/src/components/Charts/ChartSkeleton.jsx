@@ -1,12 +1,14 @@
-import { Box, Skeleton, CircularProgress, Typography } from '@mui/material';
+import { Box, Skeleton, CircularProgress, Typography, useTheme } from '@mui/material';
 
 /**
  * Chart skeleton placeholder that shows chart structure while loading
  */
-const ChartSkeleton = ({ height, isDarkMode }) => {
-  const bgColor = isDarkMode ? '#1e1e1e' : '#ffffff';
-  const lineColor = isDarkMode ? '#363a45' : '#e0e0e0';
-  const skeletonColor = isDarkMode ? '#2a2a2a' : '#f0f0f0';
+const ChartSkeleton = ({ height }) => {
+  // Same chrome as the loaded chart (createPriceChartSeries), from the theme.
+  const { palette } = useTheme();
+  const bgColor = palette.background.paper;
+  const lineColor = palette.divider;
+  const skeletonColor = palette.action.hover;
 
   return (
     <Box
@@ -145,7 +147,7 @@ const ChartSkeleton = ({ height, isDarkMode }) => {
           gap: 1,
         }}
       >
-        <CircularProgress size={32} sx={{ color: isDarkMode ? '#666' : '#bbb' }} />
+        <CircularProgress size={32} sx={{ color: 'text.disabled' }} />
         <Typography variant="caption" color="text.secondary">
           Loading chart...
         </Typography>

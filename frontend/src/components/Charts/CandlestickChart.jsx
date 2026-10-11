@@ -186,7 +186,12 @@ function CandlestickChart({
     } = createPriceChartSeries(chartContainerRef.current, {
       width: chartWidth,
       height: chartHeight,
-      isDarkMode,
+      // Derived from the mode alone, so the isDarkMode dep below covers it.
+      chrome: {
+        background: theme.palette.background.paper,
+        text: theme.palette.text.secondary,
+        grid: theme.palette.divider,
+      },
       interactive,
     });
     chartRef.current = chart;
@@ -645,7 +650,7 @@ function CandlestickChart({
             bottom: 0,
           }}
         >
-          <ChartSkeleton height={height} isDarkMode={isDarkMode} />
+          <ChartSkeleton height={height} />
         </Box>
       )}
 

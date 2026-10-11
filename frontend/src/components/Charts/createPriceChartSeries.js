@@ -11,25 +11,27 @@ import {
 // handle the component needs to drive. Vertical bands (scaleMargins) are neutral
 // defaults here; the component's "RS strip layout" and "dynamic RS band" effects
 // reapply them reactively based on whether the RS line is shown.
-export function createPriceChartSeries(container, { width, height, isDarkMode, interactive }) {
+// `chrome` carries the theme's surface colours (see CandlestickChart) so the
+// canvas matches the cards around it in both modes.
+export function createPriceChartSeries(container, { width, height, chrome, interactive }) {
   const chart = createChart(container, {
     width,
     height,
     layout: {
-      background: { type: 'solid', color: isDarkMode ? '#1e1e1e' : '#ffffff' },
-      textColor: isDarkMode ? '#d1d4dc' : '#333333',
+      background: { type: 'solid', color: chrome.background },
+      textColor: chrome.text,
     },
     grid: {
-      vertLines: { color: isDarkMode ? '#363a45' : '#e0e0e0' },
-      horzLines: { color: isDarkMode ? '#363a45' : '#e0e0e0' },
+      vertLines: { color: chrome.grid },
+      horzLines: { color: chrome.grid },
     },
     crosshair: { mode: CrosshairMode.Normal },
     rightPriceScale: {
-      borderColor: isDarkMode ? '#485263' : '#cccccc',
+      borderColor: chrome.grid,
       mode: 1, // Logarithmic scale
     },
     timeScale: {
-      borderColor: isDarkMode ? '#485263' : '#cccccc',
+      borderColor: chrome.grid,
       timeVisible: true,
       secondsVisible: false,
     },

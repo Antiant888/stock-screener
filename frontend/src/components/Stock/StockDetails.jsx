@@ -95,8 +95,8 @@ const SectionHeader = ({ children }) => (
 );
 
 const BoolIndicator = ({ value }) => {
-  if (value) return <CheckCircleIcon sx={{ fontSize: 14, color: '#4caf50' }} />;
-  return <CancelIcon sx={{ fontSize: 14, color: '#9e9e9e' }} />;
+  if (value) return <CheckCircleIcon sx={{ fontSize: 14, color: 'success.main' }} />;
+  return <CancelIcon sx={{ fontSize: 14, color: 'text.disabled' }} />;
 };
 
 function MetricBox({ label, value, bgcolor }) {
@@ -307,8 +307,7 @@ function StockDetails() {
             <Chip
               label={decision.rating}
               sx={{
-                bgcolor: getScoreColor(decision.composite_score) || 'action.selected',
-                color: '#fff',
+                ...onPalette(getScoreColor(decision.composite_score)),
                 fontWeight: 700,
               }}
             />
@@ -352,7 +351,7 @@ function StockDetails() {
               <Chip
                 size="small"
                 label={`${decision.composite_score.toFixed(1)} · ${decision.screeners_passed}/${decision.screeners_total}`}
-                sx={{ ml: 2, bgcolor: getScoreColor(decision.composite_score) || 'action.selected', color: '#fff' }}
+                sx={{ ml: 2, ...onPalette(getScoreColor(decision.composite_score)) }}
               />
             )}
           </AccordionSummary>
@@ -490,8 +489,7 @@ function StockDetails() {
                               label={`S${peer.stage}`}
                               size="small"
                               sx={{
-                                bgcolor: getStageColor(peer.stage),
-                                color: 'white',
+                                ...onPalette(getStageColor(peer.stage)),
                                 fontSize: '0.65rem',
                                 height: 18,
                                 '& .MuiChip-label': { px: 0.75 },

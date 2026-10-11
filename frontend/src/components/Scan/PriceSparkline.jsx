@@ -1,6 +1,6 @@
 import { useMemo, memo } from 'react';
 import { AreaChart, Area, ResponsiveContainer, YAxis } from 'recharts';
-import { Box, Tooltip, Typography } from '@mui/material';
+import { Box, Tooltip, Typography, useTheme } from '@mui/material';
 
 /**
  * Price Sparkline Component
@@ -9,9 +9,10 @@ import { Box, Tooltip, Typography } from '@mui/material';
  * over the last 30 trading days. Uses normalized prices for
  * consistent visual comparison across stocks.
  *
- * Color coding:
+ * Color coding (theme success/error, so it follows light/dark mode):
  * - Green: Price up overall (30-day change positive)
  * - Red: Price down overall (30-day change negative)
+ * - Grey: Flat
  *
  * Displays 1-day change as text badge
  */
@@ -25,10 +26,12 @@ function PriceSparkline({
   showChange = true,  // Whether to show the 1-day change text
   sparklineWidth = 60,  // Width of the inner sparkline chart when showChange is true
 }) {
+  const { palette } = useTheme();
+
   // Transform data for chart
-  const { chartData, domain, color, fillColor } = useMemo(() => {
+  const { chartData, domain, color } = useMemo(() => {
     if (!data || !Array.isArray(data) || data.length === 0) {
-      return { chartData: [], domain: [0, 1], color: '#9e9e9e', fillColor: '#9e9e9e' };
+      return { chartData: [], domain: [0, 1], color: palette.text.disabled };
     }
 
     // Convert to chart format
@@ -44,19 +47,15 @@ function PriceSparkline({
     const range = maxVal - minVal || 0.01;
     const padding = range * 0.05;
 
-    // Determine color based on trend
     // trend: 1 = up, -1 = down, 0 = flat
-    const isUp = trend === 1;
-    const color = isUp ? '#4caf50' : '#f44336';
-    const fillColor = isUp ? 'rgba(76, 175, 80, 0.3)' : 'rgba(244, 67, 54, 0.3)';
+    const color = trend === 1 ? palette.success.main : trend === -1 ? palette.error.main : palette.text.disabled;
 
     return {
       chartData,
       domain: [minVal - padding, maxVal + padding],
       color,
-      fillColor,
     };
-  }, [data, trend]);
+  }, [data, trend, palette]);
 
   // Format 1-day change for display
   const changeText = useMemo(() => {
@@ -140,7 +139,8 @@ function PriceSparkline({
                 dataKey="value"
                 stroke={color}
                 strokeWidth={1.5}
-                fill={fillColor}
+                fill={color}
+                fillOpacity={0.25}
               />
             </AreaChart>
           </ResponsiveContainer>

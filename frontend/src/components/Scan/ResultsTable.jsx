@@ -181,6 +181,10 @@ const resolvePaletteColor = (palette, path) => (
   path.split('.').reduce((value, key) => value?.[key], palette)
 );
 const stopPropagation = (event) => event.stopPropagation();
+const stageFill = (theme, stage) => {
+  const fill = resolvePaletteColor(theme.palette, getStageColor(stage));
+  return { backgroundColor: fill, color: theme.palette.getContrastText(fill) };
+};
 
 const ResultRow = styled(TableRow)(({ theme }) => ({
   height: ROW_HEIGHT,
@@ -235,16 +239,18 @@ const ResultRow = styled(TableRow)(({ theme }) => ({
     width: 10,
     height: 10,
     borderRadius: '50%',
-    backgroundColor: '#2196f3',
+    backgroundColor: theme.palette.primary.main,
     display: 'inline-block',
   },
   '& .rt-stage': {
-    color: 'white',
+    ...stageFill(theme, null),
     padding: '1px 4px',
     borderRadius: '2px',
     fontSize: '10px',
     fontWeight: 500,
   },
+  // After .rt-stage: same specificity, so the per-stage fill must come later.
+  ...Object.fromEntries([1, 2, 3, 4].map((stage) => [`& .rt-stage-${stage}`, stageFill(theme, stage)])),
 }));
 
 /**
@@ -516,7 +522,7 @@ const VirtualTableRow = memo(function VirtualTableRow({
 
       <TableCell align="center" className="rt-w40">
         {row.stage != null ? (
-          <span className="rt-stage" style={{ backgroundColor: getStageColor(row.stage) }}>
+          <span className={`rt-stage rt-stage-${row.stage}`}>
             S{row.stage}
           </span>
         ) : (

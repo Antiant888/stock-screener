@@ -1,22 +1,31 @@
+import { useMemo } from 'react';
+import { alpha, useTheme } from '@mui/material/styles';
+
 /**
  * Shared RRG quadrant colors — single source of truth for the live and static
- * charts (and any consumer that colors by quadrant, e.g. a detail modal).
+ * charts (and any consumer that colors by quadrant, e.g. a detail modal). Each
+ * quadrant maps to a theme tone so the colours follow light/dark mode.
  */
-export const QUADRANT_COLORS = {
-  Leading: '#4caf50',
-  Weakening: '#ff9800',
-  Lagging: '#f44336',
-  Improving: '#2196f3',
+export const QUADRANT_TONES = {
+  Leading: 'success',
+  Weakening: 'warning',
+  Lagging: 'error',
+  Improving: 'primary',
 };
 
-export const QUADRANT_FILLS = {
-  Leading: 'rgba(76, 175, 80, 0.08)',
-  Weakening: 'rgba(255, 152, 0, 0.08)',
-  Lagging: 'rgba(244, 67, 54, 0.08)',
-  Improving: 'rgba(33, 150, 243, 0.08)',
-};
-
-export const quadrantColor = (q) => QUADRANT_COLORS[q] || '#9e9e9e';
+export function useQuadrantColors() {
+  const { palette } = useTheme();
+  return useMemo(() => {
+    const colors = Object.fromEntries(
+      Object.entries(QUADRANT_TONES).map(([quadrant, tone]) => [quadrant, palette[tone].main]),
+    );
+    const fills = Object.fromEntries(
+      Object.entries(colors).map(([quadrant, color]) => [quadrant, alpha(color, 0.08)]),
+    );
+    const colorOf = (quadrant) => colors[quadrant] || palette.text.disabled;
+    return { colors, fills, colorOf };
+  }, [palette]);
+}
 
 /**
  * Hover-highlight colors. A dark outline under a silver core reads on both

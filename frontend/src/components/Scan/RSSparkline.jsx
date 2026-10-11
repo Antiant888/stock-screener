@@ -1,6 +1,6 @@
 import { useMemo, memo } from 'react';
 import { BarChart, Bar, Cell, ResponsiveContainer, YAxis } from 'recharts';
-import { Box, Tooltip } from '@mui/material';
+import { Box, Tooltip, useTheme } from '@mui/material';
 
 /**
  * RS Sparkline Component
@@ -15,6 +15,7 @@ import { Box, Tooltip } from '@mui/material';
  * - Red bar: Single lowest RS ratio value (weakest point)
  */
 function RSSparkline({ data, trend, width = 60, height = 20 }) {
+  const { palette } = useTheme();
   // Transform data for chart - use raw RS ratios like Google Sheets
   const { chartData, domain, maxIndex, minIndex } = useMemo(() => {
     if (!data || !Array.isArray(data) || data.length === 0) {
@@ -96,21 +97,19 @@ function RSSparkline({ data, trend, width = 60, height = 20 }) {
               radius={[1, 1, 0, 0]}
             >
               {chartData.map((entry, index) => {
-                // Color coding matching Google Sheets:
-                // - Blue: highest value (highcolor)
+                // Color coding matching Google Sheets, in theme colours:
+                // - Accent: highest value (highcolor)
                 // - Red: lowest value (lowcolor)
-                // - Light green: all other bars (color)
-                let fillColor = '#90EE90'; // lightgreen (default)
-                if (index === maxIndex) {
-                  fillColor = '#1F97F4'; // blue for highest
-                } else if (index === minIndex) {
-                  fillColor = '#f44336'; // red for lowest
-                }
+                // - Lighter green: all other bars (color)
+                const extreme = index === maxIndex || index === minIndex;
+                const fillColor = index === maxIndex
+                  ? palette.primary.main
+                  : index === minIndex ? palette.error.main : palette.success.main;
                 return (
                   <Cell
                     key={`cell-${index}`}
                     fill={fillColor}
-                    fillOpacity={1.0}
+                    fillOpacity={extreme ? 1 : 0.55}
                   />
                 );
               })}

@@ -7,30 +7,18 @@ import {
   Chip,
 } from '@mui/material';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
+import { onPalette } from '../../../utils/colorUtils';
 import ExpandLessIcon from '@mui/icons-material/ExpandLess';
 import AccountBalanceIcon from '@mui/icons-material/AccountBalance';
 import ShowChartIcon from '@mui/icons-material/ShowChart';
 import StarIcon from '@mui/icons-material/Star';
 
-const CATEGORY_CONFIG = {
-  fundamental: {
-    icon: AccountBalanceIcon,
-    color: '#1976d2',
-    bgColor: 'rgba(25, 118, 210, 0.04)',
-    borderColor: 'rgba(25, 118, 210, 0.2)',
-  },
-  technical: {
-    icon: ShowChartIcon,
-    color: '#1976d2',
-    bgColor: 'rgba(25, 118, 210, 0.04)',
-    borderColor: 'rgba(25, 118, 210, 0.2)',
-  },
-  rating: {
-    icon: StarIcon,
-    color: '#1976d2',
-    bgColor: 'rgba(25, 118, 210, 0.04)',
-    borderColor: 'rgba(25, 118, 210, 0.2)',
-  },
+// Neutral section chrome; the theme accent marks only the icon and the
+// active-filter count, so the sections don't compete with the results.
+const CATEGORY_ICONS = {
+  fundamental: AccountBalanceIcon,
+  technical: ShowChartIcon,
+  rating: StarIcon,
 };
 
 /**
@@ -44,8 +32,7 @@ function FilterSection({
   children
 }) {
   const [expanded, setExpanded] = useState(defaultExpanded);
-  const config = CATEGORY_CONFIG[category] || CATEGORY_CONFIG.fundamental;
-  const IconComponent = config.icon;
+  const IconComponent = CATEGORY_ICONS[category] || CATEGORY_ICONS.fundamental;
 
   return (
     <Box
@@ -53,8 +40,8 @@ function FilterSection({
         mb: 1.5,
         borderRadius: 1,
         border: '1px solid',
-        borderColor: config.borderColor,
-        backgroundColor: config.bgColor,
+        borderColor: 'divider',
+        backgroundColor: 'background.subtle',
         overflow: 'hidden',
       }}
     >
@@ -69,7 +56,7 @@ function FilterSection({
           cursor: 'pointer',
           userSelect: 'none',
           '&:hover': {
-            backgroundColor: 'rgba(0, 0, 0, 0.02)',
+            backgroundColor: 'action.hover',
           },
         }}
       >
@@ -77,7 +64,7 @@ function FilterSection({
           sx={{
             fontSize: 16,
             mr: 1,
-            color: config.color,
+            color: 'primary.main',
           }}
         />
         <Typography
@@ -85,7 +72,7 @@ function FilterSection({
           sx={{
             fontSize: '0.75rem',
             fontWeight: 600,
-            color: config.color,
+            color: 'text.primary',
             textTransform: 'uppercase',
             letterSpacing: '0.5px',
             flexGrow: 1,
@@ -102,8 +89,7 @@ function FilterSection({
               height: 18,
               fontSize: '0.65rem',
               fontWeight: 500,
-              backgroundColor: config.color,
-              color: 'white',
+              ...onPalette('primary.main'),
               mr: 1,
               '& .MuiChip-label': { px: 1 },
             }}
@@ -114,7 +100,7 @@ function FilterSection({
           size="small"
           sx={{
             p: 0.25,
-            color: config.color,
+            color: 'text.secondary',
           }}
           onClick={(e) => {
             e.stopPropagation();

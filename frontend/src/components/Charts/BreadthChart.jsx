@@ -25,6 +25,7 @@ import {
   Alert,
   ToggleButton,
   ToggleButtonGroup,
+  useTheme,
 } from '@mui/material';
 import { format, parseISO } from 'date-fns';
 
@@ -82,6 +83,7 @@ function BreadthChart({
   height = 400,
   fillContainer = false,
 }) {
+  const { palette } = useTheme();
   // Merge breadth and benchmark data by date
   const chartData = useMemo(() => {
     if (!breadthData || breadthData.length === 0) return [];
@@ -180,7 +182,7 @@ function BreadthChart({
             data={chartData}
             margin={{ top: 10, right: 60, left: 20, bottom: 10 }}
           >
-            <CartesianGrid strokeDasharray="3 3" stroke="#e0e0e0" />
+            <CartesianGrid strokeDasharray="3 3" stroke={palette.divider} />
 
             <XAxis
               dataKey="date"
@@ -228,8 +230,9 @@ function BreadthChart({
               type="monotone"
               dataKey="stocksUp"
               name="Up 4%+"
-              fill="rgba(76, 175, 80, 0.3)"
-              stroke="#4caf50"
+              fill={palette.success.main}
+              fillOpacity={0.25}
+              stroke={palette.success.main}
               strokeWidth={1.5}
             />
 
@@ -239,8 +242,9 @@ function BreadthChart({
               type="monotone"
               dataKey="stocksDown"
               name="Down 4%+"
-              fill="rgba(244, 67, 54, 0.3)"
-              stroke="#f44336"
+              fill={palette.error.main}
+              fillOpacity={0.25}
+              stroke={palette.error.main}
               strokeWidth={1.5}
             />
 
@@ -250,7 +254,7 @@ function BreadthChart({
                 type="monotone"
                 dataKey="benchmark"
                 name={benchmarkLabel}
-                stroke="#2196f3"
+                stroke={palette.primary.main}
                 strokeWidth={2}
                 dot={false}
                 connectNulls
@@ -271,16 +275,16 @@ function BreadthChart({
           }}
         >
           <Typography variant="caption" color="text.secondary">
-            <span style={{ color: '#4caf50', fontWeight: 600 }}>Green:</span>{' '}
+            <span style={{ color: palette.success.main, fontWeight: 600 }}>Green:</span>{' '}
             Stocks up 4%+ (daily count)
           </Typography>
           <Typography variant="caption" color="text.secondary">
-            <span style={{ color: '#f44336', fontWeight: 600 }}>Red:</span>{' '}
+            <span style={{ color: palette.error.main, fontWeight: 600 }}>Red:</span>{' '}
             Stocks down 4%+ (daily count)
           </Typography>
           {hasBenchmarkOverlay && (
             <Typography variant="caption" color="text.secondary">
-              <span style={{ color: '#2196f3', fontWeight: 600 }}>Blue:</span>{' '}
+              <span style={{ color: palette.primary.main, fontWeight: 600 }}>Blue:</span>{' '}
               {benchmarkLabel} price
             </Typography>
           )}

@@ -31,18 +31,18 @@ describe('formatPatternName', () => {
 
 describe('getScoreColor', () => {
   it('returns green (#4caf50) for score >= 70', () => {
-    expect(getScoreColor(70)).toBe('#4caf50');
-    expect(getScoreColor(100)).toBe('#4caf50');
+    expect(getScoreColor(70)).toBe('success.main');
+    expect(getScoreColor(100)).toBe('success.main');
   });
 
   it('returns amber (#ff9800) for score >= 40 and < 70', () => {
-    expect(getScoreColor(40)).toBe('#ff9800');
-    expect(getScoreColor(69)).toBe('#ff9800');
+    expect(getScoreColor(40)).toBe('warning.main');
+    expect(getScoreColor(69)).toBe('warning.main');
   });
 
   it('returns red (#f44336) for score < 40', () => {
-    expect(getScoreColor(39)).toBe('#f44336');
-    expect(getScoreColor(0)).toBe('#f44336');
+    expect(getScoreColor(39)).toBe('error.main');
+    expect(getScoreColor(0)).toBe('error.main');
   });
 
   it('returns undefined for null', () => {
@@ -54,8 +54,8 @@ describe('getScoreColor', () => {
   });
 
   it('handles exact boundary at 70', () => {
-    expect(getScoreColor(70)).toBe('#4caf50');
-    expect(getScoreColor(69.9)).toBe('#ff9800');
+    expect(getScoreColor(70)).toBe('success.main');
+    expect(getScoreColor(69.9)).toBe('warning.main');
   });
 });
 
