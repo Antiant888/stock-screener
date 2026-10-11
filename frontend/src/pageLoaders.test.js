@@ -16,6 +16,10 @@ describe('loaderForPath', () => {
     ['/breadth', loadBreadthPage],
     ['/stocks/AAPL', loadStockDetails],
     ['/options/AAPL', loadOptionsSymbolPage],
+    // The router renders these too: it ignores a trailing slash and case.
+    ['/scan/', loadScanPage],
+    ['/Breadth', loadBreadthPage],
+    ['/Stocks/AAPL', loadStockDetails],
   ])('maps %s to its page', (path, loader) => {
     expect(loaderForPath(path)).toBe(loader);
   });

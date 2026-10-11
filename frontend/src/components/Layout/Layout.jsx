@@ -17,7 +17,7 @@ import {
   IconButton,
   useTheme,
 } from '@mui/material';
-import { Link as RouterLink, useLocation, useNavigate } from 'react-router-dom';
+import { Link as RouterLink, matchPath, useLocation, useNavigate } from 'react-router-dom';
 import ShowChartIcon from '@mui/icons-material/ShowChart';
 import Brightness4Icon from '@mui/icons-material/Brightness4';
 import Brightness7Icon from '@mui/icons-material/Brightness7';
@@ -157,7 +157,8 @@ function useNavPrefetch() {
     loadQuietly(loaderForPath(path));
     // The open page owns its queries: the Scan page re-applies any new
     // latest-scan bootstrap, which would replace the scan the user picked.
-    if (path === location.pathname) return;
+    // matchPath follows the router (trailing slash, any casing).
+    if (matchPath(path, location.pathname)) return;
     let query = null;
     if (path === '/') query = dailySnapshotQuery(selectedMarket);
     else if (path === '/scan' && uiSnapshots?.scan) query = scanBootstrapQuery(selectedMarket);

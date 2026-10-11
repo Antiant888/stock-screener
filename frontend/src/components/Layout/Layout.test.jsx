@@ -130,12 +130,13 @@ describe('Layout', () => {
     await vi.waitFor(() => expect(api.getScanBootstrap).toHaveBeenCalledWith(null, 'HK'));
   });
 
-  it("leaves the open page's data to that page", async () => {
+  it.each(['/scan', '/scan/', '/SCAN'])("leaves the open page's data to that page at %s", async (openPath) => {
     // The mounted Scan page re-applies any new latest-scan bootstrap, which
-    // would replace the scan the user picked or just started.
+    // would replace the scan the user picked or just started. The router
+    // renders it for a trailing slash or other casing too.
     useRuntimeActivityMock.mockReturnValue({ data: null });
     runtimeState.uiSnapshots = { scan: true };
-    renderInApp('/scan');
+    renderInApp(openPath);
 
     fireEvent.mouseEnter(screen.getByRole('link', { name: 'Scan' }));
     await act(async () => {});

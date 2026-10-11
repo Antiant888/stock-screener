@@ -25,7 +25,9 @@ const PATH_LOADERS = {
 };
 
 export function loaderForPath(pathname) {
-  if (pathname.startsWith('/stocks/')) return loadStockDetails;
-  if (pathname.startsWith('/options/')) return loadOptionsSymbolPage;
-  return PATH_LOADERS[pathname] ?? null;
+  // Match as the router does: case-insensitive, trailing slash ignored.
+  const path = pathname.toLowerCase().replace(/\/+$/, '') || '/';
+  if (path.startsWith('/stocks/')) return loadStockDetails;
+  if (path.startsWith('/options/')) return loadOptionsSymbolPage;
+  return PATH_LOADERS[path] ?? null;
 }
