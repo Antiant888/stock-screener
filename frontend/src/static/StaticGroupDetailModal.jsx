@@ -289,7 +289,7 @@ function StaticGroupDetailModal({ group, detail, chartIndex = null, open, onClos
                           <TableCell align="center">
                             <Box component="span" sx={{
                               backgroundColor: stock.stage === 2 ? 'success.main' : 'grey.400',
-                              color: 'white', padding: '1px 4px', borderRadius: '2px', fontSize: '10px', fontWeight: 500,
+                              color: stock.stage === 2 ? 'success.contrastText' : 'grey.900', padding: '1px 4px', borderRadius: '2px', fontSize: '10px', fontWeight: 500,
                             }}>
                               S{stock.stage || '-'}
                             </Box>

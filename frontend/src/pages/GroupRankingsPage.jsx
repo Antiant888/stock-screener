@@ -417,7 +417,7 @@ const GroupDetailModal = ({ group, market, open, onClose }) => {
                               component="span"
                               sx={{
                                 backgroundColor: stock.stage === 2 ? 'success.main' : 'grey.400',
-                                color: 'white',
+                                color: stock.stage === 2 ? 'success.contrastText' : 'grey.900',
                                 padding: '1px 4px',
                                 borderRadius: '2px',
                                 fontSize: '10px',

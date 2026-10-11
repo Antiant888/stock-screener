@@ -1,6 +1,6 @@
 import { act, fireEvent, screen, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { renderWithProviders } from '../test/renderWithProviders';
 import { STATIC_MARKET_STORAGE_KEY, StaticMarketProvider } from './StaticMarketContext';
 import StaticLayout from './StaticLayout';
@@ -141,5 +141,34 @@ describe('StaticLayout publication status chip (#503)', () => {
     renderLayout();
 
     expect(screen.queryByRole('status', { name: /^US data status/ })).not.toBeInTheDocument();
+  });
+});
+
+describe('StaticLayout on a phone-width screen', () => {
+  beforeEach(() => {
+    // useMediaQuery(breakpoints.down('md')) matches.
+    window.matchMedia = vi.fn().mockReturnValue({
+      matches: true,
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    });
+  });
+
+  afterEach(() => {
+    delete window.matchMedia;
+    window.localStorage.clear();
+  });
+
+  it('keeps the read-only cue and a compact market picker', () => {
+    renderLayout();
+
+    expect(screen.getByRole('img', { name: 'Read-only' })).toBeInTheDocument();
+    expect(screen.getByRole('combobox', { name: 'Static market selector' })).toHaveTextContent(/^🇺🇸 US$/);
+
+    const nav = screen.getByRole('navigation', { name: 'Main' });
+    fireEvent.click(within(nav).getByRole('button', { name: 'More' }));
+    expect(within(screen.getByRole('list', { name: 'More' })).getByText('Read-only')).toBeInTheDocument();
   });
 });

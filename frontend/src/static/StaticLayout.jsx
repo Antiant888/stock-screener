@@ -7,11 +7,15 @@ import {
   Chip,
   Container,
   FormControl,
+  ListItem,
+  ListItemIcon,
+  ListItemText,
   MenuItem,
   Select,
   Toolbar,
 } from '@mui/material';
 import CandlestickChartIcon from '@mui/icons-material/CandlestickChart';
+import LockOutlinedIcon from '@mui/icons-material/LockOutlined';
 import {
   BrandMark,
   ColorModeButton,
@@ -76,7 +80,11 @@ function StaticLayout({ children }) {
           sx={{ ...safeGutters, minHeight: 52, gap: { xs: 1, md: 1.5 }, overflowX: 'auto', '& > *': { flexShrink: 0 } }}
         >
           <BrandMark label={isMobile ? null : 'Stock Scanner Daily'} />
-          {!isMobile && <Chip label="Read-only" size="small" variant="outlined" />}
+          {isMobile ? (
+            <LockOutlinedIcon role="img" aria-label="Read-only" titleAccess="Read-only" sx={{ fontSize: 18, color: 'text.secondary' }} />
+          ) : (
+            <Chip label="Read-only" size="small" variant="outlined" />
+          )}
           <FormControl size="small" sx={{ minWidth: { xs: 0, md: 140 } }}>
             <Select
               value={selectedUnavailable ? selectedMarket : marketEntry.market}
@@ -155,7 +163,20 @@ function StaticLayout({ children }) {
         ) : children}
       </Container>
 
-      {isMobile && <MobileBottomNav items={navItems} extras={(close) => <ColorModeListItem onDone={close} />} />}
+      {isMobile && (
+        <MobileBottomNav
+          items={navItems}
+          extras={(close) => (
+            <>
+              <ListItem>
+                <ListItemIcon><LockOutlinedIcon /></ListItemIcon>
+                <ListItemText primary="Read-only" secondary="A published daily snapshot; nothing here can be changed." />
+              </ListItem>
+              <ColorModeListItem onDone={close} />
+            </>
+          )}
+        />
+      )}
     </Box>
   );
 }
