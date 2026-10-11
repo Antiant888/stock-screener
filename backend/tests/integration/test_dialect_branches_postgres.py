@@ -13,7 +13,7 @@ import time
 from datetime import date, datetime, timedelta, timezone
 
 import pytest
-from sqlalchemy import create_engine, event, func, select, text
+from sqlalchemy import create_engine, event, func, null, select, text, update
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import NullPool
 
@@ -21,7 +21,7 @@ from app.database import engine
 from app.domain.common.query import SortOrder, SortSpec
 from app.domain.feature_store.models import FeatureRowWrite
 from app.domain.scanning.filter_expression_model import FilterExpression
-from app.infra.db.models.feature_store import FeatureRun
+from app.infra.db.models.feature_store import FeatureRun, StockFeatureDaily
 from app.infra.db.models.social_signals import ContentPipelineEligibility, SocialSourceRegistry
 from app.infra.db.repositories.cot_repository import (
     _COT_PUBLICATION_LOCK_ID,
@@ -59,6 +59,11 @@ def test_feature_store_strips_setup_payload_with_jsonb_path_delete(db_session):
             },
         )
     ])
+    # Runs written before 20261011_0064 have no stored copy; their exports
+    # strip the payload in SQL, which is the branch under test.
+    db_session.execute(
+        update(StockFeatureDaily).values(table_details_json=null())
+    )
 
     statements: list[str] = []
 
@@ -86,7 +91,9 @@ def test_feature_store_strips_setup_payload_with_jsonb_path_delete(db_session):
 
     [projected] = [
         row.details_json
-        for row in _feature_results_without_setup_payload_query(db_session, run.id)
+        for row in _feature_results_without_setup_payload_query(
+            db_session, run.id, table_details=False
+        )
     ]
     assert projected["rating"] == "Strong Buy"
     assert projected["setup_engine"] == {"setup_score": 82.0, "pattern_primary": "VCP"}

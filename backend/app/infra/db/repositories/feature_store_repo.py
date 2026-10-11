@@ -7,7 +7,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from sqlalchemy import Text, case, cast, func, type_coerce
+from sqlalchemy import Text, case, cast, exists, func, type_coerce
 from sqlalchemy.dialects.postgresql import JSONB, array
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
@@ -33,6 +33,7 @@ from app.infra.db.models.feature_store import (
     FeatureRunPointer,
     FeatureRunUniverseSymbol,
     StockFeatureDaily,
+    table_details,
 )
 from app.infra.db.portability import dialect_name, is_postgres, json_text
 from app.infra.query.feature_store_query import (
@@ -104,8 +105,19 @@ def _feature_results_query(session: Session, run_id: int):
     )
 
 
-def _feature_results_without_setup_payload_query(session: Session, run_id: int):
-    """Project details_json without setup explain/candidate blobs."""
+def _feature_results_without_setup_payload_query(
+    session: Session, run_id: int, *, table_details: bool
+):
+    """Project details_json without setup explain/candidate blobs.
+
+    Reads the stored copy when every row has one. Otherwise strips in SQL,
+    which runs per returned row: fine for export, wrong below a page's Sort.
+    """
+    details = (
+        StockFeatureDaily.table_details_json
+        if table_details
+        else _details_without_setup_payload(session)
+    )
     return (
         session.query(
             StockFeatureDaily.run_id,
@@ -118,7 +130,7 @@ def _feature_results_without_setup_payload_query(session: Session, run_id: int):
             StockFeatureDaily.rs_line_new_high_before_price,
             StockFeatureDaily.rs_line_blue_dot_recent,
             StockFeatureDaily.rs_line_new_high_date,
-            _details_without_setup_payload(session).label("details_json"),
+            details.label("details_json"),
             *_FEATURE_JOINED_COLUMNS,
         )
         .outerjoin(StockUniverse, StockFeatureDaily.symbol == StockUniverse.symbol)
@@ -237,6 +249,7 @@ def _upsert_stmt(session: Session, values: list[dict[str, Any]]):
             "rs_line_blue_dot_recent": stmt.excluded.rs_line_blue_dot_recent,
             "rs_line_new_high_date": stmt.excluded.rs_line_new_high_date,
             "details_json": stmt.excluded.details_json,
+            "table_details_json": stmt.excluded.table_details_json,
         },
     )
 
@@ -257,6 +270,7 @@ def _snapshot_row_values(run_id: int, row: FeatureRowWrite) -> dict[str, Any]:
         "rs_line_blue_dot_recent": coerce_bool_or_false(details.get("rs_line_blue_dot_recent")),
         "rs_line_new_high_date": details.get("rs_line_new_high_date"),
         "details_json": details,
+        "table_details_json": table_details(details),
     }
 
 
@@ -339,10 +353,6 @@ class SqlFeatureStoreRepository(FeatureStoreRepository):
         sort=None,
         page=None,
     ) -> FeaturePage:
-        run = self._session.get(FeatureRun, run_id)
-        if run is None:
-            raise EntityNotFoundError("FeatureRun", run_id)
-
         return self._query_features(
             run_id,
             filters or FilterSpec(),
@@ -403,6 +413,34 @@ class SqlFeatureStoreRepository(FeatureStoreRepository):
 
     # -- Private helpers ---------------------------------------------------
 
+    def _require_run(self, run_id: int) -> bool:
+        """Raise unless the run exists; return whether reads may use
+        ``table_details_json``, i.e. every row of the run carries it.
+
+        Rows written before 20261011_0064 have none, and a filter over the
+        stored copy would silently miss them, so such runs keep reading
+        ``details_json``. The probe checks NULL flags only, not the blobs, and
+        rides on the run lookup so it costs no extra round trip.
+        """
+        missing = exists().where(
+            StockFeatureDaily.run_id == run_id,
+            StockFeatureDaily.table_details_json.is_(None),
+            StockFeatureDaily.details_json.isnot(None),
+        )
+        found = (
+            self._session.query(FeatureRun.id, ~missing)
+            .filter(FeatureRun.id == run_id)
+            .first()
+        )
+        if found is None:
+            raise EntityNotFoundError("FeatureRun", run_id)
+        return bool(found[1])
+
+    def _details_column(self, run_id: int):
+        if self._require_run(run_id):
+            return StockFeatureDaily.table_details_json
+        return StockFeatureDaily.details_json
+
     def _query_features(
         self,
         run_id: int,
@@ -419,14 +457,15 @@ class SqlFeatureStoreRepository(FeatureStoreRepository):
         Without the joins, a filter referencing them would produce broken
         SQL or silently drop.
         """
+        ready = self._require_run(run_id)
         q = (
             self._session.query(StockFeatureDaily)
             .outerjoin(StockUniverse, StockFeatureDaily.symbol == StockUniverse.symbol)
             .outerjoin(StockFundamental, StockFeatureDaily.symbol == StockFundamental.symbol)
             .filter(StockFeatureDaily.run_id == run_id)
         )
-        q = apply_filters(q, filters)
-        rows, total = apply_sort_and_paginate(q, sort, page)
+        q = apply_filters(q, filters, table_details=ready)
+        rows, total = apply_sort_and_paginate(q, sort, page, table_details=ready)
 
         items = tuple(self._to_domain_row(r) for r in rows)
         return FeaturePage(
@@ -450,19 +489,22 @@ class SqlFeatureStoreRepository(FeatureStoreRepository):
         to read from the feature store while returning the same domain type
         as the legacy scan_results path.
         """
-        run = self._session.get(FeatureRun, run_id)
-        if run is None:
-            raise EntityNotFoundError("FeatureRun", run_id)
-
-        # Table-level pages skip the setup explain/candidate blobs in SQL
-        # rather than loading and discarding them per row.
+        ready = self._require_run(run_id)
+        # Never strip the payload in SQL here: that runs below the Sort for
+        # every row of the run (>10 s vs. 13 ms on a 10k-row run). Read the
+        # stored copy, or the plain column, whose TOAST pointer the Sort
+        # carries so only the page's rows are read; the mapper drops the payload.
         q = (
-            _feature_results_query(self._session, run_id)
-            if include_setup_payload
-            else _feature_results_without_setup_payload_query(self._session, run_id)
+            _feature_results_without_setup_payload_query(
+                self._session, run_id, table_details=True
+            )
+            if ready and not include_setup_payload
+            else _feature_results_query(self._session, run_id)
         )
-        q = apply_filter_expression(q, spec.expression)
-        rows, total = apply_sort_and_paginate(q, spec.sort, spec.page)
+        q = apply_filter_expression(q, spec.expression, table_details=ready)
+        rows, total = apply_sort_and_paginate(
+            q, spec.sort, spec.page, table_details=ready
+        )
 
         items = tuple(
             _map_feature_to_scan_result(
@@ -485,9 +527,7 @@ class SqlFeatureStoreRepository(FeatureStoreRepository):
         Bridge method for dual-source queries — matches the return type
         of ``ScanResultRepository.get_filter_options()``.
         """
-        run = self._session.get(FeatureRun, run_id)
-        if run is None:
-            raise EntityNotFoundError("FeatureRun", run_id)
+        details = self._details_column(run_id)
 
         # Ratings from indexed integer column (fast)
         rating_rows = (
@@ -507,7 +547,7 @@ class SqlFeatureStoreRepository(FeatureStoreRepository):
 
         legacy_rating_col = cast(
             json_text(
-                StockFeatureDaily.details_json,
+                details,
                 ("rating",),
                 bind_or_session=self._session,
             ),
@@ -532,7 +572,7 @@ class SqlFeatureStoreRepository(FeatureStoreRepository):
         # Industries and sectors from JSON
         industry_col = cast(
             json_text(
-                StockFeatureDaily.details_json,
+                details,
                 ("ibd_industry_group",),
                 bind_or_session=self._session,
             ),
@@ -552,7 +592,7 @@ class SqlFeatureStoreRepository(FeatureStoreRepository):
 
         sector_col = cast(
             json_text(
-                StockFeatureDaily.details_json,
+                details,
                 ("gics_sector",),
                 bind_or_session=self._session,
             ),
@@ -621,12 +661,8 @@ class SqlFeatureStoreRepository(FeatureStoreRepository):
         Bridge method for dual-source queries — matches the return type
         of ``ScanResultRepository.get_peers_by_industry()``.
         """
-        run = self._session.get(FeatureRun, run_id)
-        if run is None:
-            raise EntityNotFoundError("FeatureRun", run_id)
-
         industry_col = json_text(
-            StockFeatureDaily.details_json,
+            self._details_column(run_id),
             ("ibd_industry_group",),
             bind_or_session=self._session,
         )
@@ -654,12 +690,8 @@ class SqlFeatureStoreRepository(FeatureStoreRepository):
         Bridge method for dual-source queries — matches the return type
         of ``ScanResultRepository.get_peers_by_sector()``.
         """
-        run = self._session.get(FeatureRun, run_id)
-        if run is None:
-            raise EntityNotFoundError("FeatureRun", run_id)
-
         sector_col = json_text(
-            StockFeatureDaily.details_json,
+            self._details_column(run_id),
             ("gics_sector",),
             bind_or_session=self._session,
         )
@@ -691,17 +723,16 @@ class SqlFeatureStoreRepository(FeatureStoreRepository):
         Bridge method for dual-source export queries — matches the return
         type of ``ScanResultRepository.query_all()``.
         """
-        run = self._session.get(FeatureRun, run_id)
-        if run is None:
-            raise EntityNotFoundError("FeatureRun", run_id)
-
+        ready = self._require_run(run_id)
         q = (
             _feature_results_query(self._session, run_id)
             if include_setup_payload
-            else _feature_results_without_setup_payload_query(self._session, run_id)
+            else _feature_results_without_setup_payload_query(
+                self._session, run_id, table_details=ready
+            )
         )
-        q = apply_filter_expression(q, expression)
-        rows = apply_sort_all(q, sort)
+        q = apply_filter_expression(q, expression, table_details=ready)
+        rows = apply_sort_all(q, sort, table_details=ready)
 
         return tuple(
             _map_feature_to_scan_result(
@@ -719,19 +750,16 @@ class SqlFeatureStoreRepository(FeatureStoreRepository):
         sort: SortSpec,
         page: PageSpec | None = None,
     ) -> tuple[tuple[str, ...], int]:
-        run = self._session.get(FeatureRun, run_id)
-        if run is None:
-            raise EntityNotFoundError("FeatureRun", run_id)
-
+        ready = self._require_run(run_id)
         q = _feature_results_symbol_query(self._session, run_id)
-        q = apply_filter_expression(q, expression)
+        q = apply_filter_expression(q, expression, table_details=ready)
 
         if page is None:
-            rows = apply_sort_all(q, sort)
+            rows = apply_sort_all(q, sort, table_details=ready)
             symbols = tuple(symbol for (symbol,) in rows)
             return symbols, len(symbols)
 
-        rows, total = apply_sort_and_paginate(q, sort, page)
+        rows, total = apply_sort_and_paginate(q, sort, page, table_details=ready)
         symbols = tuple(symbol for (symbol,) in rows)
         return symbols, total
 
@@ -742,9 +770,7 @@ class SqlFeatureStoreRepository(FeatureStoreRepository):
         *,
         symbols: Sequence[str] | None = None,
     ) -> list[tuple[str, dict]]:
-        run = self._session.get(FeatureRun, run_id)
-        if run is None:
-            raise EntityNotFoundError("FeatureRun", run_id)
+        ready = self._require_run(run_id)
 
         # We only need symbol + details_json. The StockUniverse +
         # StockFundamental joins must still be present so any filter or
@@ -769,7 +795,7 @@ class SqlFeatureStoreRepository(FeatureStoreRepository):
             q = q.filter(StockFeatureDaily.symbol.in_(normalized))
 
         if filters is not None:
-            q = apply_filters(q, filters)
+            q = apply_filters(q, filters, table_details=ready)
 
         rows = q.all()
         return [

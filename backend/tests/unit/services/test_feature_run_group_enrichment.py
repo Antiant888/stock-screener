@@ -94,10 +94,14 @@ def test_enrichment_reads_the_feature_runs_exact_formula_snapshot():
 
     with factory() as db:
         stored = db.query(StockFeatureDaily).filter_by(run_id=31, symbol="AAA").one()
+        # Group filters and peer lookups read this copy, not details_json.
+        stored_table = stored.table_details_json
     assert publications[0].snapshot.formula_version == BALANCED_RS_FORMULA_VERSION
     assert publications[0].market_rs_run_id == 42
     assert publications[0].universe_size == 1
     assert stored.details_json["ibd_group_rank"] == 7
+    assert stored_table["ibd_group_rank"] == 7
+    assert stored_table["ibd_industry_group"] == "Software"
     assert stats["rs_formula_version"] == BALANCED_RS_FORMULA_VERSION
     engine.dispose()
 
