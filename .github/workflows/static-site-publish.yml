@@ -56,7 +56,7 @@ jobs:
         with:
           python-version: "3.11"
 
-      # uv with a cache installs in seconds; pip took ~2 minutes (#504).
+      # uv installs far faster than pip, which took ~2 minutes here (#504).
       - uses: astral-sh/setup-uv@v10.2.0
         with:
           enable-cache: true

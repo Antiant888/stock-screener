@@ -44,12 +44,13 @@ def test_static_site_workflows_install_backend_requirements_with_uv():
         assert installing, name
         for job_name, steps in installing.items():
             runs = [str(step.get("run", "")) for step in steps]
-            assert "uv pip install --system -r backend/requirements.txt" in runs, (name, job_name)
-            assert not any(run.startswith("pip install") for run in runs), (name, job_name)
-            setup_uv = next(
-                step for step in steps if str(step.get("uses", "")).startswith("astral-sh/setup-uv@")
-            )
-            glob = setup_uv["with"]["cache-dependency-glob"]
+            install = "uv pip install --system -r backend/requirements.txt"
+            assert install in runs, (name, job_name)
+            assert not any("pip install" in run and not run.startswith("uv ") for run in runs), (name, job_name)
+            uses = [str(step.get("uses", "")) for step in steps]
+            setup = next((i for i, use in enumerate(uses) if use.startswith("astral-sh/setup-uv@")), None)
+            assert setup is not None and setup < runs.index(install), (name, job_name)
+            glob = steps[setup]["with"]["cache-dependency-glob"]
             assert "backend/requirements.txt" in glob and "backend/requirements-server.txt" in glob
 
 
