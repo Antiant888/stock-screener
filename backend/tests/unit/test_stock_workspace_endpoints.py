@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 
 import httpx
 import pandas as pd
@@ -18,6 +18,7 @@ from app.domain.feature_store.models import FeatureRow, FeatureRunDomain, RunSta
 from app.domain.scanning.models import ScanResultItemDomain
 from app.main import app
 from app.models.market_breadth import MarketBreadth
+from app.models.stock import StockFundamental
 from app.models.stock_universe import StockUniverse
 from app.models.theme import ThemeCluster, ThemeConstituent, ThemeMetrics
 from app.models.user_watchlist import UserWatchlist, WatchlistItem
@@ -54,6 +55,7 @@ def session():
         engine,
         tables=[
             StockUniverse.__table__,
+            StockFundamental.__table__,
             UserWatchlist.__table__,
             WatchlistItem.__table__,
             MarketBreadth.__table__,
@@ -76,6 +78,7 @@ def session():
                 MarketBreadth.__table__,
                 WatchlistItem.__table__,
                 UserWatchlist.__table__,
+                StockFundamental.__table__,
                 StockUniverse.__table__,
             ],
         )
@@ -190,6 +193,7 @@ def _seed_search_and_import_data(session):
 
 
 def _seed_dashboard_data(session):
+    session.add(StockFundamental(symbol="NVDA", updated_at=datetime.now(UTC)))
     session.add(
         MarketBreadth(
             date=date(2026, 4, 2),
@@ -647,6 +651,33 @@ async def test_decision_dashboard_reads_only_cached_data(client, session, monkey
     assert payload["chart"]["price_history"][-1]["close"] == 260.0
     for reason in ("missing_stock_info", "missing_fundamentals", "missing_technicals", "missing_price_history"):
         assert reason not in payload["degraded_reasons"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("updated_at", "stale"),
+    [
+        (datetime.now(UTC) - timedelta(days=1), False),
+        (datetime.now(UTC) - timedelta(days=30), True),
+        (None, True),
+    ],
+)
+async def test_decision_dashboard_flags_stale_cached_fundamentals(
+    client, session, monkeypatch, updated_at, stale
+):
+    """Cached fundamentals are served whatever their age, so say when they are old."""
+    app.dependency_overrides[get_db] = _override_db(session)
+    app.dependency_overrides[get_uow] = lambda: _FakeUow(None)
+    app.dependency_overrides[stocks_module._get_stock_event_context_service] = lambda: _FakeEventContextService()
+    if updated_at is not None:
+        session.add(StockFundamental(symbol="NVDA", updated_at=updated_at))
+        session.commit()
+    _stub_cached_reads(monkeypatch, info=None, fundamentals={"symbol": "NVDA", "market_cap": 1})
+
+    response = await client.get("/api/v1/stocks/NVDA/decision-dashboard")
+
+    assert response.status_code == 200
+    assert ("stale_fundamentals" in response.json()["degraded_reasons"]) is stale
 
 
 @pytest.mark.asyncio

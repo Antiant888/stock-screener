@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from ...database import get_db
 from ...infra.serialization import normalize_string_list
 from ...models.market_breadth import MarketBreadth
+from ...models.stock import StockFundamental
 from ...models.stock_universe import StockUniverse
 from ...models.theme import ThemeCluster, ThemeConstituent, ThemeMetrics
 from ...schemas.scanning import ExplainResponse, ScanResultItem
@@ -30,6 +31,7 @@ from ...schemas.stock import (
 )
 from ...schemas.validation import StockValidationResponse
 from ...services.breadth.query import latest_breadth
+from ...services.cache.market_cache_policy import market_cache_policy
 from ...services.economic_theme_read_service import EconomicThemeReader
 from ...services.price_history_symbols import require_valid_price_history_symbol
 from ...services.stock_event_context_service import StockEventContextService
@@ -760,6 +762,14 @@ def get_stock_decision_dashboard(
     technicals = _cached_technicals(symbol, price_frame)
     if fundamentals is None:
         degraded_reasons.append("missing_fundamentals")
+    elif not market_cache_policy.is_datetime_fresh(
+        "fundamentals",
+        db.query(StockFundamental.updated_at)
+        .filter(StockFundamental.symbol == symbol.upper())
+        .scalar(),
+    ):
+        # Served whatever their age; don't let an old row pass as current.
+        degraded_reasons.append("stale_fundamentals")
     if technicals is None:
         degraded_reasons.append("missing_technicals")
 
