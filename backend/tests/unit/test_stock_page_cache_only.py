@@ -373,5 +373,8 @@ def test_earnings_history_is_reported_unavailable_without_asking_yahoo(db, event
         db, symbol="NVDA", as_of_date=TODAY, fundamentals=CALENDAR
     )
 
-    assert event_risk["recent_earnings_count"] == 0
+    # Unknown, not zero: the page would otherwise read "0 beats, 0 misses".
+    assert event_risk["recent_earnings_count"] is None
+    assert event_risk["beat_count_last_4"] is None
+    assert event_risk["miss_count_last_4"] is None
     assert "Recent earnings history is unavailable." in event_risk["notes"]

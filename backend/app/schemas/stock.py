@@ -210,9 +210,9 @@ class StockEventRiskSummary(BaseModel):
     next_earnings_date: Optional[str] = None
     days_until_earnings: Optional[int] = None
     earnings_window_risk: str = "safe"
-    recent_earnings_count: int = 0
-    beat_count_last_4: int = 0
-    miss_count_last_4: int = 0
+    recent_earnings_count: Optional[int] = None
+    beat_count_last_4: Optional[int] = None
+    miss_count_last_4: Optional[int] = None
     avg_post_earnings_gap_pct: Optional[float] = None
     avg_post_earnings_5s_return_pct: Optional[float] = None
     institutional_ownership_current: Optional[float] = None

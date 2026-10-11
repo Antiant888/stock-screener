@@ -612,9 +612,9 @@ function StockDetails() {
                 <MetricRow label="Next Earnings" value={eventRisk.next_earnings_date || '-'} />
                 <MetricRow label="Days Until" value={eventRisk.days_until_earnings ?? '-'} />
                 <MetricRow label="Window Risk" value={eventRisk.earnings_window_risk || '-'} />
-                <MetricRow label="Beat Count (4)" value={eventRisk.beat_count_last_4 ?? 0} />
-                <MetricRow label="Miss Count (4)" value={eventRisk.miss_count_last_4 ?? 0} />
-                <MetricRow label="Recent Earnings" value={eventRisk.recent_earnings_count ?? 0} />
+                <MetricRow label="Beat Count (4)" value={eventRisk.beat_count_last_4 ?? '-'} />
+                <MetricRow label="Miss Count (4)" value={eventRisk.miss_count_last_4 ?? '-'} />
+                <MetricRow label="Recent Earnings" value={eventRisk.recent_earnings_count ?? '-'} />
                 <MetricRow label="Avg Gap" value={formatPercent(eventRisk.avg_post_earnings_gap_pct)} />
                 <MetricRow label="Avg 5S Return" value={formatPercent(eventRisk.avg_post_earnings_5s_return_pct)} />
                 <MetricRow label="Inst Ownership" value={formatPercent(eventRisk.institutional_ownership_current)} />

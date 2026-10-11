@@ -115,12 +115,15 @@ class StockEventContextService:
         if ownership_current is None:
             notes.append("Institutional ownership history is unavailable.")
 
-        beat_count, miss_count = self._count_earnings_surprises(recent_earnings)
+        # Unknown, not zero, while there is no earnings history.
+        beat_count, miss_count = (
+            self._count_earnings_surprises(recent_earnings) if recent_earnings else (None, None)
+        )
         event_risk = {
             "next_earnings_date": next_earnings_date.isoformat() if next_earnings_date else None,
             "days_until_earnings": days_until_earnings,
             "earnings_window_risk": earnings_window_risk,
-            "recent_earnings_count": len(recent_earnings),
+            "recent_earnings_count": len(recent_earnings) or None,
             "beat_count_last_4": beat_count,
             "miss_count_last_4": miss_count,
             "avg_post_earnings_gap_pct": _round_or_none(avg_gap_pct),
