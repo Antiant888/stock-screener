@@ -43,7 +43,7 @@ const PipelineProgressCard = () => {
           bottom: { xs: mobileNavOffset(16), md: 24 },
           right: { xs: 16, md: 24 },
           width: 180,
-          zIndex: 1300,
+          zIndex: (theme) => theme.zIndex.drawer - 1,
           borderRadius: 3,
           overflow: 'hidden',
           bgcolor: `${tone}.main`,
@@ -89,7 +89,7 @@ const PipelineProgressCard = () => {
         bottom: { xs: mobileNavOffset(16), md: 24 },
         right: { xs: 16, md: 24 },
         width: { xs: 'calc(100% - 32px)', sm: 380 },
-        zIndex: 1300,
+        zIndex: (theme) => theme.zIndex.drawer - 1,
         borderRadius: 2,
         overflow: 'hidden',
       }}

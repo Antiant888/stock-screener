@@ -37,7 +37,7 @@ import {
   DesktopNav,
   MobileBottomNav,
 } from './AppNav';
-import { CORE_NAV_ITEMS, mobileNavOffset, useIsMobileShell } from './shellNav';
+import { CORE_NAV_ITEMS, mobileNavOffset, safeGutters, useIsMobileShell } from './shellNav';
 import { useRuntime } from '../../contexts/RuntimeContext';
 import { useMarket } from '../../contexts/MarketContext';
 import { usePipeline } from '../../contexts/usePipeline';
@@ -185,7 +185,8 @@ function TickerSearch() {
         px: 1.25,
         height: 32,
         width: { xs: 88, md: 160 },
-        fontSize: '14px',
+        // 16px on phones: iOS Safari zooms into inputs below that.
+        fontSize: { xs: '16px', md: '14px' },
         backgroundColor: 'action.hover',
         border: 1,
         borderColor: 'divider',
@@ -251,7 +252,7 @@ function Layout({ children }) {
       <AppBar position="static">
         <Toolbar
           variant="dense"
-          sx={{ minHeight: 52, gap: { xs: 1, md: 1.5 }, overflowX: 'auto', '& > *': { flexShrink: 0 } }}
+          sx={{ ...safeGutters, minHeight: 52, gap: { xs: 1, md: 1.5 }, overflowX: 'auto', '& > *': { flexShrink: 0 } }}
         >
           <BrandMark label={isMobile ? null : 'Stock Scanner'} />
           <RuntimeActivityStatusButton compact={isMobile} />
@@ -289,7 +290,7 @@ function Layout({ children }) {
         </Toolbar>
       </AppBar>
 
-      <Container maxWidth="xl" sx={{ mt: 1, mb: 1, flex: 1, pb: { xs: mobileNavOffset(8), md: 0 } }}>
+      <Container maxWidth="xl" sx={{ ...safeGutters, mt: 1, mb: 1, flex: 1, pb: { xs: mobileNavOffset(8), md: 0 } }}>
         {children}
       </Container>
 

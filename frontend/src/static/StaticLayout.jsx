@@ -19,7 +19,7 @@ import {
   DesktopNav,
   MobileBottomNav,
 } from '../components/Layout/AppNav';
-import { CORE_NAV_ITEMS, mobileNavOffset, useIsMobileShell } from '../components/Layout/shellNav';
+import { CORE_NAV_ITEMS, mobileNavOffset, safeGutters, useIsMobileShell } from '../components/Layout/shellNav';
 import { useStaticMarket } from './StaticMarketContext';
 import {
   getStaticSupportedMarkets,
@@ -73,7 +73,7 @@ function StaticLayout({ children }) {
       <AppBar position="static">
         <Toolbar
           variant="dense"
-          sx={{ minHeight: 52, gap: { xs: 1, md: 1.5 }, overflowX: 'auto', '& > *': { flexShrink: 0 } }}
+          sx={{ ...safeGutters, minHeight: 52, gap: { xs: 1, md: 1.5 }, overflowX: 'auto', '& > *': { flexShrink: 0 } }}
         >
           <BrandMark label={isMobile ? null : 'Stock Scanner Daily'} />
           {!isMobile && <Chip label="Read-only" size="small" variant="outlined" />}
@@ -82,6 +82,8 @@ function StaticLayout({ children }) {
               value={selectedUnavailable ? selectedMarket : marketEntry.market}
               onChange={(event) => setSelectedMarket(event.target.value)}
               displayEmpty
+              // Phones show flag + code ("🇭🇰 HK") so the status chip still fits at 360px.
+              renderValue={isMobile ? (market) => `${marketFlag(market)} ${market}`.trim() : undefined}
               sx={{ height: 32, fontSize: '13px', fontWeight: 600, borderRadius: 2 }}
               inputProps={{ 'aria-label': 'Static market selector' }}
             >
@@ -125,7 +127,7 @@ function StaticLayout({ children }) {
         </Toolbar>
       </AppBar>
 
-      <Container maxWidth="xl" sx={{ mt: 1.5, mb: 1.5, flex: 1, pb: { xs: mobileNavOffset(8), md: 0 } }}>
+      <Container maxWidth="xl" sx={{ ...safeGutters, mt: 1.5, mb: 1.5, flex: 1, pb: { xs: mobileNavOffset(8), md: 0 } }}>
         {expired && (
           <Alert
             severity="info"

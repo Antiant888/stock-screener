@@ -128,6 +128,8 @@ export function MobileBottomNav({ items, extras }) {
           borderTop: 1,
           borderColor: 'divider',
           pb: 'env(safe-area-inset-bottom)',
+          pl: 'env(safe-area-inset-left)',
+          pr: 'env(safe-area-inset-right)',
           backgroundColor: alpha(theme.palette.background.paper, 0.92),
           backdropFilter: 'blur(10px)',
         })}

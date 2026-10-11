@@ -9,6 +9,12 @@ export const MOBILE_NAV_HEIGHT = 56;
 export const mobileNavOffset = (gap = 0) => `calc(${MOBILE_NAV_HEIGHT + gap}px + env(safe-area-inset-bottom))`;
 
 // Phones and portrait tablets get the bottom bar; the desktop top-bar nav needs ~900px.
+// Toolbar/Container gutters that also clear a landscape notch (viewport-fit=cover).
+export const safeGutters = {
+  pl: { xs: 'max(16px, env(safe-area-inset-left))', sm: 'max(24px, env(safe-area-inset-left))' },
+  pr: { xs: 'max(16px, env(safe-area-inset-right))', sm: 'max(24px, env(safe-area-inset-right))' },
+};
+
 export const useIsMobileShell = () => useMediaQuery((theme) => theme.breakpoints.down('md'));
 
 export const CORE_NAV_ITEMS = [

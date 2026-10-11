@@ -53,7 +53,7 @@ function CompactMultiSelect({
                 width: 18,
                 height: 18,
                 bgcolor: isExcludeMode ? 'error.main' : 'primary.main',
-                color: 'white',
+                color: isExcludeMode ? 'error.contrastText' : 'primary.contrastText',
                 '&:hover': {
                   bgcolor: isExcludeMode ? 'error.dark' : 'primary.dark',
                 },
