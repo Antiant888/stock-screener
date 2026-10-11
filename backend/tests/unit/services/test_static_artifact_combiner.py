@@ -665,6 +665,35 @@ def test_publication_late_after_is_the_next_session_close_plus_grace() -> None:
     assert manifest["markets"]["KR"]["publication"]["late_after"] is None
 
 
+def test_publication_late_after_searches_only_verified_calendar_coverage() -> None:
+    # Near year end the 21-day search passes a market's verified coverage; the
+    # deadline must still come from the sessions that are covered.
+    from app.services.market_calendar_service import CalendarCoverageExpired
+
+    class _CoveredCalendar(_Calendar):
+        def trading_days(self, market, start, end):
+            if end > date(2026, 12, 31):
+                raise CalendarCoverageExpired(
+                    market=market,
+                    requested_date=end,
+                    verified_through=date(2026, 12, 31),
+                    source_url="",
+                    operations_doc="",
+                )
+            return super().trading_days(market, start, end)
+
+    sessions = [date(2026, 12, 23), date(2026, 12, 24), date(2026, 12, 28)]
+    manifest = {
+        "markets": {
+            "HK": {"publication": {"source": "current", "session_date": "2026-12-24"}},
+        }
+    }
+
+    annotate_publication_lag(manifest, _CoveredCalendar(date(2026, 12, 24), sessions))
+
+    assert manifest["markets"]["HK"]["publication"]["late_after"] == "2026-12-29T20:00:00Z"
+
+
 def test_publication_lag_counts_a_session_newer_than_the_close_as_current() -> None:
     # A run during the session can serve today's partial bar; that is not
     # behind the last completed session.

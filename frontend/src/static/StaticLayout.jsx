@@ -134,7 +134,8 @@ function StaticLayout({ children }) {
               label={status.label}
               color={status.color}
               size="small"
-              aria-label={`${marketEntry.market} data status`}
+              role="status"
+              aria-label={`${marketEntry.market} data status: ${status.label}`}
               sx={{ ml: 1, height: 22, fontSize: '11px' }}
             />
           )}
