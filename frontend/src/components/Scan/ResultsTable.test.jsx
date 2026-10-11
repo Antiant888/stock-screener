@@ -594,6 +594,21 @@ describe('ResultsTable', () => {
       expect(onSortChange).toHaveBeenLastCalledWith('rs_rating', 'desc');
     });
 
+    it('hides the sort picker when sorting is disabled and skips unscannable charts', () => {
+      renderWithProviders(
+        <ResultsTable
+          {...defaultProps}
+          sortingEnabled={false}
+          results={[{ ...fullSeRow, is_scannable: false }]}
+          onOpenChart={vi.fn()}
+        />,
+      );
+
+      expect(screen.queryByRole('combobox', { name: 'Sort by' })).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: /^Open .* chart$/ })).not.toBeInTheDocument();
+      expect(screen.getByRole('listitem')).toHaveAttribute('aria-setsize', '1');
+    });
+
     it('keeps an active sort that the picker does not list', () => {
       renderWithProviders(<ResultsTable {...defaultProps} sortBy="beta" />);
 

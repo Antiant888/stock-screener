@@ -32,14 +32,36 @@ describe('StockRowCard', () => {
     expect(screen.queryByRole('button')).not.toBeInTheDocument();
   });
 
-  it('opens by click and by keyboard when openable', () => {
+  it('opens through a real button while the rest stays readable content', () => {
     const onOpen = vi.fn();
     renderWithProviders(<StockRowCard row={row} onOpen={onOpen} />);
 
-    const card = screen.getByRole('button', { name: 'Open FORM chart' });
-    fireEvent.click(card);
-    fireEvent.keyDown(card, { key: 'Enter' });
-    fireEvent.keyDown(card, { key: ' ' });
-    expect(onOpen).toHaveBeenCalledTimes(3);
+    const open = screen.getByRole('button', { name: 'Open FORM chart' });
+    expect(open.tagName).toBe('BUTTON'); // native Enter/Space handling
+    expect(open).not.toContainElement(screen.getByText('$139.67'));
+    fireEvent.click(open);
+    expect(onOpen).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps a clickable badge separate from opening the chart', () => {
+    const onOpen = vi.fn();
+    const onBadge = vi.fn();
+    renderWithProviders(
+      <StockRowCard row={row} onOpen={onOpen} badge={<button type="button" onClick={onBadge}>Watch</button>} />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Watch' }));
+    expect(onBadge).toHaveBeenCalledTimes(1);
+    expect(onOpen).not.toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: 'Open FORM chart' })).not.toContainElement(
+      screen.getByRole('button', { name: 'Watch' }),
+    );
+  });
+
+  it('shows a dash for a missing or non-numeric change', () => {
+    renderWithProviders(<StockRowCard row={{ ...row, price_change_1d: 'n/a' }} />);
+
+    expect(screen.queryByText(/NaN/)).not.toBeInTheDocument();
+    expect(screen.getByText('-')).toBeInTheDocument();
   });
 });

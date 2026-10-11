@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, useCallback, memo } from 'react';
+import { useLayoutEffect, useMemo, useRef, useState, useCallback, memo } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import {
   Table,
@@ -53,8 +53,9 @@ import {
 
 // Row height constant for virtualization
 const ROW_HEIGHT = 48;
-// Phone layout: one StockRowCard per result (fixed height keeps the virtualizer exact).
-const MOBILE_CARD_HEIGHT = 76;
+// Phone layout: one StockRowCard per result (fixed height keeps the virtualizer
+// exact). Content needs ~75px; the rest is headroom for larger system text.
+const MOBILE_CARD_HEIGHT = 84;
 // Sorts offered by the phone sort picker; the active sort is always included.
 const MOBILE_SORT_FIELDS = [
   ['composite_score', 'Composite score'],
@@ -693,8 +694,9 @@ function ResultsTable({
     estimateSize: () => (isMobile ? MOBILE_CARD_HEIGHT : ROW_HEIGHT),
     overscan: 10, // Render 10 extra rows above/below viewport
   });
-  // Row height changes with the layout (e.g. rotating a tablet); drop cached sizes.
-  useEffect(() => {
+  // Row height changes with the layout (e.g. rotating a tablet); drop cached
+  // sizes before paint so cards never draw at the table's row spacing.
+  useLayoutEffect(() => {
     rowVirtualizer.measure();
   }, [isMobile, rowVirtualizer]);
 
@@ -744,7 +746,7 @@ function ResultsTable({
   );
 
   if (isMobile) {
-    const sortOptions = MOBILE_SORT_FIELDS.some(([id]) => id === sortBy)
+    const sortOptions = !sortBy || MOBILE_SORT_FIELDS.some(([id]) => id === sortBy)
       ? MOBILE_SORT_FIELDS
       : [...MOBILE_SORT_FIELDS, [sortBy, columns.find((column) => column.id === sortBy)?.label || sortBy]];
     return (
@@ -755,7 +757,7 @@ function ResultsTable({
               select
               size="small"
               label="Sort by"
-              value={sortBy}
+              value={sortBy ?? ''}
               onChange={(event) => onSortChange(event.target.value, sortOrder)}
               sx={{ minWidth: 170 }}
             >
@@ -779,6 +781,8 @@ function ResultsTable({
                 <Box
                   key={row.symbol}
                   role="listitem"
+                  aria-setsize={results.length}
+                  aria-posinset={virtualRow.index + 1}
                   sx={{
                     position: 'absolute',
                     top: 0,

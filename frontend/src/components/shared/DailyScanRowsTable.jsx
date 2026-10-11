@@ -79,7 +79,7 @@ function DailyScanRowsTable({
     <Paper
       data-testid={testId}
       elevation={0}
-      sx={{ p: 1.5, mb: 2, border: '1px solid', borderColor: 'divider' }}
+      sx={{ p: 1.5, mb: 2, border: '1px solid', borderColor: 'divider', overflow: 'hidden' }}
     >
       <Box
         sx={{
@@ -103,32 +103,36 @@ function DailyScanRowsTable({
       </Box>
       {isMobile ? (
         // Phones: one card per row instead of a 720px table that scrolls sideways.
-        <Box role="list" sx={{ mx: -1.5, mb: -1.5 }}>
+        <>
           {isLoading && rows.length === 0 ? (
             <Box sx={{ py: 2, textAlign: 'center' }}><CircularProgress size={18} /></Box>
           ) : null}
           {isError && rows.length === 0 ? (
             <Typography sx={{ color: 'error.main', py: 2, textAlign: 'center' }}>{errorMessage}</Typography>
           ) : null}
-          {rows.map((row) => (
-            <Box key={row.symbol} role="listitem" sx={{ borderTop: 1, borderColor: 'divider' }}>
-              <StockRowCard
-                row={row}
-                scoreField={scoreField}
-                badge={showActionState
-                  ? actionBadge(row)
-                  : showRating && row.rating
-                    ? <Chip label={row.rating} size="small" variant="outlined" sx={{ height: 18, fontSize: 10 }} />
-                    : null}
-                meta={showRs && row.rs_rating != null ? `RS ${formatNumber(row.rs_rating, 0)}` : null}
-                onOpen={isChartEnabled(row.symbol) ? () => handleRowOpen(row.symbol) : null}
-              />
-            </Box>
-          ))}
           {!isLoading && !isError && rows.length === 0 ? (
             <Typography sx={{ py: 2, textAlign: 'center' }}>{emptyMessage}</Typography>
           ) : null}
-        </Box>
+          {rows.length > 0 ? (
+            <Box role="list" aria-label={typeof title === 'string' ? title : undefined} sx={{ mx: -1.5, mb: -1.5 }}>
+              {rows.map((row) => (
+                <Box key={row.symbol} role="listitem" sx={{ borderTop: 1, borderColor: 'divider' }}>
+                  <StockRowCard
+                    row={row}
+                    scoreField={scoreField}
+                    badge={showActionState
+                      ? actionBadge(row)
+                      : showRating && row.rating
+                        ? <Chip label={row.rating} size="small" variant="outlined" sx={{ height: 18, fontSize: 10 }} />
+                        : null}
+                    meta={showRs && row.rs_rating != null ? `RS ${formatNumber(row.rs_rating, 0)}` : null}
+                    onOpen={isChartEnabled(row.symbol) ? () => handleRowOpen(row.symbol) : null}
+                  />
+                </Box>
+              ))}
+            </Box>
+          ) : null}
+        </>
       ) : (
         <TableContainer>
           <Table size="small" sx={{ minWidth: 720 }}>
