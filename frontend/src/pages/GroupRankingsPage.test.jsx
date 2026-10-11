@@ -275,7 +275,7 @@ describe('GroupRankingsPage', () => {
     expect(within(table).getAllByRole('row')[1]).toHaveTextContent('HK Semiconductors');
   });
 
-  it('uses fixed background bands for every live RS rating column', async () => {
+  it('tints every live RS rating column on the shared score scale', async () => {
     getCurrentRankings.mockResolvedValue({
       date: '2026-04-18',
       total_groups: 2,
@@ -326,10 +326,13 @@ describe('GroupRankingsPage', () => {
       'down-soft',
       'down-strong',
     ]);
-    expect(highCells[2]).toHaveStyle({ backgroundColor: '#0d7a3e', color: '#fff' });
-    expect(highCells[3]).toHaveStyle({ backgroundColor: '#123d2a', color: '#fff' });
-    expect(boundaryCells[2]).toHaveStyle({ backgroundColor: '#9b1c31', color: '#fff' });
-    expect(boundaryCells[3]).toHaveStyle({ backgroundColor: '#452126', color: '#fff' });
+    // Translucent success/error tints from the dark test theme; text keeps its normal colour.
+    const tint = (cell) => getComputedStyle(cell).backgroundColor;
+    expect(tint(highCells[2])).toMatch(/^rgba\(46, 189, 133, /);
+    expect(tint(highCells[3])).toMatch(/^rgba\(46, 189, 133, /);
+    expect(tint(boundaryCells[2])).toMatch(/^rgba\(246, 70, 93, /);
+    expect(tint(boundaryCells[3])).toMatch(/^rgba\(246, 70, 93, /);
+    expect(highCells[2]).not.toHaveStyle({ color: '#fff' });
     expect(boundaryCells[10]).not.toHaveAttribute('data-rs-tone');
   });
 
