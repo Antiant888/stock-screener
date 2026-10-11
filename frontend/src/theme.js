@@ -57,7 +57,8 @@ const PALETTES = {
     primary: { main: '#7b93ff', contrastText: '#0b0d12' },
     secondary: { main: '#b197fc', contrastText: '#0b0d12' },
     success: { main: '#2ebd85' },
-    error: { main: '#f6465d' },
+    // Dark text on the red fill: 5.5:1 vs 3.5:1 for white.
+    error: { main: '#f6465d', contrastText: '#0b0d12' },
     background: { default: '#0b0d12', paper: '#12151c', subtle: '#181c25' },
     divider: '#242a37',
     text: { primary: '#e7e9ee', secondary: '#8b93a7', disabled: '#5b6378' },
@@ -65,8 +66,8 @@ const PALETTES = {
   light: {
     primary: { main: '#3b5bdb', contrastText: '#ffffff' },
     secondary: { main: '#7048e8', contrastText: '#ffffff' },
-    // Darker than the dark-mode tones so they pass 4.5:1 as small text on
-    // every light surface (paper, default and subtle).
+    // Darker than the dark-mode tones so the .main values pass 4.5:1 as small
+    // text on every light surface (paper, default and subtle).
     success: { main: '#0c7d56' },
     error: { main: '#c92a37' },
     warning: { main: '#b45309' },

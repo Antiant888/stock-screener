@@ -43,14 +43,14 @@ export const getRatingColor = (rating) => {
 };
 
 /**
- * Get color for growth percentage values
+ * Get color for growth percentage values. Any positive growth is success.main:
+ * a lighter green can't reach 4.5:1 as small text on the light surfaces.
  * @param {number|null} value - Growth percentage
- * @returns {string} MUI color path or hex color
+ * @returns {string} MUI palette key
  */
 export const getGrowthColor = (value) => {
   if (value == null) return 'text.secondary';
-  if (value >= 20) return 'success.main';
-  if (value >= 0) return 'success.light';
+  if (value >= 0) return 'success.main';
   if (value >= -10) return 'warning.main';
   return 'error.main';
 };

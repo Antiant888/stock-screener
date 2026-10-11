@@ -170,7 +170,6 @@ const COLOR_CLASS_PATHS = [
   'text.disabled',
   'primary.main',
   'success.main',
-  'success.light',
   'warning.main',
   'error.main',
 ];

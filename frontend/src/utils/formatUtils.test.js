@@ -30,17 +30,17 @@ describe('formatPatternName', () => {
 });
 
 describe('getScoreColor', () => {
-  it('returns green (#4caf50) for score >= 70', () => {
+  it('returns success.main for score >= 70', () => {
     expect(getScoreColor(70)).toBe('success.main');
     expect(getScoreColor(100)).toBe('success.main');
   });
 
-  it('returns amber (#ff9800) for score >= 40 and < 70', () => {
+  it('returns warning.main for score >= 40 and < 70', () => {
     expect(getScoreColor(40)).toBe('warning.main');
     expect(getScoreColor(69)).toBe('warning.main');
   });
 
-  it('returns red (#f44336) for score < 40', () => {
+  it('returns error.main for score < 40', () => {
     expect(getScoreColor(39)).toBe('error.main');
     expect(getScoreColor(0)).toBe('error.main');
   });

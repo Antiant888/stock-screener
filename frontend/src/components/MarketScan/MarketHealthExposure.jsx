@@ -24,7 +24,6 @@ const STANCE_COLORS = {
   'Correction — In Cash': '#c62828',
 };
 
-// Follow-through day marker — a deliberate contrast to the stance colors.
 // Follow-through days use the theme accent: a marker, not a gain/loss state.
 const FTD_COLOR = 'primary.main';
 
@@ -142,7 +141,7 @@ function MarketHealthExposure({ exposure }) {
           </Box>
 
           <Box sx={{ textAlign: 'center', mt: 0.5 }}>
-            <Chip label={exposure.stance} size="small" sx={{ bgcolor: color, color: '#fff', fontWeight: 600 }} />
+            <Chip label={exposure.stance} size="small" sx={{ bgcolor: color, color: palette.getContrastText(color), fontWeight: 600 }} />
           </Box>
 
           <Box sx={{ mt: 1.5, display: 'grid', gridTemplateColumns: '1fr 1fr', rowGap: 0.5, columnGap: 1 }}>

@@ -7,11 +7,11 @@ import {
   Chip,
 } from '@mui/material';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
-import { onPalette } from '../../../utils/colorUtils';
 import ExpandLessIcon from '@mui/icons-material/ExpandLess';
 import AccountBalanceIcon from '@mui/icons-material/AccountBalance';
 import ShowChartIcon from '@mui/icons-material/ShowChart';
 import StarIcon from '@mui/icons-material/Star';
+import { onPalette } from '../../../utils/colorUtils';
 
 // Neutral section chrome; the theme accent marks only the icon and the
 // active-filter count, so the sections don't compete with the results.
