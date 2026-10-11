@@ -40,19 +40,35 @@ vi.mock('../../hooks/useRuntimeActivity', () => ({
   useRuntimeActivity: (...args) => useRuntimeActivityMock(...args),
 }));
 
-const requestedPages = vi.hoisted(() => new Set());
+const loadedPaths = vi.hoisted(() => []);
 const api = vi.hoisted(() => ({
   getBreadthBootstrap: vi.fn(),
   getDailySnapshot: vi.fn(),
   getGroupsBootstrap: vi.fn(),
+  getScanBootstrap: vi.fn(),
 }));
 
-vi.mock('../../pages/BreadthPage', () => {
-  requestedPages.add('BreadthPage');
-  return { default: () => null };
+vi.mock('../../pageLoaders', async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    loaderForPath: (path) => {
+      const loader = actual.loaderForPath(path);
+      return loader && (() => {
+        loadedPaths.push(path);
+        return loader();
+      });
+    },
+  };
 });
+vi.mock('../../pages/BreadthPage', () => ({ default: () => null }));
 vi.mock('../../pages/MarketScanPage', () => ({ default: () => null }));
 vi.mock('../../pages/GroupRankingsPage', () => ({ default: () => null }));
+vi.mock('../../pages/ScanPage', () => ({ default: () => null }));
+vi.mock('../../api/scans', async (importOriginal) => ({
+  ...(await importOriginal()),
+  getScanBootstrap: api.getScanBootstrap,
+}));
 vi.mock('../../api/breadth', async (importOriginal) => ({
   ...(await importOriginal()),
   getBreadthBootstrap: api.getBreadthBootstrap,
@@ -80,6 +96,7 @@ describe('Layout', () => {
   beforeEach(() => {
     useRuntimeActivityMock.mockReset();
     Object.values(api).forEach((mock) => mock.mockReset().mockResolvedValue(null));
+    loadedPaths.length = 0;
     window.localStorage.clear();
     runtimeState.features = { chatbot: false, themes: false, tasks: false };
     runtimeState.marketCatalog = { markets: [] };
@@ -97,8 +114,66 @@ describe('Layout', () => {
 
     fireEvent.mouseEnter(screen.getByRole('link', { name: 'Breadth' }));
 
-    await vi.waitFor(() => expect(requestedPages).toContain('BreadthPage'));
-    expect(api.getBreadthBootstrap).toHaveBeenCalledWith('HK');
+    expect(loadedPaths).toEqual(['/breadth']);
+    await vi.waitFor(() => expect(api.getBreadthBootstrap).toHaveBeenCalledWith('HK'));
+  });
+
+  it('prefetches the scan bootstrap for the selected market from another page', async () => {
+    useRuntimeActivityMock.mockReturnValue({ data: null });
+    runtimeState.enabledMarkets = ['US', 'HK'];
+    runtimeState.primaryMarket = 'HK';
+    runtimeState.uiSnapshots = { scan: true };
+    renderInApp('/');
+
+    fireEvent.mouseEnter(screen.getByRole('link', { name: 'Scan' }));
+
+    await vi.waitFor(() => expect(api.getScanBootstrap).toHaveBeenCalledWith(null, 'HK'));
+  });
+
+  it("leaves the open page's data to that page", async () => {
+    // The mounted Scan page re-applies any new latest-scan bootstrap, which
+    // would replace the scan the user picked or just started.
+    useRuntimeActivityMock.mockReturnValue({ data: null });
+    runtimeState.uiSnapshots = { scan: true };
+    renderInApp('/scan');
+
+    fireEvent.mouseEnter(screen.getByRole('link', { name: 'Scan' }));
+    await act(async () => {});
+
+    expect(api.getScanBootstrap).not.toHaveBeenCalled();
+  });
+
+  it('resolves capability-limited pages to the market they would show', async () => {
+    useRuntimeActivityMock.mockReturnValue({ data: null });
+    // SG is selected, but group rankings and breadth fall back to US for it.
+    runtimeState.enabledMarkets = ['SG', 'US'];
+    runtimeState.primaryMarket = 'SG';
+    runtimeState.uiSnapshots = { breadth: true, groups: true };
+    renderInApp();
+
+    fireEvent.mouseEnter(screen.getByRole('link', { name: 'Breadth' }));
+    fireEvent.mouseEnter(screen.getByRole('link', { name: 'Groups' }));
+    fireEvent.mouseEnter(screen.getByRole('link', { name: 'Daily' }));
+
+    await vi.waitFor(() => expect(api.getDailySnapshot).toHaveBeenCalledWith('SG'));
+    expect(api.getBreadthBootstrap).toHaveBeenCalledWith('US');
+    expect(api.getGroupsBootstrap).toHaveBeenCalledWith('US');
+  });
+
+  it('does not retry a failed prefetch on every hover', async () => {
+    useRuntimeActivityMock.mockReturnValue({ data: null });
+    runtimeState.uiSnapshots = { scan: true };
+    api.getScanBootstrap.mockRejectedValue(new Error('404'));
+    renderInApp('/');
+    const scanLink = screen.getByRole('link', { name: 'Scan' });
+
+    fireEvent.mouseEnter(scanLink);
+    await vi.waitFor(() => expect(api.getScanBootstrap).toHaveBeenCalledTimes(1));
+    await act(async () => {});
+    fireEvent.mouseEnter(scanLink);
+    await act(async () => {});
+
+    expect(api.getScanBootstrap).toHaveBeenCalledTimes(1);
   });
 
   it('skips the snapshot a page would not request', async () => {

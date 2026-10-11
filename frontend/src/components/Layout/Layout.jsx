@@ -130,17 +130,21 @@ function StrategyProfileControl() {
   );
 }
 
-// A failed early fetch is retried, and surfaced, by the route's lazy() import.
+// The early fetch is the page's one attempt, as the route's own import would
+// be: browsers keep a failed dynamic import for the session, so the route
+// shows the same error it would have shown on main. Nothing to handle here.
 const loadQuietly = (loader) => loader?.().catch(() => {});
 
 /**
  * Start a page's code and first-paint data on hover, focus or touch, so a tab
  * switch does not wait for code, then data, after the click. The data only
  * goes where the page itself would look: same key, market and snapshot flag.
- * The nav only renders once live capabilities have confirmed access.
+ * The nav renders once the capabilities request has settled, and with auth
+ * required only after sign-in; the server checks every request regardless.
  */
 function useNavPrefetch() {
   const queryClient = useQueryClient();
+  const location = useLocation();
   const { uiSnapshots } = useRuntime();
   const { selectedMarket } = useMarket();
   const { market: groupsMarket } = useMarketForCapability(
@@ -151,6 +155,9 @@ function useNavPrefetch() {
 
   return useCallback((path) => {
     loadQuietly(loaderForPath(path));
+    // The open page owns its queries: the Scan page re-applies any new
+    // latest-scan bootstrap, which would replace the scan the user picked.
+    if (path === location.pathname) return;
     let query = null;
     if (path === '/') query = dailySnapshotQuery(selectedMarket);
     else if (path === '/scan' && uiSnapshots?.scan) query = scanBootstrapQuery(selectedMarket);
@@ -159,8 +166,13 @@ function useNavPrefetch() {
     } else if (path === '/breadth' && uiSnapshots?.breadth) {
       query = breadthBootstrapQuery(queryClient, breadthMarket);
     }
-    if (query) queryClient.prefetchQuery(query);
-  }, [breadthMarket, groupsMarket, queryClient, selectedMarket, uiSnapshots]);
+    if (!query) return;
+    // A query without data is always stale, so a failed one would be asked
+    // again on every hover; wait out its staleTime instead.
+    const state = queryClient.getQueryState(query.queryKey);
+    if (state?.status === 'error' && Date.now() - state.errorUpdatedAt < query.staleTime) return;
+    queryClient.prefetchQuery(query);
+  }, [breadthMarket, groupsMarket, location.pathname, queryClient, selectedMarket, uiSnapshots]);
 }
 
 function TickerSearch() {

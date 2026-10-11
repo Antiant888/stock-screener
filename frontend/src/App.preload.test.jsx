@@ -1,7 +1,7 @@
 import { render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-const requested = vi.hoisted(() => new Set());
+const loadedPaths = vi.hoisted(() => []);
 
 vi.mock('./config/runtimeMode', () => ({ STATIC_SITE_MODE: false }));
 
@@ -11,30 +11,51 @@ vi.mock('./contexts/RuntimeContext', () => ({
   useRuntime: () => ({ runtimeReady: false }),
 }));
 
-vi.mock('./pages/MarketScanPage', () => {
-  requested.add('MarketScanPage');
-  return { default: () => null };
+vi.mock('./pageLoaders', async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    loaderForPath: (path) => {
+      const loader = actual.loaderForPath(path);
+      return loader && (() => {
+        loadedPaths.push(path);
+        return loader();
+      });
+    },
+  };
 });
-vi.mock('./pages/BreadthPage', () => {
-  requested.add('BreadthPage');
-  return { default: () => null };
-});
+vi.mock('./pages/MarketScanPage', () => ({ default: () => null }));
+vi.mock('./pages/BreadthPage', () => ({ default: () => null }));
+vi.mock('./static/StaticAppShell', () => ({ default: () => <div>Static shell</div> }));
+
+async function importAppAt(path) {
+  window.history.pushState({}, '', path);
+  vi.resetModules();
+  return (await import('./App')).default;
+}
 
 describe('App cold start', () => {
   afterEach(() => {
-    requested.clear();
+    loadedPaths.length = 0;
+    vi.doUnmock('./config/runtimeMode');
     window.history.pushState({}, '', '/');
   });
 
   it("requests the current route's page code before capabilities resolve", async () => {
-    window.history.pushState({}, '', '/breadth');
-    vi.resetModules();
-    const { default: App } = await import('./App');
+    const App = await importAppAt('/breadth');
+
+    expect(loadedPaths).toEqual(['/breadth']);
+    render(<App />);
+    expect(screen.getByText('STOCK SCANNER')).toBeInTheDocument();
+  });
+
+  it('leaves live page code alone in the static site', async () => {
+    vi.doMock('./config/runtimeMode', () => ({ STATIC_SITE_MODE: true }));
+    const App = await importAppAt('/breadth');
 
     render(<App />);
 
-    expect(screen.getByText('STOCK SCANNER')).toBeInTheDocument();
-    await vi.waitFor(() => expect(requested).toContain('BreadthPage'));
-    expect(requested).not.toContain('MarketScanPage');
+    expect(await screen.findByText('Static shell')).toBeInTheDocument();
+    expect(loadedPaths).toEqual([]);
   });
 });
