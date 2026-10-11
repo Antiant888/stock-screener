@@ -32,6 +32,9 @@ import { marketFlag } from '../../utils/marketFlags';
 import { formatSnapshotFreshnessLabel } from '../../utils/snapshotFreshness';
 import DailySocialSignalsCard from '../../features/socialSignals/DailySocialSignalsCard';
 
+// Two key-market cards per row stop fitting below ~300px (e.g. a phone at 200% zoom).
+const ONE_COLUMN_WHEN_NARROW = { '@media (max-width: 299.95px)': { flexBasis: '100%', maxWidth: '100%' } };
+
 const EMPTY_ROWS = [];
 const DEFAULT_TOP_RESULTS = 20;
 
@@ -163,7 +166,7 @@ function DailyMarketSnapshotTab({ showSocialSignals = false, onOpenSocialSignals
 
       <Grid container spacing={1.5} sx={{ mb: 2 }}>
         {keyMarkets.map((item) => (
-          <Grid item xs={6} sm={4} md={2.4} key={item.symbol}>
+          <Grid item xs={6} sm={4} md={2.4} key={item.symbol} sx={ONE_COLUMN_WHEN_NARROW}>
             <KeyMarketCard item={item} closes={item.closes} currency={item.currency || 'USD'} />
           </Grid>
         ))}

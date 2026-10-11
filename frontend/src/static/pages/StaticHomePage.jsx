@@ -42,6 +42,9 @@ import { formatSnapshotFreshnessLabel } from '../../utils/snapshotFreshness';
 import { buildCorrectionSurvivorSummary } from '../../features/opportunityState/correctionSurvivorSummary';
 import StaticCotSection from '../components/StaticCotSection';
 
+// Two key-market cards per row stop fitting below ~300px (e.g. a phone at 200% zoom).
+const ONE_COLUMN_WHEN_NARROW = { '@media (max-width: 299.95px)': { flexBasis: '100%', maxWidth: '100%' } };
+
 const EMPTY_RESULTS = [];
 const DEFAULT_TOP_RESULTS = 20;
 const LEADERS_SCREEN_ID = 'leaders_in_leading_groups';
@@ -259,7 +262,7 @@ function StaticHomePage() {
           }))
           .filter((item) => item.latest_close != null && item._closes.length > 1)
           .map((item) => (
-            <Grid item xs={6} sm={4} lg={2.4} key={item.symbol}>
+            <Grid item xs={6} sm={4} lg={2.4} key={item.symbol} sx={ONE_COLUMN_WHEN_NARROW}>
               <KeyMarketCard item={item} closes={item._closes} currency={item.currency} />
             </Grid>
           ))}
