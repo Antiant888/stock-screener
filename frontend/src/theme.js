@@ -1,3 +1,4 @@
+import { useCallback, useEffect, useState } from 'react';
 import { alpha } from '@mui/material/styles';
 
 export const COLOR_MODE_STORAGE_KEY = 'stockscanner-color-mode';
@@ -20,6 +21,28 @@ export function saveColorMode(mode) {
   } catch {
     // Not persisting is fine; the toggle still works for this session.
   }
+}
+
+// Until the user toggles, the mode tracks the OS live (e.g. an automatic
+// sunset switch); a toggle saves the choice, which readColorMode then prefers.
+export function useColorMode() {
+  const [mode, setMode] = useState(readColorMode);
+
+  useEffect(() => {
+    const query = window.matchMedia?.('(prefers-color-scheme: light)');
+    if (!query?.addEventListener) return undefined;
+    const follow = () => setMode(readColorMode());
+    query.addEventListener('change', follow);
+    return () => query.removeEventListener('change', follow);
+  }, []);
+
+  const toggleColorMode = useCallback(() => {
+    const next = mode === 'light' ? 'dark' : 'light';
+    saveColorMode(next);
+    setMode(next);
+  }, [mode]);
+
+  return { mode, toggleColorMode };
 }
 
 // One accent (primary) for selection and focus. success/error are reserved for
