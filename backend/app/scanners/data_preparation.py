@@ -27,10 +27,7 @@ from ..services.security_master_service import (
     security_master_resolver,
 )
 from ..services.stock_event_context_service import StockEventContextService
-from ..services.yahoo_earnings_calendar import (
-    EVENT_CALENDAR_FUTURE_TOLERANCE_DAYS,
-    EVENT_CALENDAR_MAX_AGE_DAYS,
-)
+from ..services.yahoo_earnings_calendar import persisted_next_earnings_date
 from ..wiring.bootstrap import get_rate_limiter, get_yfinance_service
 from .base_screener import DataRequirements, StockData
 from .criteria.relative_strength import RelativeStrengthCalculator
@@ -98,7 +95,7 @@ class DataPreparationLayer:
             return None, False
 
         as_of_date = self._as_of_date(price_data)
-        persisted_date, persisted_available = self._persisted_event_calendar(
+        persisted_date, persisted_available = persisted_next_earnings_date(
             fundamentals,
             as_of_date=as_of_date,
         )
@@ -124,43 +121,6 @@ class DataPreparationLayer:
             logger.warning("Error fetching event calendar for %s: %s", symbol, exc)
             fetch_errors["event_calendar"] = str(exc)
             return None, False
-
-    @staticmethod
-    def _persisted_event_calendar(
-        fundamentals: dict | None,
-        *,
-        as_of_date: date | None,
-    ) -> tuple[date | None, bool]:
-        if not isinstance(fundamentals, dict) or as_of_date is None:
-            return None, False
-        raw_observed_at = fundamentals.get("event_calendar_as_of_date")
-        try:
-            observed_timestamp = pd.Timestamp(raw_observed_at)
-        except (TypeError, ValueError):
-            return None, False
-        if pd.isna(observed_timestamp):
-            return None, False
-        observed_at = observed_timestamp.date()
-        age_days = (as_of_date - observed_at).days
-        if (
-            age_days < -EVENT_CALENDAR_FUTURE_TOLERANCE_DAYS
-            or age_days > EVENT_CALENDAR_MAX_AGE_DAYS
-        ):
-            return None, False
-
-        raw_next_date = fundamentals.get("next_earnings_date")
-        if raw_next_date is None:
-            return None, True
-        try:
-            next_timestamp = pd.Timestamp(raw_next_date)
-        except (TypeError, ValueError):
-            return None, False
-        if pd.isna(next_timestamp):
-            return None, False
-        next_earnings_date = next_timestamp.date()
-        if next_earnings_date < as_of_date:
-            return None, False
-        return next_earnings_date, True
 
     def _resolve_identity(self, symbol: str):
         resolver = getattr(self, "_security_master", None) or SecurityMasterResolver()

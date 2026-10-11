@@ -13,7 +13,7 @@ survivor gate. It preserves the distinction between:
 Every producer that persists fundamentals (US snapshot hydration,
 non-US bulk fundamentals ingestion, per-symbol snapshots) shares this
 module so the observation semantics cannot drift, and the persisted
-freshness window consumed by ``DataPreparationLayer._persisted_event_calendar``
+freshness window consumed by ``persisted_next_earnings_date``
 is owned here as well.
 """
 
@@ -156,7 +156,7 @@ def is_event_calendar_observation_fresh(
 ) -> bool:
     """Return whether an observation timestamp satisfies the freshness gate.
 
-    The consumer side (``_persisted_event_calendar``) and the producer
+    The consumer side (``persisted_next_earnings_date``) and the producer
     completeness check share this rule so both sides age evidence out on
     the same schedule.
     """
@@ -165,6 +165,37 @@ def is_event_calendar_observation_fresh(
         reference_date,
         max_age_days=EVENT_CALENDAR_MAX_AGE_DAYS,
     )
+
+
+def persisted_next_earnings_date(
+    fundamentals: Any,
+    *,
+    as_of_date: date | None,
+) -> tuple[date | None, bool]:
+    """Read the stored calendar observation, without asking a provider.
+
+    Returns the next earnings date on or after ``as_of_date`` and whether the
+    observation counts as evidence. A fresh observation of "no upcoming date"
+    is ``(None, True)``; a missing, stale or unreadable one is ``(None, False)``.
+    """
+    if not isinstance(fundamentals, dict) or as_of_date is None:
+        return None, False
+    if not is_event_calendar_observation_fresh(
+        fundamentals.get("event_calendar_as_of_date"),
+        reference_date=as_of_date,
+    ):
+        return None, False
+
+    raw_next_date = fundamentals.get("next_earnings_date")
+    if raw_next_date is None:
+        return None, True
+    try:
+        next_timestamp = pd.Timestamp(raw_next_date)
+    except (TypeError, ValueError):
+        return None, False
+    if pd.isna(next_timestamp) or next_timestamp.date() < as_of_date:
+        return None, False
+    return next_timestamp.date(), True
 
 
 def is_event_calendar_observation_due_for_refresh(
@@ -216,5 +247,6 @@ __all__ = [
     "is_event_calendar_observation_due_for_refresh",
     "is_event_calendar_observation_fresh",
     "normalize_yahoo_earnings_dates",
+    "persisted_next_earnings_date",
     "stamp_event_calendar_observation",
 ]
