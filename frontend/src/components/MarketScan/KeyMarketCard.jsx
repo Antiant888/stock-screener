@@ -49,7 +49,7 @@ export default function KeyMarketCard({ item, closes, currency }) {
           variant="caption"
           sx={{ alignSelf: 'flex-end', mt: 0.25, color: toneOf(periodChange), fontWeight: 600 }}
         >
-          {`${closes.length}D ${periodChange >= 0 ? '▲' : '▼'} ${Math.abs(periodChange).toFixed(1)}%`}
+          {`${closes.length - 1}D ${periodChange >= 0 ? '▲' : '▼'} ${Math.abs(periodChange).toFixed(1)}%`}
         </Typography>
       )}
     </Paper>

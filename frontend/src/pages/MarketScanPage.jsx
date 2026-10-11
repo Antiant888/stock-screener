@@ -5,6 +5,7 @@ import { lazy, Suspense, useEffect, useMemo, useState } from 'react';
 import { Box, CircularProgress, Tabs, Tab, Paper } from '@mui/material';
 import DailyMarketSnapshotTab from '../components/MarketScan/DailyMarketSnapshotTab';
 import { useRuntime } from '../contexts/RuntimeContext';
+import { mobileNavOffset } from '../components/Layout/shellNav';
 
 const KeyMarketsTab = lazy(() => import('../components/MarketScan/KeyMarketsTab'));
 const CotPositioningTab = lazy(() => import('../features/cot/CotPositioningTab'));
@@ -59,7 +60,13 @@ function MarketScanPage() {
   }, [selectedTab, subTabs.length]);
 
   return (
-    <Box sx={{ display: 'flex', height: 'calc(100vh - 70px)' }}>
+    <Box
+      sx={{
+        display: 'flex',
+        // Phones also lose the bottom nav bar's height (Layout pads the page for it).
+        height: { xs: `calc(100dvh - 70px - ${mobileNavOffset(8)})`, md: 'calc(100vh - 70px)' },
+      }}
+    >
       {/* Left sidebar with vertical tabs */}
       <Paper
         elevation={1}

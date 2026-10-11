@@ -6,17 +6,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <meta name="theme-color" content="#12151c" />
     <title>Stock Scanner</title>
-    <script>
-      // Same lookup as readColorMode() in src/theme.js, run before the bundle so
-      // the first paint uses the right background.
-      try {
-        var mode = localStorage.getItem('stockscanner-color-mode');
-        if (mode !== 'light' && mode !== 'dark') {
-          mode = window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
-        }
-        document.documentElement.dataset.colorMode = mode;
-      } catch (e) {}
-    </script>
+    <script src="/color-mode.js"></script>
   </head>
   <body>
     <div id="root"></div>

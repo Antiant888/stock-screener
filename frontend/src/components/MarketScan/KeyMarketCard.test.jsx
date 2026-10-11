@@ -14,6 +14,6 @@ describe('KeyMarketCard', () => {
     );
 
     expect(screen.getByText('+0.49%')).toBeInTheDocument();
-    expect(screen.getByText('4D ▼ 5.0%')).toBeInTheDocument();
+    expect(screen.getByText('3D ▼ 5.0%')).toBeInTheDocument();
   });
 });

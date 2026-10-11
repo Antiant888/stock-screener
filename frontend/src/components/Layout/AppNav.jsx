@@ -169,7 +169,11 @@ export function MobileBottomNav({ items, extras }) {
         anchor="bottom"
         open={moreOpen}
         onClose={close}
-        PaperProps={{ sx: { borderRadius: '16px 16px 0 0', pb: 'env(safe-area-inset-bottom)' } }}
+        PaperProps={{
+          role: 'dialog',
+          'aria-label': 'More',
+          sx: { borderRadius: '16px 16px 0 0', pb: 'env(safe-area-inset-bottom)' },
+        }}
       >
         <Box sx={{ width: 38, height: 4, borderRadius: 2, bgcolor: 'text.disabled', mx: 'auto', mt: 1 }} />
         <List aria-label="More">

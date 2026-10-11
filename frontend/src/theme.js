@@ -135,7 +135,9 @@ export const getDesignTokens = (mode) => {
       MuiTableBody: {
         styleOverrides: {
           root: {
-            '& .MuiTableRow-root:nth-of-type(odd)': {
+            // :where() keeps the stripe at the lowest specificity, so a row's own
+            // background (selected or highlighted rows) still wins on odd rows.
+            '& :where(.MuiTableRow-root:nth-of-type(odd))': {
               backgroundColor: alpha(palette.text.primary, 0.025),
             },
             '& .MuiTableRow-root:hover': {

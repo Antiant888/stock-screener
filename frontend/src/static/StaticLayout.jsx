@@ -71,7 +71,10 @@ function StaticLayout({ children }) {
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', minHeight: '100vh' }}>
       <AppBar position="static">
-        <Toolbar variant="dense" sx={{ minHeight: 52, gap: { xs: 1, md: 1.5 } }}>
+        <Toolbar
+          variant="dense"
+          sx={{ minHeight: 52, gap: { xs: 1, md: 1.5 }, overflowX: 'auto', '& > *': { flexShrink: 0 } }}
+        >
           <BrandMark label={isMobile ? null : 'Stock Scanner Daily'} />
           {!isMobile && <Chip label="Read-only" size="small" variant="outlined" />}
           <FormControl size="small" sx={{ minWidth: { xs: 0, md: 140 } }}>
