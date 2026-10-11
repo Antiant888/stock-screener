@@ -83,7 +83,7 @@ function AssistantMessageBubble({ message }) {
             alignItems: 'center',
             justifyContent: 'center',
             backgroundColor: isUser ? 'primary.main' : 'secondary.main',
-            color: 'white',
+            color: isUser ? 'primary.contrastText' : 'secondary.contrastText',
           }}
         >
           {isUser ? <PersonIcon fontSize="small" /> : <SmartToyIcon fontSize="small" />}
@@ -105,7 +105,7 @@ function AssistantMessageBubble({ message }) {
               : theme.palette.mode === 'dark'
                 ? 'grey.800'
                 : 'grey.100',
-          color: isUser || message.isError ? 'white' : 'text.primary',
+          color: isUser ? 'primary.contrastText' : message.isError ? 'white' : 'text.primary',
           maxWidth: '100%',
           wordBreak: 'break-word',
         }}

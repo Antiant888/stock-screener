@@ -1,7 +1,7 @@
 import { MemoryRouter } from 'react-router-dom';
-import { screen } from '@testing-library/react';
+import { fireEvent, screen, within } from '@testing-library/react';
 import { act } from 'react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import Layout from './Layout';
 import { renderWithProviders } from '../../test/renderWithProviders';
@@ -183,7 +183,7 @@ describe('Layout', () => {
         <Layout><div>content</div></Layout>
       </MemoryRouter>,
     );
-    expect(screen.getByRole('link', { name: 'Options' })).toHaveStyle({ fontWeight: '600' });
+    expect(screen.getByRole('link', { name: 'Options' })).toHaveAttribute('aria-current', 'page');
 
     runtimeState.primaryMarket = 'HK';
     rerender(
@@ -192,5 +192,62 @@ describe('Layout', () => {
       </MemoryRouter>,
     );
     expect(screen.queryByRole('link', { name: 'Options' })).not.toBeInTheDocument();
+  });
+
+  describe('on a phone-width screen', () => {
+    beforeEach(() => {
+      // useMediaQuery(breakpoints.down('md')) matches.
+      window.matchMedia = vi.fn().mockReturnValue({
+        matches: true,
+        addListener: vi.fn(),
+        removeListener: vi.fn(),
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+      });
+      useRuntimeActivityMock.mockReturnValue({
+        dataUpdatedAt: 1,
+        data: { bootstrap: { state: 'ready' }, summary: { active_market_count: 0 }, markets: [] },
+      });
+    });
+
+    afterEach(() => {
+      delete window.matchMedia;
+    });
+
+    const renderAt = (path) => renderWithProviders(
+      <MemoryRouter initialEntries={[path]}>
+        <Layout><div>content</div></Layout>
+      </MemoryRouter>,
+    );
+
+    it('moves navigation into a bottom bar with a More sheet', () => {
+      renderAt('/scan');
+
+      const nav = screen.getByRole('navigation', { name: 'Main' });
+      expect(within(nav).getAllByRole('link').map((link) => link.textContent))
+        .toEqual(['Daily', 'Scan', 'Breadth', 'Groups']);
+      expect(within(nav).getByRole('link', { name: 'Scan' })).toHaveAttribute('aria-current', 'page');
+      expect(screen.queryByRole('link', { name: 'Backtest' })).not.toBeInTheDocument();
+
+      fireEvent.click(within(nav).getByRole('button', { name: 'More' }));
+      const sheet = screen.getByRole('list', { name: 'More' });
+      expect(within(sheet).getByRole('link', { name: 'Backtest' })).toBeInTheDocument();
+      expect(within(sheet).getByRole('button', { name: 'Default' })).toBeInTheDocument();
+      expect(within(sheet).getByRole('button', { name: /mode$/ })).toBeInTheDocument();
+    });
+
+    it('highlights More when the current page lives in the sheet', () => {
+      renderAt('/validation');
+
+      const nav = screen.getByRole('navigation', { name: 'Main' });
+      expect(within(nav).getByRole('button', { name: 'More' })).toHaveClass('Mui-selected');
+    });
+
+    it('collapses the runtime status to its badge but keeps the full label', () => {
+      renderAt('/');
+
+      expect(screen.queryByText('Markets ready')).not.toBeInTheDocument();
+      expect(screen.getByRole('link', { name: 'Markets ready: View operations' })).toBeInTheDocument();
+    });
   });
 });

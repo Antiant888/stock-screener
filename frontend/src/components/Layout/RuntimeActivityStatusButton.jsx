@@ -84,7 +84,7 @@ function buildSummary(activity, { isPending = false, isError = false } = {}) {
   };
 }
 
-export default function RuntimeActivityStatusButton() {
+export default function RuntimeActivityStatusButton({ compact = false }) {
   const [activityEnabled, setActivityEnabled] = useState(false);
   useEffect(() => {
     const timerId = window.setTimeout(() => {
@@ -105,21 +105,24 @@ export default function RuntimeActivityStatusButton() {
       color="inherit"
       component={RouterLink}
       to="/operations"
+      // Compact mode shows only the badge, so the title and detail move to the label.
+      aria-label={compact ? `${summary.title}: ${summary.detail}` : undefined}
+      title={compact ? `${summary.title} · ${summary.detail}` : undefined}
       sx={{
         minWidth: 0,
-        px: 1,
+        px: compact ? 0.75 : 1,
         py: 0.25,
-        ml: 2,
         borderRadius: 1.5,
         textTransform: 'none',
         display: 'flex',
         alignItems: 'center',
         gap: 1,
         maxWidth: 280,
-        border: '1px solid rgba(255,255,255,0.16)',
-        backgroundColor: 'rgba(255,255,255,0.08)',
+        border: 1,
+        borderColor: 'divider',
+        backgroundColor: 'action.hover',
         '&:hover': {
-          backgroundColor: 'rgba(255,255,255,0.14)',
+          backgroundColor: 'action.selected',
         },
       }}
     >
@@ -129,42 +132,44 @@ export default function RuntimeActivityStatusButton() {
         color={summary.badgeColor}
         sx={{
           height: 18,
-          fontSize: '10px',
+          fontSize: '11px',
           fontWeight: 700,
           '& .MuiChip-label': {
             px: 0.75,
           },
         }}
       />
-      <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', overflow: 'hidden' }}>
-        <Typography
-          variant="caption"
-          sx={{
-            color: 'inherit',
-            fontWeight: 700,
-            lineHeight: 1.2,
-            whiteSpace: 'nowrap',
-            textOverflow: 'ellipsis',
-            overflow: 'hidden',
-            maxWidth: 220,
-          }}
-        >
-          {summary.title}
-        </Typography>
-        <Typography
-          variant="caption"
-          sx={{
-            color: 'rgba(255,255,255,0.78)',
-            lineHeight: 1.2,
-            whiteSpace: 'nowrap',
-            textOverflow: 'ellipsis',
-            overflow: 'hidden',
-            maxWidth: 220,
-          }}
-        >
-          {summary.detail}
-        </Typography>
-      </Box>
+      {!compact && (
+        <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', overflow: 'hidden' }}>
+          <Typography
+            variant="caption"
+            sx={{
+              color: 'inherit',
+              fontWeight: 700,
+              lineHeight: 1.2,
+              whiteSpace: 'nowrap',
+              textOverflow: 'ellipsis',
+              overflow: 'hidden',
+              maxWidth: 220,
+            }}
+          >
+            {summary.title}
+          </Typography>
+          <Typography
+            variant="caption"
+            sx={{
+              color: 'text.secondary',
+              lineHeight: 1.2,
+              whiteSpace: 'nowrap',
+              textOverflow: 'ellipsis',
+              overflow: 'hidden',
+              maxWidth: 220,
+            }}
+          >
+            {summary.detail}
+          </Typography>
+        </Box>
+      )}
     </Button>
   );
 }

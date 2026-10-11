@@ -20,16 +20,16 @@ function MarketSelector() {
       inputProps={{ 'aria-label': 'Market selector' }}
       renderValue={(code) => `${marketFlag(code)} ${code}`}
       sx={{
-        ml: 1.5,
         px: 1,
         py: 0.25,
         fontSize: '13px',
         fontWeight: 600,
-        color: 'inherit',
-        backgroundColor: 'rgba(255,255,255,0.15)',
-        borderRadius: 1,
-        '& .MuiSelect-icon': { color: 'rgba(255,255,255,0.7)' },
-        '&:hover': { backgroundColor: 'rgba(255,255,255,0.25)' },
+        backgroundColor: 'action.hover',
+        border: 1,
+        borderColor: 'divider',
+        borderRadius: 2,
+        '& .MuiSelect-icon': { color: 'text.secondary' },
+        '&:hover': { backgroundColor: 'action.selected' },
       }}
     >
       {selectableMarkets.map((code) => (

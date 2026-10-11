@@ -11,6 +11,11 @@ import CloseIcon from '@mui/icons-material/Close';
 import RemoveIcon from '@mui/icons-material/Remove';
 import OpenInFullIcon from '@mui/icons-material/OpenInFull';
 import { usePipeline } from '../contexts/usePipeline';
+import { mobileNavOffset } from './Layout/shellNav';
+
+// Sit above the assistant button (same corner; 48px on phones, 56px on desktop).
+const STACK_ABOVE_FAB_MOBILE = 16 + 48 + 12;
+const STACK_ABOVE_FAB_DESKTOP = 24 + 56 + 16;
 
 const PipelineProgressCard = () => {
   const { pipelineStatus, isCardVisible, isMinimized, closePipelineCard, toggleMinimize } = usePipeline();
@@ -28,6 +33,7 @@ const PipelineProgressCard = () => {
   // Queued before cutover to economic authority, then skipped by the worker (#472).
   const isSkipped = pipelineStatus?.status === 'skipped';
   const isDone = isComplete || isFailed || isSkipped;
+  const tone = isComplete ? 'success' : isFailed ? 'error' : isSkipped ? 'warning' : 'primary';
 
   if (!isCardVisible) return null;
 
@@ -38,14 +44,14 @@ const PipelineProgressCard = () => {
         elevation={8}
         sx={{
           position: 'fixed',
-          bottom: 24,
-          right: 24,
+          bottom: { xs: mobileNavOffset(STACK_ABOVE_FAB_MOBILE), md: STACK_ABOVE_FAB_DESKTOP },
+          right: { xs: 16, md: 24 },
           width: 180,
-          zIndex: 1300,
+          zIndex: (theme) => theme.zIndex.drawer - 1,
           borderRadius: 3,
           overflow: 'hidden',
-          bgcolor: isComplete ? 'success.main' : isFailed ? 'error.main' : isSkipped ? 'warning.main' : 'primary.main',
-          color: 'white',
+          bgcolor: `${tone}.main`,
+          color: `${tone}.contrastText`,
           cursor: 'pointer',
           transition: 'transform 0.2s, box-shadow 0.2s',
           '&:hover': {
@@ -65,12 +71,12 @@ const PipelineProgressCard = () => {
           }}
         >
           <Box display="flex" alignItems="center" gap={1}>
-            {!isDone && <CircularProgress size={14} sx={{ color: 'white' }} />}
+            {!isDone && <CircularProgress size={14} sx={{ color: 'inherit' }} />}
             <Typography variant="caption" fontWeight="bold">
               {isComplete ? 'Complete' : isFailed ? 'Failed' : isSkipped ? 'Skipped' : `Running ${pipelineStatus?.percent?.toFixed(0) || 0}%`}
             </Typography>
           </Box>
-          <IconButton size="small" sx={{ color: 'white', p: 0.25 }}>
+          <IconButton size="small" sx={{ color: 'inherit', p: 0.25 }}>
             <OpenInFullIcon sx={{ fontSize: 14 }} />
           </IconButton>
         </Box>
@@ -84,10 +90,10 @@ const PipelineProgressCard = () => {
       elevation={8}
       sx={{
         position: 'fixed',
-        bottom: 24,
-        right: 24,
-        width: 380,
-        zIndex: 1300,
+        bottom: { xs: mobileNavOffset(STACK_ABOVE_FAB_MOBILE), md: STACK_ABOVE_FAB_DESKTOP },
+        right: { xs: 16, md: 24 },
+        width: { xs: 'calc(100% - 32px)', sm: 380 },
+        zIndex: (theme) => theme.zIndex.drawer - 1,
         borderRadius: 2,
         overflow: 'hidden',
       }}
@@ -97,25 +103,25 @@ const PipelineProgressCard = () => {
         sx={{
           px: 2,
           py: 1.5,
-          bgcolor: isComplete ? 'success.main' : isFailed ? 'error.main' : isSkipped ? 'warning.main' : 'primary.main',
-          color: 'white',
+          bgcolor: `${tone}.main`,
+          color: `${tone}.contrastText`,
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'space-between',
         }}
       >
         <Box display="flex" alignItems="center">
-          {!isDone && <CircularProgress size={16} sx={{ color: 'white', mr: 1 }} />}
+          {!isDone && <CircularProgress size={16} sx={{ color: 'inherit', mr: 1 }} />}
           <Typography variant="subtitle2" fontWeight="bold">
             {isComplete ? 'Pipeline Complete' : isFailed ? 'Pipeline Failed' : isSkipped ? 'Pipeline Skipped' : 'Running Pipeline...'}
           </Typography>
         </Box>
         <Box display="flex" alignItems="center" gap={0.5}>
-          <IconButton size="small" onClick={toggleMinimize} sx={{ color: 'white', p: 0.5 }}>
+          <IconButton size="small" onClick={toggleMinimize} sx={{ color: 'inherit', p: 0.5 }}>
             <RemoveIcon fontSize="small" />
           </IconButton>
           {isDone && (
-            <IconButton size="small" onClick={closePipelineCard} sx={{ color: 'white', p: 0.5 }}>
+            <IconButton size="small" onClick={closePipelineCard} sx={{ color: 'inherit', p: 0.5 }}>
               <CloseIcon fontSize="small" />
             </IconButton>
           )}
@@ -146,8 +152,8 @@ const PipelineProgressCard = () => {
                   justifyContent: 'center',
                   fontSize: '10px',
                   fontWeight: 'bold',
-                  bgcolor: index < getActiveStep() ? 'success.main' : index === getActiveStep() && !isDone ? 'primary.main' : 'grey.300',
-                  color: index <= getActiveStep() ? 'white' : 'text.secondary',
+                  bgcolor: index < getActiveStep() ? 'success.main' : index === getActiveStep() && !isDone ? 'primary.main' : 'action.selected',
+                  color: index < getActiveStep() ? 'success.contrastText' : index === getActiveStep() && !isDone ? 'primary.contrastText' : 'text.secondary',
                 }}
               >
                 {index < getActiveStep() ? '✓' : index + 1}
