@@ -17,7 +17,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 
 import CandlestickChart from '../components/Charts/CandlestickChart';
 import StockMetricsSidebar from '../components/Scan/StockMetricsSidebar';
-import { getGroupRankColor } from '../utils/colorUtils';
+import { getGroupRankColor, onPalette } from '../utils/colorUtils';
 import { useChartNavigation } from '../hooks/useChartNavigation';
 import { isCurrentChartIndex, staticChartPayloadQuery } from './chartClient';
 import { useStaticGeneration } from './dataClient';
@@ -194,13 +194,13 @@ function StaticChartViewerModal({
                       py: 0.5,
                       textAlign: 'center',
                       minWidth: 36,
-                      bgcolor: getGroupRankColor(groupRank),
+                      ...onPalette(getGroupRankColor(groupRank)),
                     }}
                   >
                     <Typography
                       variant="body2"
                       noWrap
-                      sx={{ fontSize: '0.8rem', color: 'white', fontWeight: 'bold' }}
+                      sx={{ fontSize: '0.8rem', color: 'inherit', fontWeight: 'bold' }}
                     >
                       {groupRank ?? '-'}
                     </Typography>
@@ -219,17 +219,17 @@ function StaticChartViewerModal({
                       px: 1.5,
                       py: 0.5,
                       textAlign: 'center',
-                      bgcolor: Number(adrValue) >= 4
+                      ...onPalette(Number(adrValue) >= 4
                         ? 'success.main'
                         : Number(adrValue) >= 2
                           ? 'warning.main'
-                          : 'error.main',
+                          : 'error.main'),
                     }}
                   >
                     <Typography
                       variant="body2"
                       noWrap
-                      sx={{ fontSize: '0.8rem', color: 'white', fontWeight: 'bold' }}
+                      sx={{ fontSize: '0.8rem', color: 'inherit', fontWeight: 'bold' }}
                     >
                       {Number(adrValue).toFixed(1)}%
                     </Typography>
@@ -249,17 +249,17 @@ function StaticChartViewerModal({
                       py: 0.5,
                       textAlign: 'center',
                       minWidth: 36,
-                      bgcolor: epsRating >= 80
+                      ...onPalette(epsRating >= 80
                         ? 'success.main'
                         : epsRating >= 50
                           ? 'warning.main'
-                          : 'error.main',
+                          : 'error.main'),
                     }}
                   >
                     <Typography
                       variant="body2"
                       noWrap
-                      sx={{ fontSize: '0.8rem', color: 'white', fontWeight: 'bold' }}
+                      sx={{ fontSize: '0.8rem', color: 'inherit', fontWeight: 'bold' }}
                     >
                       {epsRating}
                     </Typography>

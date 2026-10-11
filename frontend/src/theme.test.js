@@ -63,4 +63,22 @@ describe('useColorMode', () => {
     act(() => setOsLight(true));
     expect(result.current.mode).toBe('dark');
   });
+
+  it('keeps a toggle for the session when storage is blocked', () => {
+    const setItem = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+      throw new Error('blocked');
+    });
+    try {
+      const setOsLight = switchableOs(false);
+      const { result } = renderHook(() => useColorMode());
+
+      act(() => result.current.toggleColorMode());
+      expect(result.current.mode).toBe('light');
+
+      act(() => setOsLight(false));
+      expect(result.current.mode).toBe('light');
+    } finally {
+      setItem.mockRestore();
+    }
+  });
 });

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { alpha } from '@mui/material/styles';
 
 export const COLOR_MODE_STORAGE_KEY = 'stockscanner-color-mode';
@@ -27,17 +27,22 @@ export function saveColorMode(mode) {
 // sunset switch); a toggle saves the choice, which readColorMode then prefers.
 export function useColorMode() {
   const [mode, setMode] = useState(readColorMode);
+  // In memory too, so a toggle sticks for the session even when storage is blocked.
+  const userChose = useRef(false);
 
   useEffect(() => {
     const query = window.matchMedia?.('(prefers-color-scheme: light)');
     if (!query?.addEventListener) return undefined;
-    const follow = () => setMode(readColorMode());
+    const follow = () => {
+      if (!userChose.current) setMode(readColorMode());
+    };
     query.addEventListener('change', follow);
     return () => query.removeEventListener('change', follow);
   }, []);
 
   const toggleColorMode = useCallback(() => {
     const next = mode === 'light' ? 'dark' : 'light';
+    userChose.current = true;
     saveColorMode(next);
     setMode(next);
   }, [mode]);
