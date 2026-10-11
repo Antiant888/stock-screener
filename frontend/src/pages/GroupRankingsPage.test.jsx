@@ -332,6 +332,10 @@ describe('GroupRankingsPage', () => {
     expect(tint(highCells[3])).toMatch(/^rgba\(46, 189, 133, /);
     expect(tint(boundaryCells[2])).toMatch(/^rgba\(246, 70, 93, /);
     expect(tint(boundaryCells[3])).toMatch(/^rgba\(246, 70, 93, /);
+    const opacity = (cell) => Number(tint(cell).match(/, ([\d.]+)\)$/)[1]);
+    expect(opacity(highCells[2])).toBeGreaterThan(opacity(highCells[3]));
+    expect(opacity(boundaryCells[2])).toBeGreaterThan(opacity(boundaryCells[3]));
+    expect(tint(highCells[5])).toBe('rgba(0, 0, 0, 0)');
     expect(highCells[2]).not.toHaveStyle({ color: '#fff' });
     expect(boundaryCells[10]).not.toHaveAttribute('data-rs-tone');
   });

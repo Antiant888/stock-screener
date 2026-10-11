@@ -16,8 +16,7 @@ import {
   derivePctRsAbove80,
   formatGroupRs,
 } from './groupRankingFields';
-import { groupRsTone } from './groupRsVisualEncoding';
-import { heatSx } from '../../utils/scoreHeat';
+import { groupRsCellSx, groupRsTone } from './groupRsVisualEncoding';
 
 const RankChangeCell = ({ value }) => {
   if (value === null || value === undefined) {
@@ -140,7 +139,7 @@ const LiveRankingCell = ({ row, column, showHistoricalRanks }) => {
       data-rs-tone={isRsRating ? groupRsTone(value) : undefined}
       sx={{
         fontFamily: 'monospace',
-        ...(isRsRating && heatSx(value)),
+        ...(isRsRating && groupRsCellSx(value)),
       }}
     >
       {formatGroupRs(value)}

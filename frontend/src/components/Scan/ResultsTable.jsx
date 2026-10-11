@@ -184,7 +184,7 @@ const stopPropagation = (event) => event.stopPropagation();
 // Screener scores: 0 means "could not score" (insufficient data, error, no
 // breakthrough; see VolumeBreakthroughScanner._insufficient_data_result), not a
 // weak score, so it stays untinted.
-const scoreHeatClass = (score) => heatClass(score === 0 ? null : score);
+const scoreHeatClass = (score) => heatClass(Number(score?.toFixed(1)) === 0 ? null : score);
 const stageFill = (theme, stage) => {
   const fill = resolvePaletteColor(theme.palette, getStageColor(stage));
   return { backgroundColor: fill, color: theme.palette.getContrastText(fill) };

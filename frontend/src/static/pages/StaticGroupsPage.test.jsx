@@ -187,10 +187,14 @@ describe('StaticGroupsPage', () => {
       'neutral',
       'down-strong',
     ]);
-    // Translucent success/error tints from MUI's default theme (success #2e7d32, error #d32f2f).
+    // Translucent success/error tints from MUI's default theme (success #2e7d32,
+    // error #d32f2f): strong deeper than soft, neutral untinted.
     const tint = (cell) => getComputedStyle(cell).backgroundColor;
+    const opacity = (cell) => Number(tint(cell).match(/, ([\d.]+)\)$/)[1]);
     expect(tint(leaderCells[2])).toMatch(/^rgba\(46, 125, 50, /);
     expect(tint(leaderCells[4])).toMatch(/^rgba\(46, 125, 50, /);
+    expect(opacity(leaderCells[2])).toBeGreaterThan(opacity(leaderCells[4]));
+    expect(tint(leaderCells[5])).toBe('rgba(0, 0, 0, 0)');
     expect(tint(laggardCells[2])).toMatch(/^rgba\(211, 47, 47, /);
   });
 

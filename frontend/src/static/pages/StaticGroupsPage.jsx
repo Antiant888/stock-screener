@@ -38,8 +38,7 @@ import {
   formatGroupRs,
 } from '../../features/groups/groupRankingFields';
 import { sortGroupRankings } from '../../features/groups/groupRankingSort';
-import { groupRsTone } from '../../features/groups/groupRsVisualEncoding';
-import { heatSx } from '../../utils/scoreHeat';
+import { groupRsCellSx, groupRsTone } from '../../features/groups/groupRsVisualEncoding';
 
 const GroupMatrixPanel = lazy(() => import('../../features/groups/matrix/GroupMatrixPanel'));
 
@@ -79,7 +78,7 @@ function StaticRankingCell({ row, column }) {
       <TableCell
         align={align}
         data-rs-tone={groupRsTone(value)}
-        sx={{ fontFamily: 'monospace', ...heatSx(value) }}
+        sx={{ fontFamily: 'monospace', ...groupRsCellSx(value) }}
       >
         {formatGroupRs(value)}
       </TableCell>
