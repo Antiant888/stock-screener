@@ -144,12 +144,21 @@ def _get_stock_fundamentals_payload(
 
 
 # The stock page reads only stored data. Mid-session the cached bars may end
-# in a partial bar for today, which the chart, technicals and price share;
-# nothing here fetches, so a close during the request changes nothing.
+# in a partial bar for today, which the chart, technicals and price share.
+# Bars are judged against the market's last completed session, so a partial
+# bar still unrefreshed after the close is flagged stale; nothing here fetches.
 
 
-def _cached_price_frame(symbol: str) -> pd.DataFrame | None:
-    return get_price_cache().get_cached_only(symbol.upper(), period="2y")
+def _cached_price_frame(
+    symbol: str, market: str | None
+) -> tuple[pd.DataFrame | None, bool]:
+    """Cached 2-year bars, and whether they cover the market's last completed session."""
+    cache = get_price_cache()
+    fresh = cache.get_cached_only_fresh(symbol.upper(), period="2y", market=market)
+    if fresh is not None:
+        return fresh, True
+    # Stale bars still draw the chart; the caller flags them.
+    return cache.get_cached_only(symbol.upper(), period="2y"), False
 
 
 def _last_close(price_frame: pd.DataFrame | None) -> float | None:
@@ -749,10 +758,9 @@ def get_stock_decision_dashboard(
 
     # Cached data only: live Yahoo lookups here cost seconds per open behind
     # the shared 1 req/s limiter.
-    fundamentals = _get_stock_fundamentals_payload(
-        symbol, cache_only=True, market=resolve_symbol_market(db, symbol)
-    )
-    price_frame = _cached_price_frame(symbol)
+    market = resolve_symbol_market(db, symbol)
+    fundamentals = _get_stock_fundamentals_payload(symbol, cache_only=True, market=market)
+    price_frame, prices_fresh = _cached_price_frame(symbol, market)
     info = _cached_stock_info(
         db, symbol, fundamentals=fundamentals, price_frame=price_frame
     )
@@ -776,6 +784,9 @@ def get_stock_decision_dashboard(
     price_history = dataframe_to_points(price_frame, PERIOD_DAYS["6mo"])
     if not price_history:
         degraded_reasons.append("missing_price_history")
+    if price_frame is not None and not prices_fresh:
+        # The price, technicals and chart all end at an old bar.
+        degraded_reasons.append("stale_price_history")
 
     with uow:
         latest_run = _get_latest_feature_run_for_symbol(uow, db, symbol)

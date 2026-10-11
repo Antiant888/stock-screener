@@ -557,8 +557,15 @@ class _NoYahoo:
 
 
 class _CachedPrices:
-    def __init__(self, frame):
+    def __init__(self, frame, *, fresh=True, market="US"):
         self._frame = frame
+        self._fresh = fresh
+        self._market = market
+
+    def get_cached_only_fresh(self, symbol, period="2y", *, required_as_of_date=None, market=None):
+        # Freshness follows the symbol's own market calendar.
+        assert market == self._market, market
+        return self._frame if self._fresh else None
 
     def get_cached_only(self, symbol, period="2y"):
         return self._frame
@@ -603,7 +610,7 @@ def _stub_cached_reads(monkeypatch, *, info, fundamentals=None, closes=()):
     monkeypatch.setattr(
         stocks_module,
         "_cached_price_frame",
-        lambda symbol: _cached_frame(list(closes)) if closes else None,
+        lambda symbol, market: (_cached_frame(list(closes)), True) if closes else (None, False),
     )
 
 
@@ -649,8 +656,39 @@ async def test_decision_dashboard_reads_only_cached_data(client, session, monkey
     assert payload["technicals"]["ma_50"] == 235.5
     assert payload["fundamentals"]["market_cap"] == 2_300_000_000_000
     assert payload["chart"]["price_history"][-1]["close"] == 260.0
-    for reason in ("missing_stock_info", "missing_fundamentals", "missing_technicals", "missing_price_history"):
+    for reason in (
+        "missing_stock_info",
+        "missing_fundamentals",
+        "missing_technicals",
+        "missing_price_history",
+        "stale_price_history",
+    ):
         assert reason not in payload["degraded_reasons"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fresh", [True, False])
+async def test_decision_dashboard_flags_stale_cached_prices(client, session, monkeypatch, fresh):
+    """Old bars still draw the chart, but their close must not pass as current."""
+    app.dependency_overrides[get_db] = _override_db(session)
+    app.dependency_overrides[get_uow] = lambda: _FakeUow(None)
+    app.dependency_overrides[stocks_module._get_stock_event_context_service] = lambda: _FakeEventContextService()
+    session.add(StockUniverse(symbol="0700.HK", name="Tencent", market="HK", is_active=True, status="active"))
+    session.commit()
+    monkeypatch.setattr(
+        stocks_module,
+        "get_price_cache",
+        lambda: _CachedPrices(_cached_frame([10.0, 11.0]), fresh=fresh, market="HK"),
+    )
+    monkeypatch.setattr(stocks_module, "_get_stock_fundamentals_payload", lambda symbol, **_kw: None)
+
+    response = await client.get("/api/v1/stocks/0700.HK/decision-dashboard")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["info"]["current_price"] == 11.0
+    assert payload["chart"]["price_history"][-1]["close"] == 11.0
+    assert ("stale_price_history" in payload["degraded_reasons"]) is not fresh
 
 
 @pytest.mark.asyncio
