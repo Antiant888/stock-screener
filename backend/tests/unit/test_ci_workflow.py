@@ -32,6 +32,28 @@ def test_backend_ci_uses_runtime_requirements_without_optional_theme_ml_stack():
         )
 
 
+def test_static_site_workflows_install_backend_requirements_with_uv():
+    # pip took ~2 minutes per static job; uv with a cache takes seconds (#504).
+    for name in ("static-site.yml", "static-site-publish.yml"):
+        workflow = yaml.safe_load((REPO_ROOT / ".github" / "workflows" / name).read_text())
+        installing = {
+            job_name: job["steps"]
+            for job_name, job in workflow["jobs"].items()
+            if any("backend/requirements" in str(step.get("run", "")) for step in job.get("steps", []))
+        }
+        assert installing, name
+        for job_name, steps in installing.items():
+            runs = [str(step.get("run", "")) for step in steps]
+            install = "uv pip install --system -r backend/requirements.txt"
+            assert install in runs, (name, job_name)
+            assert not any("pip install" in run and not run.startswith("uv ") for run in runs), (name, job_name)
+            uses = [str(step.get("uses", "")) for step in steps]
+            setup = next((i for i, use in enumerate(uses) if use.startswith("astral-sh/setup-uv@")), None)
+            assert setup is not None and setup < runs.index(install), (name, job_name)
+            glob = steps[setup]["with"]["cache-dependency-glob"]
+            assert "backend/requirements.txt" in glob and "backend/requirements-server.txt" in glob
+
+
 def test_backend_unit_shards_use_cache_free_equal_weight_split_and_exclude_opt_in_markers():
     workflow = yaml.safe_load(
         (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text()
