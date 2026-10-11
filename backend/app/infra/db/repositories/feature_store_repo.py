@@ -454,13 +454,11 @@ class SqlFeatureStoreRepository(FeatureStoreRepository):
         if run is None:
             raise EntityNotFoundError("FeatureRun", run_id)
 
-        # Table-level pages skip the setup explain/candidate blobs in SQL
-        # rather than loading and discarding them per row.
-        q = (
-            _feature_results_query(self._session, run_id)
-            if include_setup_payload
-            else _feature_results_without_setup_payload_query(self._session, run_id)
-        )
+        # Select the plain column even when the setup payload is dropped: the
+        # Sort carries its TOAST pointer and only the page's rows are read,
+        # whereas stripping in SQL runs below the Sort for every row of the run
+        # (13 ms vs. >10 s on a 10k-row run). The mapper drops the payload.
+        q = _feature_results_query(self._session, run_id)
         q = apply_filter_expression(q, spec.expression)
         rows, total = apply_sort_and_paginate(q, spec.sort, spec.page)
 
