@@ -9,6 +9,7 @@ const acknowledgeAlert = vi.fn();
 const fetchOperationsJobs = vi.fn();
 const cancelOperationsJob = vi.fn();
 const useRuntimeActivity = vi.fn();
+const getBootstrapStatus = vi.fn();
 const runtimeState = vi.hoisted(() => ({ features: { themes: true } }));
 
 vi.mock('../contexts/RuntimeContext', () => ({
@@ -23,6 +24,10 @@ vi.mock('../api/telemetry', () => ({
 vi.mock('../api/operations', () => ({
   fetchOperationsJobs: (...args) => fetchOperationsJobs(...args),
   cancelOperationsJob: (...args) => cancelOperationsJob(...args),
+}));
+
+vi.mock('../api/appRuntime', () => ({
+  getBootstrapStatus: (...args) => getBootstrapStatus(...args),
 }));
 
 vi.mock('../hooks/useRuntimeActivity', () => ({
@@ -124,6 +129,10 @@ describe('OperationsPage', () => {
     vi.clearAllMocks();
     fetchAlerts.mockResolvedValue({ summaries: [SUMMARY_US], alerts: [ALERT_US] });
     fetchOperationsJobs.mockResolvedValue(OPERATIONS_PAYLOAD);
+    getBootstrapStatus.mockResolvedValue({
+      market_stages: { US: { breadth: 'ready', exposure: 'ready', groups: 'ready' } },
+      features: { cot: 'ready', options: 'disabled', social: 'disabled' },
+    });
     cancelOperationsJob.mockResolvedValue({
       status: 'accepted',
       cancel_strategy: 'scan_cancel',
@@ -346,5 +355,30 @@ describe('OperationsPage', () => {
     renderWithProviders(<OperationsPage />);
     expect(await screen.findByText('Batch 3/5 · refreshing prices')).toBeInTheDocument();
     expect(screen.queryByText('Company exposure research (shadow)')).not.toBeInTheDocument();
+  });
+
+  it('lists derived stages and features that have not published (#393)', async () => {
+    getBootstrapStatus.mockResolvedValue({
+      market_stages: {
+        US: { breadth: 'missing', exposure: 'ready', groups: 'missing' },
+        HK: { breadth: 'ready', exposure: 'ready', groups: 'ready' },
+      },
+      features: { cot: 'missing', options: 'disabled', social: 'missing' },
+    });
+    renderWithProviders(<OperationsPage />);
+
+    expect(await screen.findByText('Not yet published')).toBeInTheDocument();
+    expect(screen.getByText('US: breadth, groups')).toBeInTheDocument();
+    expect(screen.getByText('Features: cot, social')).toBeInTheDocument();
+    const alert = screen.getByText('Not yet published').closest('[role="alert"]');
+    expect(alert).not.toHaveTextContent('HK');
+    expect(alert).not.toHaveTextContent('options');
+  });
+
+  it('shows no publication warning when everything enabled has published', async () => {
+    renderWithProviders(<OperationsPage />);
+    expect(await screen.findByText('Batch 3/5 · refreshing prices')).toBeInTheDocument();
+    await waitFor(() => expect(getBootstrapStatus).toHaveBeenCalled());
+    expect(screen.queryByText('Not yet published')).not.toBeInTheDocument();
   });
 });

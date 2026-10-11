@@ -31,6 +31,7 @@ import {
 } from '@mui/material';
 import { fetchAlerts, acknowledgeAlert } from '../api/telemetry';
 import { cancelOperationsJob, fetchOperationsJobs } from '../api/operations';
+import { getBootstrapStatus } from '../api/appRuntime';
 import { useRuntimeActivity } from '../hooks/useRuntimeActivity';
 import { useRuntime } from '../contexts/RuntimeContext';
 import SocialSignalHealthPanel from '../features/socialSignals/SocialSignalHealthPanel';
@@ -113,6 +114,28 @@ function resolveDeterminatePercent(percent, current, total) {
     return Math.max(0, Math.min(100, (Number(current) / Number(total)) * 100));
   }
   return null;
+}
+
+const missingKeys = (statuses) => Object.keys(statuses ?? {}).filter((key) => statuses[key] === 'missing');
+
+// Derived stages and optional features never gate readiness, so surface the
+// ones that have never published (queued and failed both read as missing).
+function UnpublishedDataAlert({ status }) {
+  const lines = Object.entries(status?.market_stages ?? {})
+    .map(([market, stages]) => [market, missingKeys(stages)])
+    .filter(([, missing]) => missing.length > 0)
+    .map(([market, missing]) => `${market}: ${missing.join(', ')}`);
+  const features = missingKeys(status?.features);
+  if (features.length > 0) lines.push(`Features: ${features.join(', ')}`);
+  if (lines.length === 0) return null;
+  return (
+    <Alert severity="warning" sx={{ mb: 1.5 }}>
+      <Typography variant="body2" fontWeight={700}>Not yet published</Typography>
+      {lines.map((line) => (
+        <Typography key={line} variant="body2">{line}</Typography>
+      ))}
+    </Alert>
+  );
 }
 
 function MarketSummaryCard({ summary }) {
@@ -506,6 +529,12 @@ export default function OperationsPage() {
     refetchInterval: POLL_MS,
   });
 
+  const bootstrapStatusQuery = useQuery({
+    queryKey: ['runtime', 'bootstrapStatus'],
+    queryFn: getBootstrapStatus,
+    refetchInterval: POLL_MS,
+  });
+
   const jobsQuery = useQuery({
     queryKey: ['operations', 'jobs'],
     queryFn: fetchOperationsJobs,
@@ -595,6 +624,7 @@ export default function OperationsPage() {
           {bootstrap.background_warning}
         </Typography>
       )}
+      <UnpublishedDataAlert status={bootstrapStatusQuery.data} />
       {activityQuery.isLoading && !hasMarketActivity ? (
         <CircularProgress size={20} />
       ) : (
