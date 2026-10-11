@@ -260,7 +260,7 @@ def get_pipeline_observability(
     )
 
 
-@router.get("/content", response_model=ContentItemsListResponse)
+@router.get("/content", response_model=ContentItemsListResponse, dependencies=[Depends(reject_legacy_theme_reads)])
 def list_content_items(
     search: Optional[str] = Query(None, description="Search in title, source_name, tickers"),
     source_type: Optional[str] = Query(None, description="Filter: substack, twitter, news, reddit"),
@@ -301,7 +301,7 @@ def list_content_items(
     )
 
 
-@router.get("/content/export")
+@router.get("/content/export", dependencies=[Depends(reject_legacy_theme_reads)])
 def export_content_items(
     search: Optional[str] = Query(None, description="Search in title, source_name, tickers"),
     source_type: Optional[str] = Query(None, description="Filter: substack, twitter, news, reddit"),

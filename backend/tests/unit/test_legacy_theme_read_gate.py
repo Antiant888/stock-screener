@@ -16,8 +16,6 @@ import pytest
 
 from tests.helpers.legacy_theme_read_gate import Index, api_entry_points, unrouted_legacy_reads
 
-_INTELLIGENCE = "Audit 'Readers with no routing': the development GET serves legacy identities (#557: route)."
-_CONTENT = "Audit 'Readers with no routing': content listing annotates items with ThemeMention."
 _DEVELOPMENT_BACKFILL = (
     "Audit 'Rollback machinery (keep until retirement)': maps legacy "
     "ThemeDevelopmentTheme links to economic rows for the snapshot builder (#513)."
@@ -33,18 +31,6 @@ _SOCIAL_BRIDGE = (
 
 # entry point -> (reason, the legacy models it is expected to read)
 ALLOWLIST: dict[str, tuple[str, set[str]]] = {
-    "GET /api/v1/themes/{theme_id}/developments": (
-        _INTELLIGENCE,
-        {"ThemeCluster", "ThemeDevelopmentTheme", "ThemeEquivalenceOperation", "ThemeMention"},
-    ),
-    "GET /api/v1/themes/content": (
-        _CONTENT,
-        {"ThemeMention", "table:theme_mentions"},
-    ),
-    "GET /api/v1/themes/content/export": (
-        _CONTENT,
-        {"ThemeMention", "table:theme_mentions"},
-    ),
     "task app.tasks.economic_taxonomy_tasks.backfill_legacy_developments": (
         _DEVELOPMENT_BACKFILL,
         {"ThemeDevelopmentTheme"},

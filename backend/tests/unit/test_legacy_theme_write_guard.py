@@ -490,6 +490,9 @@ REFUSED_READS = [
     "/matching/telemetry",
     "/pipeline/state-health",
     "/pipeline/observability",
+    "/1/developments",
+    "/content",
+    "/content/export",
 ]
 
 
