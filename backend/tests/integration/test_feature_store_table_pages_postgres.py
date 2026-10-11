@@ -16,7 +16,7 @@ from pathlib import Path
 import pytest
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
-from sqlalchemy import event, null, update
+from sqlalchemy import event, insert, null, update
 
 from app.database import engine
 from app.domain.common.query import (
@@ -227,6 +227,46 @@ def _index_serves(db_session, captured, index_name: str, key: str) -> bool:
             ):
                 return True
     return False
+
+
+def test_table_details_indexes_leave_out_rows_without_the_copy(db_session):
+    """Every run published before 0064 has no copy; B-tree indexes keep NULL
+    keys, so indexing those rows would write the whole history into each
+    index while the migration holds the table's lock."""
+    migration = _load_table_details_migration()
+    run = FeatureRun(as_of_date=AS_OF, run_type="daily_snapshot", status="published")
+    db_session.add(run)
+    db_session.flush()
+    # Core, not the ORM: a row written before 0064 has one version, without
+    # the copy (an UPDATE here would leave a second, indexable version).
+    db_session.execute(
+        insert(StockFeatureDaily),
+        [
+            {
+                "run_id": run.id,
+                "symbol": f"L{i:03d}",
+                "as_of_date": AS_OF,
+                "details_json": {"rs_rating": i, "ibd_industry_group": "G01"},
+            }
+            for i in range(30)
+        ],
+    )
+
+    migration.op = Operations(MigrationContext.configure(db_session.connection()))
+    migration._create_indexes()
+    try:
+        # A non-concurrent build records how many entries it wrote.
+        indexed = dict(
+            db_session.connection().exec_driver_sql(
+                "SELECT relname, reltuples FROM pg_class WHERE relname = ANY(%(names)s)",
+                {"names": list(migration._INDEXES)},
+            ).fetchall()
+        )
+    finally:
+        migration._drop_indexes()
+
+    assert set(indexed) == set(migration._INDEXES)
+    assert {name: count for name, count in indexed.items() if count} == {}
 
 
 def _public_name(details_key: str) -> str:

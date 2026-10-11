@@ -19,10 +19,11 @@ The indexes cover the fields 20260617_0021, 20260821_0028 and 20260925_0057
 index on ``details_json``, now on the new column, plus the industry group the
 peer lookups filter on. Their expressions must match what the repository
 compiles; test_feature_store_table_pages_postgres checks that PostgreSQL uses
-each one for those statements. They are built without CONCURRENTLY: the new
-column is NULL on every existing row, so a build reads only the narrow heap,
-never the details, and building inside the migration's transaction keeps the
-revision all-or-nothing, with no invalid index left to recover.
+each one for those statements. They are partial on rows that carry the copy,
+so the new column being NULL on every existing row means a build reads only the
+narrow heap, never the details, and writes no entries. That lets them be built
+without CONCURRENTLY, inside the migration's transaction, which keeps the
+revision all-or-nothing with no invalid index left to recover.
 
 Locking: ADD COLUMN takes an ACCESS EXCLUSIVE lock that the migration
 transaction holds through the index builds, blocking reads and writes of the
@@ -71,10 +72,14 @@ _INDEXES = {
 
 
 def _create_indexes() -> None:
+    # Partial: B-tree indexes keep NULL keys, so every pre-0064 row would get
+    # an entry. PostgreSQL proves the predicate from each strict filter on the
+    # column, and only runs whose rows all carry the copy are filtered on it.
     for name, expression in _INDEXES.items():
         op.execute(
             f"CREATE INDEX IF NOT EXISTS {name} "
-            f"ON stock_feature_daily (run_id, ({expression}))"
+            f"ON stock_feature_daily (run_id, ({expression})) "
+            f"WHERE {_COLUMN} IS NOT NULL"
         )
 
 
