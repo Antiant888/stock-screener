@@ -10,7 +10,7 @@ import { useQuery } from '@tanstack/react-query';
 
 import CandlestickChart from '../components/Charts/CandlestickChart';
 import GroupChartsLayout, { GroupChartCell } from '../components/Charts/GroupChartsLayout';
-import { getGroupRankColor } from '../utils/colorUtils';
+import { getGroupRankColor, onPalette } from '../utils/colorUtils';
 import { isCurrentChartIndex, staticChartPayloadQuery } from './chartClient';
 import { useStaticGeneration } from './dataClient';
 
@@ -27,10 +27,10 @@ function StatBadge({ value, label, bgcolor }) {
           py: 0.5,
           minWidth: 36,
           textAlign: 'center',
-          bgcolor,
+          ...onPalette(bgcolor),
         }}
       >
-        <Typography variant="body2" noWrap sx={{ fontSize: '0.8rem', color: 'white', fontWeight: 'bold' }}>
+        <Typography variant="body2" noWrap sx={{ fontSize: '0.8rem', color: 'inherit', fontWeight: 'bold' }}>
           {value}
         </Typography>
       </Box>

@@ -46,7 +46,7 @@ describe('App cold start', () => {
 
     expect(loadedPaths).toEqual(['/breadth']);
     render(<App />);
-    expect(screen.getByText('STOCK SCANNER')).toBeInTheDocument();
+    expect(screen.getByText('Stock Scanner')).toBeInTheDocument();
   });
 
   it('leaves live page code alone in the static site', async () => {

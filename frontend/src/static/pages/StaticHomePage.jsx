@@ -25,13 +25,10 @@ import {
   useStaticManifest,
 } from '../dataClient';
 import { useStaticChartIndex } from '../chartClient';
-import PriceSparkline from '../../components/Scan/PriceSparkline';
-import TrendingUpIcon from '@mui/icons-material/TrendingUp';
-import TrendingDownIcon from '@mui/icons-material/TrendingDown';
+import KeyMarketCard from '../../components/MarketScan/KeyMarketCard';
 import StaticChartViewerModal from '../StaticChartViewerModal';
 import RankChangeCell from '../../components/shared/RankChangeCell';
 import TickerCell from '../../components/common/TickerCell';
-import { formatLocalCurrency } from '../../utils/formatUtils';
 import { useStaticMarket } from '../StaticMarketContext';
 import { marketFlag } from '../../utils/marketFlags';
 import { MARKET_CAP_OPTIONS } from '../../features/scan/components/filterPanel/constants';
@@ -44,6 +41,9 @@ import { buildFiltersFromPreset } from '../hooks/usePresetScreens';
 import { formatSnapshotFreshnessLabel } from '../../utils/snapshotFreshness';
 import { buildCorrectionSurvivorSummary } from '../../features/opportunityState/correctionSurvivorSummary';
 import StaticCotSection from '../components/StaticCotSection';
+
+// Two key-market cards per row stop fitting below ~300px (e.g. a phone at 200% zoom).
+const ONE_COLUMN_WHEN_NARROW = { '@media (max-width: 299.95px)': { flexBasis: '100%', maxWidth: '100%' } };
 
 const EMPTY_RESULTS = [];
 const DEFAULT_TOP_RESULTS = 20;
@@ -261,69 +261,11 @@ function StaticHomePage() {
             _closes: (item.history || []).map((h) => h.close).filter((c) => c != null),
           }))
           .filter((item) => item.latest_close != null && item._closes.length > 1)
-          .map((item) => {
-          const closes = item._closes;
-          const trend = closes[closes.length - 1] > closes[0]
-            ? 1
-            : closes[closes.length - 1] < closes[0]
-              ? -1
-              : 0;
-          return (
-            <Grid item xs={12} sm={6} md={4} lg={2.4} key={item.symbol}>
-              <Paper
-                elevation={0}
-                sx={{
-                  p: 1.5,
-                  height: '100%',
-                  border: '1px solid',
-                  borderColor: 'divider',
-                  display: 'flex',
-                  alignItems: 'stretch',
-                  gap: 1.5,
-                }}
-              >
-                <Box sx={{ flex: '0 0 auto', minWidth: 0 }}>
-                  <Typography variant="body2" sx={{ fontWeight: 600, fontSize: '13px' }}>
-                    {item.symbol}
-                  </Typography>
-                  <Typography variant="caption" sx={{ color: 'text.disabled', fontSize: '10px' }}>
-                    {item.display_name}
-                  </Typography>
-                  <Typography variant="body1" sx={{ mt: 0.5, fontFamily: 'monospace', fontWeight: 600 }}>
-                    {formatLocalCurrency(item.latest_close, item.currency)}
-                  </Typography>
-                  <Box display="flex" alignItems="center" sx={{ mt: 0.5 }}>
-                    {item.change_1d > 0 && <TrendingUpIcon sx={{ fontSize: 14, mr: 0.25, color: 'success.main' }} />}
-                    {item.change_1d < 0 && <TrendingDownIcon sx={{ fontSize: 14, mr: 0.25, color: 'error.main' }} />}
-                    <Typography
-                      variant="body2"
-                      sx={{
-                        color: item.change_1d > 0 ? 'success.main' : item.change_1d < 0 ? 'error.main' : 'text.secondary',
-                        fontFamily: 'monospace',
-                        fontWeight: 600,
-                        fontSize: '12px',
-                      }}
-                    >
-                      {item.change_1d != null
-                        ? `${item.change_1d > 0 ? '+' : ''}${formatNumber(item.change_1d, 2)}%`
-                        : '-'}
-                    </Typography>
-                  </Box>
-                </Box>
-                <Box sx={{ flex: 1, minWidth: 0, display: 'flex', alignItems: 'stretch' }}>
-                  <PriceSparkline
-                    data={closes}
-                    trend={trend}
-                    change1d={null}
-                    width="100%"
-                    height="100%"
-                    showChange={false}
-                  />
-                </Box>
-              </Paper>
+          .map((item) => (
+            <Grid item xs={6} sm={4} lg={2.4} key={item.symbol} sx={ONE_COLUMN_WHEN_NARROW}>
+              <KeyMarketCard item={item} currency={item.currency} />
             </Grid>
-          );
-        })}
+          ))}
       </Grid>
 
       <MarketHealthExposure exposure={home?.market_health_exposure} />

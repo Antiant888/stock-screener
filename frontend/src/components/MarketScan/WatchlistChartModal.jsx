@@ -30,6 +30,7 @@ import CandlestickChart from '../Charts/CandlestickChart';
 import StockMetricsSidebar from '../Scan/StockMetricsSidebar';
 import PeerComparisonModal from '../Scan/PeerComparisonModal';
 import AddToWatchlistMenu from '../common/AddToWatchlistMenu';
+import { onPalette } from '../../utils/colorUtils';
 
 const inferMarketFromSymbol = (symbol) => {
   const normalized = String(symbol || '').toUpperCase();
@@ -242,12 +243,12 @@ function WatchlistChartModal({ open, onClose, initialSymbol, symbols = [] }) {
                     py: 0.5,
                     textAlign: 'center',
                     minWidth: 36,
-                    bgcolor: (isChartDataLoading || isGroupRankLoading) ? 'grey.400' : getGroupRankColor(chartData?.ibd_group_rank ?? groupRankData?.current_rank),
+                    ...onPalette((isChartDataLoading || isGroupRankLoading) ? 'grey.400' : getGroupRankColor(chartData?.ibd_group_rank ?? groupRankData?.current_rank)),
                   }}>
                     {(isChartDataLoading || (needsGroupRankFetch && isGroupRankLoading)) ? (
-                      <CircularProgress size={14} sx={{ color: 'white' }} />
+                      <CircularProgress size={14} sx={{ color: 'inherit' }} />
                     ) : (
-                      <Typography variant="body2" noWrap sx={{ fontSize: '0.8rem', color: 'white', fontWeight: 'bold' }}>
+                      <Typography variant="body2" noWrap sx={{ fontSize: '0.8rem', color: 'inherit', fontWeight: 'bold' }}>
                         {chartData?.ibd_group_rank ?? groupRankData?.current_rank ?? '-'}
                       </Typography>
                     )}
@@ -266,13 +267,13 @@ function WatchlistChartModal({ open, onClose, initialSymbol, symbols = [] }) {
                     px: 1.5,
                     py: 0.5,
                     textAlign: 'center',
-                    bgcolor: stockData.adr_percent >= 4
+                    ...onPalette(stockData.adr_percent >= 4
                       ? 'success.main'
                       : stockData.adr_percent >= 2
                         ? 'warning.main'
-                        : 'error.main',
+                        : 'error.main'),
                   }}>
-                    <Typography variant="body2" noWrap sx={{ fontSize: '0.8rem', color: 'white', fontWeight: 'bold' }}>
+                    <Typography variant="body2" noWrap sx={{ fontSize: '0.8rem', color: 'inherit', fontWeight: 'bold' }}>
                       {stockData.adr_percent.toFixed(1)}%
                     </Typography>
                   </Box>
@@ -291,13 +292,13 @@ function WatchlistChartModal({ open, onClose, initialSymbol, symbols = [] }) {
                     py: 0.5,
                     textAlign: 'center',
                     minWidth: 36,
-                    bgcolor: stockData.eps_rating >= 80
+                    ...onPalette(stockData.eps_rating >= 80
                       ? 'success.main'
                       : stockData.eps_rating >= 50
                         ? 'warning.main'
-                        : 'error.main',
+                        : 'error.main'),
                   }}>
-                    <Typography variant="body2" noWrap sx={{ fontSize: '0.8rem', color: 'white', fontWeight: 'bold' }}>
+                    <Typography variant="body2" noWrap sx={{ fontSize: '0.8rem', color: 'inherit', fontWeight: 'bold' }}>
                       {stockData.eps_rating}
                     </Typography>
                   </Box>

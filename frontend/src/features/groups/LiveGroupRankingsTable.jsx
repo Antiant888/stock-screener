@@ -65,7 +65,7 @@ const RankBadge = ({ rank }) => (
     component="span"
     sx={{
       backgroundColor: rank <= 20 ? 'success.main' : rank >= 177 ? 'error.main' : 'warning.main',
-      color: rank <= 20 || rank >= 177 ? 'white' : 'warning.contrastText',
+      color: rank <= 20 ? 'success.contrastText' : rank >= 177 ? 'error.contrastText' : 'warning.contrastText',
       padding: '1px 5px',
       borderRadius: '2px',
       fontSize: '10px',

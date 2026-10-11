@@ -363,7 +363,7 @@ describe('App static mode', () => {
     await renderStaticAppAtHash('#/');
 
     expect(await screen.findByRole(
-      'tab',
+      'link',
       { name: 'Options' },
       { timeout: 10000 },
     )).toBeInTheDocument();
@@ -396,6 +396,6 @@ describe('App static mode', () => {
 
     expect(await screen.findByRole('heading', { name: 'Hong Kong Group Rankings' })).toBeInTheDocument();
     expect(screen.getByRole('combobox', { name: 'Static market selector' })).toHaveTextContent('Hong Kong');
-    expect(screen.queryByRole('tab', { name: 'Options' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'Options' })).not.toBeInTheDocument();
   }, 10000);
 });

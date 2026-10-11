@@ -38,7 +38,7 @@ import {
   ValidationRecentEventsTable,
   ValidationSummaryCards,
 } from '../Validation/ValidationPanels';
-import { getGroupRankColor, getStageColor } from '../../utils/colorUtils';
+import { getGroupRankColor, getStageColor, onPalette } from '../../utils/colorUtils';
 import {
   formatLargeNumber,
   formatPercent,
@@ -102,8 +102,8 @@ const BoolIndicator = ({ value }) => {
 function MetricBox({ label, value, bgcolor }) {
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
-      <Box sx={{ borderRadius: 1, px: 1.5, py: 0.5, textAlign: 'center', minWidth: 36, bgcolor }}>
-        <Typography variant="body2" noWrap sx={{ fontSize: '0.8rem', color: 'white', fontWeight: 'bold' }}>
+      <Box sx={{ borderRadius: 1, px: 1.5, py: 0.5, textAlign: 'center', minWidth: 36, ...onPalette(bgcolor) }}>
+        <Typography variant="body2" noWrap sx={{ fontSize: '0.8rem', color: 'inherit', fontWeight: 'bold' }}>
           {value}
         </Typography>
       </Box>

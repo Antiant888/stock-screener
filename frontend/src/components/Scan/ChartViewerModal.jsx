@@ -30,7 +30,7 @@ import PeerComparisonModal from './PeerComparisonModal';
 import SetupEngineDrawer from './SetupEngineDrawer';
 import AddToWatchlistMenu from '../common/AddToWatchlistMenu';
 import MarketThemesList from '../Stock/MarketThemesList';
-import { getGroupRankColor } from '../../utils/colorUtils';
+import { getGroupRankColor, onPalette } from '../../utils/colorUtils';
 import {
   buildScanQueryRequest,
   stableExpressionKey,
@@ -389,12 +389,12 @@ function ChartViewerModal({
                       py: 0.5,
                       textAlign: 'center',
                       minWidth: 36,
-                      bgcolor: isGroupRankLoading ? 'grey.400' : getGroupRankColor(groupRankData?.current_rank),
+                      ...onPalette(isGroupRankLoading ? 'grey.400' : getGroupRankColor(groupRankData?.current_rank)),
                     }}>
                       {isGroupRankLoading ? (
-                        <CircularProgress size={14} sx={{ color: 'white' }} />
+                        <CircularProgress size={14} sx={{ color: 'inherit' }} />
                       ) : (
-                        <Typography variant="body2" noWrap sx={{ fontSize: '0.8rem', color: 'white', fontWeight: 'bold' }}>
+                        <Typography variant="body2" noWrap sx={{ fontSize: '0.8rem', color: 'inherit', fontWeight: 'bold' }}>
                           {groupRankData?.current_rank ?? '-'}
                         </Typography>
                       )}
@@ -413,13 +413,13 @@ function ChartViewerModal({
                       px: 1.5,
                       py: 0.5,
                       textAlign: 'center',
-                      bgcolor: Number(adrValue) >= 4
+                      ...onPalette(Number(adrValue) >= 4
                         ? 'success.main'
                         : Number(adrValue) >= 2
                           ? 'warning.main'
-                          : 'error.main',
+                          : 'error.main'),
                     }}>
-                      <Typography variant="body2" noWrap sx={{ fontSize: '0.8rem', color: 'white', fontWeight: 'bold' }}>
+                      <Typography variant="body2" noWrap sx={{ fontSize: '0.8rem', color: 'inherit', fontWeight: 'bold' }}>
                         {Number(adrValue).toFixed(1)}%
                       </Typography>
                     </Box>
@@ -438,13 +438,13 @@ function ChartViewerModal({
                       py: 0.5,
                       textAlign: 'center',
                       minWidth: 36,
-                      bgcolor: (finalStockData?.eps_rating ?? fundamentals?.eps_rating) >= 80
+                      ...onPalette((finalStockData?.eps_rating ?? fundamentals?.eps_rating) >= 80
                         ? 'success.main'
                         : (finalStockData?.eps_rating ?? fundamentals?.eps_rating) >= 50
                           ? 'warning.main'
-                          : 'error.main',
+                          : 'error.main'),
                     }}>
-                      <Typography variant="body2" noWrap sx={{ fontSize: '0.8rem', color: 'white', fontWeight: 'bold' }}>
+                      <Typography variant="body2" noWrap sx={{ fontSize: '0.8rem', color: 'inherit', fontWeight: 'bold' }}>
                         {finalStockData?.eps_rating ?? fundamentals?.eps_rating}
                       </Typography>
                     </Box>

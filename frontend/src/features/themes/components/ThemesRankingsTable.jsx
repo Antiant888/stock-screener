@@ -144,7 +144,8 @@ export default function ThemesRankingsTable({
                     sx={{
                       backgroundColor:
                         row.rank <= 5 ? 'success.main' : row.rank <= 10 ? 'warning.main' : 'error.main',
-                      color: 'white',
+                      color:
+                        row.rank <= 5 ? 'success.contrastText' : row.rank <= 10 ? 'warning.contrastText' : 'error.contrastText',
                       padding: '1px 4px',
                       borderRadius: '2px',
                       fontSize: '10px',

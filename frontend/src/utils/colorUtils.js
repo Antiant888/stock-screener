@@ -103,3 +103,17 @@ export const getGroupRankColor = (rank) => {
   if (rank >= 177) return 'error.main';    // Bottom ~10%
   return 'warning.main';                    // Middle
 };
+
+/**
+ * Background plus readable text for a theme palette key used as a badge fill.
+ * '<tone>.main' uses that tone's contrastText; light greys get dark text; any
+ * other key (e.g. 'text.secondary') gets the inverse surface colour.
+ * @param {string} key - Palette key such as 'success.main' or 'grey.400'
+ * @returns {{bgcolor: string, color: string}} sx props
+ */
+export const onPalette = (key) => ({
+  bgcolor: key,
+  color: key.endsWith('.main')
+    ? key.replace(/\.main$/, '.contrastText')
+    : key.startsWith('grey.') ? 'grey.900' : 'background.paper',
+});
