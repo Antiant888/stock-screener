@@ -149,11 +149,17 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-          cache: pip
-          cache-dependency-path: backend/requirements.txt
+
+      # uv installs far faster than pip, which took ~2 minutes here (#504).
+      - uses: astral-sh/setup-uv@v10.2.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: |
+            backend/requirements.txt
+            backend/requirements-server.txt
 
       - name: Install backend dependencies
-        run: pip install -r backend/requirements.txt
+        run: uv pip install --system -r backend/requirements.txt
 
       - name: Seed prior weekly reference bundle
         env:
