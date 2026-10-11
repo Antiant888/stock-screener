@@ -29,6 +29,7 @@ from app.infra.db.models.feature_store import (
     StockFeatureDaily,
 )
 from app.infra.db.repositories.feature_store_repo import SqlFeatureStoreRepository
+from sqlalchemy import null, update
 from sqlalchemy.orm import Session
 
 from .conftest import count_queries
@@ -579,8 +580,9 @@ class TestJoinedColumnFilters:
         assert "se_explain" not in item.extended_fields
         assert "se_candidates" not in item.extended_fields
 
+    @pytest.mark.parametrize("run_state", ["table_details", "legacy"])
     def test_all_scan_results_strips_setup_payload_in_sql_projection(
-        self, repo: SqlFeatureStoreRepository, session: Session, engine
+        self, repo: SqlFeatureStoreRepository, session: Session, engine, run_state
     ):
         run_id = _create_run(session)
         repo.upsert_snapshot_rows(
@@ -604,6 +606,11 @@ class TestJoinedColumnFilters:
                 )
             ],
         )
+        if run_state == "legacy":
+            # A row written before 20261011_0064 has no stored copy.
+            session.execute(
+                update(StockFeatureDaily).values(table_details_json=null())
+            )
 
         with count_queries(engine) as counter:
             [item] = repo.query_all_as_scan_results(
@@ -613,12 +620,18 @@ class TestJoinedColumnFilters:
                 include_setup_payload=False,
             )
 
-        feature_selects = [
+        [feature_select] = [
             statement.lower()
             for statement in counter["statements"]
             if "from stock_feature_daily" in statement.lower()
+            and "order by" in statement.lower()
         ]
-        assert any("json_remove" in statement for statement in feature_selects)
+        # The payload never leaves the database: the stored copy omits it, and
+        # a legacy run strips it in the projection.
+        if run_state == "table_details":
+            assert "table_details_json as details_json" in feature_select
+        else:
+            assert "json_remove" in feature_select
         assert item.extended_fields["se_setup_score"] == 82.0
         assert item.extended_fields["se_pattern_primary"] == "VCP"
         assert "se_explain" not in item.extended_fields

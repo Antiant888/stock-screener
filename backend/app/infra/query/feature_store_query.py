@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 from sqlalchemy.orm import Query
 
 from app.domain.common.query import (
@@ -164,23 +166,42 @@ _FILTER_FIELD_RESOLVER = SqlFilterFieldResolver(
     company_name_column=StockUniverse.name,
     range_predicates={"listing_aware_volume": listing_aware_volume_predicate},
 )
+# The same fields read from the setup-payload-free copy; callers pass
+# ``table_details=True`` only when every row of the run carries it.
+_TABLE_DETAILS_RESOLVER = replace(
+    _FILTER_FIELD_RESOLVER, json_column=StockFeatureDaily.table_details_json
+)
+
+
+def _resolver(table_details: bool) -> SqlFilterFieldResolver:
+    return _TABLE_DETAILS_RESOLVER if table_details else _FILTER_FIELD_RESOLVER
 
 
 # ── Public API ──────────────────────────────────────────────────────────
 
 
-def apply_filters(query: Query, filters: FilterSpec) -> Query:
+def apply_filters(
+    query: Query, filters: FilterSpec, *, table_details: bool = False
+) -> Query:
     """Backward-compatible adapter for existing flat-filter callers."""
 
-    return apply_filter_expression(query, filter_spec_to_expression(filters))
+    return apply_filter_expression(
+        query, filter_spec_to_expression(filters), table_details=table_details
+    )
 
 
-def apply_filter_expression(query: Query, expression: FilterExpression) -> Query:
-    return query.filter(compile_filter_expression(query, expression))
+def apply_filter_expression(
+    query: Query, expression: FilterExpression, *, table_details: bool = False
+) -> Query:
+    return query.filter(
+        compile_filter_expression(query, expression, table_details=table_details)
+    )
 
 
-def compile_filter_expression(query: Query, expression: FilterExpression):
-    return compile_sql_expression(query, expression, _FILTER_FIELD_RESOLVER)
+def compile_filter_expression(
+    query: Query, expression: FilterExpression, *, table_details: bool = False
+):
+    return compile_sql_expression(query, expression, _resolver(table_details))
 
 
 def supported_filter_fields() -> frozenset[str]:
@@ -195,22 +216,26 @@ def apply_sort_and_paginate(
     query: Query,
     sort: SortSpec,
     page: PageSpec,
+    *,
+    table_details: bool = False,
 ) -> tuple[list, int]:
     """Apply sort + pagination.  Returns (rows, total_count)."""
     total = lean_count(query)
 
-    query = apply_sql_sort(query, sort, _FILTER_FIELD_RESOLVER)
+    query = apply_sql_sort(query, sort, _resolver(table_details))
     query = query.offset(page.offset).limit(page.limit)
     rows = query.all()
 
     return rows, total
 
 
-def apply_sort_all(query: Query, sort: SortSpec) -> list:
+def apply_sort_all(
+    query: Query, sort: SortSpec, *, table_details: bool = False
+) -> list:
     """Apply sort and return ALL matching rows (no pagination).
 
     Used by export-style queries that need every row.
     Unlike the legacy scan_result_query, no Python-sort fallback is needed
     because all feature store fields are SQL-sortable via json_extract.
     """
-    return apply_sql_sort(query, sort, _FILTER_FIELD_RESOLVER).all()
+    return apply_sql_sort(query, sort, _resolver(table_details)).all()

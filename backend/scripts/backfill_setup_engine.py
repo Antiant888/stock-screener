@@ -46,7 +46,11 @@ import pandas as pd
 
 from app.analysis.patterns.models import SETUP_ENGINE_DEFAULT_SCHEMA_VERSION
 from app.database import SessionLocal
-from app.infra.db.models.feature_store import FeatureRun, StockFeatureDaily
+from app.infra.db.models.feature_store import (
+    FeatureRun,
+    StockFeatureDaily,
+    table_details,
+)
 from app.scanners.base_screener import DataRequirements, StockData
 from app.scanners.setup_engine_scanner import attach_setup_engine
 from app.scanners.setup_engine_screener import SetupEngineScanner
@@ -388,7 +392,10 @@ def run_backfill(args: argparse.Namespace) -> None:
                         StockFeatureDaily.run_id == run_id,
                         StockFeatureDaily.symbol == symbol,
                     ).update(
-                        {"details_json": merged_details},
+                        {
+                            "details_json": merged_details,
+                            "table_details_json": table_details(merged_details),
+                        },
                         synchronize_session=False,
                     )
                 db.commit()

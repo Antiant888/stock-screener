@@ -381,16 +381,27 @@ class TestRunBackfillForceOverwrite:
         # Scanner returns updated result
         scanner_inst = MagicMock()
         scanner_inst.scan_stock.return_value = MagicMock(
-            details={"setup_engine": {"schema_version": "v1", "setup_score": 75.0}},
+            details={
+                "setup_engine": {
+                    "schema_version": "v1",
+                    "setup_score": 75.0,
+                    "explain": {"summary": "base"},
+                    "candidates": [{"pattern": "vcp"}],
+                }
+            },
             rating="Buy",
         )
         mock_scanner_cls.return_value = scanner_inst
 
         # Make db.query flexible for update + spot-check
+        updates: list[dict] = []
+
         def query_side_effect(*args, **kwargs):
             result = MagicMock()
             result.join.return_value.filter.return_value = mock_query
-            result.filter.return_value.update.return_value = 1
+            result.filter.return_value.update.side_effect = (
+                lambda values, **_kw: updates.append(values) or 1
+            )
             result.filter.return_value.order_by.return_value.limit.return_value.all.return_value = []
             return result
 
@@ -403,3 +414,11 @@ class TestRunBackfillForceOverwrite:
         scanner_inst.scan_stock.assert_called_once()
         # And a commit should have happened
         mock_db.commit.assert_called()
+        # The bulk UPDATE bypasses the ORM hook, so it must refresh the
+        # table-level copy that filters read, without the setup payload.
+        [values] = updates
+        assert values["details_json"]["setup_engine"]["candidates"] == [{"pattern": "vcp"}]
+        assert values["table_details_json"]["setup_engine"] == {
+            "schema_version": "v1",
+            "setup_score": 75.0,
+        }
