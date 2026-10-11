@@ -471,8 +471,8 @@ function ArticleBrowserModal({ open, onClose, pipeline }) {
                               sx={{
                                 fontSize: '9px',
                                 height: 18,
-                                backgroundColor: '#1976d2',
-                                color: 'white',
+                                bgcolor: 'primary.main',
+                                color: 'primary.contrastText',
                               }}
                             />
                           ))}

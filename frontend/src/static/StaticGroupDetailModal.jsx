@@ -16,6 +16,7 @@ import {
   TableRow,
   Tooltip,
   Typography,
+  useTheme,
 } from '@mui/material';
 import CloseIcon from '@mui/icons-material/Close';
 import {
@@ -37,6 +38,7 @@ import StaticGroupChartsGrid from './StaticGroupChartsGrid';
 const CHARTS_TOP_N_GROUPS = 50;
 
 function StaticGroupDetailModal({ group, detail, chartIndex = null, open, onClose }) {
+  const { palette } = useTheme();
   const [activeTab, setActiveTab] = useState('overview');
 
   useEffect(() => {
@@ -186,9 +188,9 @@ function StaticGroupDetailModal({ group, detail, chartIndex = null, open, onClos
                         formatter={(value) => [`Rank: ${value}`, '']}
                         labelFormatter={(label, payload) => payload?.[0]?.payload?.date || label}
                       />
-                      <ReferenceLine y={20} stroke="#4caf50" strokeDasharray="3 3" opacity={0.5} />
-                      <ReferenceLine y={177} stroke="#f44336" strokeDasharray="3 3" opacity={0.5} />
-                      <Line type="monotone" dataKey="rank" stroke="#2196f3" strokeWidth={2} dot={false} activeDot={{ r: 4 }} />
+                      <ReferenceLine y={20} stroke={palette.success.main} strokeDasharray="3 3" opacity={0.5} />
+                      <ReferenceLine y={177} stroke={palette.error.main} strokeDasharray="3 3" opacity={0.5} />
+                      <Line type="monotone" dataKey="rank" stroke={palette.primary.main} strokeWidth={2} dot={false} activeDot={{ r: 4 }} />
                     </LineChart>
                   </ResponsiveContainer>
                 </Box>

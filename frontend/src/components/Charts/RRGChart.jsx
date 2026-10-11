@@ -44,12 +44,11 @@ import {
   Alert,
   FormControlLabel,
   Switch,
+  useTheme,
 } from '@mui/material';
 import {
-  QUADRANT_COLORS,
-  QUADRANT_FILLS,
   QUADRANT_LAYOUT,
-  quadrantColor,
+  useQuadrantColors,
   HIGHLIGHT,
   HIGHLIGHT_HALO,
 } from './rrgColors';
@@ -87,6 +86,7 @@ const computeBound = (groups) => {
 /** Graduated tail vertex: faint/small when old, brighter toward the head. The
  *  head itself is drawn by the larger "current" dot, so it's skipped here. */
 const TailDot = ({ cx, cy, payload, hovered }) => {
+  const { colorOf } = useQuadrantColors();
   if (cx == null || cy == null || payload?.isHead) return null;
   const t = payload.t ?? 0.5;
   if (emphasis(payload.industry_group, hovered) === 'hovered') {
@@ -97,7 +97,7 @@ const TailDot = ({ cx, cy, payload, hovered }) => {
       cx={cx}
       cy={cy}
       r={2 + 2.5 * t}
-      fill={quadrantColor(payload.quadrant)}
+      fill={colorOf(payload.quadrant)}
       fillOpacity={(0.25 + 0.5 * t) * (hovered ? DIM : 1)}
     />
   );
@@ -118,7 +118,7 @@ const ArrowHead = ({ x, y, angle, color }) => {
 /** Per-series pixel geometry for the trails — the expensive part (Catmull-Rom
  *  path + arrow midpoints). Built independent of hover so it can be memoized and
  *  reused across hover changes, which only restyle the trails, never re-shape them. */
-const buildTrailGeometry = (shown, perSegment, xScale, yScale) => {
+const buildTrailGeometry = (shown, perSegment, xScale, yScale, colorOf) => {
   const out = [];
   shown.forEach((g) => {
     const tail = g.tail || [];
@@ -130,7 +130,7 @@ const buildTrailGeometry = (shown, perSegment, xScale, yScale) => {
     for (let i = from; i < pts.length; i += 1) {
       arrows.push(splineSegmentMidpoint(pts[i - 2], pts[i - 1], pts[i], pts[i + 1]));
     }
-    out.push({ group: g.industry_group, color: quadrantColor(g.quadrant), path: catmullRomPath(pts), arrows });
+    out.push({ group: g.industry_group, color: colorOf(g.quadrant), path: catmullRomPath(pts), arrows });
   });
   return out;
 };
@@ -160,6 +160,7 @@ const renderHot = (s) => [
  *  Degrades to nothing if scales aren't ready (e.g. SSR/jsdom). */
 const RRGOverlay = ({ shown, perSegment, showLabels, showTails, hovered, xAxisMap, yAxisMap }) => {
   const clipId = useId();
+  const { colorOf } = useQuadrantColors();
   const xAxis = xAxisMap && xAxisMap[Object.keys(xAxisMap)[0]];
   const yAxis = yAxisMap && yAxisMap[Object.keys(yAxisMap)[0]];
   const xScale = xAxis?.scale;
@@ -173,10 +174,10 @@ const RRGOverlay = ({ shown, perSegment, showLabels, showTails, hovered, xAxisMa
     ? `${xScale.domain().join()}|${xScale.range().join()}|${yScale.domain().join()}|${yScale.range().join()}`
     : '';
   const geometry = useMemo(
-    () => (ready && showTails ? buildTrailGeometry(shown, perSegment, xScale, yScale) : []),
+    () => (ready && showTails ? buildTrailGeometry(shown, perSegment, xScale, yScale, colorOf) : []),
     // sig stands in for xScale/yScale identity; listing the functions would bust every render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [shown, perSegment, showTails, sig],
+    [shown, perSegment, showTails, sig, colorOf],
   );
   // The resting trails are hover-independent, so React reuses these elements
   // (stable reference) and skips re-rendering them when only the hover changes.
@@ -206,7 +207,7 @@ const RRGOverlay = ({ shown, perSegment, showLabels, showTails, hovered, xAxisMa
       if ([cx, cy].some((v) => v == null || Number.isNaN(v))) return;
       // Heads zoomed out of view get no label (it would be clipped anyway).
       if (cx < clip.x || cx > clip.x + clip.width || cy < clip.y || cy > clip.y + clip.height) return;
-      anchors.push({ cx, cy, text: g.industry_group, color: quadrantColor(g.quadrant) });
+      anchors.push({ cx, cy, text: g.industry_group, color: colorOf(g.quadrant) });
     });
     labels = layoutLabels(anchors).map((l) => (
       <text
@@ -242,6 +243,7 @@ const RRGOverlay = ({ shown, perSegment, showLabels, showTails, hovered, xAxisMa
 };
 
 const RRGTooltip = ({ active, payload }) => {
+  const { colorOf } = useQuadrantColors();
   if (!active || !payload || !payload.length) return null;
   const g = payload[0]?.payload;
   if (!g) return null;
@@ -260,7 +262,7 @@ const RRGTooltip = ({ active, payload }) => {
       <Typography variant="body2" sx={{ fontWeight: 700, mb: 0.5 }}>
         {g.industry_group}
       </Typography>
-      <Typography variant="caption" sx={{ color: quadrantColor(g.quadrant), fontWeight: 600 }}>
+      <Typography variant="caption" sx={{ color: colorOf(g.quadrant), fontWeight: 600 }}>
         {g.quadrant}
         {g.is_provisional ? ' · provisional' : ''}
       </Typography>
@@ -285,6 +287,8 @@ const RRGTooltip = ({ active, payload }) => {
  * @param {Object[]} props.data.groups - RRGGroupResponse[] from the API
  */
 export default function RRGChart({ data, isLoading, error, onSelectGroup, height = 720 }) {
+  const { palette } = useTheme();
+  const { colors: quadrantColors, fills: quadrantFills, colorOf } = useQuadrantColors();
   const groups = useMemo(() => (data?.groups ?? []), [data]);
   const asOf = data?.date ?? null;
   const scopeLabel = data?.scope === 'sectors' ? 'Sectors' : 'Groups';
@@ -443,15 +447,15 @@ export default function RRGChart({ data, isLoading, error, onSelectGroup, height
                     x2={x2}
                     y1={y1}
                     y2={y2}
-                    fill={QUADRANT_FILLS[name]}
+                    fill={quadrantFills[name]}
                     fillOpacity={1}
-                    label={{ value: name, position: labelPosition, fill: QUADRANT_COLORS[name], fontSize: 12 }}
+                    label={{ value: name, position: labelPosition, fill: quadrantColors[name], fontSize: 12 }}
                   />
                 );
               })}
 
-              {xLo < 100 && 100 < xHi && <ReferenceLine x={100} stroke="#9e9e9e" strokeDasharray="4 4" />}
-              {yLo < 100 && 100 < yHi && <ReferenceLine y={100} stroke="#9e9e9e" strokeDasharray="4 4" />}
+              {xLo < 100 && 100 < xHi && <ReferenceLine x={100} stroke={palette.text.disabled} strokeDasharray="4 4" />}
+              {yLo < 100 && 100 < yHi && <ReferenceLine y={100} stroke={palette.text.disabled} strokeDasharray="4 4" />}
 
               <XAxis
                 type="number"
@@ -513,9 +517,9 @@ export default function RRGChart({ data, isLoading, error, onSelectGroup, height
                   x2={zoom.drag.x2}
                   y1={zoom.drag.y1}
                   y2={zoom.drag.y2}
-                  fill="#90caf9"
+                  fill={palette.primary.main}
                   fillOpacity={0.2}
-                  stroke="#90caf9"
+                  stroke={palette.primary.main}
                   strokeOpacity={0.7}
                 />
               )}
@@ -535,9 +539,9 @@ export default function RRGChart({ data, isLoading, error, onSelectGroup, height
                   return (
                     <Cell
                       key={`dot-${p.industry_group}`}
-                      fill={quadrantColor(p.quadrant)}
+                      fill={colorOf(p.quadrant)}
                       fillOpacity={e === 'dimmed' ? DIM : base}
-                      stroke={e === 'hovered' ? HIGHLIGHT : quadrantColor(p.quadrant)}
+                      stroke={e === 'hovered' ? HIGHLIGHT : colorOf(p.quadrant)}
                       strokeWidth={e === 'hovered' ? 3 : 1}
                     />
                   );

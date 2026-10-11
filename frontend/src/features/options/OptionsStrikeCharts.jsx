@@ -1,4 +1,4 @@
-import { Box, Grid, Paper, Typography } from '@mui/material';
+import { Box, Grid, Paper, Typography, useTheme } from '@mui/material';
 import {
   Bar,
   BarChart,
@@ -22,6 +22,11 @@ function ChartFrame({ title, children }) {
 }
 
 export default function OptionsStrikeCharts({ points, spotPrice }) {
+  // Calls in the theme's gain colour, puts in its loss colour, across all three charts.
+  const { palette } = useTheme();
+  const call = palette.success.main;
+  const put = palette.error.main;
+  const guide = palette.text.secondary;
   return (
     <Grid container spacing={2}>
       <Grid item xs={12} lg={4}>
@@ -32,11 +37,11 @@ export default function OptionsStrikeCharts({ points, spotPrice }) {
               <XAxis dataKey="strike" />
               <YAxis />
               <Tooltip />
-              <ReferenceLine x={spotPrice} stroke="#fff" strokeDasharray="3 3" />
-              <Bar dataKey="call_open_interest" name="Call OI" fill="#2e7d32" />
-              <Bar dataKey="put_open_interest" name="Put OI" fill="#d32f2f" />
-              <Bar dataKey="call_volume" name="Call volume" fill="#66bb6a" />
-              <Bar dataKey="put_volume" name="Put volume" fill="#ef5350" />
+              <ReferenceLine x={spotPrice} stroke={guide} strokeDasharray="3 3" />
+              <Bar dataKey="call_open_interest" name="Call OI" fill={call} />
+              <Bar dataKey="put_open_interest" name="Put OI" fill={put} />
+              <Bar dataKey="call_volume" name="Call volume" fill={call} fillOpacity={0.45} />
+              <Bar dataKey="put_volume" name="Put volume" fill={put} fillOpacity={0.45} />
             </BarChart>
           </ResponsiveContainer>
         </ChartFrame>
@@ -49,9 +54,9 @@ export default function OptionsStrikeCharts({ points, spotPrice }) {
               <XAxis dataKey="strike" />
               <YAxis />
               <Tooltip />
-              <ReferenceLine y={0} stroke="#fff" />
-              <Bar dataKey="estimated_call_gex" name="Estimated call GEX" fill="#1976d2" />
-              <Bar dataKey="estimated_put_gex" name="Estimated put GEX" fill="#dc004e" />
+              <ReferenceLine y={0} stroke={guide} />
+              <Bar dataKey="estimated_call_gex" name="Estimated call GEX" fill={call} />
+              <Bar dataKey="estimated_put_gex" name="Estimated put GEX" fill={put} />
             </BarChart>
           </ResponsiveContainer>
         </ChartFrame>
@@ -64,9 +69,9 @@ export default function OptionsStrikeCharts({ points, spotPrice }) {
               <XAxis dataKey="strike" />
               <YAxis tickFormatter={(value) => `${Math.round(value * 100)}%`} />
               <Tooltip formatter={(value) => `${(value * 100).toFixed(1)}%`} />
-              <ReferenceLine x={spotPrice} stroke="#fff" strokeDasharray="3 3" />
-              <Line dataKey="call_iv" name="Call IV" stroke="#2e7d32" connectNulls={false} />
-              <Line dataKey="put_iv" name="Put IV" stroke="#d32f2f" connectNulls={false} />
+              <ReferenceLine x={spotPrice} stroke={guide} strokeDasharray="3 3" />
+              <Line dataKey="call_iv" name="Call IV" stroke={call} connectNulls={false} />
+              <Line dataKey="put_iv" name="Put IV" stroke={put} connectNulls={false} />
             </LineChart>
           </ResponsiveContainer>
         </ChartFrame>

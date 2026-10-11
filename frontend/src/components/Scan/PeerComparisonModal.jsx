@@ -27,7 +27,7 @@ import apiClient from '../../api/client';
 import { getStockPeers } from '../../api/stocks';
 import RSSparkline from './RSSparkline';
 import AddToWatchlistMenu from '../common/AddToWatchlistMenu';
-import { getStageColor } from '../../utils/colorUtils';
+import { getStageColor, onPalette } from '../../utils/colorUtils';
 
 /**
  * Fetch peer stocks — scan-based when scanId is provided, standalone otherwise.
@@ -316,8 +316,7 @@ function PeerComparisonModal({ open, onClose, scanId, symbol, onOpenChart }) {
                             label={`S${peer.stage}`}
                             size="small"
                             sx={{
-                              backgroundColor: getStageColor(peer.stage),
-                              color: 'white',
+                              ...onPalette(getStageColor(peer.stage)),
                               fontWeight: 'medium',
                               fontSize: '0.75rem',
                             }}

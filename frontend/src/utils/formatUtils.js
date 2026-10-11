@@ -122,13 +122,13 @@ export const formatPatternName = (name) => {
 /**
  * Get color for a 0-100 score: green >= 70, amber >= 40, red < 40
  * @param {number|null} score - Score value 0-100
- * @returns {string|undefined} Hex color or undefined for null
+ * @returns {string|undefined} MUI palette key, or undefined for null
  */
 export const getScoreColor = (score) => {
   if (score == null) return undefined;
-  if (score >= 70) return '#4caf50';
-  if (score >= 40) return '#ff9800';
-  return '#f44336';
+  if (score >= 70) return 'success.main';
+  if (score >= 40) return 'warning.main';
+  return 'error.main';
 };
 
 // Per-market currency-symbol map. Matches the conventions used in the rest

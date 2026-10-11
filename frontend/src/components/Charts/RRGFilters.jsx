@@ -12,7 +12,7 @@ import {
   ToggleButton,
   ToggleButtonGroup,
 } from '@mui/material';
-import { QUADRANTS, QUADRANT_COLORS } from './rrgColors';
+import { QUADRANTS, QUADRANT_TONES } from './rrgColors';
 
 export default function RRGFilters({
   scopeLabel,
@@ -42,8 +42,8 @@ export default function RRGFilters({
             sx={{
               textTransform: 'none',
               '&.Mui-selected': {
-                color: QUADRANT_COLORS[q],
-                borderColor: QUADRANT_COLORS[q],
+                color: `${QUADRANT_TONES[q]}.main`,
+                borderColor: `${QUADRANT_TONES[q]}.main`,
                 fontWeight: 700,
               },
             }}

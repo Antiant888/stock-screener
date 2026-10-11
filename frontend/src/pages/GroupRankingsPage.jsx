@@ -27,6 +27,7 @@ import {
   ToggleButton,
   ToggleButtonGroup,
   Tooltip,
+  useTheme,
 } from '@mui/material';
 import TrendingUpIcon from '@mui/icons-material/TrendingUp';
 import TrendingDownIcon from '@mui/icons-material/TrendingDown';
@@ -154,6 +155,7 @@ const MoversCard = ({ title, groups, isGainers, period }) => {
 
 // Group Detail Modal
 const GroupDetailModal = ({ group, market, open, onClose }) => {
+  const { palette } = useTheme();
   const [activeTab, setActiveTab] = useState('overview');
 
   useEffect(() => {
@@ -288,12 +290,12 @@ const GroupDetailModal = ({ group, market, open, onClose }) => {
                         formatter={(value) => [`Rank: ${value}`, '']}
                         labelFormatter={(label, payload) => payload?.[0]?.payload?.date || label}
                       />
-                      <ReferenceLine y={20} stroke="#4caf50" strokeDasharray="3 3" opacity={0.5} />
-                      <ReferenceLine y={177} stroke="#f44336" strokeDasharray="3 3" opacity={0.5} />
+                      <ReferenceLine y={20} stroke={palette.success.main} strokeDasharray="3 3" opacity={0.5} />
+                      <ReferenceLine y={177} stroke={palette.error.main} strokeDasharray="3 3" opacity={0.5} />
                       <Line
                         type="monotone"
                         dataKey="rank"
-                        stroke="#2196f3"
+                        stroke={palette.primary.main}
                         strokeWidth={2}
                         dot={false}
                         activeDot={{ r: 4 }}

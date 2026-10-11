@@ -9,30 +9,28 @@ import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
 import {
   getStageColor,
   getRatingColor,
-  getGrowthColorHex,
+  getGrowthColor,
   getEpsRatingColor,
+  onPalette,
 } from '../../utils/colorUtils';
 import { formatPercent, formatRatio, formatPatternName, getScoreColor } from '../../utils/formatUtils';
 import { resolveMarketCapDisplay } from '../../utils/marketCapUtils';
-
-// Alias for this component's usage (uses hex colors)
-const getGrowthColor = getGrowthColorHex;
 
 /**
  * RS Trend icon component
  */
 const RSTrendIcon = ({ trend }) => {
-  if (trend === 1) return <TrendingUpIcon sx={{ fontSize: 16, color: '#4caf50' }} />;
-  if (trend === -1) return <TrendingDownIcon sx={{ fontSize: 16, color: '#f44336' }} />;
-  return <TrendingFlatIcon sx={{ fontSize: 16, color: '#9e9e9e' }} />;
+  if (trend === 1) return <TrendingUpIcon sx={{ fontSize: 16, color: 'success.main' }} />;
+  if (trend === -1) return <TrendingDownIcon sx={{ fontSize: 16, color: 'error.main' }} />;
+  return <TrendingFlatIcon sx={{ fontSize: 16, color: 'text.disabled' }} />;
 };
 
 /**
  * Boolean indicator (checkmark or X)
  */
 const BoolIndicator = ({ value }) => {
-  if (value) return <CheckCircleIcon sx={{ fontSize: 16, color: '#4caf50' }} />;
-  return <CancelIcon sx={{ fontSize: 16, color: '#9e9e9e' }} />;
+  if (value) return <CheckCircleIcon sx={{ fontSize: 16, color: 'success.main' }} />;
+  return <CancelIcon sx={{ fontSize: 16, color: 'text.disabled' }} />;
 };
 
 /**
@@ -468,8 +466,7 @@ function StockMetricsSidebar({
                 label={`S${stockData.stage}`}
                 size="small"
                 sx={{
-                  backgroundColor: getStageColor(stockData.stage),
-                  color: 'white',
+                  ...onPalette(getStageColor(stockData.stage)),
                   fontSize: '0.65rem',
                   height: 18,
                   '& .MuiChip-label': { px: 0.75 },

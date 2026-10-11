@@ -7,7 +7,6 @@ import {
   Card,
   CircularProgress,
   Typography,
-  useTheme,
 } from '@mui/material';
 import { useQuery } from '@tanstack/react-query';
 
@@ -118,8 +117,6 @@ function useRevealOnScroll(rootMargin) {
  * @param {number} props.height - Height per chart cell (default 200)
  */
 function GroupChartsGrid({ symbols = [], period = '6mo', height = 200 }) {
-  const theme = useTheme();
-  const isDarkMode = theme.palette.mode === 'dark';
 
   const normalizedSymbols = useMemo(
     () =>
@@ -202,13 +199,12 @@ function GroupChartsGrid({ symbols = [], period = '6mo', height = 200 }) {
         period={period}
         height={height}
         dataUpdatedAt={dataUpdatedAt}
-        isDarkMode={isDarkMode}
       />
     </Box>
   );
 }
 
-function GroupChartCells({ symbols, batch, period, height, dataUpdatedAt, isDarkMode }) {
+function GroupChartCells({ symbols, batch, period, height, dataUpdatedAt }) {
   const { cellRef, isRevealed } = useRevealOnScroll(`${height + CARD_CHROME_PX}px 0px`);
   const dataMap = batch?.data || {};
   const missingSet = new Set(batch?.missing || []);
@@ -226,7 +222,7 @@ function GroupChartCells({ symbols, batch, period, height, dataUpdatedAt, isDark
                 variant="outlined"
                 sx={{
                   overflow: 'hidden',
-                  bgcolor: isDarkMode ? '#1e1e1e' : 'background.paper',
+                  bgcolor: 'background.paper',
                 }}
               >
                 <Box
@@ -236,7 +232,8 @@ function GroupChartCells({ symbols, batch, period, height, dataUpdatedAt, isDark
                     alignItems: 'center',
                     px: 1,
                     py: 0.5,
-                    borderBottom: `1px solid ${isDarkMode ? '#363a45' : '#e0e0e0'}`,
+                    borderBottom: 1,
+                    borderColor: 'divider',
                   }}
                 >
                   <Typography variant="subtitle2" sx={{ fontWeight: 700, fontFamily: 'monospace' }}>

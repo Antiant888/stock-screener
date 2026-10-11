@@ -1,5 +1,5 @@
 import { Fragment, useMemo } from 'react';
-import { Box, Chip, Grid, Paper, Typography } from '@mui/material';
+import { Box, Chip, Grid, Paper, Typography, useTheme } from '@mui/material';
 import {
   Area,
   AreaChart,
@@ -24,8 +24,8 @@ const STANCE_COLORS = {
   'Correction — In Cash': '#c62828',
 };
 
-// Follow-through day marker — a deliberate contrast to the stance colors.
-const FTD_COLOR = '#1565c0';
+// Follow-through days use the theme accent: a marker, not a gain/loss state.
+const FTD_COLOR = 'primary.main';
 
 function stanceColor(stance) {
   return STANCE_COLORS[stance] || '#9e9e9e';
@@ -64,6 +64,7 @@ function TimelineTooltip({ active, payload }) {
 }
 
 function MarketHealthExposure({ exposure }) {
+  const { palette } = useTheme();
   const color = stanceColor(exposure?.stance);
 
   const history = useMemo(
@@ -140,7 +141,7 @@ function MarketHealthExposure({ exposure }) {
           </Box>
 
           <Box sx={{ textAlign: 'center', mt: 0.5 }}>
-            <Chip label={exposure.stance} size="small" sx={{ bgcolor: color, color: '#fff', fontWeight: 600 }} />
+            <Chip label={exposure.stance} size="small" sx={{ bgcolor: color, color: palette.getContrastText(color), fontWeight: 600 }} />
           </Box>
 
           <Box sx={{ mt: 1.5, display: 'grid', gridTemplateColumns: '1fr 1fr', rowGap: 0.5, columnGap: 1 }}>
@@ -190,8 +191,8 @@ function MarketHealthExposure({ exposure }) {
                     x={p.label}
                     y={p.exposure_score}
                     r={4}
-                    fill={FTD_COLOR}
-                    stroke="#fff"
+                    fill={palette.primary.main}
+                    stroke={palette.background.paper}
                     strokeWidth={1.5}
                     ifOverflow="extendDomain"
                   />

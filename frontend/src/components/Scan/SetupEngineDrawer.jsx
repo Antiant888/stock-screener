@@ -4,6 +4,7 @@ import CheckCircleIcon from '@mui/icons-material/CheckCircle';
 import CancelIcon from '@mui/icons-material/Cancel';
 import WarningAmberIcon from '@mui/icons-material/WarningAmber';
 import { formatPatternName, getScoreColor } from '../../utils/formatUtils';
+import { onPalette } from '../../utils/colorUtils';
 
 // Human-readable names for common check/flag strings
 const CHECK_NAME_MAP = {
@@ -220,8 +221,7 @@ function SetupEngineDrawer({ open, onClose, stockData, isLoading = false }) {
                     sx={{
                       fontSize: '0.7rem',
                       height: 22,
-                      bgcolor: getScoreColor(stockData.se_pattern_confidence),
-                      color: 'white',
+                      ...onPalette(getScoreColor(stockData.se_pattern_confidence)),
                     }}
                   />
                 )}
@@ -247,8 +247,7 @@ function SetupEngineDrawer({ open, onClose, stockData, isLoading = false }) {
                     sx={{
                       fontSize: '0.7rem',
                       height: 22,
-                      bgcolor: stockData.se_setup_ready ? '#4caf50' : '#9e9e9e',
-                      color: 'white',
+                      ...onPalette(stockData.se_setup_ready ? 'success.main' : 'grey.500'),
                       fontWeight: 'bold',
                     }}
                   />
@@ -297,7 +296,7 @@ function SetupEngineDrawer({ open, onClose, stockData, isLoading = false }) {
                       fontWeight="medium"
                       sx={{
                         fontSize: '0.8rem',
-                        color: stockData.se_distance_to_pivot_pct <= 0 ? '#4caf50' : '#ff9800',
+                        color: stockData.se_distance_to_pivot_pct <= 0 ? 'success.main' : 'warning.main',
                       }}
                     >
                       {stockData.se_distance_to_pivot_pct >= 0 ? '+' : ''}
@@ -322,7 +321,7 @@ function SetupEngineDrawer({ open, onClose, stockData, isLoading = false }) {
                 {explain.passed_checks.map((check) => (
                   <CheckItem
                     key={check}
-                    icon={<CheckCircleIcon sx={{ fontSize: 16, color: '#4caf50' }} />}
+                    icon={<CheckCircleIcon sx={{ fontSize: 16, color: 'success.main' }} />}
                     text={formatCheckName(check)}
                   />
                 ))}
@@ -335,9 +334,9 @@ function SetupEngineDrawer({ open, onClose, stockData, isLoading = false }) {
                 {explain.failed_checks.map((check) => (
                   <CheckItem
                     key={check}
-                    icon={<CancelIcon sx={{ fontSize: 16, color: '#f44336' }} />}
+                    icon={<CancelIcon sx={{ fontSize: 16, color: 'error.main' }} />}
                     text={formatCheckName(check)}
-                    color="#f44336"
+                    color="error.main"
                   />
                 ))}
               </DrawerSection>
@@ -366,7 +365,7 @@ function SetupEngineDrawer({ open, onClose, stockData, isLoading = false }) {
                   const flagBase = getFlagCode(flag);
                   const flagText = getFlagMessage(flag);
                   const isHard = HARD_FLAGS.has(flagBase);
-                  const flagColor = isHard ? '#f44336' : '#ff9800';
+                  const flagColor = isHard ? 'error.main' : 'warning.main';
                   return (
                     <CheckItem
                       key={`${flagBase || 'flag'}-${idx}`}
@@ -405,8 +404,7 @@ function SetupEngineDrawer({ open, onClose, stockData, isLoading = false }) {
                           sx={{
                             fontSize: '0.65rem',
                             height: 18,
-                            bgcolor: getScoreColor(Number(c.confidence_pct)),
-                            color: 'white',
+                            ...onPalette(getScoreColor(Number(c.confidence_pct))),
                           }}
                         />
                       )}
@@ -463,9 +461,9 @@ function SetupEngineDrawer({ open, onClose, stockData, isLoading = false }) {
                         {Object.entries(c.checks).map(([name, passed]) => (
                           <Box key={name} sx={{ display: 'flex', alignItems: 'center', gap: 0.5, py: 0.1 }}>
                             {passed ? (
-                              <CheckCircleIcon sx={{ fontSize: 12, color: '#4caf50' }} />
+                              <CheckCircleIcon sx={{ fontSize: 12, color: 'success.main' }} />
                             ) : (
-                              <CancelIcon sx={{ fontSize: 12, color: '#f44336' }} />
+                              <CancelIcon sx={{ fontSize: 12, color: 'error.main' }} />
                             )}
                             <Typography variant="caption" sx={{ fontSize: '0.68rem' }}>
                               {formatCheckName(name)}
