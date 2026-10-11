@@ -8,12 +8,15 @@ import {
   Container,
   FormControl,
   ListItem,
+  ListItemButton,
   ListItemIcon,
   ListItemText,
   MenuItem,
   Select,
   Toolbar,
 } from '@mui/material';
+import { useLocation } from 'react-router-dom';
+import GitHubIcon from '@mui/icons-material/GitHub';
 import CandlestickChartIcon from '@mui/icons-material/CandlestickChart';
 import LockOutlinedIcon from '@mui/icons-material/LockOutlined';
 import {
@@ -49,6 +52,10 @@ const publicationStatus = (publication, now) => {
   return { label: `Current · ${session}`, color: 'success' };
 };
 
+// ponytail: forks link upstream too; the demo exists to send people to this repo.
+const REPO_URL = 'https://github.com/xang1234/stock-screener';
+const SITE_NAME = 'Stock Scanner Daily';
+
 const useMinuteClock = () => {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
@@ -71,6 +78,14 @@ function StaticLayout({ children }) {
   const navItems = isStaticOptionsAvailable(marketEntry)
     ? [...CORE_NAV_ITEMS, { path: '/options', label: 'Options', matchPrefix: true, icon: <CandlestickChartIcon /> }]
     : CORE_NAV_ITEMS;
+  const { pathname } = useLocation();
+  const pageLabel = navItems.find((item) => (
+    item.matchPrefix ? pathname.startsWith(item.path) : pathname === item.path
+  ))?.label;
+  const titleMarket = selectedUnavailable ? selectedMarket : marketEntry.market;
+  useEffect(() => {
+    document.title = [pageLabel, titleMarket, SITE_NAME].filter(Boolean).join(' · ');
+  }, [pageLabel, titleMarket]);
 
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', minHeight: '100vh' }}>
@@ -79,7 +94,7 @@ function StaticLayout({ children }) {
           variant="dense"
           sx={{ ...safeGutters, minHeight: 52, gap: { xs: 1, md: 1.5 }, overflowX: 'auto', '& > *': { flexShrink: 0 } }}
         >
-          <BrandMark label={isMobile ? null : 'Stock Scanner Daily'} />
+          <BrandMark label={isMobile ? null : SITE_NAME} />
           {isMobile ? (
             <LockOutlinedIcon role="img" aria-label="Read-only" titleAccess="Read-only" sx={{ fontSize: 18, color: 'text.secondary' }} />
           ) : (
@@ -129,6 +144,18 @@ function StaticLayout({ children }) {
             <>
               <Box sx={{ flexGrow: 1 }} />
               <DesktopNav items={navItems} />
+              <Button
+                href={REPO_URL}
+                target="_blank"
+                rel="noopener noreferrer"
+                size="small"
+                color="inherit"
+                variant="outlined"
+                startIcon={<GitHubIcon />}
+                sx={{ textTransform: 'none', borderRadius: 2 }}
+              >
+                Star on GitHub
+              </Button>
               <ColorModeButton />
             </>
           )}
@@ -172,6 +199,10 @@ function StaticLayout({ children }) {
                 <ListItemIcon><LockOutlinedIcon /></ListItemIcon>
                 <ListItemText primary="Read-only" secondary="A published daily snapshot; nothing here can be changed." />
               </ListItem>
+              <ListItemButton component="a" href={REPO_URL} target="_blank" rel="noopener noreferrer" onClick={close}>
+                <ListItemIcon><GitHubIcon /></ListItemIcon>
+                <ListItemText primary="Star on GitHub" secondary="Open source. Self-host it for live scans." />
+              </ListItemButton>
               <ColorModeListItem onDone={close} />
             </>
           )}

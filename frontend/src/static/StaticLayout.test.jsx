@@ -83,6 +83,23 @@ describe('StaticLayout market selector', () => {
   });
 });
 
+describe('StaticLayout repo link and page title', () => {
+  it('links the demo back to its GitHub repo in a new tab', () => {
+    renderLayout();
+
+    const link = screen.getByRole('link', { name: /Star on GitHub/ });
+    expect(link).toHaveAttribute('href', 'https://github.com/xang1234/stock-screener');
+    expect(link).toHaveAttribute('target', '_blank');
+    expect(link).toHaveAttribute('rel', expect.stringContaining('noopener'));
+  });
+
+  it('titles the tab with the page and market', () => {
+    renderLayout('/breadth');
+
+    expect(document.title).toBe('Breadth · US · Stock Scanner Daily');
+  });
+});
+
 describe('StaticLayout publication status chip (#503)', () => {
   const setPublication = (publication) => {
     manifest.markets.US.publication = publication;
@@ -170,5 +187,13 @@ describe('StaticLayout on a phone-width screen', () => {
     const nav = screen.getByRole('navigation', { name: 'Main' });
     fireEvent.click(within(nav).getByRole('button', { name: 'More' }));
     expect(within(screen.getByRole('list', { name: 'More' })).getByText('Read-only')).toBeInTheDocument();
+  });
+
+  it('offers the GitHub repo from the More menu', () => {
+    renderLayout();
+
+    fireEvent.click(within(screen.getByRole('navigation', { name: 'Main' })).getByRole('button', { name: 'More' }));
+    expect(within(screen.getByRole('list', { name: 'More' })).getByRole('link', { name: /Star on GitHub/ }))
+      .toHaveAttribute('href', 'https://github.com/xang1234/stock-screener');
   });
 });
