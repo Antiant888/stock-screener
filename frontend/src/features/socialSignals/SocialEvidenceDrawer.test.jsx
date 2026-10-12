@@ -53,4 +53,9 @@ describe('SocialEvidenceDrawer', () => {
     renderDrawer({ available: true, item: { canonical_symbol: 'CEG' }, posts: [], claims: [] });
     expect(screen.getByText('No company claims extracted in this window.')).toBeInTheDocument();
   });
+
+  it('omits the section for an API that does not report claims', () => {
+    renderDrawer({ available: true, item: { canonical_symbol: 'CEG' }, posts: [] });
+    expect(screen.queryByText('What X is claiming')).not.toBeInTheDocument();
+  });
 });

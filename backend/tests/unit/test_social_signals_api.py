@@ -669,7 +669,6 @@ async def test_evidence_lists_this_candidates_extracted_claims_supported_first(
         SocialSnapshotRecord,
     )
     from app.infra.db.models.social_analysis import SocialExtractionWork, SocialRunWork
-    from app.infra.db.models.social_signals import SocialPostTicker
     from app.models.stock_universe import StockUniverse
     from app.models.theme import ContentItem
     from app.services import server_auth
@@ -690,12 +689,8 @@ async def test_evidence_lists_this_candidates_extracted_claims_supported_first(
                        url=post.url, author="analyst", published_at=post.created_at, fetched_at=now)
     db_session.add(item)
     db_session.flush()
-    db_session.add(SocialPostTicker(
-        content_item_id=item.id, candidate_key="US:AAA", raw_token="$AAA",
-        stock_universe_id=security.id, canonical_symbol="AAA", market="US",
-        mic="XNAS", local_code="AAA", resolution_state="resolved",
-        resolution_policy_version="social-resolution-v1", explanation_json={},
-    ))
+    # No SocialPostTicker row: scoring also attaches posts through cashtags in the
+    # text and claim tokens, so claims must not depend on a stored ticker mapping.
     record = SocialSnapshotRecord(
         "published-1", "US:AAA", "AAA", "US", "watch",
         Decimal("80"), Decimal("50"), Decimal("68"),
@@ -703,6 +698,7 @@ async def test_evidence_lists_this_candidates_extracted_claims_supported_first(
     )
     serialized_post = {**asdict(post), "created_at": post.created_at.isoformat(),
                        "observed_at": post.observed_at.isoformat()}
+
     def claim(token, theme, relationship, excerpt, support):
         return ExtractionClaim("p-1", theme.lower().replace(" ", "-"), theme, token,
                                relationship, excerpt, support, ())
@@ -721,19 +717,33 @@ async def test_evidence_lists_this_candidates_extracted_claims_supported_first(
         created_at=now, updated_at=now,
     )
 
-    def link_work(run):
-        db_session.add(work)
-        db_session.flush()
-        db_session.add(SocialRunWork(run_id=run.id, work_id=work.id, input_hash=input_hash,
-                                     included_at=now))
+    # An earlier revision of the same post, saved first; only the newest work counts.
+    from dataclasses import replace
+    old_post = replace(post, text="$AAA draft: nuclear deal coming")
+    old_hash = SocialExtractionService.input_hash((old_post,))
+    old_snapshot = {**serialized_post, "text": old_post.text}
+    old_result = ExtractionResult(old_hash, "synthetic", "actual", "v1", "v1", (
+        claim("$AAA", "Stale theme", "rumor", "nuclear deal coming", "supported"),
+    ), 1, 1, (ExtractionPostJudgment("p-1", True, "aaa-draft"),))
+    old_work = SocialExtractionWork(
+        content_item_id=item.id, input_hash=old_hash, prompt_version="v1", schema_version="v1",
+        selected_model="requested", actual_provider="synthetic", actual_model="actual",
+        result_json=asdict(old_result), state="succeeded", input_snapshot_json=old_snapshot,
+        created_at=now, updated_at=now,
+    )
 
+    def link_work(run):
+        for saved, saved_hash in ((old_work, old_hash), (work, input_hash)):
+            db_session.add(saved)
+            db_session.flush()
+            db_session.add(SocialRunWork(run_id=run.id, work_id=saved.id, input_hash=saved_hash,
+                                         included_at=now))
 
     _publish_rows(db_session, (record,), observations={
         "1": {"inputs": [{"content_item_id": item.id, "post": serialized_post}],
               "observed_at": now.isoformat()},
         "2": {"inputs": [], "observed_at": now.isoformat()},
     }, before_publish=link_work)
-
 
     response = await _request(
         db_session, "GET", "/api/v1/social-signals/candidates/US:AAA/evidence?window=7d",

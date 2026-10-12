@@ -433,20 +433,30 @@ class SocialSignalQueries:
         from app.infra.db.models.social_analysis import SocialExtractionWork, SocialRunWork
         from app.services.social_theme_projection_service import _decode
 
+        # ponytail: loads every succeeded work pinned to the run, as the scoring
+        # reader does; filter by content item ids in SQL if drawer opens get slow.
+        # (Not by ticker rows: posts also join a candidate through claim tokens.)
         works = self.db.scalars(select(SocialExtractionWork).join(
             SocialRunWork, SocialRunWork.work_id == SocialExtractionWork.id,
-        ).where(SocialRunWork.run_id == run.id, SocialExtractionWork.state == "succeeded"))
-        found = {}
+        ).where(
+            SocialRunWork.run_id == run.id, SocialExtractionWork.state == "succeeded",
+        ).order_by(SocialExtractionWork.id.desc()))
+        found, seen_posts, resolved = {}, set(), {}
         for work in works:
-            if (work.input_snapshot_json or {}).get("provider_post_id") not in post_ids:
+            post_id = (work.input_snapshot_json or {}).get("provider_post_id")
+            # Newest work per post only: an edited post's older revision is superseded.
+            if post_id not in post_ids or post_id in seen_posts:
                 continue
+            seen_posts.add(post_id)
             try:
                 post, result = _decode(work)
             except ValueError:
                 # A saved result that no longer validates is not evidence to show.
                 continue
             for claim in result.claims:
-                resolution = resolver.resolve(claim.company_token)
+                if claim.company_token not in resolved:
+                    resolved[claim.company_token] = resolver.resolve(claim.company_token)
+                resolution = resolved[claim.company_token]
                 if resolution.status != "resolved" or (resolution.market, resolution.symbol) != listing:
                     continue
                 excerpt = _excerpt(claim.excerpt)

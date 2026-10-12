@@ -61,7 +61,7 @@ export default function SocialEvidenceDrawer({
             </Typography>
           </Box>
         ) : null}
-        {data?.available ? <ClaimList claims={data.claims || []} /> : null}
+        {data?.available && Array.isArray(data.claims) ? <ClaimList claims={data.claims} /> : null}
         <Box sx={{ mt: 2 }}>
           <Typography variant="subtitle2">Source posts</Typography>
           {(data?.posts || []).slice(0, 3).map((post) => (
