@@ -1,4 +1,4 @@
-import { fireEvent, screen, within } from '@testing-library/react';
+import { cleanup, fireEvent, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { renderWithProviders } from '../../test/renderWithProviders';
 import {
@@ -629,18 +629,34 @@ describe('ResultsTable', () => {
       expect(within(ratedCard).getByText('Strong Buy')).toBeInTheDocument();
     });
 
-    it('shows the score the list is sorted by, labelled, instead of the composite', () => {
-      const row = { ...fullSeRow, composite_score: 66, minervini_score: 56.2 };
-      const { rerender } = renderWithProviders(
-        <ResultsTable {...defaultProps} results={[row]} sortBy="minervini_score" />,
+    it('shows the metric the list is sorted by, labelled, instead of the composite', () => {
+      const row = {
+        ...fullSeRow, composite_score: 66, minervini_score: 56.2, vcp_score: 81.5, eps_growth_qq: 45.24,
+        se_pattern_primary: 'cup_with_handle',
+      };
+      const renderSorted = (sortBy) => renderWithProviders(
+        <ResultsTable {...defaultProps} results={[row]} sortBy={sortBy} />,
       );
-      expect(screen.getByLabelText('Min score 56.2')).toHaveTextContent('Min 56.2');
 
-      rerender(<ResultsTable {...defaultProps} results={[{ ...row, vcp_score: 81.5 }]} sortBy="vcp_score" />);
+      renderSorted('minervini_score');
+      expect(screen.getByLabelText('Min 56.2')).toHaveTextContent('Min 56.2');
+      cleanup();
+
       // The built-in VCP and Tight presets sort by vcp_score.
-      expect(screen.getByLabelText('VScr score 81.5')).toBeInTheDocument();
+      renderSorted('vcp_score');
+      expect(screen.getByLabelText('VScr 81.5')).toBeInTheDocument();
+      cleanup();
 
-      rerender(<ResultsTable {...defaultProps} results={[row]} sortBy="symbol" />);
+      // Growth Rockets sorts by EPS growth, a percentage.
+      renderSorted('eps_growth_qq');
+      expect(screen.getByLabelText('EPS 45.2%')).toBeInTheDocument();
+      cleanup();
+
+      // Non-numeric sorts and fields already on the card keep the composite.
+      renderSorted('se_pattern_primary');
+      expect(screen.getByLabelText('Score 66.0')).toBeInTheDocument();
+      cleanup();
+      renderSorted('symbol');
       expect(screen.getByLabelText('Score 66.0')).toBeInTheDocument();
     });
 

@@ -69,6 +69,18 @@ describe('StockRowCard', () => {
     expect(screen.getByRole('button', { name: 'Watch' })).toHaveStyle({ pointerEvents: 'auto' });
   });
 
+  it('keeps the ticker at full width next to a long badge and actions', () => {
+    renderWithProviders(
+      <StockRowCard row={row} onOpen={vi.fn()} badge={<span>Deteriorating</span>} actions={<button type="button">Add</button>} />,
+    );
+
+    // jsdom has no layout, so check the flex rules: the ticker never shrinks,
+    // the badge slot can (it truncates), the actions keep their size.
+    expect(screen.getByRole('button', { name: 'Open FORM chart' })).toHaveStyle({ flexShrink: '0' });
+    expect(screen.getByText('Deteriorating').parentElement).toHaveStyle({ minWidth: '0' });
+    expect(screen.getByRole('button', { name: 'Add' }).parentElement).toHaveStyle({ flexShrink: '0' });
+  });
+
   it('shows a dash for a missing or non-numeric change', () => {
     renderWithProviders(<StockRowCard row={{ ...row, price_change_1d: 'n/a' }} />);
 

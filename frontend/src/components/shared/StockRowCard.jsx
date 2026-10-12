@@ -14,7 +14,23 @@ const oneDecimal = (value) => (Number.isFinite(Number(value)) && value != null ?
  * `badge` (e.g. a clickable action state) sits above the overlay as a sibling,
  * not nested inside the button.
  */
-export default function StockRowCard({ row, scoreField = 'composite_score', scoreLabel = null, badge = null, actions = null, meta = null, onOpen = null }) {
+export default function StockRowCard({
+  row,
+  scoreField = 'composite_score',
+  scoreLabel = null,
+  scoreSuffix = '',
+  badge = null,
+  actions = null,
+  meta = null,
+  onOpen = null,
+}) {
+  // A labelled metric (the active sort) only when it has a number; otherwise
+  // the composite, unlabelled.
+  const metricIsNumeric = Number.isFinite(Number(row[scoreField])) && row[scoreField] != null;
+  const metric = metricIsNumeric || scoreField === 'composite_score'
+    ? { value: oneDecimal(row[scoreField]), label: scoreLabel, suffix: scoreLabel ? scoreSuffix : '' }
+    : { value: oneDecimal(row.composite_score), label: null, suffix: '' };
+  const metricText = `${metric.value}${metric.value === '-' ? '' : metric.suffix}`;
   const change = Number(row.price_change_1d);
   const hasChange = row.price_change_1d != null && Number.isFinite(change);
   // Rank first: long industry names truncate, and the rank is the part worth keeping.
@@ -46,7 +62,9 @@ export default function StockRowCard({ row, scoreField = 'composite_score', scor
               aria-label={`Open ${row.symbol} chart`}
               sx={{
                 all: 'unset',
-                minWidth: 0,
+                // The ticker keeps its width; the badge beside it truncates instead.
+                flexShrink: 0,
+                maxWidth: '70%',
                 overflow: 'hidden',
                 textOverflow: 'ellipsis',
                 whiteSpace: 'nowrap',
@@ -60,7 +78,7 @@ export default function StockRowCard({ row, scoreField = 'composite_score', scor
               {row.symbol}
             </Box>
           ) : (
-            <Typography component="span" noWrap sx={{ fontWeight: 700, fontSize: '14px', minWidth: 0 }}>{row.symbol}</Typography>
+            <Typography component="span" noWrap sx={{ fontWeight: 700, fontSize: '14px', flexShrink: 0, maxWidth: '70%' }}>{row.symbol}</Typography>
           )}
           {badge || actions ? (
             // Above the stretched overlay, but only interactive children take the
@@ -69,7 +87,7 @@ export default function StockRowCard({ row, scoreField = 'composite_score', scor
               sx={{
                 position: 'relative',
                 zIndex: 1,
-                flexShrink: 0,
+                minWidth: 0,
                 pointerEvents: 'none',
                 display: 'flex',
                 alignItems: 'center',
@@ -77,8 +95,20 @@ export default function StockRowCard({ row, scoreField = 'composite_score', scor
                 '& button, & a, & [role="button"]': { pointerEvents: 'auto' },
               }}
             >
-              {badge}
-              {actions}
+              {badge ? (
+                <Box
+                  sx={{
+                    minWidth: 0,
+                    overflow: 'hidden',
+                    pointerEvents: 'none',
+                    '& .MuiChip-root': { maxWidth: '100%' },
+                    '& button, & a, & [role="button"]': { pointerEvents: 'auto' },
+                  }}
+                >
+                  {badge}
+                </Box>
+              ) : null}
+              {actions ? <Box sx={{ flexShrink: 0, display: 'flex' }}>{actions}</Box> : null}
             </Box>
           ) : null}
         </Box>
@@ -107,10 +137,10 @@ export default function StockRowCard({ row, scoreField = 'composite_score', scor
       <Box sx={{ textAlign: 'right' }}>
         <Typography
           component="span"
-          aria-label={`${scoreLabel ? `${scoreLabel} score` : 'Score'} ${oneDecimal(row[scoreField])}`}
+          aria-label={metric.label ? `${metric.label} ${metricText}` : `Score ${metricText}`}
           sx={{ display: 'inline-block', px: 0.75, borderRadius: 1, bgcolor: 'action.selected', fontSize: '11px', fontWeight: 700 }}
         >
-          {scoreLabel ? `${scoreLabel} ` : ''}{oneDecimal(row[scoreField])}
+          {metric.label ? `${metric.label} ` : ''}{metricText}
         </Typography>
         <Typography sx={{ fontSize: '13px', fontWeight: 600, mt: 0.25 }}>
           {formatLocalCurrency(row.current_price, row.currency)}

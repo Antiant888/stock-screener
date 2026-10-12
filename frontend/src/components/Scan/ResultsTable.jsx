@@ -56,13 +56,11 @@ const ROW_HEIGHT = 48;
 // Phone layout: one StockRowCard per result (fixed height keeps the virtualizer
 // exact). Content needs ~75px; the rest is headroom for larger system text.
 const MOBILE_CARD_HEIGHT = 84;
-// Score-like sorts: when one is active, the phone card shows that score
-// (labelled) instead of the composite, so the number matches the order.
-const CARD_SCORE_FIELDS = new Set([
-  'minervini_score', 'canslim_score', 'ipo_score', 'custom_score', 'volume_breakthrough_score',
-  'se_setup_score', 'vcp_score', 'resilience_score', 'rs_rating', 'rs_rating_1m', 'rs_rating_3m', 'rs_rating_12m',
-  'eps_rating', 'beta_adj_rs',
-]);
+// Phone cards show the active sort's value (labelled) so the number matches
+// the order, except for fields the card already shows; a non-numeric sort
+// value falls back to the composite inside StockRowCard.
+const CARD_VISIBLE_FIELDS = new Set(['composite_score', 'symbol', 'current_price', 'price_change_1d', 'ibd_group_rank']);
+const PERCENT_FIELD = /(_pct|_pctile|growth|change|perf|distance)/;
 // Sorts offered by the phone sort picker; the active sort is always included.
 const MOBILE_SORT_FIELDS = [
   ['composite_score', 'Composite score'],
@@ -779,10 +777,11 @@ function ResultsTable({
   };
 
   if (isMobile) {
-    const cardScoreField = CARD_SCORE_FIELDS.has(sortBy) ? sortBy : 'composite_score';
+    const cardScoreField = sortBy && !CARD_VISIBLE_FIELDS.has(sortBy) ? sortBy : 'composite_score';
     const cardScoreLabel = cardScoreField === 'composite_score'
       ? null
-      : columns.find((column) => column.id === cardScoreField)?.label || null;
+      : columns.find((column) => column.id === cardScoreField)?.label || cardScoreField;
+    const cardScoreSuffix = PERCENT_FIELD.test(cardScoreField) ? '%' : '';
     const sortOptions = !sortBy || MOBILE_SORT_FIELDS.some(([id]) => id === sortBy)
       ? MOBILE_SORT_FIELDS
       : [...MOBILE_SORT_FIELDS, [sortBy, columns.find((column) => column.id === sortBy)?.label || sortBy]];
@@ -836,6 +835,7 @@ function ResultsTable({
                     row={row}
                     scoreField={cardScoreField}
                     scoreLabel={cardScoreLabel}
+                    scoreSuffix={cardScoreSuffix}
                     badge={mobileBadge(row)}
                     actions={showActions && showWatchlistMenu
                       ? <AddToWatchlistMenu symbols={row.symbol} size="small" />
