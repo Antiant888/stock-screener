@@ -722,4 +722,18 @@ describe('ResultsTable', () => {
       expect(screen.getByRole('combobox', { name: 'Sort by' })).toHaveTextContent('Beta');
     });
   });
+
+  it('tints score cells by value and leaves a could-not-score 0 plain', () => {
+    const row = { ...fullSeRow, minervini_score: 95.4, canslim_score: 12.3, volume_breakthrough_score: 0, custom_score: 0.04 };
+    renderWithProviders(<ResultsTable {...defaultProps} results={[row]} />);
+
+    expect(screen.getByText('95.4')).toHaveClass('rt-heat-up-5');
+    expect(screen.getByText('12.3')).toHaveClass('rt-heat-down-3');
+    // Exact 0 and a value displayed as "0.0" look the same: untinted.
+    const zeros = screen.getAllByText('0.0');
+    expect(zeros).toHaveLength(2);
+    zeros.forEach((cell) => expect(cell.className).not.toMatch(/rt-heat/));
+    // The generated rule paints the tint (success.main at step 5).
+    expect(screen.getByText('95.4')).toHaveStyle({ backgroundColor: 'rgba(46, 189, 133, 0.5)' });
+  });
 });

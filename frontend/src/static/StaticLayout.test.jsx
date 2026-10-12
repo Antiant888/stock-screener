@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { renderWithProviders } from '../test/renderWithProviders';
 import { STATIC_MARKET_STORAGE_KEY, StaticMarketProvider } from './StaticMarketContext';
 import StaticLayout from './StaticLayout';
+import { SITE_TITLE } from './siteMeta';
 import { STATIC_GENERATION_EXPIRED_EVENT } from './dataClient';
 
 const manifest = {
@@ -80,6 +81,42 @@ describe('StaticLayout market selector', () => {
     expect(screen.getByText(/newer data has been published/i)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Reload' })).toBeInTheDocument();
     expect(screen.getByTestId('page')).toBeInTheDocument();
+  });
+});
+
+describe('StaticLayout repo link and page title', () => {
+  it('links the demo back to its GitHub repo in a new tab', () => {
+    renderLayout();
+
+    const link = screen.getByRole('link', { name: /Star on GitHub/ });
+    expect(link).toHaveAttribute('href', 'https://github.com/xang1234/stock-screener');
+    expect(link).toHaveAttribute('target', '_blank');
+    expect(link).toHaveAttribute('rel', expect.stringContaining('noopener'));
+  });
+
+  it('titles the tab with the page and market', () => {
+    renderLayout('/breadth');
+
+    expect(document.title).toBe('Breadth · US · Stock Scanner Daily');
+  });
+
+  it('names the Options page even when the market has no options nav item', () => {
+    renderLayout('/options/AAPL');
+
+    expect(screen.queryByRole('link', { name: 'Options' })).not.toBeInTheDocument();
+    expect(document.title).toBe('Options · US · Stock Scanner Daily');
+  });
+
+  it('keeps the descriptive search title on the landing page', () => {
+    renderLayout('/');
+
+    expect(document.title).toBe(SITE_TITLE);
+  });
+
+  it('says the repo link opens a new tab', () => {
+    renderLayout();
+
+    expect(screen.getByRole('link', { name: 'Star on GitHub (opens in a new tab)' })).toBeInTheDocument();
   });
 });
 
@@ -170,5 +207,13 @@ describe('StaticLayout on a phone-width screen', () => {
     const nav = screen.getByRole('navigation', { name: 'Main' });
     fireEvent.click(within(nav).getByRole('button', { name: 'More' }));
     expect(within(screen.getByRole('list', { name: 'More' })).getByText('Read-only')).toBeInTheDocument();
+  });
+
+  it('offers the GitHub repo from the More menu', () => {
+    renderLayout();
+
+    fireEvent.click(within(screen.getByRole('navigation', { name: 'Main' })).getByRole('button', { name: 'More' }));
+    expect(within(screen.getByRole('list', { name: 'More' })).getByRole('link', { name: /Star on GitHub/ }))
+      .toHaveAttribute('href', 'https://github.com/xang1234/stock-screener');
   });
 });

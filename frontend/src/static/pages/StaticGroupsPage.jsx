@@ -38,10 +38,7 @@ import {
   formatGroupRs,
 } from '../../features/groups/groupRankingFields';
 import { sortGroupRankings } from '../../features/groups/groupRankingSort';
-import {
-  groupRsCellSx,
-  groupRsTone,
-} from '../../features/groups/groupRsVisualEncoding';
+import { groupRsCellSx, groupRsTone } from '../../features/groups/groupRsVisualEncoding';
 
 const GroupMatrixPanel = lazy(() => import('../../features/groups/matrix/GroupMatrixPanel'));
 

@@ -52,6 +52,7 @@ import {
   formatLocalCurrency,
   formatPatternName,
 } from '../../utils/formatUtils';
+import { heatClass, heatClassStyles } from '../../utils/scoreHeat';
 
 // Row height constant for virtualization
 const ROW_HEIGHT = 48;
@@ -289,6 +290,10 @@ const resolvePaletteColor = (palette, path) => (
   path.split('.').reduce((value, key) => value?.[key], palette)
 );
 const stopPropagation = (event) => event.stopPropagation();
+// Screener scores: 0 means "could not score" (insufficient data, error, no
+// breakthrough; see VolumeBreakthroughScanner._insufficient_data_result), not a
+// weak score, so it stays untinted.
+const scoreHeatClass = (score) => heatClass(Number(score?.toFixed(1)) === 0 ? null : score);
 const stageFill = (theme, stage) => {
   const fill = resolvePaletteColor(theme.palette, getStageColor(stage));
   return { backgroundColor: fill, color: theme.palette.getContrastText(fill) };
@@ -306,6 +311,7 @@ const ResultRow = styled(TableRow)(({ theme }) => ({
     `& .${colorClass(path)}`,
     { color: resolvePaletteColor(theme.palette, path) },
   ])),
+  ...heatClassStyles(theme.palette),
   '& .rt-mono': { fontFamily: 'monospace' },
   '& .rt-strong': { fontWeight: 600 },
   '& .rt-ellipsis': { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
@@ -523,31 +529,31 @@ const VirtualTableRow = memo(function VirtualTableRow({
         {row.ibd_group_rank ?? '-'}
       </TableCell>
 
-      <TableCell align="center" className="rt-mono rt-w50 rt-strong rt-c-primary-main">
+      <TableCell align="center" className={`rt-mono rt-w50 rt-strong ${scoreHeatClass(row.composite_score)}`}>
         {row.composite_score?.toFixed(1) || '-'}
       </TableCell>
 
-      <TableCell align="center" className="rt-mono rt-w45">
+      <TableCell align="center" className={`rt-mono rt-w45 ${scoreHeatClass(row.minervini_score)}`}>
         {row.minervini_score != null ? row.minervini_score.toFixed(1) : '-'}
       </TableCell>
 
-      <TableCell align="center" className="rt-mono rt-w45">
+      <TableCell align="center" className={`rt-mono rt-w45 ${scoreHeatClass(row.canslim_score)}`}>
         {row.canslim_score != null ? row.canslim_score.toFixed(1) : '-'}
       </TableCell>
 
-      <TableCell align="center" className="rt-mono rt-w45">
+      <TableCell align="center" className={`rt-mono rt-w45 ${scoreHeatClass(row.ipo_score)}`}>
         {row.ipo_score != null ? row.ipo_score.toFixed(1) : '-'}
       </TableCell>
 
-      <TableCell align="center" className="rt-mono rt-w45">
+      <TableCell align="center" className={`rt-mono rt-w45 ${scoreHeatClass(row.custom_score)}`}>
         {row.custom_score != null ? row.custom_score.toFixed(1) : '-'}
       </TableCell>
 
-      <TableCell align="center" className="rt-mono rt-w50">
+      <TableCell align="center" className={`rt-mono rt-w50 ${scoreHeatClass(row.volume_breakthrough_score)}`}>
         {row.volume_breakthrough_score != null ? row.volume_breakthrough_score.toFixed(1) : '-'}
       </TableCell>
 
-      <TableCell align="center" className="rt-mono rt-w45">
+      <TableCell align="center" className={`rt-mono rt-w45 ${scoreHeatClass(row.se_setup_score)}`}>
         {row.se_setup_score != null ? row.se_setup_score.toFixed(1) : '-'}
       </TableCell>
 

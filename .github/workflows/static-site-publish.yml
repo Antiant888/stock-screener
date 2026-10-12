@@ -150,6 +150,7 @@ jobs:
         env:
           VITE_STATIC_SITE: "true"
           VITE_BASE_PATH: /${{ github.event.repository.name }}/
+          VITE_SITE_URL: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/
         run: cd frontend && npm run build
 
       - name: Upload Pages artifact

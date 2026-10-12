@@ -8,12 +8,15 @@ import {
   Container,
   FormControl,
   ListItem,
+  ListItemButton,
   ListItemIcon,
   ListItemText,
   MenuItem,
   Select,
   Toolbar,
 } from '@mui/material';
+import { useLocation } from 'react-router-dom';
+import GitHubIcon from '@mui/icons-material/GitHub';
 import CandlestickChartIcon from '@mui/icons-material/CandlestickChart';
 import LockOutlinedIcon from '@mui/icons-material/LockOutlined';
 import {
@@ -32,6 +35,7 @@ import {
   useStaticManifest,
 } from './dataClient';
 import { useStaticGenerationLifecycle } from './useStaticGenerationLifecycle';
+import { REPO_URL, SITE_NAME, SITE_TITLE } from './siteMeta';
 import { marketFlag } from '../utils/marketFlags';
 import { isStaticOptionsAvailable } from '../features/options/optionsAvailability';
 
@@ -68,9 +72,20 @@ function StaticLayout({ children }) {
   const selectedUnavailable = getStaticUnavailableMarkets(manifestQuery.data).includes(selectedMarket);
   const now = useMinuteClock();
   const status = selectedUnavailable ? null : publicationStatus(marketEntry.publication, now);
-  const navItems = isStaticOptionsAvailable(marketEntry)
-    ? [...CORE_NAV_ITEMS, { path: '/options', label: 'Options', matchPrefix: true, icon: <CandlestickChartIcon /> }]
-    : CORE_NAV_ITEMS;
+  const allNavItems = [...CORE_NAV_ITEMS, { path: '/options', label: 'Options', matchPrefix: true, icon: <CandlestickChartIcon /> }];
+  const navItems = isStaticOptionsAvailable(marketEntry) ? allNavItems : CORE_NAV_ITEMS;
+  const { pathname } = useLocation();
+  // Title from every route: /options still renders (an unavailable notice) when its nav item is hidden.
+  const pageLabel = allNavItems.find((item) => (
+    item.matchPrefix ? pathname.startsWith(item.path) : pathname === item.path
+  ))?.label;
+  const titleMarket = selectedUnavailable ? selectedMarket : marketEntry.market;
+  useEffect(() => {
+    // The landing page is the only URL search engines see (hash routes), so it keeps the descriptive title.
+    document.title = pathname === '/'
+      ? SITE_TITLE
+      : [pageLabel, titleMarket, SITE_NAME].filter(Boolean).join(' · ');
+  }, [pathname, pageLabel, titleMarket]);
 
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', minHeight: '100vh' }}>
@@ -79,7 +94,7 @@ function StaticLayout({ children }) {
           variant="dense"
           sx={{ ...safeGutters, minHeight: 52, gap: { xs: 1, md: 1.5 }, overflowX: 'auto', '& > *': { flexShrink: 0 } }}
         >
-          <BrandMark label={isMobile ? null : 'Stock Scanner Daily'} />
+          <BrandMark label={isMobile ? null : SITE_NAME} />
           {isMobile ? (
             <LockOutlinedIcon role="img" aria-label="Read-only" titleAccess="Read-only" sx={{ fontSize: 18, color: 'text.secondary' }} />
           ) : (
@@ -129,6 +144,20 @@ function StaticLayout({ children }) {
             <>
               <Box sx={{ flexGrow: 1 }} />
               <DesktopNav items={navItems} />
+              <Button
+                href={REPO_URL}
+                target="_blank"
+                rel="noopener noreferrer"
+                size="small"
+                color="inherit"
+                variant="outlined"
+                startIcon={<GitHubIcon />}
+                aria-label="Star on GitHub (opens in a new tab)"
+                // Icon-only until lg: the bar already scrolls sideways around 900-1200px.
+                sx={{ textTransform: 'none', borderRadius: 2, minWidth: 0, '& .MuiButton-startIcon': { mr: { md: 0, lg: 1 } } }}
+              >
+                <Box component="span" sx={{ display: { md: 'none', lg: 'inline' } }}>Star on GitHub</Box>
+              </Button>
               <ColorModeButton />
             </>
           )}
@@ -172,6 +201,17 @@ function StaticLayout({ children }) {
                 <ListItemIcon><LockOutlinedIcon /></ListItemIcon>
                 <ListItemText primary="Read-only" secondary="A published daily snapshot; nothing here can be changed." />
               </ListItem>
+              <ListItemButton
+                component="a"
+                href={REPO_URL}
+                target="_blank"
+                rel="noopener noreferrer"
+                aria-label="Star on GitHub (opens in a new tab)"
+                onClick={close}
+              >
+                <ListItemIcon><GitHubIcon /></ListItemIcon>
+                <ListItemText primary="Star on GitHub" secondary="Open source. Self-host it for live scans." />
+              </ListItemButton>
               <ColorModeListItem onDone={close} />
             </>
           )}
