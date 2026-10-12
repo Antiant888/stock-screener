@@ -102,7 +102,9 @@ const CARD_METRICS = {
   market_cap: { label: 'MCap', name: 'Market cap', format: (v, row) => formatLargeNumber(v, getCurrencyPrefix(row.currency)) },
   market_cap_usd: { label: 'MCap$', name: 'Market cap USD', format: (v) => formatLargeNumber(v, '$') },
   adv_usd: { label: 'ADV', name: 'Average dollar volume', format: (v) => formatLargeNumber(v, '$') },
-  ipo_date: { label: 'IPO', name: 'IPO age', format: (v) => formatIpoAge(v), text: true },
+  // The list sorts by the raw date, so show the date (an age would read in
+  // the opposite direction to the sort arrow).
+  ipo_date: { label: 'IPO', name: 'IPO date', format: (v) => String(v).slice(0, 10), text: true },
   gap_percent: { label: 'Gap', name: 'Gap', format: pct },
   // Preset-only fields: present on static-site rows (static_scan_bundle_exporter
   // extended fields); the live scan API doesn't return them yet, so live cards
@@ -115,6 +117,12 @@ const CARD_METRICS = {
   week_52_low_distance: { label: '52WL', name: 'From 52-week low', format: pct },
   volume_surge: { label: 'Vol', name: 'Volume surge', format: ratio },
   se_up_down_volume_ratio_10d: { label: 'U/D', name: 'Up/down volume 10 days', format: ratio },
+};
+// Same text as the desktop symbol cell's matched-setups chip.
+const matchedGroupsLabel = (row) => {
+  const groups = row.matched_groups || [];
+  if (!groups.length) return null;
+  return groups.length === 1 ? groups[0].name : `${groups[0].name} +${groups.length - 1}`;
 };
 // Text sorts the pill can't fit: their value leads the card's group line.
 const CARD_SORT_NOTES = {
@@ -929,11 +937,22 @@ function ResultsTable({
                   <StockRowCard
                     row={row}
                     metric={cardMetricFor(row, sortBy)}
-                    sortNote={CARD_SORT_NOTES[sortBy]?.(row) ?? null}
-                    badge={mobileBadge(row)}
-                    actions={showActions && showWatchlistMenu
-                      ? <AddToWatchlistMenu symbols={row.symbol} size="small" />
-                      : null}
+                    sortNote={[CARD_SORT_NOTES[sortBy]?.(row), matchedGroupsLabel(row)].filter(Boolean).join(' · ') || null}
+                    badge={(
+                      <>
+                        <MarketBadge market={row.market} exchange={row.exchange} />
+                        {mobileBadge(row)}
+                      </>
+                    )}
+                    actions={(
+                      <>
+                        <FieldAvailabilityChip
+                          fieldAvailability={row.field_availability}
+                          growthMetricBasis={row.growth_metric_basis}
+                        />
+                        {showActions && showWatchlistMenu ? <AddToWatchlistMenu symbols={row.symbol} size="small" /> : null}
+                      </>
+                    )}
                     onOpen={chartEnabled ? () => handleRowClick(row.symbol) : null}
                   />
                 </Box>

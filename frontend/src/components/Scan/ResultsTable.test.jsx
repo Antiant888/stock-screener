@@ -702,6 +702,30 @@ describe('ResultsTable', () => {
       expect(onSortChange).toHaveBeenLastCalledWith('market_cap', 'desc');
     });
 
+    it('keeps the desktop symbol cell details on the card', async () => {
+      const row = {
+        ...fullSeRow,
+        market: 'HK',
+        matched_groups: [{ name: 'VCP setup' }, { name: 'Leaders' }],
+        field_availability: { eps_growth_qq: { status: 'unavailable', reason: 'no quarterly data' } },
+      };
+      renderWithProviders(<ResultsTable {...defaultProps} results={[row]} />);
+
+      const card = screen.getByRole('listitem');
+      expect(within(card).getByText('HK')).toBeInTheDocument(); // market badge
+      expect(within(card).getByText('VCP setup +1')).toBeInTheDocument(); // matched setups
+      // Data-availability chip stays interactive and opens its details dialog.
+      await userEvent.click(within(card).getByRole('button', { name: /unavailable or computed/ }));
+      expect(screen.getByRole('dialog')).toBeInTheDocument();
+    });
+
+    it('shows the IPO date (what the list sorts by), not an age', () => {
+      const row = { ...fullSeRow, ipo_date: '2024-03-15' };
+      renderWithProviders(<ResultsTable {...defaultProps} results={[row]} sortBy="ipo_date" />);
+
+      expect(screen.getByText('IPO date 2024-03-15')).toBeInTheDocument();
+    });
+
     it('labels the price sort alias in the picker', () => {
       // scanFilterFields.json marks `price` sortable (same column as current_price).
       renderWithProviders(<ResultsTable {...defaultProps} sortBy="price" />);
