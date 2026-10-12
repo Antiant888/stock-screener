@@ -1,4 +1,5 @@
 import { fireEvent, screen, waitFor } from '@testing-library/react';
+import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { renderWithProviders } from '../test/renderWithProviders';
@@ -32,6 +33,11 @@ vi.mock('../api/appRuntime', () => ({
 
 vi.mock('../hooks/useRuntimeActivity', () => ({
   useRuntimeActivity: (...args) => useRuntimeActivity(...args),
+}));
+
+vi.mock('../api/tasks', () => ({
+  getScheduledTasks: () => Promise.resolve({ tasks: [], total_tasks: 0 }),
+  triggerTask: vi.fn(),
 }));
 
 const SUMMARY_US = {
@@ -189,6 +195,18 @@ describe('OperationsPage', () => {
     expect(screen.queryByText(/No active alerts/)).not.toBeInTheDocument();
     expect(screen.getByText('warning')).toBeInTheDocument();
     expect(screen.getByText('open')).toBeInTheDocument();
+  });
+
+  it('shows scheduled jobs only when the tasks feature is enabled', async () => {
+    const { unmount } = renderWithProviders(<MemoryRouter><OperationsPage /></MemoryRouter>);
+    expect(screen.queryByRole('heading', { name: 'Scheduled jobs' })).not.toBeInTheDocument();
+    unmount();
+
+    runtimeState.features = { themes: true, tasks: true };
+    renderWithProviders(<MemoryRouter><OperationsPage /></MemoryRouter>);
+
+    expect(screen.getByRole('heading', { name: 'Scheduled jobs' })).toBeInTheDocument();
+    expect(await screen.findByText(/No scheduled tasks/)).toBeInTheDocument();
   });
 
   it('clicking Ack calls acknowledgeAlert', async () => {

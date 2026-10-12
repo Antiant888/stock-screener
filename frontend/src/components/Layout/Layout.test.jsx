@@ -364,6 +364,16 @@ describe('Layout', () => {
     expect(screen.queryByRole('link', { name: 'Options' })).not.toBeInTheDocument();
   });
 
+  it('links the scheduled-tasks gear to the Operations schedules section', () => {
+    useRuntimeActivityMock.mockReturnValue({ data: null });
+    runtimeState.features = { ...runtimeState.features, tasks: true };
+    renderInApp('/scan');
+
+    expect(screen.getByRole('link', { name: 'Scheduled tasks' }))
+      .toHaveAttribute('href', '/operations#schedules');
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  });
+
   describe('on a phone-width screen', () => {
     beforeEach(() => {
       // useMediaQuery(breakpoints.down('md')) matches.
@@ -429,6 +439,16 @@ describe('Layout', () => {
 
       expect(loadedPaths).toEqual(['/breadth']);
       await vi.waitFor(() => expect(api.getBreadthBootstrap).toHaveBeenCalledWith('US'));
+    });
+
+    it('links Scheduled tasks in the More sheet to the Operations schedules section', () => {
+      runtimeState.features = { ...runtimeState.features, tasks: true };
+      renderInApp('/');
+
+      fireEvent.click(within(screen.getByRole('navigation', { name: 'Main' })).getByRole('button', { name: 'More' }));
+
+      expect(screen.getByRole('link', { name: 'Scheduled tasks' }))
+        .toHaveAttribute('href', '/operations#schedules');
     });
 
     it('loads a More-sheet page when its link is touched', () => {
