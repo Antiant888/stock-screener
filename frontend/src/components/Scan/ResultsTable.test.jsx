@@ -636,6 +636,10 @@ describe('ResultsTable', () => {
       );
       expect(screen.getByLabelText('Min score 56.2')).toHaveTextContent('Min 56.2');
 
+      rerender(<ResultsTable {...defaultProps} results={[{ ...row, vcp_score: 81.5 }]} sortBy="vcp_score" />);
+      // The built-in VCP and Tight presets sort by vcp_score.
+      expect(screen.getByLabelText('VScr score 81.5')).toBeInTheDocument();
+
       rerender(<ResultsTable {...defaultProps} results={[row]} sortBy="symbol" />);
       expect(screen.getByLabelText('Score 66.0')).toBeInTheDocument();
     });

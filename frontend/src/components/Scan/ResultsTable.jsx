@@ -60,7 +60,7 @@ const MOBILE_CARD_HEIGHT = 84;
 // (labelled) instead of the composite, so the number matches the order.
 const CARD_SCORE_FIELDS = new Set([
   'minervini_score', 'canslim_score', 'ipo_score', 'custom_score', 'volume_breakthrough_score',
-  'se_setup_score', 'resilience_score', 'rs_rating', 'rs_rating_1m', 'rs_rating_3m', 'rs_rating_12m',
+  'se_setup_score', 'vcp_score', 'resilience_score', 'rs_rating', 'rs_rating_1m', 'rs_rating_3m', 'rs_rating_12m',
   'eps_rating', 'beta_adj_rs',
 ]);
 // Sorts offered by the phone sort picker; the active sort is always included.
