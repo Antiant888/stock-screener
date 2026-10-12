@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from ...database import get_db
 from ...schemas.operations import (
     CotOperationsResponse,
+    OperationsCancelJobRequest,
     OperationsCancelJobResponse,
     OperationsJobsResponse,
 )
@@ -31,10 +32,16 @@ def get_operations_jobs(db: Session = Depends(get_db)) -> OperationsJobsResponse
 @router.post("/jobs/{task_id}/cancel", response_model=OperationsCancelJobResponse)
 def cancel_operations_job(
     task_id: str,
+    body: OperationsCancelJobRequest | None = None,
     db: Session = Depends(get_db),
 ) -> OperationsCancelJobResponse:
     """Safely cancel or revoke a job when the strategy supports it."""
-    return OperationsCancelJobResponse(**_service.cancel_job(db, task_id))
+    result = _service.cancel_job(
+        db, task_id, expected_strategy=body.expected_strategy if body else None
+    )
+    if result["status"] == "conflict":
+        raise HTTPException(status_code=409, detail=result["message"])
+    return OperationsCancelJobResponse(**result)
 
 
 @router.get("/social-signals")

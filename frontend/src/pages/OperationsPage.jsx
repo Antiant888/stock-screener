@@ -15,6 +15,11 @@ import {
   Chip,
   CircularProgress,
   Container,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogContentText,
+  DialogTitle,
   FormControl,
   InputLabel,
   LinearProgress,
@@ -92,19 +97,34 @@ function formatTimestamp(value) {
   }
 }
 
+// What each cancel strategy actually does, in the words the confirm dialog uses.
+const CANCEL_ACTIONS = {
+  revoke_and_remove_from_queue: {
+    label: 'Cancel',
+    detail: 'Remove from queue — it never runs.',
+  },
+  revoke: {
+    label: 'Revoke',
+    detail: 'A worker has already picked this job up. Revoking makes the worker drop it instead of running it.',
+  },
+  scan_cancel: {
+    label: 'Cancel scan',
+    detail: 'Mark the scan cancelled — the worker stops at its next checkpoint.',
+  },
+  force_cancel_refresh: {
+    label: 'Force cancel',
+    detail: 'Force-release the refresh locks — the worker may still be running; use only if it is dead.',
+    danger: true,
+  },
+  force_release_market_lease: {
+    label: 'Force release',
+    detail: 'Force-release the market lock — the worker may still be running; use only if it is dead.',
+    danger: true,
+  },
+};
+
 function formatCancelLabel(strategy) {
-  switch (strategy) {
-    case 'revoke':
-      return 'Revoke';
-    case 'scan_cancel':
-      return 'Cancel scan';
-    case 'force_cancel_refresh':
-      return 'Force cancel';
-    case 'revoke_and_remove_from_queue':
-      return 'Cancel';
-    default:
-      return 'Unavailable';
-  }
+  return CANCEL_ACTIONS[strategy]?.label || 'Unavailable';
 }
 
 function resolveDeterminatePercent(percent, current, total) {
@@ -437,7 +457,10 @@ function JobsTable({ jobs, onCancel, cancellingTaskId, cancelInFlight }) {
       </TableHead>
       <TableBody>
         {jobs.map((job) => {
-          const canCancel = job.cancel_strategy && job.cancel_strategy !== 'unsupported';
+          const canCancel = Boolean(CANCEL_ACTIONS[job.cancel_strategy]);
+          // Stays until the job leaves the inventory, unless a different action now applies.
+          const cancelRequested = job.cancel_requested_at
+            && job.cancel_requested_strategy === job.cancel_strategy;
           const isCancelling = cancelInFlight && cancellingTaskId === job.task_id;
           const progressValue = resolveDeterminatePercent(job.percent, job.current, job.total);
           const hasDeterminateProgress = job.progress_mode === 'determinate' && progressValue != null;
@@ -488,12 +511,16 @@ function JobsTable({ jobs, onCancel, cancellingTaskId, cancelInFlight }) {
               <TableCell>{job.wait_reason || '—'}</TableCell>
               <TableCell>{formatLagSeconds(job.heartbeat_lag_seconds)}</TableCell>
               <TableCell>
-                {canCancel ? (
+                {cancelRequested ? (
+                  <Typography variant="caption" color="warning.main" title={formatTimestamp(job.cancel_requested_at)}>
+                    Cancel requested
+                  </Typography>
+                ) : canCancel ? (
                   <Button
                     size="small"
                     variant="outlined"
-                    color={job.cancel_strategy === 'force_cancel_refresh' ? 'error' : 'primary'}
-                    onClick={() => onCancel(job.task_id)}
+                    color={CANCEL_ACTIONS[job.cancel_strategy].danger ? 'error' : 'primary'}
+                    onClick={() => onCancel(job)}
                     disabled={isCancelling}
                   >
                     {isCancelling ? 'Working…' : formatCancelLabel(job.cancel_strategy)}
@@ -556,17 +583,22 @@ export default function OperationsPage() {
   });
 
   const cancelMutation = useMutation({
-    mutationFn: cancelOperationsJob,
+    mutationFn: ({ taskId, expectedStrategy }) => cancelOperationsJob(taskId, expectedStrategy),
     onSuccess: (payload) => {
       setJobActionError(null);
-      queryClient.invalidateQueries({ queryKey: ['operations', 'jobs'] });
-      queryClient.invalidateQueries({ queryKey: ['runtimeActivity'] });
       if (payload.status !== 'accepted') {
         setJobActionError(payload.message);
       }
     },
+    // A 409 means the job moved since it was shown: say so and refresh.
     onError: (err) => setJobActionError(err?.response?.data?.detail || err.message),
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: ['operations', 'jobs'] });
+      queryClient.invalidateQueries({ queryKey: ['runtimeActivity'] });
+    },
   });
+  const [confirmJob, setConfirmJob] = useState(null);
+  const confirmAction = confirmJob ? CANCEL_ACTIONS[confirmJob.cancel_strategy] : null;
 
   const summaries = alertsQuery.data?.summaries || [];
   const alerts = alertsQuery.data?.alerts || [];
@@ -731,11 +763,36 @@ export default function OperationsPage() {
       ) : (
         <JobsTable
           jobs={filteredJobs}
-          onCancel={(taskId) => cancelMutation.mutate(taskId)}
-          cancellingTaskId={cancelMutation.variables}
+          onCancel={setConfirmJob}
+          cancellingTaskId={cancelMutation.variables?.taskId}
           cancelInFlight={cancelMutation.isPending}
         />
       )}
+      <Dialog open={Boolean(confirmAction)} onClose={() => setConfirmJob(null)}>
+        <DialogTitle>{confirmAction?.label}</DialogTitle>
+        <DialogContent>
+          <DialogContentText>{confirmAction?.detail}</DialogContentText>
+          <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 1 }}>
+            {confirmJob?.task_name} · {confirmJob?.task_id} · {confirmJob?.state}
+          </Typography>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setConfirmJob(null)}>Back</Button>
+          <Button
+            variant="contained"
+            color={confirmAction?.danger ? 'error' : 'primary'}
+            onClick={() => {
+              cancelMutation.mutate({
+                taskId: confirmJob.task_id,
+                expectedStrategy: confirmJob.cancel_strategy,
+              });
+              setConfirmJob(null);
+            }}
+          >
+            {confirmAction?.label}
+          </Button>
+        </DialogActions>
+      </Dialog>
 
       {features.tasks && <SchedulesSection />}
 

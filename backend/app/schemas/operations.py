@@ -23,6 +23,8 @@ class OperationsJobRow(BaseModel):
     current: int | None = None
     total: int | None = None
     message: str | None = None
+    cancel_requested_at: str | None = None
+    cancel_requested_strategy: str | None = None
 
 
 class OperationsQueueSummary(BaseModel):
@@ -51,6 +53,11 @@ class OperationsJobsResponse(BaseModel):
     workers: list[OperationsWorkerStatus] = Field(default_factory=list)
     leases: OperationsLeaseSnapshot = Field(default_factory=OperationsLeaseSnapshot)
     generated_at: str
+
+
+class OperationsCancelJobRequest(BaseModel):
+    # The strategy the operator confirmed; a mismatch returns 409.
+    expected_strategy: str | None = None
 
 
 class OperationsCancelJobResponse(BaseModel):

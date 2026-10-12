@@ -5,7 +5,7 @@ from __future__ import annotations
 import ast
 import base64
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import json
 import logging
 from typing import Any, Iterable, Optional
@@ -72,6 +72,7 @@ class _JobRecord:
     args: Any = None
     kwargs: dict[str, Any] | None = None
     source: str | None = None
+    cancel_requested: dict[str, Any] | None = None
 
     def to_api(self) -> dict[str, Any]:
         return {
@@ -90,6 +91,8 @@ class _JobRecord:
             "current": self.current,
             "total": self.total,
             "message": self.message,
+            "cancel_requested_at": (self.cancel_requested or {}).get("timestamp"),
+            "cancel_requested_strategy": (self.cancel_requested or {}).get("strategy"),
         }
 
 
@@ -746,13 +749,10 @@ class OperationsJobService:
                 )
         return sorted(depths.values(), key=lambda item: item["queue"])
 
-    def list_jobs(self, db: Session) -> dict[str, Any]:
-        lease_snapshot = self._lease_snapshot()
-        queued_jobs = self._queued_jobs(lease_snapshot)
-        inspect_jobs, workers = self._inspect_jobs()
-
+    @staticmethod
+    def _merge_live_jobs(jobs: Iterable[_JobRecord]) -> dict[str, _JobRecord]:
         records: dict[str, _JobRecord] = {}
-        for job in [*queued_jobs, *inspect_jobs]:
+        for job in jobs:
             existing = records.get(job.task_id)
             if existing is None:
                 job.cancel_strategy = _cancel_strategy_for(job)
@@ -763,12 +763,50 @@ class OperationsJobService:
             if state_rank.get(job.state, 0) >= state_rank.get(existing.state, 0):
                 job.cancel_strategy = _cancel_strategy_for(job)
                 records[job.task_id] = job
+        return records
 
+    def _cancel_requests(self, db: Session) -> dict[str, dict[str, Any]]:
+        """Latest accepted cancel per task, so a row reads "cancel requested"
+        until the job actually leaves the inventory."""
+        # ponytail: reads the last day of audit rows; a job still listed after
+        # a day loses the marker. Index by task id if the rows pile up.
+        since = _utcnow() - timedelta(days=1)
+        rows = (
+            db.query(AppSetting)
+            .filter(AppSetting.category == OPERATIONS_JOB_ACTION_CATEGORY)
+            .filter(AppSetting.created_at >= since)
+            .all()
+        )
+        requests: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            try:
+                action = json.loads(row.value)
+            except (json.JSONDecodeError, TypeError):
+                continue
+            if not isinstance(action, dict) or action.get("outcome") != "accepted":
+                continue
+            task_id = action.get("task_id")
+            previous = requests.get(task_id)
+            if task_id and (
+                previous is None
+                or str(action.get("timestamp")) > str(previous.get("timestamp"))
+            ):
+                requests[task_id] = action
+        return requests
+
+    def list_jobs(self, db: Session) -> dict[str, Any]:
+        lease_snapshot = self._lease_snapshot()
+        queued_jobs = self._queued_jobs(lease_snapshot)
+        inspect_jobs, workers = self._inspect_jobs()
+
+        records = self._merge_live_jobs([*queued_jobs, *inspect_jobs])
         self._augment_with_runtime_activity(db, records, lease_snapshot)
+        cancel_requests = self._cancel_requests(db)
         for record in records.values():
             if record.progress_mode == "indeterminate" or not record.message:
                 self._apply_job_backend_progress(record)
             self._apply_heartbeat_progress(record)
+            record.cancel_requested = cancel_requests.get(record.task_id)
 
         jobs = sorted(
             (record.to_api() for record in records.values()),
@@ -816,28 +854,34 @@ class OperationsJobService:
         db.add(row)
         db.commit()
 
-    def _find_scan_record(self, db: Session, task_id: str) -> _JobRecord | None:
-        inventory = self.list_jobs(db)
-        for item in inventory["jobs"]:
-            if item["task_id"] == task_id:
-                for record in self._queued_jobs(self._lease_snapshot()) + self._inspect_jobs()[0]:
-                    if record.task_id == task_id:
-                        return record
-                # Fallback: synthesize a minimal record for runtime-only rows.
-                return _JobRecord(
-                    task_id=item["task_id"],
-                    task_name=item["task_name"],
-                    queue=item["queue"],
-                    market=item["market"],
-                    state=item["state"],
-                    worker=item["worker"],
-                    age_seconds=item["age_seconds"],
-                    wait_reason=item["wait_reason"],
-                    heartbeat_lag_seconds=item["heartbeat_lag_seconds"],
-                    cancel_strategy=item["cancel_strategy"],
-                    kwargs={"market": item["market"]} if item["market"] else {},
-                )
-        return None
+    def _query_task(self, task_id: str) -> list[_JobRecord]:
+        """Ask workers about one task id: one broadcast instead of the five a
+        full inventory sends."""
+        replies = self._inspect().query_task(task_id) or {}
+        records: list[_JobRecord] = []
+        for worker, tasks in replies.items():
+            state, request = (tasks or {}).get(task_id) or (None, None)
+            # ETA-scheduled tasks also report "reserved"; both are revoked.
+            mapped = {"active": "running", "reserved": "reserved"}.get(state)
+            if not mapped or not isinstance(request, dict):
+                continue
+            queue_name = (request.get("delivery_info") or {}).get("routing_key")
+            record = self._inspect_record(request, state=mapped, worker=worker, queue_name=queue_name)
+            if record:
+                records.append(record)
+        return records
+
+    def _find_job_record(self, db: Session, task_id: str) -> _JobRecord | None:
+        """Resolve one task the way list_jobs would, without rebuilding the
+        whole inventory."""
+        lease_snapshot = self._lease_snapshot()
+        live = [job for job in self._queued_jobs(lease_snapshot) if job.task_id == task_id]
+        if not live:
+            live = self._query_task(task_id)
+        records = self._merge_live_jobs(live)
+        if task_id not in records:
+            self._augment_with_runtime_activity(db, records, lease_snapshot)
+        return records.get(task_id)
 
     def _remove_queued_task(self, *, task_id: str) -> tuple[bool, str | None]:
         broker = self._broker()
@@ -868,13 +912,23 @@ class OperationsJobService:
         queue_scan_bootstrap_publish(scan_id)
         return "accepted", f"Scan {scan_id} cancelled successfully"
 
-    def cancel_job(self, db: Session, task_id: str) -> dict[str, Any]:
-        record = self._find_scan_record(db, task_id)
+    def cancel_job(
+        self,
+        db: Session,
+        task_id: str,
+        expected_strategy: str | None = None,
+    ) -> dict[str, Any]:
+        record = self._find_job_record(db, task_id)
         if record is None:
-            message = f"Task {task_id} was not found in the Operations inventory."
+            message = f"Task {task_id} is no longer queued or running. Refresh to see its current state."
             return {"status": "blocked", "cancel_strategy": "unknown", "message": message}
 
         strategy = record.cancel_strategy or _cancel_strategy_for(record)
+        # Compare-and-set on what the operator confirmed. The strategy decides
+        # what the click does; state alone flickers between queued and waiting.
+        if expected_strategy and expected_strategy != strategy:
+            message = f"Job moved to {record.state}, so this action no longer applies. Refresh and retry."
+            return {"status": "conflict", "cancel_strategy": strategy, "message": message}
 
         if strategy == "revoke_and_remove_from_queue":
             removed, queue_name = self._remove_queued_task(task_id=task_id)

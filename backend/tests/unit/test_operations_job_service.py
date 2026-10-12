@@ -536,7 +536,7 @@ def test_cancel_job_removes_queued_task_and_revokes():
     broker = _FakeBroker({"data_fetch_us": [raw]})
     service._broker = lambda: broker
     service._record_cancel_action = lambda *args, **kwargs: None
-    service._find_scan_record = lambda _db, _task_id: _JobRecord(
+    service._find_job_record = lambda _db, _task_id: _JobRecord(
         task_id="queued-1",
         task_name="app.tasks.cache_tasks.smart_refresh_cache",
         queue="data_fetch_us",
@@ -563,7 +563,7 @@ def test_cancel_job_uses_scan_cancel_strategy_for_running_scan():
     service = OperationsJobService()
     service._record_cancel_action = lambda *args, **kwargs: None
     service._cancel_scan = lambda _db, scan_id: ("accepted", f"cancelled:{scan_id}")
-    service._find_scan_record = lambda _db, _task_id: _JobRecord(
+    service._find_job_record = lambda _db, _task_id: _JobRecord(
         task_id="scan-task-1",
         task_name="app.tasks.scan_tasks.run_bulk_scan",
         queue="user_scans_hk",
@@ -608,7 +608,7 @@ def test_cancel_scan_queues_bootstrap_publish_instead_of_building_inline():
 def test_cancel_job_force_releases_market_lease_for_stale_market_job():
     service = OperationsJobService()
     service._record_cancel_action = lambda *args, **kwargs: None
-    service._find_scan_record = lambda _db, _task_id: _JobRecord(
+    service._find_job_record = lambda _db, _task_id: _JobRecord(
         task_id="market-job-1",
         task_name="app.tasks.group_rank_tasks.calculate_daily_group_rankings",
         queue="market_jobs_us",
@@ -634,7 +634,7 @@ def test_cancel_job_force_releases_market_lease_for_stale_market_job():
 def test_force_cancel_refresh_releases_scoped_lock_and_coordination_leases():
     service = OperationsJobService()
     service._record_cancel_action = lambda *args, **kwargs: None
-    service._find_scan_record = lambda _db, _task_id: _JobRecord(
+    service._find_job_record = lambda _db, _task_id: _JobRecord(
         task_id="fetch-us-lock",
         task_name="app.tasks.cache_tasks.smart_refresh_cache",
         queue="data_fetch_us",
@@ -668,3 +668,117 @@ def test_force_cancel_refresh_releases_scoped_lock_and_coordination_leases():
     mock_get_coordination.return_value.release_market_workload.assert_called_once_with("fetch-us-lock", market="us")
     mock_get_coordination.return_value.release_external_fetch.assert_called_once_with("fetch-us-lock")
     price_cache.clear_warmup_heartbeat.assert_called_once_with(market="us")
+
+
+def test_cancel_job_refuses_when_the_strategy_changed_since_the_operator_saw_it():
+    service = OperationsJobService()
+    audit = MagicMock()
+    service._record_cancel_action = audit
+    service._find_job_record = lambda _db, _task_id: _JobRecord(
+        task_id="queued-1",
+        task_name="app.tasks.cache_tasks.smart_refresh_cache",
+        queue="data_fetch_us",
+        market="US",
+        state="reserved",
+        worker="datafetch@host",
+        age_seconds=None,
+        wait_reason=None,
+        heartbeat_lag_seconds=None,
+        cancel_strategy="revoke",
+    )
+
+    with patch("app.services.operations_job_service.celery_app.control.revoke") as mock_revoke:
+        result = service.cancel_job(
+            MagicMock(), "queued-1", expected_strategy="revoke_and_remove_from_queue"
+        )
+
+    assert result["status"] == "conflict"
+    assert "reserved" in result["message"]
+    mock_revoke.assert_not_called()
+    audit.assert_not_called()
+
+
+class _QueryOnlyInspect:
+    """Fails the test if the lookup falls back to the full inventory."""
+
+    def __init__(self, replies):
+        self.replies = replies
+        self.queried = []
+
+    def query_task(self, task_id):
+        self.queried.append(task_id)
+        return self.replies
+
+    def __getattr__(self, name):
+        raise AssertionError(f"cancel lookup must not call inspect.{name}()")
+
+
+def test_find_job_record_asks_workers_about_one_task_only():
+    service = OperationsJobService()
+    service._broker = lambda: _FakeBroker({})
+    inspect = _QueryOnlyInspect(
+        {
+            "general@host": {
+                "task-1": [
+                    "reserved",
+                    {
+                        "id": "task-1",
+                        "name": "app.tasks.breadth_tasks.calculate_daily_breadth",
+                        "args": [],
+                        "kwargs": {"market": "US"},
+                        "delivery_info": {"routing_key": "market_jobs_us"},
+                    },
+                ]
+            },
+            "other@host": {},
+        }
+    )
+    service._inspect = lambda: inspect
+
+    with patch("app.services.operations_job_service.get_workload_coordination") as mock_get_coordination:
+        mock_get_coordination.return_value.get_external_fetch_holder.return_value = None
+        mock_get_coordination.return_value.get_market_workload_holders.return_value = {"US": None}
+        record = service._find_job_record(MagicMock(), "task-1")
+
+    assert inspect.queried == ["task-1"]
+    assert record.state == "reserved"
+    assert record.cancel_strategy == "revoke"
+    assert record.queue == "market_jobs_us"
+
+
+def test_list_jobs_marks_rows_with_an_accepted_cancel_request():
+    service = OperationsJobService()
+    raw = _queued_message(
+        task_id="scan-task-1",
+        task_name="app.tasks.scan_tasks.run_bulk_scan",
+        kwargs={"market": "US"},
+    )
+    service._broker = lambda: _FakeBroker({"user_scans_us": [raw]})
+    service._inspect = lambda: _FakeInspect()
+    service._runtime_activity_records = lambda _db: []
+
+    def _action(task_id, outcome, timestamp, strategy="scan_cancel"):
+        return SimpleNamespace(value=json.dumps({
+            "task_id": task_id, "strategy": strategy, "outcome": outcome, "timestamp": timestamp,
+        }))
+
+    db = MagicMock()
+    db.query.return_value.filter.return_value.filter.return_value.all.return_value = [
+        _action("scan-task-1", "accepted", "2026-10-13T10:00:00+00:00"),
+        _action("scan-task-1", "accepted", "2026-10-13T10:05:00+00:00"),
+        _action("scan-task-1", "blocked", "2026-10-13T10:09:00+00:00", strategy="revoke"),
+        SimpleNamespace(value="not json"),
+    ]
+    lock = MagicMock()
+    lock.get_current_task.return_value = None
+
+    with patch("app.services.operations_job_service.get_workload_coordination") as mock_get_coordination, patch(
+        "app.services.operations_job_service.get_data_fetch_lock", return_value=lock
+    ):
+        mock_get_coordination.return_value.get_external_fetch_holder.return_value = None
+        mock_get_coordination.return_value.get_market_workload_holders.return_value = {"US": None}
+        payload = service.list_jobs(db)
+
+    job = next(job for job in payload["jobs"] if job["task_id"] == "scan-task-1")
+    assert job["cancel_requested_at"] == "2026-10-13T10:05:00+00:00"
+    assert job["cancel_requested_strategy"] == "scan_cancel"

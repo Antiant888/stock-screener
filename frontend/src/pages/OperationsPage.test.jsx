@@ -1,4 +1,4 @@
-import { fireEvent, screen, waitFor } from '@testing-library/react';
+import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { renderWithProviders } from '../test/renderWithProviders';
@@ -220,16 +220,86 @@ describe('OperationsPage', () => {
     });
   });
 
-  it('clicking a job action calls cancelOperationsJob', async () => {
+  const confirmCancel = async (index = 0) => {
+    const cancelButtons = await screen.findAllByRole('button', { name: /cancel/i });
+    fireEvent.click(cancelButtons[index]);
+    const dialog = await screen.findByRole('dialog');
+    fireEvent.click(within(dialog).getAllByRole('button').at(-1));
+    return dialog;
+  };
+
+  it('confirms with the plain-language effect before cancelling, and sends the strategy it showed', async () => {
     renderWithProviders(<OperationsPage />);
 
     const cancelButtons = await screen.findAllByRole('button', { name: /cancel/i });
     fireEvent.click(cancelButtons[0]);
 
+    const dialog = await screen.findByRole('dialog');
+    expect(within(dialog).getByText('Remove from queue — it never runs.')).toBeInTheDocument();
+    expect(cancelOperationsJob).not.toHaveBeenCalled();
+
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+
     await waitFor(() => {
-      expect(cancelOperationsJob).toHaveBeenCalled();
+      expect(cancelOperationsJob).toHaveBeenCalledWith('task-fetch-hk', 'revoke_and_remove_from_queue');
     });
-    expect(cancelOperationsJob.mock.calls[0][0]).toBe('task-fetch-hk');
+  });
+
+  it('backing out of the dialog does not cancel', async () => {
+    renderWithProviders(<OperationsPage />);
+
+    fireEvent.click((await screen.findAllByRole('button', { name: /cancel/i }))[0]);
+    fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Back' }));
+
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    expect(cancelOperationsJob).not.toHaveBeenCalled();
+  });
+
+  it('says why when the job moved before the cancel landed (409)', async () => {
+    cancelOperationsJob.mockRejectedValue({
+      response: { status: 409, data: { detail: 'Job moved to running, so this action no longer applies. Refresh and retry.' } },
+    });
+    renderWithProviders(<OperationsPage />);
+
+    await confirmCancel();
+
+    expect(await screen.findByText(/Job moved to running/)).toBeInTheDocument();
+  });
+
+  it('shows Cancel requested instead of the button until the job leaves', async () => {
+    fetchOperationsJobs.mockResolvedValue({
+      ...OPERATIONS_PAYLOAD,
+      jobs: [
+        {
+          ...OPERATIONS_PAYLOAD.jobs[1],
+          cancel_requested_at: '2026-10-13T10:00:00+00:00',
+          cancel_requested_strategy: 'scan_cancel',
+        },
+      ],
+    });
+    renderWithProviders(<OperationsPage />);
+
+    expect(await screen.findByText('Cancel requested')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Cancel scan' })).not.toBeInTheDocument();
+  });
+
+  it('labels the live force-release action instead of Unavailable', async () => {
+    fetchOperationsJobs.mockResolvedValue({
+      ...OPERATIONS_PAYLOAD,
+      jobs: [
+        {
+          ...OPERATIONS_PAYLOAD.jobs[1],
+          state: 'stale',
+          cancel_strategy: 'force_release_market_lease',
+        },
+      ],
+    });
+    renderWithProviders(<OperationsPage />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Force release' }));
+    expect(
+      within(await screen.findByRole('dialog')).getByText(/the worker may still be running; use only if it is dead/),
+    ).toBeInTheDocument();
   });
 
   it('clears the Working state after a cancel mutation settles', async () => {
@@ -243,8 +313,7 @@ describe('OperationsPage', () => {
 
     renderWithProviders(<OperationsPage />);
 
-    const cancelButton = (await screen.findAllByRole('button', { name: /cancel/i }))[0];
-    fireEvent.click(cancelButton);
+    await confirmCancel();
 
     expect(await screen.findByRole('button', { name: /working/i })).toBeDisabled();
 
