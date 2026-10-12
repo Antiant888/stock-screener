@@ -1535,3 +1535,10 @@ def test_publisher_renders_seo_pages_into_the_built_site() -> None:
     run = step["run"]
     assert "python3 scripts/render_seo_pages.py --dist frontend/dist" in run
     assert "--site-url https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/" in run
+
+
+def test_search_console_verification_file_ships_with_the_site() -> None:
+    # Google re-checks this file to keep the Search Console property verified;
+    # Vite copies frontend/public/ to the site root.
+    token = ROOT / "frontend" / "public" / "google2f3dbee9a723186e.html"
+    assert token.read_text().strip() == "google-site-verification: google2f3dbee9a723186e.html"
