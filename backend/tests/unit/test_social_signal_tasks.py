@@ -218,6 +218,16 @@ def test_budget_resume_skips_generations_older_than_the_latest_publication(
     )
 
     assert tasks._latest_resumable_run() is None
+    # A resume scheduled for the budget reset names its run explicitly.
+    from app.wiring import use_case_factories
+    monkeypatch.setattr(use_case_factories, "get_refresh_social_signals_use_case",
+                        lambda: (_ for _ in ()).throw(AssertionError("replayed")))
+    assert tasks.resume_social_analysis.run("stale") == {
+        "status": "skipped", "reason_codes": ["generation_superseded"],
+    }
+    # An admin retry of the published generation itself still replays.
+    with pytest.raises(AssertionError, match="replayed"):
+        tasks.resume_social_analysis.run("published")
 
 
 def test_source_task_returns_redacted_typed_outcome_without_outer_provider_retry(monkeypatch):
