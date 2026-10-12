@@ -27,7 +27,8 @@ import { useIsMobileShell } from '../Layout/shellNav';
 
 const ACTIVE_STATUSES = new Set(['queued', 'running']);
 // A run still queued after this has likely lost its message or has no worker
-// on its queue; it would otherwise block Run until it reads as lost (~25h).
+// on its queue. Run stays blocked (its message may still be in the broker, so
+// queueing another would run the job twice); the note points to the cancel.
 const STALE_QUEUED_MS = 10 * 60 * 1000;
 
 const STATUS_DISPLAY = {
@@ -73,7 +74,8 @@ function isStaleQueued(run) {
 // Why Run is unavailable for this run, or null when it may run again.
 function runBlockedReason(run) {
   if (run?.status === 'running') return 'Already running';
-  if (run?.status === 'queued' && !isStaleQueued(run)) return 'Already queued';
+  if (isStaleQueued(run)) return 'Still queued: cancel it in the job console to run it again';
+  if (run?.status === 'queued') return 'Already queued';
   return null;
 }
 
@@ -101,10 +103,12 @@ function StatusChip({ run }) {
   );
 }
 
-// The failure message, or why a queued run can be started again.
+// The failure message, or what to do about a run stuck in the queue.
 function StatusNote({ run }) {
   const note = run?.status === 'failed' ? run.error_message
-    : isStaleQueued(run) ? `Not picked up for ${ageLabel(ageMs(run.started_at))}` : null;
+    : isStaleQueued(run)
+      ? `Not picked up for ${ageLabel(ageMs(run.started_at))}. Cancel it in the job console to run it again.`
+      : null;
   if (!note) return null;
   return (
     <Typography

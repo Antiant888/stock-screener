@@ -162,9 +162,10 @@ describe('SchedulesSection', () => {
     expect(button).toBeDisabled();
   });
 
-  it('lets a run that has sat in the queue too long be started again', async () => {
-    // A lost broker message or an undeployed worker leaves a run queued until
-    // it reads as lost (~25h); the operator must not be locked out meanwhile.
+  it('keeps a long-queued run blocked and points to the job console', async () => {
+    // Its broker message may still exist (e.g. no worker on that queue yet);
+    // queueing another would run the job twice once a worker comes up. The
+    // job console's cancel removes the message and closes the run instead.
     getScheduledTasks.mockResolvedValue(payload([
       task('refresh', 'Weekly Full Refresh', lastRun('queued', {
         started_at: new Date(Date.now() - 30 * 60 * 1000).toISOString(),
@@ -174,9 +175,10 @@ describe('SchedulesSection', () => {
     renderSection();
 
     const button = await screen.findByRole('button', { name: 'Run Weekly Full Refresh now' });
-    expect(button).toBeEnabled();
-    // Says why this Queued row can run while a fresh Queued row cannot.
-    expect(within(rowFor('Weekly Full Refresh')).getByText('Not picked up for 30m')).toBeInTheDocument();
+    expect(button).toBeDisabled();
+    expect(within(rowFor('Weekly Full Refresh'))
+      .getByText('Not picked up for 30m. Cancel it in the job console to run it again.'))
+      .toBeInTheDocument();
   });
 
   it('does not flag a freshly queued run as stuck', async () => {
