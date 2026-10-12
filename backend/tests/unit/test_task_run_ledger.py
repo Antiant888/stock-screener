@@ -86,6 +86,40 @@ def test_retry_does_not_rewind_a_running_row(db_session):
     assert row.status == "running"
 
 
+def test_retry_keeps_the_first_start_time(db_session):
+    # A retry fires task_prerun again with the same id; duration and the
+    # lost cutoff must cover the whole run, not just the last attempt.
+    task_id = str(uuid4())
+    _start(CLEANUP, task_id, {})
+    first_start = datetime.now(timezone.utc) - timedelta(minutes=10)
+    db_session.query(TaskExecutionHistory).filter_by(task_id=task_id).update({"started_at": first_start})
+    db_session.commit()
+
+    _finish(CLEANUP, task_id, {}, state="RETRY")
+    _start(CLEANUP, task_id, {})
+    _finish(CLEANUP, task_id, {}, state="SUCCESS")
+
+    [row] = _rows(db_session, task_id)
+    assert row.status == "completed"
+    assert row.duration_seconds >= 600
+
+
+def test_manual_run_start_time_is_when_a_worker_picks_it_up(db_session):
+    service = TaskRegistryService()
+    service._task_imports["weekly-orphaned-scan-cleanup"] = SimpleNamespace(
+        apply_async=lambda **kwargs: SimpleNamespace(id=kwargs["task_id"])
+    )
+    task_id = service.trigger_task("weekly-orphaned-scan-cleanup", db_session)["task_id"]
+    queued_at = datetime.now(timezone.utc) - timedelta(minutes=10)
+    db_session.query(TaskExecutionHistory).filter_by(task_id=task_id).update({"started_at": queued_at})
+    db_session.commit()
+
+    _start(CLEANUP, task_id, {})
+
+    [row] = _rows(db_session, task_id)
+    assert datetime.now(timezone.utc) - row.started_at.replace(tzinfo=timezone.utc) < timedelta(minutes=1)
+
+
 def test_unserializable_result_still_records_the_outcome(db_session):
     task_id = str(uuid4())
 

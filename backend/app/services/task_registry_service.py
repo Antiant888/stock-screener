@@ -218,10 +218,12 @@ def record_task_run(
                     triggered_by=origin if isinstance(origin, str) else 'auto',
                 )
                 db.add(row)
-            row.status = status
-            if status == 'running':
+            if status == 'running' and row.status == 'queued':
+                # Start the clock when a worker first picks up a manual run; a
+                # retry's prerun (row already running) keeps the first start.
                 row.started_at = now
-            elif status in _FINISHED_STATUSES:
+            row.status = status
+            if status in _FINISHED_STATUSES:
                 row.completed_at = now
                 started_at = _coerce_utc_datetime(row.started_at)
                 if started_at:
