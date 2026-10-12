@@ -162,7 +162,7 @@ describe('StaticGroupsPage', () => {
     expect(within(rows[2]).getAllByRole('cell')[7]).toHaveTextContent('10.0');
   });
 
-  it('uses the same RS background bands in the static rankings table', async () => {
+  it('uses the same RS score tints in the static rankings table', async () => {
     renderPage();
 
     expect(await screen.findByRole('heading', { name: 'US Group Rankings' })).toBeInTheDocument();
@@ -187,9 +187,15 @@ describe('StaticGroupsPage', () => {
       'neutral',
       'down-strong',
     ]);
-    expect(leaderCells[2]).toHaveStyle({ backgroundColor: '#0d7a3e', color: '#fff' });
-    expect(leaderCells[4]).toHaveStyle({ backgroundColor: '#123d2a', color: '#fff' });
-    expect(laggardCells[2]).toHaveStyle({ backgroundColor: '#9b1c31', color: '#fff' });
+    // Translucent success/error tints from MUI's default theme (success #2e7d32,
+    // error #d32f2f): strong deeper than soft, neutral untinted.
+    const tint = (cell) => getComputedStyle(cell).backgroundColor;
+    const opacity = (cell) => Number(tint(cell).match(/, ([\d.]+)\)$/)[1]);
+    expect(tint(leaderCells[2])).toMatch(/^rgba\(46, 125, 50, /);
+    expect(tint(leaderCells[4])).toMatch(/^rgba\(46, 125, 50, /);
+    expect(opacity(leaderCells[2])).toBeGreaterThan(opacity(leaderCells[4]));
+    expect(tint(leaderCells[5])).toBe('rgba(0, 0, 0, 0)');
+    expect(tint(laggardCells[2])).toMatch(/^rgba\(211, 47, 47, /);
   });
 
   it('sorts static group rankings by RS columns', async () => {

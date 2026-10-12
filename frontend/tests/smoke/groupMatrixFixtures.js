@@ -29,7 +29,6 @@ export function matrixFixture(market = 'US', count = 120) {
 }
 export async function installMatrixFixtures(page, { count = 120, mode = 'live' } = {}) {
   const requests = [];
-  await page.route(/fonts\.(googleapis|gstatic)\.com/, route => route.abort());
   const json = (route, value, status = 200) => route.fulfill({ status, contentType:'application/json', body:JSON.stringify(value) });
   await page.route('**/api/v1/**', async route => {
     const url = new URL(route.request().url()); requests.push(url.pathname);
