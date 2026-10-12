@@ -756,7 +756,7 @@ class SocialSignalWriter:
                     if b.market_context.freshness.actual_session else None for b in context.market_batches}
             run.completed_at, run.status = as_of, "staged"
             run.source_outcomes_json = {
-                source_id: {**value, "processing_status": "complete"}
+                source_id: {**value, "processing_status": "complete"} if value["read_status"] == "success" else value
                 for source_id, value in run.source_outcomes_json.items()
             }
             run.coverage_json = {key: deepcopy(run.source_outcomes_json[key]) for key in frozen_input["sources"]}

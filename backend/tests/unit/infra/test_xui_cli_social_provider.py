@@ -234,6 +234,7 @@ def test_timed_out_initial_read_retries_at_the_incremental_size(monkeypatch):
     assert limits == ["1000", "200"]
     assert batch.outcome.read_status == "success"
     assert batch.outcome.history_status == "warming_up"
+    assert batch.outcome.coverage_reason_codes == ("bounded_provider_read", "initial_read_truncated")
 
 
 def test_timed_out_list_read_stops_after_the_single_retry(monkeypatch):

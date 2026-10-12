@@ -186,7 +186,12 @@ class SocialScoringEvidenceReader:
                         or (generation.id != current.id and _utc(generation.created_at) >= as_of)):
                     continue
                 for source_id, observation in generation.application_progress_json.get("observations", {}).items():
-                    if source_id not in source_ids or generation.source_outcomes_json.get(source_id, {}).get("read_status") != "success":
+                    if source_id not in source_ids:
+                        continue
+                    if generation.source_outcomes_json.get(source_id, {}).get("read_status") != "success":
+                        if generation.id == current.id:
+                            # Failing now leaves the current window unobserved.
+                            latest_source_completeness[source_id] = False
                         continue
                     outcome = generation.source_outcomes_json[source_id]
                     latest_source_completeness[source_id] = (

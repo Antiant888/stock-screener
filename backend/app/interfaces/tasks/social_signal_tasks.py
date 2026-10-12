@@ -65,9 +65,12 @@ def _latest_resumable_run():
             for run in all_runs
             if run.application_progress_json.get("replay")
         }
+        # A generation older than the latest publication would republish stale reads.
+        published_at = max((run.created_at for run in all_runs if run.status == "published"), default=None)
         runs = (
             run for run in all_runs
             if run.status == "running" and run.id not in replayed_run_ids
+            and (published_at is None or run.created_at > published_at)
         )
         return next((run.id for run in runs if (
             set(run.application_progress_json.get("observations", {}))

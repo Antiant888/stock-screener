@@ -545,6 +545,18 @@ def test_scoring_evidence_retains_older_in_window_post_after_incremental_cap(tmp
     assert {post.likes for post in aaa.posts if post.provider_post_id == "new"} == {10}
     assert aaa.enabled_source_ids == ("1", "2")
     assert aaa.history_complete is False
+    # A list that fails now must not inherit its earlier complete window.
+    writer.create_run("partial", NOW)
+    writer.persist_observations(saved_batch(1, NOW, "fresh", NOW - timedelta(hours=1), "initial"), run_id="partial")
+    failed_request = SocialReadRequest("partial:2", "2", list_ids[1], "incremental", NOW, 200,
+                                       NOW - timedelta(days=14), "cursor")
+    writer.persist_observations(SocialSourceBatch(failed_request, (), SocialSourceOutcome(
+        "failed", "failed", "limited", ("provider_timeout",), (), None, None, 0, None,
+        "provider_timeout",
+    )), run_id="partial")
+    partial = SocialScoringEvidenceReader(sessions).read("partial", NOW)
+    assert all(item.history_complete is False for item in partial)
+    assert all("provider_timeout" in item.coverage_reasons for item in partial)
     # A retained semantic judgment can be explicitly pinned to the new
     # generation without pretending the old post was recollected.
     from dataclasses import asdict
@@ -652,4 +664,6 @@ async def test_refresh_runs_through_real_writer_backlog_and_publication_with_fix
     assert result.published is True
     with sessions() as db:
         assert db.get(SocialSignalRunPointer, "latest_published").run_id == "fixture-run"
+    # Replays rebuild every saved outcome, including a failed list's.
+    assert len(writer.read_run_inputs("fixture-run").batches) == 2
     engine.dispose()

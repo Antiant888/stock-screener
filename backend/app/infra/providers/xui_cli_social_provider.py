@@ -82,7 +82,7 @@ class XuiCliSocialProvider:
             return self._failed(request, "reauthentication_required", cooldown=True)
 
         intent_cap = {"initial": 1000, "incremental": _INCREMENTAL_CAP, "test": 5}[request.intent]
-        effective_limit = min(request.limit, intent_cap)
+        requested_limit = effective_limit = min(request.limit, intent_cap)
         for attempt in range(2):
             read_result = self._execute([
                 "xui", "read", "--path", self._config_path, "--profile", self._profile,
@@ -120,7 +120,10 @@ class XuiCliSocialProvider:
         return SocialSourceBatch(request, tuple(posts), SocialSourceOutcome(
             read_status="success", processing_status="pending",
             history_status="warming_up" if request.intent == "initial" else "limited",
-            coverage_reason_codes=("bounded_provider_read",), known_gap_intervals=(),
+            coverage_reason_codes=("bounded_provider_read",) + (
+                ("initial_read_truncated",) if effective_limit < requested_limit else ()
+            ),
+            known_gap_intervals=(),
             observed_oldest_at=min(timestamps) if timestamps else None,
             observed_newest_at=max(timestamps) if timestamps else None,
             received_count=len(posts), committed_progress=None, error_code=None,
