@@ -245,6 +245,205 @@ def test_queue_daily_market_pipeline_skips_until_local_bootstrap_ready(monkeypat
     assert chain_called is False
 
 
+class _ChainClaims:
+    """Stands in for WorkloadCoordination's per-market pipeline-chain lease."""
+
+    def __init__(self, *, fail_claim: bool = False):
+        self.holders: dict[str, dict] = {}
+        self.released: list[tuple[str, str]] = []
+        self.fail_claim = fail_claim
+
+    def claim_pipeline_chain(self, token, *, market):
+        if self.fail_claim:
+            raise ConnectionError("redis down")
+        if market in self.holders:
+            return False
+        self.holders[market] = {"task_id": token, "started_at": "2026-03-16T20:30:00+00:00"}
+        return True
+
+    def get_pipeline_chain_holder(self, market):
+        return self.holders.get(market)
+
+    def release_pipeline_chain(self, token, *, market):
+        self.released.append((market, token))
+        holder = self.holders.get(market)
+        if holder and holder["task_id"] == token:
+            del self.holders[market]
+            return True
+        return False
+
+
+def _ready_to_dispatch(monkeypatch, module, claims, published):
+    class _FakeCalendar:
+        def market_now(self, _market):
+            return datetime(2026, 3, 16, 16, 30)
+
+        def is_trading_day(self, _market, _today):
+            return True
+
+        def last_completed_trading_day(self, _market):
+            return date(2026, 3, 16)
+
+    class _FakeChain:
+        def __init__(self, signatures):
+            self.signatures = signatures
+
+        def apply_async(self, **options):
+            published.append((self.signatures, options))
+            return SimpleNamespace(id=f"chain-{len(published)}")
+
+    monkeypatch.setattr(
+        "app.services.runtime_preferences_service.is_market_enabled_now", lambda _market: True,
+    )
+    monkeypatch.setattr(module, "_local_runtime_bootstrap_blocker", lambda _market: None)
+    monkeypatch.setattr(module, "_market_pipeline_active", lambda _market: None)
+    monkeypatch.setattr(module, "MarketCalendarService", lambda: _FakeCalendar())
+    monkeypatch.setattr(
+        module, "_build_daily_market_pipeline_signatures", lambda *_args: ["prices", "groups", "snapshot"],
+    )
+    monkeypatch.setattr(module, "chain", lambda *signatures: _FakeChain(list(signatures)))
+    monkeypatch.setattr(module, "_pipeline_chain_claims", lambda: claims)
+
+
+def test_dispatch_holds_the_chain_until_its_last_stage_or_first_failure(monkeypatch):
+    from app.tasks import daily_market_pipeline_tasks as module
+
+    claims, published = _ChainClaims(), []
+    _ready_to_dispatch(monkeypatch, module, claims, published)
+
+    result = module.queue_daily_market_pipeline.run("US")
+
+    assert result["status"] == "queued"
+    token = claims.holders["US"]["task_id"]
+    [(signatures, options)] = published
+    # Released by a final stage on success...
+    release = signatures[-1]
+    assert signatures[:-1] == ["prices", "groups", "snapshot"]
+    assert release.task == "app.tasks.daily_market_pipeline_tasks.release_daily_market_pipeline_claim"
+    assert release.kwargs == {"market": "US", "token": token}
+    assert release.immutable
+    # ...and by the same task as every stage's error callback.
+    assert options["link_error"] is release
+
+
+def test_second_dispatch_between_stages_is_refused(monkeypatch):
+    # The per-stage workload lease is free between stages; the chain claim
+    # is what stops a second chain for the same market.
+    from app.tasks import daily_market_pipeline_tasks as module
+
+    claims, published = _ChainClaims(), []
+    _ready_to_dispatch(monkeypatch, module, claims, published)
+
+    first = module.queue_daily_market_pipeline.run("US")
+    second = module.queue_daily_market_pipeline.run("US")
+
+    assert first["status"] == "queued"
+    assert second["status"] == "skipped"
+    assert second["reason"] == "market_pipeline_already_active"
+    assert second["active_task_id"] == claims.holders["US"]["task_id"]
+    assert second["active_since"] == "2026-03-16T20:30:00+00:00"
+    assert len(published) == 1
+
+
+def test_other_markets_are_not_blocked_by_a_running_chain(monkeypatch):
+    from app.tasks import daily_market_pipeline_tasks as module
+
+    claims, published = _ChainClaims(), []
+    _ready_to_dispatch(monkeypatch, module, claims, published)
+
+    assert module.queue_daily_market_pipeline.run("US")["status"] == "queued"
+    assert module.queue_daily_market_pipeline.run("HK")["status"] == "queued"
+
+
+def test_a_failed_publish_releases_the_claim(monkeypatch):
+    from app.tasks import daily_market_pipeline_tasks as module
+
+    claims, published = _ChainClaims(), []
+    _ready_to_dispatch(monkeypatch, module, claims, published)
+
+    class _BrokenChain:
+        def apply_async(self, **_options):
+            raise ConnectionError("broker unavailable")
+
+    monkeypatch.setattr(module, "chain", lambda *_signatures: _BrokenChain())
+
+    with pytest.raises(ConnectionError):
+        module.queue_daily_market_pipeline.run("US")
+
+    assert claims.holders == {}
+
+
+def test_a_failed_release_after_a_failed_publish_keeps_the_publish_error(monkeypatch, caplog):
+    from app.tasks import daily_market_pipeline_tasks as module
+
+    claims, published = _ChainClaims(), []
+    _ready_to_dispatch(monkeypatch, module, claims, published)
+
+    class _BrokenChain:
+        def apply_async(self, **_options):
+            raise ConnectionError("broker unavailable")
+
+    def broken_release(_token, *, market):
+        raise TimeoutError("redis down")
+
+    monkeypatch.setattr(module, "chain", lambda *_signatures: _BrokenChain())
+    monkeypatch.setattr(claims, "release_pipeline_chain", broken_release)
+
+    with pytest.raises(ConnectionError, match="broker unavailable"):
+        module.queue_daily_market_pipeline.run("US")
+    assert "Could not release the US pipeline chain claim" in caplog.text
+
+
+def test_dispatch_still_runs_when_the_claim_store_is_down(monkeypatch, caplog):
+    # The daily pipeline matters more than duplicate protection: fail open,
+    # loudly, as the existing workload-holder check already does.
+    from app.tasks import daily_market_pipeline_tasks as module
+
+    claims, published = _ChainClaims(fail_claim=True), []
+    _ready_to_dispatch(monkeypatch, module, claims, published)
+
+    result = module.queue_daily_market_pipeline.run("US")
+
+    assert result["status"] == "queued"
+    [(signatures, options)] = published
+    assert signatures == ["prices", "groups", "snapshot"]
+    assert "link_error" not in options
+    assert "Could not claim the US pipeline chain" in caplog.text
+
+
+def test_release_only_frees_its_own_claim(monkeypatch):
+    from app.tasks import daily_market_pipeline_tasks as module
+
+    claims = _ChainClaims()
+    claims.holders["US"] = {"task_id": "newer-chain", "started_at": "x"}
+    monkeypatch.setattr(module, "_pipeline_chain_claims", lambda: claims)
+
+    result = module.release_daily_market_pipeline_claim.run(market="US", token="older-chain")
+
+    assert result == {"status": "ok", "market": "US", "stage": "release", "released": False}
+    assert claims.holders["US"]["task_id"] == "newer-chain"
+
+
+def test_release_task_takes_no_positional_args():
+    # Celery calls an errback inline with (request, exc, traceback) when its
+    # task takes more than one positional argument; keyword-only arguments
+    # keep it a published task whose immutable signature ignores the task id.
+    import inspect
+
+    from app.tasks import daily_market_pipeline_tasks as module
+
+    params = inspect.signature(module.release_daily_market_pipeline_claim.run).parameters.values()
+    assert all(param.kind is inspect.Parameter.KEYWORD_ONLY for param in params)
+
+
+def test_chain_claim_expires_well_before_the_next_daily_run():
+    # A missed release (a stage revoked from the console fires no errback)
+    # must not block the market's next scheduled run about 24h later.
+    from app.tasks.workload_coordination import PIPELINE_CHAIN_TTL_SECONDS
+
+    assert 3 * 3600 <= PIPELINE_CHAIN_TTL_SECONDS <= 12 * 3600
+
+
 def test_guard_price_refresh_fails_lock_contention_skip_result():
     from app.tasks import daily_market_pipeline_tasks as module
 

@@ -104,11 +104,12 @@ describe('SchedulesSection', () => {
 
     const row = rowFor('Daily Market Pipeline (US)');
     expect(within(row).getByText('Handed off')).toBeInTheDocument();
-    // Run stays available (the backend cannot yet tell when the chain is
-    // done), so the note warns against starting a second chain.
-    expect(within(row).getByText(
-      'Stages queued. Follow them in Market activity and the job console; running it again before they finish starts a second pipeline.',
-    )).toBeInTheDocument();
+    // The backend refuses a second chain while this one holds its claim
+    // (a second Run reads Skipped, 'Market pipeline already active'), so
+    // the note no longer needs to warn about it.
+    const note = within(row).getByText('Stages queued. Follow them in Market activity and the job console.');
+    expect(note).toBeInTheDocument();
+    expect(within(row).queryByText(/second pipeline/)).not.toBeInTheDocument();
   });
 
   it('runs only the clicked task and refreshes the list', async () => {

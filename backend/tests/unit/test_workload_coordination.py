@@ -238,3 +238,45 @@ def test_serialized_data_fetch_retries_when_external_fetch_lease_is_busy(
         market="US",
     )
     mock_lock.release.assert_called_once_with("task-123", market="US")
+
+
+def test_pipeline_chain_claim_is_an_atomic_market_scoped_lease():
+    from app.tasks.workload_coordination import PIPELINE_CHAIN_TTL_SECONDS
+
+    coordination, mock_redis, _ = _make_coordination()
+    mock_redis.set.return_value = True
+
+    assert coordination.claim_pipeline_chain("token-1", market="US") is True
+
+    args, kwargs = mock_redis.set.call_args
+    assert args[0] == "pipeline_chain:us"
+    assert args[1].startswith("daily_market_pipeline:token-1:")
+    # NX: two dispatches at once (Beat and a manual Run) cannot both win.
+    assert kwargs == {"nx": True, "ex": PIPELINE_CHAIN_TTL_SECONDS}
+
+
+def test_pipeline_chain_claim_reports_an_existing_holder():
+    coordination, mock_redis, _ = _make_coordination()
+    mock_redis.set.return_value = None
+
+    assert coordination.claim_pipeline_chain("token-2", market="US") is False
+
+
+def test_pipeline_chain_release_is_owner_checked():
+    coordination, _, mock_release_script = _make_coordination()
+    mock_release_script.return_value = 1
+
+    assert coordination.release_pipeline_chain("token-1", market="US") is True
+    mock_release_script.assert_called_once_with(keys=["pipeline_chain:us"], args=[":token-1:"])
+
+
+def test_pipeline_chain_holder_reads_token_and_start():
+    coordination, mock_redis, _ = _make_coordination()
+    mock_redis.get.return_value = b"daily_market_pipeline:token-1:2026-03-16T20:30:00+00:00"
+    mock_redis.ttl.return_value = 1000
+
+    holder = coordination.get_pipeline_chain_holder("US")
+
+    assert holder["task_id"] == "token-1"
+    assert holder["started_at"] == "2026-03-16T20:30:00+00:00"
+    mock_redis.get.assert_called_with("pipeline_chain:us")
