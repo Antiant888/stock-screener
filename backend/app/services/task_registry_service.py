@@ -163,6 +163,24 @@ def _result_summary(result: Any, task_id: str) -> Optional[Dict[str, Any]]:
         return None
 
 
+def _reported_error(result: Any) -> Optional[str]:
+    """The error a task returned instead of raising, if any.
+
+    Several registry tasks (weekly_full_refresh, cleanup_old_price_data,
+    refresh_all_fundamentals, refresh_stock_universe) catch their exception
+    and return ``{'error': ...}`` or ``{'status': 'error'}``, so Celery
+    reports SUCCESS. Other statuses (skipped, ok, the Options task's
+    failed_quality gate) are finished runs, not failures.
+    """
+    if not isinstance(result, dict):
+        return None
+    if result.get('error'):
+        return str(result['error'])
+    if result.get('status') in ('error', 'failed'):
+        return f"Task reported status '{result['status']}'"
+    return None
+
+
 def _registry_entry_for(task_function: str, kwargs: Dict[str, Any]) -> Optional[str]:
     """Map a Celery task to its registry entry, preferring a per-market entry."""
     market = str(kwargs.get('market') or '').upper()
@@ -203,6 +221,8 @@ def record_task_run(
     task_name = _registry_entry_for(task_function, kwargs)
     if task_name is None:
         return
+    if status == 'completed' and (reported := _reported_error(result)):
+        status, error = 'failed', reported
     try:
         now = datetime.now(timezone.utc)
         with SessionLocal() as db:
@@ -525,6 +545,9 @@ class TaskRegistryService:
             response['total'] = result.info.get('total', 0)
         elif celery_state == 'SUCCESS':
             response['result'] = result.result
+            if reported := _reported_error(result.result):
+                status = response['status'] = 'failed'
+                response['error'] = reported
         elif celery_state == 'FAILURE':
             response['error'] = str(result.result) if result.result else 'Unknown error'
 
@@ -534,8 +557,8 @@ class TaskRegistryService:
                 db,
                 task_id,
                 status,
-                result=result.result if status == 'completed' else None,
-                error=str(result.result) if status == 'failed' else None,
+                result=response.get('result'),
+                error=response.get('error'),
             )
 
         return response
@@ -562,6 +585,8 @@ class TaskRegistryService:
         error: str = None
     ):
         """Update execution record when task completes."""
+        if status == 'completed' and (reported := _reported_error(result)):
+            status, error = 'failed', reported
         execution = db.query(TaskExecutionHistory).filter(
             TaskExecutionHistory.task_id == task_id
         ).first()

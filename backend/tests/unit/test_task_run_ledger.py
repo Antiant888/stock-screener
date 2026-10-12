@@ -76,6 +76,57 @@ def test_failed_run_records_error_message(db_session):
     assert (row.task_name, row.status, row.error_message) == ("weekly-orphaned-scan-cleanup", "failed", "boom")
 
 
+@pytest.mark.parametrize(
+    ("retval", "expected_status", "expected_error"),
+    [
+        # weekly_full_refresh / cleanup_old_price_data / refresh_all_fundamentals
+        # catch the exception and return it, so Celery reports SUCCESS.
+        ({"error": "db locked", "completed_at": "x"}, "failed", "db locked"),
+        # refresh_stock_universe tags the status as well.
+        ({"status": "error", "error": "feed down"}, "failed", "feed down"),
+        ({"status": "failed"}, "failed", "Task reported status 'failed'"),
+        ({"status": "skipped", "reason": "not_trading_day"}, "completed", None),
+        # Options: a quality-gate outcome is a finished run, not a failure.
+        ({"status": "failed_quality", "reason_codes": ["low_coverage"]}, "completed", None),
+        ({"status": "success", "error": None}, "completed", None),
+    ],
+)
+def test_error_results_returned_as_success_are_recorded_as_failed(
+    db_session, retval, expected_status, expected_error,
+):
+    task_id = str(uuid4())
+    _start(CLEANUP, task_id, {})
+    _finish(CLEANUP, task_id, {}, state="SUCCESS", retval=retval)
+
+    [row] = _rows(db_session, task_id)
+    assert (row.status, row.error_message) == (expected_status, expected_error)
+
+
+def test_reconcile_records_an_error_result_as_failed(db_session):
+    task_id = str(uuid4())
+    _start(CLEANUP, task_id, {})
+
+    with patch("app.services.task_registry_service.AsyncResult") as async_result:
+        async_result.return_value = SimpleNamespace(state="SUCCESS", result={"error": "db locked"})
+        assert TaskRegistryService().reconcile_open_runs(db_session) == 1
+
+    [row] = _rows(db_session, task_id)
+    assert (row.status, row.error_message) == ("failed", "db locked")
+
+
+def test_status_endpoint_reports_an_error_result_as_failed(db_session):
+    task_id = str(uuid4())
+    _start(CLEANUP, task_id, {})
+
+    with patch("app.services.task_registry_service.AsyncResult") as async_result:
+        async_result.return_value = SimpleNamespace(state="SUCCESS", result={"error": "db locked"}, info=None)
+        status = TaskRegistryService().get_task_status("weekly-orphaned-scan-cleanup", task_id, db_session)
+
+    assert (status["status"], status["error"]) == ("failed", "db locked")
+    [row] = _rows(db_session, task_id)
+    assert (row.status, row.error_message) == ("failed", "db locked")
+
+
 def test_retry_does_not_rewind_a_running_row(db_session):
     task_id = str(uuid4())
 
