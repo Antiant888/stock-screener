@@ -35,6 +35,15 @@ def test_bundle_declares_no_static_tools():
     assert "tools" not in manifest
 
 
+def test_bundle_runtime_is_one_smithery_recognises():
+    # smithery-cli src/lib/mcpb.ts detectBundleRuntime only knows python/node/binary
+    # (or a bun command) and rejects MCPB's "uv" type. Hosts still launch the server
+    # through mcp_config, which runs `uv run` either way.
+    manifest = json.loads((PACKAGE / "mcpb" / "manifest.json").read_text())
+    assert manifest["server"]["type"] == "python"
+    assert manifest["server"]["mcp_config"]["command"] == "uv"
+
+
 def test_registry_name_matches_the_readme_ownership_marker():
     # The MCP registry verifies PyPI ownership by finding `mcp-name: <name>` in the README.
     server = json.loads((PACKAGE / "server.json").read_text())

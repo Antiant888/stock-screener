@@ -102,7 +102,7 @@ STOCKSCREEN_LIVE=1 uv run pytest -m live           # against the real publish
 
 1. Bump `__version__` in `src/stockscreen_mcp/__init__.py`. Bump the same version in `server.json` (both `version` fields) and in `mcpb/manifest.json` and `mcpb/pyproject.toml`. `tests/test_packaging.py` fails if they drift.
 2. Push a `stockscreen-mcp-v<version>` tag. `.github/workflows/stockscreen-mcp-release.yml` publishes to PyPI and then to the [MCP registry](https://registry.modelcontextprotocol.io/), through `stockscreen-mcp-registry.yml` with GitHub OIDC.
-3. **Smithery and Claude Desktop bundle:** build it with `cd mcpb && npx @anthropic-ai/mcpb pack . stockscreen-mcp.mcpb`, then upload with `smithery mcp publish stockscreen-mcp.mcpb -n xang1234/stockscreen-mcp`.
+3. **Smithery and Claude Desktop bundle:** build it with `cd mcpb && npx @anthropic-ai/mcpb pack . stockscreen-mcp.mcpb`, then upload with `smithery mcp publish stockscreen-mcp.mcpb -n davidten7/stockscreen-mcp` (the maintainer's Smithery namespace).
 
 ## License and disclaimer
 

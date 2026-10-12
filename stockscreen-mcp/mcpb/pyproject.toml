@@ -1,5 +1,7 @@
-# MCPB bundle (server.type "uv"): the host installs these dependencies with uv and runs
-# server.py. Pins the released package; its version must match ../src/stockscreen_mcp/__init__.py.
+# MCPB bundle: manifest.json's mcp_config runs `uv run --directory <bundle> server.py`, which
+# installs these dependencies. server.type is "python" (not MCPB's "uv") because Smithery's
+# publisher only recognises python/node/binary. Pins the released package; its version must
+# match ../src/stockscreen_mcp/__init__.py.
 [project]
 name = "stockscreen-mcp-bundle"
 version = "0.1.0"

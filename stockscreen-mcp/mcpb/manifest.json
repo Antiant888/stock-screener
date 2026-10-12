@@ -17,7 +17,7 @@
   "license": "Apache-2.0",
   "keywords": ["stocks", "screener", "minervini", "canslim", "relative-strength", "market-breadth"],
   "server": {
-    "type": "uv",
+    "type": "python",
     "entry_point": "server.py",
     "mcp_config": {
       "command": "uv",
