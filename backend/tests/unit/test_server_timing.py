@@ -5,7 +5,7 @@ import re
 
 import httpx
 import pytest
-from fastapi import FastAPI
+from fastapi import BackgroundTasks, FastAPI
 from fastapi.responses import Response, StreamingResponse
 from sqlalchemy import create_engine, text
 from sqlalchemy.exc import OperationalError
@@ -87,6 +87,12 @@ def _app(engine):
             yield b"done"
 
         return StreamingResponse(rows(), media_type="text/plain")
+
+    @app.post("/kick-off")
+    def kick_off_route(background_tasks: BackgroundTasks):
+        run(1)
+        background_tasks.add_task(run, 4)  # like POST /breadth/calculate
+        return {"queued": True}
 
     @app.get("/empty")
     def empty_route():
@@ -189,6 +195,17 @@ async def test_a_stream_never_passes_for_a_complete_count(client):
 
     assert response.text == "done"
     assert _timing(response, STREAMED)[0] == 0
+
+
+@pytest.mark.asyncio
+async def test_background_tasks_are_not_part_of_the_response(client):
+    # They run after the client has the whole response, so they never
+    # delayed it; the header times what the client waited for.
+    async with client:
+        response = await client.post("/kick-off")
+
+    assert response.json() == {"queued": True}
+    assert _timing(response)[0] == 1
 
 
 @pytest.mark.asyncio

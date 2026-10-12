@@ -11,7 +11,9 @@ Browsers show it in DevTools' Timing tab, e.g.
 A streamed body (no Content-Length: StreamingResponse, SSE) runs after the
 headers, with whatever queries it makes, so such a response reports
 ``db;…;desc="N queries before streaming", headers;dur=…`` instead, never a
-total it cannot know.
+total it cannot know. Starlette BackgroundTasks, like Celery tasks, are not
+part of the response the client waited for: they run after it was sent,
+and their queries are not in it.
 
 ``total`` minus ``db`` is not all Python. It also holds waiting for a pooled
 connection, connecting, the pre-ping and BEGIN/COMMIT/ROLLBACK, none of which
