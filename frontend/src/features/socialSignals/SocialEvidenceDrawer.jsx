@@ -61,6 +61,7 @@ export default function SocialEvidenceDrawer({
             </Typography>
           </Box>
         ) : null}
+        {data?.available && Array.isArray(data.claims) ? <ClaimList claims={data.claims} /> : null}
         <Box sx={{ mt: 2 }}>
           <Typography variant="subtitle2">Source posts</Typography>
           {(data?.posts || []).slice(0, 3).map((post) => (
@@ -89,6 +90,56 @@ function ComponentMath({ title, components }) {
           </Typography>
         </Stack>
       ))}
+    </Box>
+  );
+}
+
+const supportChip = {
+  supported: { label: 'Supported', color: 'success' },
+  uncertain: { label: 'Uncertain', color: 'warning' },
+  unsupported: { label: 'Unsupported', color: 'default' },
+};
+
+// Attachment-backed excerpts quote the attachment, not the poster.
+const attachmentLabel = { article: 'linked article', image: 'shared image' };
+
+function ClaimList({ claims }) {
+  return (
+    <Box sx={{ mt: 2 }}>
+      <Typography variant="subtitle2">What X is claiming</Typography>
+      {claims.length ? (
+        <Box component="ul" aria-label="Extracted claims"
+          sx={{ listStyle: 'none', p: 0, m: 0 }}>
+          {claims.map((claim) => {
+            const chip = supportChip[claim.support] || supportChip.unsupported;
+            return (
+              <Box component="li" key={`${claim.post_id}:${claim.theme}:${claim.excerpt}`}
+                sx={{ py: 1, borderBottom: 1, borderColor: 'divider' }}>
+                <Stack direction="row" gap={0.75} alignItems="center" flexWrap="wrap">
+                  <Typography variant="body2" fontWeight={600}>{claim.theme} · {claim.relationship}</Typography>
+                  <Chip size="small" variant="outlined" color={chip.color} label={chip.label} />
+                </Stack>
+                <Typography variant="body2" sx={{ my: 0.5 }}>“{claim.excerpt}”</Typography>
+                <Typography variant="caption" color="text.secondary">
+                  {claim.source_url ? (
+                    <>
+                      From a{' '}
+                      <Link href={claim.source_url} target="_blank" rel="noreferrer">
+                        {attachmentLabel[claim.source] || 'attachment'}
+                      </Link>
+                      {' shared by '}
+                    </>
+                  ) : null}
+                  <Link href={claim.url} target="_blank" rel="noreferrer">@{claim.author_handle}</Link>
+                  {' · '}{new Date(claim.created_at).toLocaleString()}
+                </Typography>
+              </Box>
+            );
+          })}
+        </Box>
+      ) : (
+        <Typography variant="body2" color="text.secondary">No company claims extracted in this window.</Typography>
+      )}
     </Box>
   );
 }

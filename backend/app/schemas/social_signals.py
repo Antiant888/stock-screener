@@ -102,6 +102,25 @@ class SocialEvidencePost(BaseModel):
     engagement: dict[str, int | None] = Field(default_factory=dict)
 
 
+class SocialEvidenceClaim(BaseModel):
+    """One extracted claim about this candidate.
+
+    The excerpt is verbatim from the post, or from an attachment of it (an image's
+    text or a linked article) when ``source`` says so; ``source_url`` is then the
+    attachment, and ``url`` remains the post that shared it.
+    """
+    post_id: str
+    author_handle: str
+    created_at: datetime
+    url: str
+    theme: str
+    relationship: str
+    excerpt: str = Field(max_length=280)
+    support: Literal["supported", "uncertain", "unsupported"]
+    source: Literal["post", "image", "article"] = "post"
+    source_url: str | None = None
+
+
 class SocialEvidenceResponse(BaseModel):
     supported: bool
     available: bool
@@ -110,6 +129,7 @@ class SocialEvidenceResponse(BaseModel):
     window: WindowCode
     item: SocialQueueItem | None = None
     posts: list[SocialEvidencePost] = Field(default_factory=list, max_length=3)
+    claims: list[SocialEvidenceClaim] = Field(default_factory=list, max_length=5)
     related_listings: list[dict[str, Any]] = Field(default_factory=list)
 
 
