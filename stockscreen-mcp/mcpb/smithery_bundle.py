@@ -18,6 +18,19 @@ from pathlib import Path
 
 BUNDLE = Path(__file__).resolve().parent
 FILES = (".mcpbignore", "manifest.json", "pyproject.toml", "server.py")
+# smithery (the publish CLI) declares engines.node >=20.0.0.
+MIN_NODE_MAJOR = 20
+
+
+def require_node(version: str) -> None:
+    """Exit with a clear message unless `node --version` output is Node 20 or newer."""
+    major = version.strip().lstrip("v").split(".")[0]
+    if not major.isdigit() or int(major) < MIN_NODE_MAJOR:
+        found = version.strip() or "no node on PATH"
+        sys.exit(
+            f"Node {MIN_NODE_MAJOR}+ is required to pack and publish to Smithery (found: {found}). "
+            "With nvm: nvm use 22"
+        )
 
 
 def stage(target: Path) -> Path:
@@ -31,7 +44,15 @@ def stage(target: Path) -> Path:
     return target
 
 
+def node_version() -> str:
+    try:
+        return subprocess.run(["node", "--version"], capture_output=True, text=True, check=True).stdout
+    except (OSError, subprocess.CalledProcessError):
+        return ""
+
+
 def main() -> None:
+    require_node(node_version())
     output = Path(sys.argv[1] if len(sys.argv) > 1 else "stockscreen-mcp-smithery.mcpb").resolve()
     with tempfile.TemporaryDirectory() as tmp:
         staged = stage(Path(tmp) / "bundle")

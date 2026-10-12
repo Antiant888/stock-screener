@@ -102,7 +102,7 @@ STOCKSCREEN_LIVE=1 uv run pytest -m live           # against the real publish
 
 1. Bump `__version__` in `src/stockscreen_mcp/__init__.py`. Bump the same version in `server.json` (both `version` fields) and in `mcpb/manifest.json` and `mcpb/pyproject.toml`. `tests/test_packaging.py` fails if they drift.
 2. Push a `stockscreen-mcp-v<version>` tag. `.github/workflows/stockscreen-mcp-release.yml` publishes to PyPI and then to the [MCP registry](https://registry.modelcontextprotocol.io/), through `stockscreen-mcp-registry.yml` with GitHub OIDC.
-3. **Bundles** (needs Node 18+), built from `mcpb/`:
+3. **Bundles** (needs Node 20+, which the Smithery CLI requires; `smithery_bundle.py` checks it), built from `mcpb/`:
    - **Claude Desktop:** `npx @anthropic-ai/mcpb pack . stockscreen-mcp.mcpb` builds an MCPB `uv` bundle.
    - **Smithery:** its CLI can't read the `uv` type yet ([smithery-cli#801](https://github.com/arcadeai-labs/smithery-cli/issues/801)). `python smithery_bundle.py` packs a copy typed `python` as `stockscreen-mcp-smithery.mcpb`.
    - **Publish to Smithery:** `smithery mcp publish stockscreen-mcp-smithery.mcpb -n davidten7/stockscreen-mcp`, using the maintainer's Smithery namespace.

@@ -60,6 +60,27 @@ def test_bundle_is_a_uv_bundle_with_a_separate_smithery_variant(tmp_path):
     assert json.loads((PACKAGE / "mcpb" / "manifest.json").read_text())["server"]["type"] == "uv"  # untouched
 
 
+def _smithery_bundle_module():
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("smithery_bundle", PACKAGE / "mcpb" / "smithery_bundle.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.mark.parametrize("version", ["v14.21.3", "v18.20.4", "v19.9.0", "", "not-a-version"])
+def test_smithery_packing_refuses_node_older_than_20(version):
+    # smithery (the publish CLI) declares engines.node >=20.0.0; this machine's default is v14.
+    with pytest.raises(SystemExit, match="Node 20"):
+        _smithery_bundle_module().require_node(version)
+
+
+@pytest.mark.parametrize("version", ["v20.0.0", "v22.18.0", "v24.20.0"])
+def test_smithery_packing_accepts_node_20_and_newer(version):
+    _smithery_bundle_module().require_node(version)
+
+
 def test_registry_name_matches_the_readme_ownership_marker():
     # The MCP registry verifies PyPI ownership by finding `mcp-name: <name>` in the README.
     server = json.loads((PACKAGE / "server.json").read_text())
