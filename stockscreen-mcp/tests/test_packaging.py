@@ -28,11 +28,13 @@ def test_bundle_pins_the_package_version():
     assert bundle["dependencies"] == [f"stockscreen-mcp=={__version__}"]
 
 
-def test_bundle_declares_no_static_tools():
-    # `smithery mcp publish` rejects any bundle with a `tools` array (HTTP 400,
-    # arcadeai-labs/smithery-cli#787); hosts list the tools from the running server.
+def test_bundle_declares_an_empty_tools_list():
+    # Smithery needs exactly `"tools": []`: listed tools are rejected for lacking
+    # inputSchema (arcadeai-labs/smithery-cli#787), and a missing key leaves the server
+    # card empty, so publish fails with 400 "No values to set" (#770). Hosts list the
+    # real tools from the running server.
     manifest = json.loads((PACKAGE / "mcpb" / "manifest.json").read_text())
-    assert "tools" not in manifest
+    assert manifest.get("tools") == []
 
 
 def test_bundle_runtime_is_one_smithery_recognises():

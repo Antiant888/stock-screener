@@ -24,6 +24,7 @@
       "args": ["run", "--directory", "${__dirname}", "server.py"]
     }
   },
+  "tools": [],
   "compatibility": {
     "platforms": ["darwin", "linux", "win32"],
     "runtimes": { "python": ">=3.10" }
