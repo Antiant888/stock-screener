@@ -33,6 +33,10 @@ const STALE_QUEUED_MS = 10 * 60 * 1000;
 
 const STATUS_DISPLAY = {
   completed: { color: 'success', label: 'Completed' },
+  // The task ran but did nothing (not a trading day, already running, …).
+  skipped: { color: 'default', variant: 'outlined', label: 'Skipped' },
+  // The task only queued other tasks (the daily pipeline's stage chain).
+  dispatched: { color: 'info', variant: 'outlined', label: 'Handed off' },
   running: { color: 'info', label: 'Running' },
   queued: { color: 'warning', label: 'Queued' },
   failed: { color: 'error', label: 'Failed' },
@@ -116,17 +120,40 @@ function StatusChip({ run }) {
 }
 
 // The failure message, or what to do about a run stuck in the queue.
-function StatusNote({ task }) {
+// 'not_trading_day' -> 'Not trading day'; free-text reasons pass through.
+function humanizeReason(reason) {
+  const text = String(reason).replaceAll('_', ' ');
+  return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
+function statusNote(task) {
   const run = task.last_run;
-  const note = run?.status === 'failed' ? run.error_message
-    : isStaleQueued(run)
-      ? `Not picked up for ${ageLabel(ageMs(run.started_at))}. ${stuckRecovery(task.name)}`
-      : null;
+  if (run?.status === 'failed') return [run.error_message, 'error'];
+  if (isStaleQueued(run)) {
+    return [`Not picked up for ${ageLabel(ageMs(run.started_at))}. ${stuckRecovery(task.name)}`, 'warning.main'];
+  }
+  if (run?.status === 'skipped' && run.detail) return [humanizeReason(run.detail), 'text.secondary'];
+  if (run?.status === 'dispatched') {
+    // The pipeline's already-active guard only sees a stage while it runs, not
+    // the gaps between stages, so a second Run can start a second chain.
+    return [
+      'Stages queued. Follow them in Market activity and the job console; '
+        + 'running it again before they finish starts a second pipeline.',
+      'warning.main',
+    ];
+  }
+  return [null, null];
+}
+
+// The failure message, why a run skipped, where handed-off work went, or
+// what to do about a run stuck in the queue.
+function StatusNote({ task }) {
+  const [note, color] = statusNote(task);
   if (!note) return null;
   return (
     <Typography
       variant="caption"
-      color={run.status === 'failed' ? 'error' : 'warning.main'}
+      color={color}
       sx={{ display: 'block', mt: 0.5, maxWidth: 320, overflowWrap: 'anywhere' }}
     >
       {note}

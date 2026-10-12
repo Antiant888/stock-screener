@@ -58,12 +58,12 @@ def test_worker_run_is_recorded_start_to_finish(db_session):
     [row] = _rows(db_session, task_id)
     assert (row.task_name, row.status, row.triggered_by) == ("daily-market-pipeline-hk", "running", "auto")
 
-    _finish(PIPELINE, task_id, {"market": "HK"}, state="SUCCESS", retval={"status": "queued"})
+    _finish(PIPELINE, task_id, {"market": "HK"}, state="SUCCESS", retval={"status": "ok"})
     [row] = _rows(db_session, task_id)
     assert row.status == "completed"
     assert row.completed_at is not None
     assert row.duration_seconds is not None
-    assert row.result_summary == {"status": "queued"}
+    assert row.result_summary == {"status": "ok"}
 
 
 def test_failed_run_records_error_message(db_session):
@@ -85,7 +85,7 @@ def test_failed_run_records_error_message(db_session):
         # refresh_stock_universe tags the status as well.
         ({"status": "error", "error": "feed down"}, "failed", "feed down"),
         ({"status": "failed"}, "failed", "Task reported status 'failed'"),
-        ({"status": "skipped", "reason": "not_trading_day"}, "completed", None),
+        ({"status": "skipped", "reason": "not_trading_day"}, "skipped", None),
         # Options: a quality-gate outcome is a finished run, not a failure.
         ({"status": "failed_quality", "reason_codes": ["low_coverage"]}, "completed", None),
         ({"status": "success", "error": None}, "completed", None),
@@ -100,6 +100,156 @@ def test_error_results_returned_as_success_are_recorded_as_failed(
 
     [row] = _rows(db_session, task_id)
     assert (row.status, row.error_message) == (expected_status, expected_error)
+
+
+@pytest.mark.parametrize(
+    ("retval", "expected_detail"),
+    [
+        # queue_daily_market_pipeline on a weekend / with a run in progress.
+        ({"status": "skipped", "reason": "not_trading_day", "market": "US"}, "not_trading_day"),
+        ({"status": "skipped", "reason": "market_pipeline_already_active"}, "market_pipeline_already_active"),
+        # cache_tasks' older shape.
+        ({"skipped": True, "reason": "Not a trading day"}, "Not a trading day"),
+        # options / social tag reason codes.
+        ({"status": "skipped", "reason_codes": ["market_unsupported", "no_cohort"]}, "market_unsupported, no_cohort"),
+        ({"status": "skipped"}, None),
+        # serialized_data_fetch_task when the data-fetch lock is held: the
+        # weekly jobs' most common skip, with only a message.
+        ({"status": "already_running", "skipped": True, "message": "Data fetch already in progress (x)"},
+         "Data fetch already in progress (x)"),
+    ],
+)
+def test_skipped_runs_are_not_reported_as_completed(db_session, retval, expected_detail):
+    task_id = str(uuid4())
+    _start(PIPELINE, task_id, {"market": "US"})
+    _finish(PIPELINE, task_id, {"market": "US"}, state="SUCCESS", retval=retval)
+
+    last_run = _last_run(db_session, "daily-market-pipeline-us")
+
+    assert (last_run["status"], last_run["detail"]) == ("skipped", expected_detail)
+
+
+def _social_result(processing_status, *reason_codes):
+    # refresh_social_signals returns asdict(SocialRunResult): no 'status' key.
+    return {
+        "run_id": "r1", "mode": "live", "processing_status": processing_status,
+        "published": False, "coverage_summary": [], "reason_codes": list(reason_codes),
+    }
+
+
+@pytest.mark.parametrize(
+    ("retval", "expected"),
+    [
+        (_social_result("skipped", "social_runtime_unavailable"), ("skipped", "social_runtime_unavailable", None)),
+        (_social_result("blocked", "minimum_two_enabled"), ("skipped", "minimum_two_enabled", None)),
+        # Every list read failed: a failure, not a skip.
+        (_social_result("blocked", "source_participation_failed"),
+         ("failed", None, "Social source collection failed (source_participation_failed)")),
+        # Analysis ended unsuccessfully (RefreshSocialSignals fail_analysis).
+        (_social_result("failed", "analysis_failed"),
+         ("failed", None, "Social Signals analysis failed (analysis_failed)")),
+        # Collected; analysis resumes later on its own.
+        (_social_result("deferred", "analysis_incomplete"), ("completed", None, None)),
+        (_social_result("complete"), ("completed", None, None)),
+    ],
+)
+def test_social_signal_outcomes_come_from_processing_status(db_session, retval, expected):
+    task_id = str(uuid4())
+    _start(SOCIAL, task_id, {"origin": "scheduled"})
+    _finish(SOCIAL, task_id, {"origin": "scheduled"}, state="SUCCESS", retval=retval)
+
+    last_run = _last_run(db_session, "social-signal-refresh")
+
+    assert (last_run["status"], last_run["detail"], last_run["error_message"]) == expected
+
+
+@pytest.mark.parametrize("count", [0, 5])
+def test_a_count_of_skipped_symbols_is_not_a_skipped_run(db_session, count):
+    # refresh_all_fundamentals reports how many symbols it skipped.
+    task_id = str(uuid4())
+    _start("app.tasks.fundamentals_tasks.refresh_all_fundamentals", task_id, {"market": "US"})
+    _finish("app.tasks.fundamentals_tasks.refresh_all_fundamentals", task_id, {"market": "US"},
+            state="SUCCESS", retval={"status": "success", "updated": 10, "skipped": count})
+
+    [row] = _rows(db_session, task_id)
+    assert row.status == "completed"
+
+
+def test_status_fallback_writer_classifies_a_skipped_result(db_session):
+    # An open run whose signal write was lost: the status endpoint reads
+    # Celery, reports completed (Options contract) and records skipped.
+    task_id = str(uuid4())
+    _start(PIPELINE, task_id, {"market": "US"})
+
+    with patch("app.services.task_registry_service.AsyncResult") as async_result:
+        async_result.return_value = SimpleNamespace(
+            state="SUCCESS", result={"status": "skipped", "reason": "not_trading_day"}, info=None,
+        )
+        status = TaskRegistryService().get_task_status("daily-market-pipeline-us", task_id, db_session)
+
+    assert status["status"] == "completed"
+    [row] = _rows(db_session, task_id)
+    assert row.status == "skipped"
+
+
+def test_status_fallback_reports_a_social_failure_as_failed(db_session):
+    # The response must agree with what the same call records.
+    task_id = str(uuid4())
+    _start(SOCIAL, task_id, {"origin": "scheduled"})
+
+    with patch("app.services.task_registry_service.AsyncResult") as async_result:
+        async_result.return_value = SimpleNamespace(
+            state="SUCCESS", result=_social_result("blocked", "source_participation_failed"), info=None,
+        )
+        status = TaskRegistryService().get_task_status("social-signal-refresh", task_id, db_session)
+
+    assert (status["status"], status["error"]) == (
+        "failed", "Social source collection failed (source_participation_failed)",
+    )
+    [row] = _rows(db_session, task_id)
+    assert row.status == "failed"
+
+
+def test_pipeline_handoff_is_reported_as_dispatched_not_completed(db_session):
+    # queue_daily_market_pipeline only queues the stage chain and returns in
+    # seconds; the real work (prices, breadth, groups, scan) is still ahead.
+    task_id = str(uuid4())
+    _start(PIPELINE, task_id, {"market": "US"})
+    _finish(PIPELINE, task_id, {"market": "US"}, state="SUCCESS",
+            retval={"status": "queued", "market": "US", "task_id": "chain-1"})
+
+    last_run = _last_run(db_session, "daily-market-pipeline-us")
+
+    assert (last_run["status"], last_run["detail"]) == ("dispatched", None)
+
+
+def test_reconcile_classifies_skipped_results_too(db_session):
+    task_id = str(uuid4())
+    _start(PIPELINE, task_id, {"market": "US"})
+
+    with patch("app.services.task_registry_service.AsyncResult") as async_result:
+        async_result.return_value = SimpleNamespace(state="SUCCESS", result={"status": "skipped", "reason": "x"})
+        assert TaskRegistryService().reconcile_open_runs(db_session) == 1
+
+    [row] = _rows(db_session, task_id)
+    assert row.status == "skipped"
+
+
+def test_status_endpoint_keeps_reporting_skipped_runs_as_completed(db_session):
+    # The Options page polls this endpoint and reads result.status itself; it
+    # only stops on completed/failed/cancelled.
+    task_id = str(uuid4())
+    _start(OPTIONS, task_id, {"market": "US"})
+    _finish(OPTIONS, task_id, {"market": "US"}, state="SUCCESS",
+            retval={"status": "skipped", "reason_codes": ["market_unsupported"]})
+
+    with patch("app.services.task_registry_service.AsyncResult") as async_result:
+        status = TaskRegistryService().get_task_status("daily-us-options-analytics", task_id, db_session)
+
+    assert status["status"] == "completed"
+    assert status["result"] == {"status": "skipped", "reason_codes": ["market_unsupported"]}
+    assert TaskStatusResponse(**status).celery_state == "SUCCESS"
+    async_result.assert_not_called()
 
 
 def test_reconcile_records_an_error_result_as_failed(db_session):
