@@ -157,3 +157,4 @@ def test_cashtags_reject_money_amounts():
     text = "$NVDA $MU. $BRK.B up; $10K $1M $50m $1.5B $2T $300. $0 $750 $10,000 and $3M? x$AAA"
     assert cashtags(text) == ["$BRK.B", "$MU.", "$NVDA"]
     assert cashtags("$6758.T 和 $2330.TW, 关注$0700.HK") == ["$0700.HK", "$2330.TW", "$6758.T"]
+    assert cashtags("$1.5bn, $10K-$20K, $3mm, $2tn") == []

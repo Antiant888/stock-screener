@@ -690,6 +690,7 @@ def test_no_signal_posts_finish_without_an_llm_call(backlog, value):
     replace(post(1), text="nvidia just guided above the street"),
     replace(post(1), text="Look at MU here"),
     replace(post(1), text="Tencent 0700.HK looks heavy"),
+    replace(post(1), text="F cuts EV spending"),
     replace(post(1), text="雷军说小米汽车订单很多"),
     replace(post(1), text="this chart", attachments=(SocialAttachmentRef("image", "https://pbs.twimg.com/a.jpg"),)),
     replace(post(1), text="agreed", quoted_text="$AAA beats"),
@@ -701,6 +702,7 @@ def test_posts_with_a_ticker_name_or_attachment_still_reach_the_llm(backlog, val
         db.add(StockUniverse(symbol="NVDA", name="NVIDIA Corp", market="US", exchange="NASDAQ", is_active=True))
         db.add(StockUniverse(symbol="MU", name="Micron Technology Inc", market="US", exchange="NASDAQ", is_active=True))
         db.add(StockUniverse(symbol="0700.HK", name="TENCENT", market="HK", exchange="HKEX", is_active=True))
+        db.add(StockUniverse(symbol="F", name="Ford Motor Co", market="US", exchange="NYSE", is_active=True))
     configure_budget(backlog)
     llm = FakeLLM()
     worker = processor(backlog, llm)
@@ -709,3 +711,24 @@ def test_posts_with_a_ticker_name_or_attachment_still_reach_the_llm(backlog, val
     asyncio.run(worker.execute(NOW, 1))
 
     assert llm.calls == 1
+
+
+def test_a_no_signal_skip_reopens_once_the_universe_lists_the_ticker(backlog):
+    """A skip made before a listing loaded must not stick once the post names it."""
+    from app.infra.db.models.social_analysis import SocialExtractionWork
+    from app.models.stock_universe import StockUniverse
+
+    configure_budget(backlog)
+    llm = FakeLLM()
+    value = replace(post(1), text="ZZZ supplies cooling")
+    work_id = enqueue(backlog, processor(backlog, llm), value)
+    with backlog.begin() as db:
+        db.add(StockUniverse(symbol="ZZZ", name="Zeta Cooling Inc", market="US", exchange="NASDAQ", is_active=True))
+    worker = processor(backlog, llm)
+
+    assert worker.enqueue(1, value, selected_model="synthetic/requested", now=NOW) == work_id
+    asyncio.run(worker.execute(NOW, 1))
+
+    assert llm.calls == 1
+    with backlog() as db:
+        assert db.get(SocialExtractionWork, work_id).error_code is None

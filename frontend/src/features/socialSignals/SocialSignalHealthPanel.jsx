@@ -205,7 +205,9 @@ export default function SocialSignalHealthPanel() {
           Budget-paused work resumes after reset. Outside-window work is retained and only retried when you request it.
         </Typography>
         {(analysis.data || []).map((work) => <Stack key={work.work_id} direction="row" gap={1} alignItems="center">
-          <Typography variant="body2">Work {work.work_id} · {work.state}</Typography>
+          <Typography variant="body2">
+            Work {work.work_id} · {work.error_code === 'skipped:no_signal' ? 'skipped, no ticker or company' : work.state}
+          </Typography>
           {['waiting_budget', 'failed_retryable', 'failed_terminal', 'outside_window'].includes(work.state) ? (
             <Button size="small" aria-label={`Retry work ${work.work_id}`}
               onClick={() => mutation.mutate(() => retrySocialAnalysis(adminKey, work.work_id))}>Retry</Button>

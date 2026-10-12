@@ -1,7 +1,7 @@
 """Persisted social evidence and installation-wide source registry."""
 from sqlalchemy import (
     BigInteger, CheckConstraint, Column, Date, DateTime, ForeignKey, Index,
-    Integer, JSON, Numeric, Text, UniqueConstraint, event, inspect, select,
+    Integer, JSON, Numeric, Text, UniqueConstraint, event, inspect, select, update,
 )
 from sqlalchemy.orm import Session
 from sqlalchemy.sql import func
@@ -206,12 +206,21 @@ class SocialSignalRunPointer(Base):
     __table_args__ = (CheckConstraint("key = 'latest_published'", name="ck_social_pointer_key"),)
 
 
+def _lock_registry(db):
+    with db.no_autoflush:
+        if db.get_bind().dialect.name == "sqlite":
+            db.execute(update(SocialSourceRegistry).where(SocialSourceRegistry.id == 1).values(version=SocialSourceRegistry.version))
+        return db.scalar(select(SocialSourceRegistry).where(SocialSourceRegistry.id == 1)
+                         .with_for_update().execution_options(populate_existing=True))
+
+
 @event.listens_for(Session, "before_flush")
 def _protect_social_history(session, flush_context, instances):
+    # Importing a service here would register more flush listeners mid-flush
+    # ("deque mutated during iteration"); keep this listener on models only.
     from app.infra.db.models.social_analysis import SocialRunWork
     links = [row for row in session.new | session.dirty | session.deleted if isinstance(row, SocialRunWork)]
     if links:
-        from app.services.social_theme_projection_service import _lock_registry
         with session.no_autoflush:
             _lock_registry(session)
             run_ids = {row.run_id for row in links}

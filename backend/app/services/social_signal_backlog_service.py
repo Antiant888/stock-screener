@@ -253,6 +253,11 @@ class ProcessSocialBacklog:
                 SocialExtractionWork.prompt_version == prompt_version,
                 SocialExtractionWork.schema_version == schema_version,
                 SocialExtractionWork.selected_model == selected_model))
+            if work is not None and work.error_code == SKIPPED_NO_SIGNAL and self._has_signal(db, post):
+                # The universe has since listed something the post names; extract it after all.
+                work.state, work.error_code, work.result_json = "pending", None, None
+                work.actual_provider = work.actual_model = None
+                work.updated_at = now
             if work is None:
                 work = SocialExtractionWork(content_item_id=content_item_id, input_hash=input_hash,
                     prompt_version=prompt_version, schema_version=schema_version,
@@ -295,7 +300,8 @@ class ProcessSocialBacklog:
         # it errs toward an LLM call. CJK text has no word breaks, so it always passes.
         # Aliases that are not a name's first word ("Foxconn") are skipped; add
         # resolve_alias here if those turn up in skipped posts.
-        return (any(len(word) >= 2 and word in symbols for word in _SYMBOL.findall(text))
+        # Exact case: lowercase "it", "on", "now" are tickers too, and would pass every post.
+        return (any(word in symbols for word in _SYMBOL.findall(text))
                 or any(word in names for word in _WORD.findall(text.casefold())))
 
     def _claim(self, now, limit, admin_work_ids, eligible_work_ids=()):
