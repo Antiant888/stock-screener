@@ -51,9 +51,18 @@ async function goto(route, settle = 4500) {
   await dwell(settle);
 }
 
+// A failed step keeps going (so one bad page doesn't cost the rest) but the
+// run exits nonzero, so a missing image can't pass for a complete refresh.
+let failed = 0;
 async function step(name, fn) {
   try { await fn(); console.log(`✓ ${name}`); }
-  catch (e) { console.error(`✗ ${name}:`, e.message); }
+  catch (e) { failed += 1; console.error(`✗ ${name}:`, e.message); }
+}
+
+async function pickMarket(label) {
+  await page.getByRole('combobox', { name: 'Market selector' }).click();
+  await page.getByRole('option', { name: new RegExp(label) }).click();
+  await dwell(4000);
 }
 
 // 1. Daily Snapshot dashboard (NEW hero)
@@ -62,21 +71,35 @@ await step('daily-snapshot', async () => {
   await png('daily-snapshot');
 });
 
-// 2. Scan results — sort by Composite to surface classified names
+// 1b. Market Health & Exposure card — element crop from the same page
+await step('health-exposure', async () => {
+  const card = page.getByText('Market Health & Exposure', { exact: true })
+    .locator('xpath=ancestor::div[contains(@class,"MuiPaper-root")][1]');
+  if (await card.getByText(/No exposure data yet/).count()) throw new Error('no exposure data on this stack');
+  await card.screenshot({ path: path.join(OUT, 'health-exposure.jpg'), type: 'jpeg', quality: 92 });
+});
+
+// 2. Scan results — the default sort is already Composite descending (clicking
+// the header would flip it to ascending and lead with the weakest names).
+// Theme chips are only populated for the Asian universes in the reference
+// deployment: set SCAN_RESULTS_MARKET to the option label (e.g. Japan) there.
+const SCAN_MARKET = process.env.SCAN_RESULTS_MARKET;
 await step('scan-results', async () => {
   await goto('/scan', 5000);
-  // Click the COMP column header to sort by composite score (desc).
-  const comp = page.getByRole('columnheader', { name: /COMP/i }).first();
-  if (await comp.count()) { await comp.click().catch(() => {}); await dwell(900); }
-  await dwell(1500);
-  await png('scan-results');
+  if (SCAN_MARKET) await pickMarket(SCAN_MARKET);
+  try {
+    await dwell(1500);
+    await png('scan-results');
+  } finally {
+    // The market choice persists; later steps (Options) need US.
+    if (SCAN_MARKET) await pickMarket('United States');
+  }
 });
 
 // 3. Market selector — open the header market dropdown (5 markets)
 await step('market-selector', async () => {
   await goto('/scan', 4000);
-  const marketBtn = page.getByRole('combobox').filter({ hasText: 'US' }).first();
-  await marketBtn.click();
+  await page.getByRole('combobox', { name: 'Market selector' }).click();
   await dwell(1100);
   await jpg('market-selector');
 });
@@ -98,11 +121,24 @@ await step('group-rankings', async () => {
 // 6. RRG — capture both GROUPS (default) and SECTORS scope for comparison
 await step('rrg', async () => {
   await goto('/groups', 4000);
-  await page.getByRole('button', { name: 'RRG', exact: true }).click();
+  await page.getByRole('tab', { name: 'RRG', exact: true }).click();
   await dwell(4500);
   await png('rrg-groups');
-  const sectors = page.getByRole('button', { name: 'Sectors', exact: true }).first();
-  if (await sectors.count()) { await sectors.click(); await dwell(4000); await png('rrg-sectors'); }
+  // rrg-rotation.png is the sector scope with labels; a missing control must
+  // fail the step rather than save an unlabelled or loading chart.
+  await page.getByRole('button', { name: 'Sectors', exact: true }).first().click();
+  await dwell(3000);
+  await page.getByRole('checkbox', { name: /Labels/i }).first().check();
+  await dwell(1500);
+  await png('rrg-sectors');
+});
+
+// 6b. Options Command Center (US only; the nav hides it for other markets)
+await step('options-command-center', async () => {
+  await goto('/options', 6000);
+  // The route redirects to / when options are unavailable; don't save that as Options.
+  await page.getByRole('heading', { name: 'Options Command Center', level: 1 }).waitFor({ timeout: 5000 });
+  await png('options-command-center');
 });
 
 // 7. Watchlist table
@@ -116,3 +152,7 @@ await step('watchlist-table', async () => {
 await context.close();
 await browser.close();
 console.log('done ->', OUT);
+if (failed) {
+  console.error(`${failed} step(s) failed`);
+  process.exitCode = 1;
+}

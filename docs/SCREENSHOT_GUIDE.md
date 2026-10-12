@@ -195,19 +195,15 @@ This guide provides detailed instructions for capturing screenshots and GIFs for
 ## GIFs to Capture
 
 ### 1. scan-workflow.gif (Hero GIF)
-**Duration**: 8-10 seconds
-**What to capture**: Complete scan workflow:
-1. Start on `/scan` page with no results
-2. Select screeners (click Min, CAN chips)
-3. Click "Start Scan" button
-4. Show progress bar filling
-5. Results populating in table
-6. Optional: Quick scroll through results
+**What to capture** (automated by `capture-scan-workflow.sh`, see below):
+1. Daily Snapshot
+2. Scan results, then a stock's detail, walking to the next stocks with Space
+3. Group rankings table
+4. RRG (sector scope, labels on)
+5. Stock Matrix grid, Technology sector, scrolled to the software rows
 
 **Tips**:
-- Use "Test" universe (20 stocks) for faster demo
-- Optimize GIF size (target < 5MB)
-- Ensure smooth scrolling
+- Optimize GIF size (target ~5MB)
 
 ---
 
@@ -282,7 +278,7 @@ When the UI changes significantly:
 
 ## Automated Live-App Capture (screenshots + hero GIF)
 
-The README screenshots and the hero `scan-workflow.gif` are regenerated from a **live full-app deployment** (not the static demo) via two Playwright scripts. They authenticate by reading `SERVER_AUTH_PASSWORD` from the repo-root `.env` and POSTing `/api/v1/auth/login`, so the server session cookie rides in the browser context — the password is never printed or passed on the command line.
+The README screenshots and the hero `scan-workflow.gif` are regenerated from a **live full-app deployment** (not the static demo) via three Playwright scripts (the breadth images are the exception; see the note below). They authenticate by reading `SERVER_AUTH_PASSWORD` from the repo-root `.env` and POSTing `/api/v1/auth/login`, so the server session cookie rides in the browser context — the password is never printed or passed on the command line.
 
 ```bash
 # one-time setup
@@ -300,7 +296,7 @@ bash frontend/scripts/capture-scan-workflow.sh
 
 > **GIF encoding note:** the tour GIF uses an ffmpeg flat-palette pass with `dither=none` followed by `gifsicle -O3 --lossy`, *not* gifski. The dark UI background is a near-black gradient, and error-diffusion dithering (gifski's default, with no opt-out) scatters it into patchy speckle. `dither=none` keeps the darks uniform; gifsicle recovers the file size. See `capture-scan-workflow.sh` for the exact pass.
 
-`capture-live-readme.mjs` captures the Daily Snapshot, Scan results, Market selector, Breadth, Group rankings, RRG (sector scope, labels on), and Watchlist at `deviceScaleFactor: 2`. Review the output in `.tmp/readme-shots/`, then downscale the keepers to 1440px wide (matching the existing set) before copying into `docs/screenshots/`:
+`capture-live-readme.mjs` captures the Daily Snapshot, the Market Health & Exposure card (element crop, kept at 2x), Scan results, Market selector, Breadth, Group rankings, RRG (sector scope, labels on), Options Command Center, and Watchlist at `deviceScaleFactor: 2`. For a local Docker stack, set `SITE_URL=http://localhost`. `capture-group-readme.mjs` (with `GROUPS_SCREENSHOT_URL=http://localhost`) writes `group-rs-table`, `group-matrix-grid` and `group-matrix-clusters` to `.tmp/group-readme/` at their committed size (2400px wide); copy those as-is. Review the `capture-live-readme.mjs` output in `.tmp/readme-shots/`, then downscale the keepers to 1440px wide (matching the existing set) before copying into `docs/screenshots/`:
 
 ```bash
 ffmpeg -y -i .tmp/readme-shots/breadth-chart.png -vf "scale=1440:-1:flags=lanczos" -q:v 2 docs/screenshots/breadth-chart.jpg
@@ -308,7 +304,9 @@ ffmpeg -y -i .tmp/readme-shots/breadth-chart.png -vf "scale=1440:-1:flags=lanczo
 
 The table-focused `breadth-history.jpg` is currently captured separately using the steps in **4b** so its group headers and newest rows remain the focus.
 
-**Capture `scan-results` on an Asian market (e.g. Japan).** The Themes chip-cluster column is only populated for the Asia universes in the reference deployment; a US scan leaves it blank.
+**Breadth needs history.** Backfilled breadth only covers dates with a recorded point-in-time universe, so a freshly installed stack shows only a few sessions however wide the range. When that is the case, take `breadth-chart.jpg` and `breadth-history.jpg` from the static site (same page, long history) instead. The hero tour leaves Breadth out for the same reason.
+
+**Capture `scan-results` on an Asian market when the stack has one.** The Themes chip-cluster column is only populated for the Asia universes in the reference deployment; a US scan leaves it blank. Set `SCAN_RESULTS_MARKET` to the market's label in the picker (e.g. `SCAN_RESULTS_MARKET=Japan`); the step switches back to United States afterwards. A stack with only US data keeps the default.
 
 **Assets kept from prior captures** (regenerate them only when the live instance has the relevant data/state):
 
@@ -319,22 +317,27 @@ The table-focused `breadth-history.jpg` is currently captured separately using t
 | `market-badges.png` | Needs a single view spanning multiple markets (mixed-market badges) |
 | `bootstrap-setup.jpg`, `bootstrap-progress.jpg` | First-run-only wizard screens |
 
-## Automated Tour GIF (`static-site-tour.gif`)
+## Automated Tour GIFs (`static-site-tour.gif`, `static-site-mobile-tour.gif`)
 
-The static-site page-tour GIF is regenerated by a Playwright + ffmpeg + gifsicle pipeline:
+The static-site page-tour GIFs are regenerated by a Playwright + ffmpeg + gifsicle pipeline:
 
 ```bash
 # one-time setup
 brew install ffmpeg gifsicle
 
-# regenerate the GIF
+# regenerate the desktop GIF
 bash frontend/scripts/capture-static-site-tour.sh
+
+# regenerate the phone GIF shown beside the hero in the README
+TOUR=mobile bash frontend/scripts/capture-static-site-tour.sh
 ```
 
 What it does:
-1. `frontend/scripts/capture-static-site-tour.mjs` drives a headless Chromium with Playwright's `recordVideo` API against `https://xang1234.github.io/stock-screener/`. The storyboard mirrors the live-app tour: Daily Snapshot → Scan (preset filter chips + space-bar stock detail walk) → Breadth → Groups (ranked table → RRG rotation, sector scope with labels).
+1. `frontend/scripts/capture-static-site-tour.mjs` drives a headless Chromium with Playwright's `recordVideo` API against `https://xang1234.github.io/stock-screener/`. The storyboard: Daily Snapshot → Scan (preset filter chips + space-bar stock detail walk) → Breadth → Groups (ranked table → RRG rotation, sector scope with labels).
 2. `ffmpeg` trims the head spinner, applies a 1.5x speed-up, and extracts frames.
 3. `ffmpeg` builds a flat global palette and re-encodes with `paletteuse=dither=none` (uniform darks — see the GIF encoding note above), then `gifsicle -O3 --lossy=30` writes `docs/gifs/static-site-tour.gif` at width 960, near the 5 MB budget.
+
+With `TOUR=mobile`, step 1 runs `capture-static-mobile-tour.mjs` instead: Playwright's iPhone 13 profile (390x664 viewport, touch) opens the Daily Snapshot, then uses the bottom tab bar for Scan (stock cards, open one chart) → Breadth → Groups (RRG, sector scope with labels), and the GIF is written to `docs/gifs/static-site-mobile-tour.gif` at width 390. The README shows it at `width="26.4%"` beside the hero's `72%`, which gives both GIFs the same height (0.72 × 600/960 = 0.264 × 664/390 ≈ 0.45). Change the widths together if either GIF's aspect ratio changes.
 
 To target a different host (e.g. a PR preview), pass `SITE_URL`:
 
