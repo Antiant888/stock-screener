@@ -37,13 +37,27 @@ def test_bundle_declares_an_empty_tools_list():
     assert manifest.get("tools") == []
 
 
-def test_bundle_runtime_is_one_smithery_recognises():
-    # smithery-cli src/lib/mcpb.ts detectBundleRuntime only knows python/node/binary
-    # (or a bun command) and rejects MCPB's "uv" type. Hosts still launch the server
-    # through mcp_config, which runs `uv run` either way.
+def test_bundle_is_a_uv_bundle_with_a_separate_smithery_variant(tmp_path):
+    # The bundle ships no dependencies, so it must stay MCPB type "uv" (the host installs
+    # them from pyproject.toml). Smithery's CLI can't read "uv" yet (smithery-cli#801),
+    # so smithery_bundle.py packs a copy retyped "python" for Smithery only.
     manifest = json.loads((PACKAGE / "mcpb" / "manifest.json").read_text())
-    assert manifest["server"]["type"] == "python"
-    assert manifest["server"]["mcp_config"]["command"] == "uv"
+    assert manifest["server"]["type"] == "uv"
+
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("smithery_bundle", PACKAGE / "mcpb" / "smithery_bundle.py")
+    smithery_bundle = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(smithery_bundle)
+    staged = smithery_bundle.stage(tmp_path / "stage")
+
+    staged_manifest = json.loads((staged / "manifest.json").read_text())
+    assert staged_manifest["server"]["type"] == "python"
+    assert {k: v for k, v in staged_manifest.items() if k != "server"} == {
+        k: v for k, v in manifest.items() if k != "server"
+    }
+    assert sorted(p.name for p in staged.iterdir()) == [".mcpbignore", "manifest.json", "pyproject.toml", "server.py"]
+    assert json.loads((PACKAGE / "mcpb" / "manifest.json").read_text())["server"]["type"] == "uv"  # untouched
 
 
 def test_registry_name_matches_the_readme_ownership_marker():
