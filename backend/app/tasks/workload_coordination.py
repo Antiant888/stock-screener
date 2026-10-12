@@ -36,9 +36,11 @@ PIPELINE_CHAIN_PREFIX = "pipeline_chain"
 # failure. Fixed from dispatch and never renewed: one concurrency-1 worker
 # serves every market's data-fetch queue (start_celery.sh), so a stage can
 # wait many hours before it starts and nothing could renew the claim in
-# time. 20h covers that wait, and a claim no release frees (a stage revoked
-# from the console fires no errback) still expires before the market's next
-# scheduled run, 24h after this one.
+# time. 20h covers normal waits, and a claim no release frees (a stage
+# revoked from the console fires no errback) still expires before the
+# market's next scheduled run, 24h after this one. It does not cover an
+# unbounded backlog (a chain still queued after 20h can be overlapped); a
+# liveness-based claim would (#605).
 PIPELINE_CHAIN_TTL_SECONDS = 20 * 3600
 COORDINATION_WAIT_MAX_RETRIES = 10_000
 logger = logging.getLogger(__name__)
