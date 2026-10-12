@@ -205,7 +205,10 @@ def _outcome(status: str, result: Any, error: Optional[str] = None) -> tuple[str
     # instead of status. 'deferred' collected and resumes later, so it stays
     # completed.
     processing = result.get('processing_status')
-    if processing == 'blocked' and 'source_participation_failed' in (result.get('reason_codes') or ()):
+    codes = result.get('reason_codes') or ()
+    if processing == 'failed':
+        return 'failed', f"Social Signals analysis failed ({', '.join(map(str, codes)) or 'no reason given'})"
+    if processing == 'blocked' and 'source_participation_failed' in codes:
         return 'failed', 'Social source collection failed (source_participation_failed)'
     # 'skipped' is True only for a skipped run; refresh_all_fundamentals
     # reports a count of skipped symbols under the same key.
@@ -599,7 +602,10 @@ class TaskRegistryService:
             response['total'] = result.info.get('total', 0)
         elif celery_state == 'SUCCESS':
             response['result'] = result.result
-            if reported := _reported_error(result.result):
+            # Same classifier as the recorded outcome; skipped and dispatched
+            # runs still report completed (execution status, Options contract).
+            outcome, reported = _outcome('completed', result.result)
+            if outcome == 'failed':
                 status = response['status'] = 'failed'
                 response['error'] = reported
         elif celery_state == 'FAILURE':

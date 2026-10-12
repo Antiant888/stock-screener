@@ -145,6 +145,9 @@ def _social_result(processing_status, *reason_codes):
         # Every list read failed: a failure, not a skip.
         (_social_result("blocked", "source_participation_failed"),
          ("failed", None, "Social source collection failed (source_participation_failed)")),
+        # Analysis ended unsuccessfully (RefreshSocialSignals fail_analysis).
+        (_social_result("failed", "analysis_failed"),
+         ("failed", None, "Social Signals analysis failed (analysis_failed)")),
         # Collected; analysis resumes later on its own.
         (_social_result("deferred", "analysis_incomplete"), ("completed", None, None)),
         (_social_result("complete"), ("completed", None, None)),
@@ -187,6 +190,24 @@ def test_status_fallback_writer_classifies_a_skipped_result(db_session):
     assert status["status"] == "completed"
     [row] = _rows(db_session, task_id)
     assert row.status == "skipped"
+
+
+def test_status_fallback_reports_a_social_failure_as_failed(db_session):
+    # The response must agree with what the same call records.
+    task_id = str(uuid4())
+    _start(SOCIAL, task_id, {"origin": "scheduled"})
+
+    with patch("app.services.task_registry_service.AsyncResult") as async_result:
+        async_result.return_value = SimpleNamespace(
+            state="SUCCESS", result=_social_result("blocked", "source_participation_failed"), info=None,
+        )
+        status = TaskRegistryService().get_task_status("social-signal-refresh", task_id, db_session)
+
+    assert (status["status"], status["error"]) == (
+        "failed", "Social source collection failed (source_participation_failed)",
+    )
+    [row] = _rows(db_session, task_id)
+    assert row.status == "failed"
 
 
 def test_pipeline_handoff_is_reported_as_dispatched_not_completed(db_session):
