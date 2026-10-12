@@ -71,10 +71,22 @@ function isStaleQueued(run) {
   return run?.status === 'queued' && ageMs(run.started_at) >= STALE_QUEUED_MS;
 }
 
-// Why Run is unavailable for this run, or null when it may run again.
-function runBlockedReason(run) {
+// Jobs whose queue the job console does not read (OperationsJobService
+// .broker_queue_names), so a queued run cannot be cancelled from there.
+const NOT_IN_JOB_CONSOLE = new Set(['social-signal-refresh']);
+
+// How to clear a run stuck in the queue so Run works again.
+function stuckRecovery(taskName) {
+  return NOT_IN_JOB_CONSOLE.has(taskName)
+    ? 'Start the social worker, or wait until this run reads as Unknown.'
+    : 'Cancel it in the job console to run it again.';
+}
+
+// Why Run is unavailable for this job, or null when it may run again.
+function runBlockedReason(task) {
+  const run = task.last_run;
   if (run?.status === 'running') return 'Already running';
-  if (isStaleQueued(run)) return 'Still queued: cancel it in the job console to run it again';
+  if (isStaleQueued(run)) return `Still queued. ${stuckRecovery(task.name)}`;
   if (run?.status === 'queued') return 'Already queued';
   return null;
 }
@@ -104,10 +116,11 @@ function StatusChip({ run }) {
 }
 
 // The failure message, or what to do about a run stuck in the queue.
-function StatusNote({ run }) {
+function StatusNote({ task }) {
+  const run = task.last_run;
   const note = run?.status === 'failed' ? run.error_message
     : isStaleQueued(run)
-      ? `Not picked up for ${ageLabel(ageMs(run.started_at))}. Cancel it in the job console to run it again.`
+      ? `Not picked up for ${ageLabel(ageMs(run.started_at))}. ${stuckRecovery(task.name)}`
       : null;
   if (!note) return null;
   return (
@@ -121,18 +134,18 @@ function StatusNote({ run }) {
   );
 }
 
-function Status({ run }) {
-  if (!run) return <Typography variant="body2" color="text.secondary">—</Typography>;
+function Status({ task }) {
+  if (!task.last_run) return <Typography variant="body2" color="text.secondary">—</Typography>;
   return (
     <Box>
-      <StatusChip run={run} />
-      <StatusNote run={run} />
+      <StatusChip run={task.last_run} />
+      <StatusNote task={task} />
     </Box>
   );
 }
 
 function RunButton({ task, pending, onRun }) {
-  const blockedReason = runBlockedReason(task.last_run);
+  const blockedReason = runBlockedReason(task);
   return (
     <Tooltip title={blockedReason || 'Run this job now'}>
       <span>
@@ -173,7 +186,7 @@ function JobsTable({ tasks, pendingNames, onRun }) {
               <Typography variant="body2">{task.schedule_description}</Typography>
             </TableCell>
             <TableCell><LastRun run={task.last_run} /></TableCell>
-            <TableCell><Status run={task.last_run} /></TableCell>
+            <TableCell><Status task={task} /></TableCell>
             <TableCell align="center">
               <RunButton task={task} pending={pendingNames.has(task.name)} onRun={onRun} />
             </TableCell>
@@ -203,7 +216,7 @@ function JobCards({ tasks, pendingNames, onRun }) {
             {task.last_run && <StatusChip run={task.last_run} />}
             <LastRun run={task.last_run} />
           </Box>
-          <StatusNote run={task.last_run} />
+          <StatusNote task={task} />
           <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.5 }}>
             {task.schedule_description}
           </Typography>

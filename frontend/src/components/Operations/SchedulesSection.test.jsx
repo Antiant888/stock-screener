@@ -181,6 +181,26 @@ describe('SchedulesSection', () => {
       .toBeInTheDocument();
   });
 
+  it('gives a long-queued Social Signals refresh a recovery path that works', async () => {
+    // The job console does not read the social_ingestion queue, so it cannot
+    // cancel this run; pointing there would be a dead end.
+    getScheduledTasks.mockResolvedValue(payload([
+      task('social-signal-refresh', 'Refresh Social Signals', lastRun('queued', {
+        started_at: new Date(Date.now() - 30 * 60 * 1000).toISOString(),
+      })),
+    ]));
+
+    renderSection();
+    await screen.findByText('Refresh Social Signals');
+
+    const row = rowFor('Refresh Social Signals');
+    expect(within(row).getByText(
+      'Not picked up for 30m. Start the social worker, or wait until this run reads as Unknown.',
+    )).toBeInTheDocument();
+    expect(within(row).queryByText(/job console/)).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Run Refresh Social Signals now' })).toBeDisabled();
+  });
+
   it('does not flag a freshly queued run as stuck', async () => {
     getScheduledTasks.mockResolvedValue(payload([
       task('refresh', 'Weekly Full Refresh', lastRun('queued', {
