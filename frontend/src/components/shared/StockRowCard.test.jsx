@@ -58,6 +58,17 @@ describe('StockRowCard', () => {
     );
   });
 
+  it('lets taps on an inert badge reach the card while interactive badges stay clickable', () => {
+    const { rerender } = renderWithProviders(
+      <StockRowCard row={row} onOpen={vi.fn()} badge={<span>Strong Buy</span>} />,
+    );
+    // The badge slot sits above the stretched open-button overlay; it must not swallow taps.
+    expect(screen.getByText('Strong Buy').parentElement).toHaveStyle({ pointerEvents: 'none' });
+
+    rerender(<StockRowCard row={row} onOpen={vi.fn()} badge={<button type="button">Watch</button>} />);
+    expect(screen.getByRole('button', { name: 'Watch' })).toHaveStyle({ pointerEvents: 'auto' });
+  });
+
   it('shows a dash for a missing or non-numeric change', () => {
     renderWithProviders(<StockRowCard row={{ ...row, price_change_1d: 'n/a' }} />);
 

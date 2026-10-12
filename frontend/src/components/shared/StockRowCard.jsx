@@ -62,7 +62,21 @@ export default function StockRowCard({ row, scoreField = 'composite_score', badg
           ) : (
             <Typography component="span" noWrap sx={{ fontWeight: 700, fontSize: '14px', minWidth: 0 }}>{row.symbol}</Typography>
           )}
-          {badge ? <Box sx={{ position: 'relative', zIndex: 1, flexShrink: 0 }}>{badge}</Box> : null}
+          {badge ? (
+            // Above the stretched overlay, but only interactive badges take the
+            // tap; an inert one (a rating chip) lets it fall through to open.
+            <Box
+              sx={{
+                position: 'relative',
+                zIndex: 1,
+                flexShrink: 0,
+                pointerEvents: 'none',
+                '& button, & a, & [role="button"]': { pointerEvents: 'auto' },
+              }}
+            >
+              {badge}
+            </Box>
+          ) : null}
         </Box>
         {row.company_name ? (
           <Typography noWrap sx={{ fontSize: '12px', color: 'text.secondary' }}>{row.company_name}</Typography>
