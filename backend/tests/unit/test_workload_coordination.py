@@ -270,6 +270,17 @@ def test_pipeline_chain_release_is_owner_checked():
     mock_release_script.assert_called_once_with(keys=["pipeline_chain:us"], args=[":token-1:"])
 
 
+def test_pipeline_chain_renewal_only_extends_an_existing_claim():
+    from app.tasks.workload_coordination import PIPELINE_CHAIN_TTL_SECONDS
+
+    coordination, mock_redis, _ = _make_coordination()
+    mock_redis.expire.return_value = 0
+
+    # EXPIRE never creates a key, so renewing after release is a no-op.
+    assert coordination.renew_pipeline_chain("US") is False
+    mock_redis.expire.assert_called_once_with("pipeline_chain:us", PIPELINE_CHAIN_TTL_SECONDS)
+
+
 def test_pipeline_chain_holder_reads_token_and_start():
     coordination, mock_redis, _ = _make_coordination()
     mock_redis.get.return_value = b"daily_market_pipeline:token-1:2026-03-16T20:30:00+00:00"

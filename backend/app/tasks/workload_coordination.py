@@ -33,8 +33,9 @@ EXTERNAL_FETCH_GLOBAL_KEY = "external_fetch_global"
 MARKET_WORKLOAD_PREFIX = "market_workload"
 PIPELINE_CHAIN_PREFIX = "pipeline_chain"
 # Held from dispatch until the daily pipeline chain's last stage or first
-# failure. The TTL only matters when no release runs (a stage revoked from
-# the console fires no errback): long enough for a normal chain, short
+# failure; each guard stage restarts the TTL, so it measures time since the
+# last stage, not since dispatch. It only expires on its own when no release
+# runs (a stage revoked from the console fires no errback), and it is short
 # enough never to block the market's next scheduled run about 24h later.
 PIPELINE_CHAIN_TTL_SECONDS = 6 * 3600
 COORDINATION_WAIT_MAX_RETRIES = 10_000
@@ -179,6 +180,15 @@ class WorkloadCoordination:
         return bool(
             self.redis.set(_pipeline_chain_key(market), value, nx=True, ex=PIPELINE_CHAIN_TTL_SECONDS)
         )
+
+    def renew_pipeline_chain(self, market: Optional[str]) -> bool:
+        """Restart the claim's TTL; never creates one (EXPIRE on a missing key).
+
+        Not token-checked: only one chain per market holds the claim, and a
+        late stage of an older chain can at worst extend a newer chain's
+        claim, never release it.
+        """
+        return bool(self.redis.expire(_pipeline_chain_key(market), PIPELINE_CHAIN_TTL_SECONDS))
 
     def release_pipeline_chain(self, token: str, *, market: Optional[str]) -> bool:
         """Release only if this token still holds it (never a newer chain's)."""

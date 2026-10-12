@@ -264,6 +264,10 @@ class _ChainClaims:
     def get_pipeline_chain_holder(self, market):
         return self.holders.get(market)
 
+    def renew_pipeline_chain(self, market):
+        self.renewed = [*getattr(self, "renewed", []), market]
+        return market in self.holders
+
     def release_pipeline_chain(self, token, *, market):
         self.released.append((market, token))
         holder = self.holders.get(market)
@@ -340,9 +344,128 @@ def test_second_dispatch_between_stages_is_refused(monkeypatch):
     assert first["status"] == "queued"
     assert second["status"] == "skipped"
     assert second["reason"] == "market_pipeline_already_active"
-    assert second["active_task_id"] == claims.holders["US"]["task_id"]
+    # A claim token, not a Celery task id: named so nobody looks it up as one.
+    assert second["active_chain_token"] == claims.holders["US"]["task_id"]
+    assert "active_task_id" not in second
     assert second["active_since"] == "2026-03-16T20:30:00+00:00"
     assert len(published) == 1
+
+
+def test_claim_freed_between_claim_and_holder_lookup_is_retried(monkeypatch):
+    # The first chain releases right after the second's SET NX lost: the
+    # second dispatch must not skip with nothing running.
+    from app.tasks import daily_market_pipeline_tasks as module
+
+    claims, published = _ChainClaims(), []
+    _ready_to_dispatch(monkeypatch, module, claims, published)
+    attempts = []
+    real_claim = claims.claim_pipeline_chain
+
+    def flaky_claim(token, *, market):
+        attempts.append(token)
+        return False if len(attempts) == 1 else real_claim(token, market=market)
+
+    monkeypatch.setattr(claims, "claim_pipeline_chain", flaky_claim)
+
+    result = module.queue_daily_market_pipeline.run("US")
+
+    assert result["status"] == "queued"
+    assert len(attempts) == 2
+    assert len(published) == 1
+
+
+def test_dispatch_fails_open_when_the_coordination_cannot_be_built(monkeypatch, caplog):
+    from app.tasks import daily_market_pipeline_tasks as module
+
+    claims, published = _ChainClaims(), []
+    _ready_to_dispatch(monkeypatch, module, claims, published)
+
+    def no_coordination():
+        raise RuntimeError("Redis package is not installed")
+
+    monkeypatch.setattr(module, "_pipeline_chain_claims", no_coordination)
+
+    result = module.queue_daily_market_pipeline.run("US")
+
+    assert result["status"] == "queued"
+    assert "Could not claim the US pipeline chain" in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("guard", "kwargs"),
+    [
+        ("guard_price_refresh", {"result": {"status": "success"}}),
+        ("guard_group_result", {"result": {"status": "ok"}}),
+        ("guard_breadth_result", {"result": {"status": "ok"}}),
+        ("guard_exposure_result", {"result": {"status": "ok"}}),
+        ("guard_snapshot_result", {"result": {"auto_scan_id": "s1"}}),
+    ],
+)
+def test_each_guard_stage_keeps_the_chain_claim_alive(monkeypatch, guard, kwargs):
+    # A chain can run longer than the claim's TTL (long refreshes, waits on
+    # the serialized data-fetch worker); renewing after every stage measures
+    # the TTL from the last stage instead of from dispatch.
+    from app.tasks import daily_market_pipeline_tasks as module
+
+    claims = _ChainClaims()
+    claims.holders["US"] = {"task_id": "tok", "started_at": "x"}
+    monkeypatch.setattr(module, "_pipeline_chain_claims", lambda: claims)
+
+    getattr(module, guard).run(market="US", **kwargs)
+
+    assert claims.renewed == ["US"]
+
+
+def test_market_rs_guard_keeps_the_chain_claim_alive(monkeypatch):
+    from app.tasks import daily_market_pipeline_tasks as module
+
+    claims = _ChainClaims()
+    monkeypatch.setattr(module, "_pipeline_chain_claims", lambda: claims)
+    monkeypatch.setattr(module, "_active_formula_for_market", lambda _market: module.LEGACY_RS_FORMULA_VERSION)
+
+    module.guard_market_rs_result.run(result=None, market="US", calculation_date="2026-03-16")
+
+    assert claims.renewed == ["US"]
+
+
+def test_a_failed_claim_renewal_never_fails_the_stage(monkeypatch, caplog):
+    from app.tasks import daily_market_pipeline_tasks as module
+
+    def no_coordination():
+        raise ConnectionError("redis down")
+
+    monkeypatch.setattr(module, "_pipeline_chain_claims", no_coordination)
+
+    assert module.guard_group_result.run(result={"status": "ok"}, market="US")["status"] == "ok"
+    assert "Could not renew the US pipeline chain claim" in caplog.text
+
+
+def test_real_celery_chain_attaches_the_release_to_every_stage():
+    # Uses Celery's own chain preparation, not the fakes above.
+    from celery import chain
+    from celery.utils.functional import arity_greater
+
+    from app.tasks import daily_market_pipeline_tasks as module
+
+    release = module.release_daily_market_pipeline_claim.si(market="US", token="tok")
+    stages = [
+        module.guard_price_refresh.s(market="US"),
+        module.guard_group_result.s(market="US"),
+        release,
+    ]
+
+    tasks, _results = chain(*stages).prepare_steps(
+        (), {}, chain(*stages).tasks, link_error=release, app=module.celery_app,
+    )
+
+    assert len(tasks) == 3
+    for task in tasks:
+        [errback] = task.options["link_error"]
+        assert errback["task"] == release.task
+        assert errback["kwargs"] == {"market": "US", "token": "tok"}
+    # Published as a task (immutable signature drops the failed task id),
+    # not called inline with (request, exc, traceback).
+    assert arity_greater(module.release_daily_market_pipeline_claim.__header__, 1) is False
 
 
 def test_other_markets_are_not_blocked_by_a_running_chain(monkeypatch):
