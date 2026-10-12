@@ -125,10 +125,7 @@ npx vitest run src/components/Scan/ResultsTable.test.jsx
 npm run lint
 ```
 
-**Note:** Vitest 4.x requires Node 18+. On this machine, the system Node is v14 — use NVM to activate Node 22:
-```bash
-export NVM_DIR="$HOME/.nvm" && [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
-```
+**Note:** Vitest 4.x requires Node 18+ (the Smithery CLI used for `stockscreen-mcp` needs 20+). On this machine the default `node` is already v24: nvm's default alias and `/usr/local/bin/node` are both Node 24, and nvm also has v22. No activation step is needed.
 
 **Test file locations:**
 - `frontend/src/components/Scan/` — component tests (ResultsTable, FilterPanel, SetupEngineDrawer)
