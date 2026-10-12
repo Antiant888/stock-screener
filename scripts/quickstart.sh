@@ -45,8 +45,10 @@ resolve_image_tag() {
     echo "$tag"
     return
   fi
+  # Both images: CI pushes the backend before building the frontend.
   if sha="$(git -C "$ROOT_DIR" rev-parse HEAD 2>/dev/null)" \
-    && docker manifest inspect "$BACKEND_IMAGE:sha-${sha:0:7}" >/dev/null 2>&1; then
+    && docker manifest inspect "$BACKEND_IMAGE:sha-${sha:0:7}" >/dev/null 2>&1 \
+    && docker manifest inspect "$FRONTEND_IMAGE:sha-${sha:0:7}" >/dev/null 2>&1; then
     echo "sha-${sha:0:7}"
     return
   fi

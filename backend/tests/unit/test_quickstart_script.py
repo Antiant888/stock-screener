@@ -14,7 +14,10 @@ SCRIPT = REPO_ROOT / "scripts" / "quickstart.sh"
 
 FAKE_DOCKER = """#!/usr/bin/env bash
 echo "docker $*" >> "$FAKE_LOG"
-if [[ "$1" == "manifest" ]]; then exit "${FAKE_MANIFEST_EXIT:-0}"; fi
+if [[ "$1" == "manifest" ]]; then
+  if [[ -n "${FAKE_MANIFEST_MISSING:-}" && "$*" == *"$FAKE_MANIFEST_MISSING"* ]]; then exit 1; fi
+  exit "${FAKE_MANIFEST_EXIT:-0}"
+fi
 if [[ "$1 $2 $3" == "compose version --short" ]]; then echo "${FAKE_COMPOSE_VERSION:-2.29.1}"; fi
 exit 0
 """
@@ -134,6 +137,16 @@ def test_falls_back_to_latest_when_the_checkout_has_no_published_image(run):
 
     assert values["APP_IMAGE_TAG"] == "latest"
     assert "latest" in result.stderr
+
+
+def test_falls_back_when_only_the_backend_image_was_published(run):
+    # publish-images pushes the backend before building the frontend; a failed
+    # frontend push leaves a sha-* tag that cannot be pulled as a pair.
+    if _checkout_tag().startswith("v"):
+        pytest.skip("release checkouts never fall back")
+    _, values, _ = run(FAKE_MANIFEST_MISSING="stockscreenclaude-frontend")
+
+    assert values["APP_IMAGE_TAG"] == "latest"
 
 
 @pytest.mark.skipif(sys.platform != "linux", reason="bind-mount ownership only matters on Linux")
