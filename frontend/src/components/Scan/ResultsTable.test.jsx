@@ -664,6 +664,22 @@ describe('ResultsTable', () => {
       expectPill('symbol', '66.0', 'Score 66.0');
     });
 
+    it('leads the group line with a text sort value', () => {
+      const row = {
+        ...fullSeRow, gics_sector: 'Technology', se_pattern_primary: 'cup_with_handle', rs_line_blue_dot_recent: true,
+      };
+      const leadOf = (sortBy) => {
+        renderWithProviders(<ResultsTable {...defaultProps} results={[row]} sortBy={sortBy} />);
+        const text = screen.getByTestId('card-sort-note').textContent;
+        cleanup();
+        return text;
+      };
+
+      expect(leadOf('gics_sector')).toBe('Technology');
+      expect(leadOf('se_pattern_primary')).toBe('Cup With Handle');
+      expect(leadOf('rs_line_blue_dot_recent')).toBe('RS blue dot');
+    });
+
     it('offers every sortable column in the picker, common ones first', async () => {
       const onSortChange = vi.fn();
       renderWithProviders(<ResultsTable {...defaultProps} onSortChange={onSortChange} />);

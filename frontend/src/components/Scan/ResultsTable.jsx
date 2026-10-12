@@ -50,6 +50,7 @@ import {
   getIpoAgeColor,
   getCurrencyPrefix,
   formatLocalCurrency,
+  formatPatternName,
 } from '../../utils/formatUtils';
 
 // Row height constant for virtualization
@@ -107,6 +108,12 @@ const CARD_METRICS = {
   week_52_high_distance: { label: '52W', name: 'From 52-week high', format: pct },
   volume_surge: { label: 'Vol', name: 'Volume surge', format: ratio },
   se_up_down_volume_ratio_10d: { label: 'U/D', name: 'Up/down volume 10 days', format: ratio },
+};
+// Text sorts the pill can't fit: their value leads the card's group line.
+const CARD_SORT_NOTES = {
+  gics_sector: (row) => row.gics_sector || null,
+  se_pattern_primary: (row) => (row.se_pattern_primary ? formatPatternName(row.se_pattern_primary) : null),
+  rs_line_blue_dot_recent: (row) => (row.rs_line_blue_dot_recent ? 'RS blue dot' : null),
 };
 // The card's labelled metric for this row, or null to keep the composite.
 const cardMetricFor = (row, sortBy) => {
@@ -907,6 +914,7 @@ function ResultsTable({
                   <StockRowCard
                     row={row}
                     metric={cardMetricFor(row, sortBy)}
+                    sortNote={CARD_SORT_NOTES[sortBy]?.(row) ?? null}
                     badge={mobileBadge(row)}
                     actions={showActions && showWatchlistMenu
                       ? <AddToWatchlistMenu symbols={row.symbol} size="small" />

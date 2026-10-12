@@ -23,6 +23,8 @@ export default function StockRowCard({
   metric = null,
   badge = null,
   actions = null,
+  // Text value of a text sort (sector, pattern…); leads the group line.
+  sortNote = null,
   meta = null,
   onOpen = null,
 }) {
@@ -111,8 +113,14 @@ export default function StockRowCard({
         {row.company_name ? (
           <Typography noWrap sx={{ fontSize: '12px', color: 'text.secondary' }}>{row.company_name}</Typography>
         ) : null}
-        {group ? (
-          <Typography noWrap sx={{ fontSize: '11px', color: 'text.disabled' }}>{group}</Typography>
+        {group || sortNote ? (
+          <Typography noWrap sx={{ fontSize: '11px', color: 'text.disabled' }}>
+            {sortNote ? (
+              <Box component="span" data-testid="card-sort-note" sx={{ color: 'text.primary', fontWeight: 600 }}>{sortNote}</Box>
+            ) : null}
+            {sortNote && group ? ' · ' : ''}
+            {group}
+          </Typography>
         ) : null}
       </Box>
 
