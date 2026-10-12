@@ -1,5 +1,5 @@
 import { fireEvent, screen, waitFor, within } from '@testing-library/react';
-import { QueryClient } from '@tanstack/react-query';
+import { QueryClient, useQuery } from '@tanstack/react-query';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { renderWithProviders } from '../../test/renderWithProviders';
@@ -110,6 +110,24 @@ describe('SchedulesSection', () => {
 
     expect(await within(rowFor('Weekly Scan Cleanup')).findByText('Queued')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Run Weekly Scan Cleanup now' })).toBeDisabled();
+  });
+
+  it('does not keep a row busy while the slow job console refetches', async () => {
+    // The job inventory queries Celery workers and can take many seconds.
+    function JobConsoleQuery() {
+      useQuery({ queryKey: ['operations', 'jobs'], queryFn: () => new Promise(() => {}) });
+      return null;
+    }
+    getScheduledTasks.mockResolvedValue(payload([
+      task('cleanup', 'Weekly Scan Cleanup', lastRun('completed')),
+    ]));
+    triggerTask.mockResolvedValue({ task_id: 'new-run', status: 'queued' });
+
+    renderWithProviders(<><SchedulesSection /><JobConsoleQuery /></>);
+    fireEvent.click(await screen.findByRole('button', { name: 'Run Weekly Scan Cleanup now' }));
+
+    // The schedules list has refetched (completed again), so the row is free.
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Run Weekly Scan Cleanup now' })).toBeEnabled());
   });
 
   it('keeps every in-flight row blocked when several are triggered', async () => {

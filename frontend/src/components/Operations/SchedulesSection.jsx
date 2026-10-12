@@ -260,10 +260,10 @@ export default function SchedulesSection() {
       // The server has committed a queued row; show it now so Run stays
       // blocked until the refetch confirms it.
       queryClient.setQueryData(['scheduledTasks'], (data) => markQueued(data, taskName, response?.task_id));
-      return Promise.all([
-        queryClient.invalidateQueries({ queryKey: ['scheduledTasks'] }),
-        queryClient.invalidateQueries({ queryKey: ['operations', 'jobs'] }),
-      ]);
+      // Not awaited: the job inventory queries Celery workers and can take
+      // seconds; the row's busy state should only wait for its own list.
+      queryClient.invalidateQueries({ queryKey: ['operations', 'jobs'] });
+      return queryClient.invalidateQueries({ queryKey: ['scheduledTasks'] });
     },
     onError: (err) => setError(err?.response?.data?.detail || err?.message || 'Failed to trigger task'),
     onSettled: (_data, _error, taskName) => setPending(taskName, false),
