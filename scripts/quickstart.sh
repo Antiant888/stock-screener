@@ -115,6 +115,8 @@ fi
 if [[ "$(uname -s)" == "Linux" && "$(stat -c %u "$ROOT_DIR/data")" != "1000" ]]; then
   echo "Letting the container user (uid 1000) write to ./data..."
   if command -v setfacl >/dev/null 2>&1; then
+    # With -R, setfacl applies the default (d:) entry to directories only and
+    # skips it on files (exit 0); only a non-recursive d: on a file errors.
     setfacl -R -m u:1000:rwX -m d:u:1000:rwX "$ROOT_DIR/data"
   else
     echo "quickstart: setfacl not found (install the 'acl' package to avoid this); changing ./data ownership to uid 1000 instead." >&2
