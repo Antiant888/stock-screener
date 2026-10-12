@@ -5,8 +5,11 @@ export const fetchOperationsJobs = async () => {
   return response.data;
 };
 
-export const cancelOperationsJob = async (taskId) => {
-  const response = await apiClient.post(`/v1/operations/jobs/${taskId}/cancel`);
+// expectedStrategy: the action the operator confirmed; the server returns 409 if it no longer applies.
+export const cancelOperationsJob = async (taskId, expectedStrategy) => {
+  const response = await apiClient.post(`/v1/operations/jobs/${taskId}/cancel`, {
+    expected_strategy: expectedStrategy,
+  });
   return response.data;
 };
 

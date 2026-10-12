@@ -186,7 +186,7 @@ The Operations page includes:
 - **Market health summaries** — freshness lag, benchmark age, universe drift, and completeness distribution.
 - **Job console** — queued, waiting, reserved, running, stale, stuck, failed, and cancelled jobs across Celery queues.
 - **Lease view** — current external-fetch and market-workload ownership.
-- **Safe cancellation controls** — revoke, scan cancel, force refresh cancel, or queue removal when the backend marks an action as supported.
+- **Safe cancellation controls** — revoke, scan cancel, force refresh cancel, force market-lock release, or queue removal when the backend marks an action as supported. Each action asks for confirmation and says what it does: **Cancel** removes the job from the queue so it never runs; **Revoke** makes the worker that already picked it up drop it; **Cancel scan** marks the scan cancelled and the worker stops at its next checkpoint; **Force cancel** and **Force release** release locks while the worker may still be running, so use them only when it is dead. If the job moved on before the click landed (for example, a queued job started running), the cancel is refused with "Job moved to …, refresh and retry" and nothing is changed. After an accepted cancel, the row reads **Cancel requested** until the job leaves the console.
 
 Use the filters (state, queue, market, task text) to narrow the job console before cancelling anything.
 

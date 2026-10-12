@@ -87,7 +87,7 @@ async def test_operations_cancel_endpoint_returns_service_payload(client, monkey
     monkeypatch.setattr(
         module._service,
         "cancel_job",
-        lambda _db, task_id: {
+        lambda _db, task_id, expected_strategy=None: {
             "status": "accepted",
             "cancel_strategy": "scan_cancel",
             "message": f"Cancelled {task_id}",
@@ -106,6 +106,34 @@ async def test_operations_cancel_endpoint_returns_service_payload(client, monkey
         "cancel_strategy": "scan_cancel",
         "message": "Cancelled task-123",
     }
+
+
+@pytest.mark.asyncio
+async def test_operations_cancel_endpoint_returns_409_when_the_job_moved(client, monkeypatch):
+    from app.api.v1 import operations as module
+    from app.services import server_auth
+
+    seen = {}
+
+    def _cancel(_db, task_id, expected_strategy=None):
+        seen["expected_strategy"] = expected_strategy
+        return {"status": "conflict", "cancel_strategy": "scan_cancel", "message": "Job moved to running"}
+
+    monkeypatch.setattr(server_auth.settings, "server_auth_enabled", False)
+    monkeypatch.setattr(module._service, "cancel_job", _cancel)
+    app.dependency_overrides[get_db] = lambda: _FakeDb()
+
+    try:
+        response = await client.post(
+            "/api/v1/operations/jobs/task-123/cancel",
+            json={"expected_strategy": "revoke_and_remove_from_queue"},
+        )
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "Job moved to running"
+    assert seen["expected_strategy"] == "revoke_and_remove_from_queue"
 
 
 @pytest.mark.asyncio
