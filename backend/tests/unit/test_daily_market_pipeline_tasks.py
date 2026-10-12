@@ -264,10 +264,6 @@ class _ChainClaims:
     def get_pipeline_chain_holder(self, market):
         return self.holders.get(market)
 
-    def renew_pipeline_chain(self, market):
-        self.renewed = [*getattr(self, "renewed", []), market]
-        return market in self.holders
-
     def release_pipeline_chain(self, token, *, market):
         self.released.append((market, token))
         holder = self.holders.get(market)
@@ -391,55 +387,6 @@ def test_dispatch_fails_open_when_the_coordination_cannot_be_built(monkeypatch, 
     assert "Could not claim the US pipeline chain" in caplog.text
 
 
-@pytest.mark.parametrize(
-    ("guard", "kwargs"),
-    [
-        ("guard_price_refresh", {"result": {"status": "success"}}),
-        ("guard_group_result", {"result": {"status": "ok"}}),
-        ("guard_breadth_result", {"result": {"status": "ok"}}),
-        ("guard_exposure_result", {"result": {"status": "ok"}}),
-        ("guard_snapshot_result", {"result": {"auto_scan_id": "s1"}}),
-    ],
-)
-def test_each_guard_stage_keeps_the_chain_claim_alive(monkeypatch, guard, kwargs):
-    # A chain can run longer than the claim's TTL (long refreshes, waits on
-    # the serialized data-fetch worker); renewing after every stage measures
-    # the TTL from the last stage instead of from dispatch.
-    from app.tasks import daily_market_pipeline_tasks as module
-
-    claims = _ChainClaims()
-    claims.holders["US"] = {"task_id": "tok", "started_at": "x"}
-    monkeypatch.setattr(module, "_pipeline_chain_claims", lambda: claims)
-
-    getattr(module, guard).run(market="US", **kwargs)
-
-    assert claims.renewed == ["US"]
-
-
-def test_market_rs_guard_keeps_the_chain_claim_alive(monkeypatch):
-    from app.tasks import daily_market_pipeline_tasks as module
-
-    claims = _ChainClaims()
-    monkeypatch.setattr(module, "_pipeline_chain_claims", lambda: claims)
-    monkeypatch.setattr(module, "_active_formula_for_market", lambda _market: module.LEGACY_RS_FORMULA_VERSION)
-
-    module.guard_market_rs_result.run(result=None, market="US", calculation_date="2026-03-16")
-
-    assert claims.renewed == ["US"]
-
-
-def test_a_failed_claim_renewal_never_fails_the_stage(monkeypatch, caplog):
-    from app.tasks import daily_market_pipeline_tasks as module
-
-    def no_coordination():
-        raise ConnectionError("redis down")
-
-    monkeypatch.setattr(module, "_pipeline_chain_claims", no_coordination)
-
-    assert module.guard_group_result.run(result={"status": "ok"}, market="US")["status"] == "ok"
-    assert "Could not renew the US pipeline chain claim" in caplog.text
-
-
 def test_real_celery_chain_attaches_the_release_to_every_stage():
     # Uses Celery's own chain preparation, not the fakes above.
     from celery import chain
@@ -559,12 +506,22 @@ def test_release_task_takes_no_positional_args():
     assert all(param.kind is inspect.Parameter.KEYWORD_ONLY for param in params)
 
 
-def test_chain_claim_expires_well_before_the_next_daily_run():
-    # A missed release (a stage revoked from the console fires no errback)
-    # must not block the market's next scheduled run about 24h later.
+def test_chain_claim_outlasts_queue_waits_but_not_the_next_daily_run():
+    # One concurrency-1 worker serves every market's data-fetch queue
+    # (start_celery.sh), so a stage can wait many hours before it starts and
+    # no stage could renew the claim in time; the claim must cover that. A
+    # missed release (a stage revoked from the console fires no errback) must
+    # still expire before the market's next scheduled run, 24h after this one.
     from app.tasks.workload_coordination import PIPELINE_CHAIN_TTL_SECONDS
 
-    assert 3 * 3600 <= PIPELINE_CHAIN_TTL_SECONDS <= 12 * 3600
+    assert 16 * 3600 <= PIPELINE_CHAIN_TTL_SECONDS <= 22 * 3600
+
+
+def test_the_claim_is_not_renewed_past_its_fixed_expiry():
+    # Renewing after each stage could push the expiry past the next daily run.
+    from app.tasks.workload_coordination import WorkloadCoordination
+
+    assert not hasattr(WorkloadCoordination, "renew_pipeline_chain")
 
 
 def test_guard_price_refresh_fails_lock_contention_skip_result():

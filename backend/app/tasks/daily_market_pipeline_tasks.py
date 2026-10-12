@@ -58,17 +58,6 @@ def _pipeline_chain_claims():
     return get_workload_coordination()
 
 
-def _keep_pipeline_chain_claim(market: str) -> None:
-    """Restart the chain claim's TTL after a stage (see PIPELINE_CHAIN_TTL_SECONDS).
-
-    Best effort: a failed renewal must never fail the stage it follows.
-    """
-    try:
-        _pipeline_chain_claims().renew_pipeline_chain(market)
-    except Exception:
-        logger.warning("Could not renew the %s pipeline chain claim", market, exc_info=True)
-
-
 def _nonfatal_group_taxonomy_skip(result: dict) -> bool:
     return result.get("reason") == "no_taxonomy_for_market" and (
         result.get("skipped") is True
@@ -132,7 +121,6 @@ def _price_refresh_failed(result: Any) -> bool:
     queue="celery",
 )
 def guard_price_refresh(result: dict | None = None, *, market: str) -> dict:
-    _keep_pipeline_chain_claim(market)
     if _price_refresh_failed(result):
         raise RuntimeError(f"Daily price refresh failed for {market}: {result}")
     return {"status": "ok", "market": market, "stage": "prices"}
@@ -149,7 +137,6 @@ def guard_market_rs_result(
     calculation_date: str,
 ) -> dict:
     market_code = _normalize_pipeline_market(market)
-    _keep_pipeline_chain_claim(market_code)
     active_formula = _active_formula_for_market(market_code)
     exact_completed = (
         isinstance(result, dict)
@@ -204,7 +191,6 @@ def guard_market_rs_result(
     queue="celery",
 )
 def guard_breadth_result(result: dict | None = None, *, market: str) -> dict:
-    _keep_pipeline_chain_claim(market)
     if _result_failed(result):
         raise RuntimeError(f"Daily breadth calculation failed for {market}: {result}")
     return {"status": "ok", "market": market, "stage": "breadth"}
@@ -215,7 +201,6 @@ def guard_breadth_result(result: dict | None = None, *, market: str) -> dict:
     queue="celery",
 )
 def guard_exposure_result(result: dict | None = None, *, market: str) -> dict:
-    _keep_pipeline_chain_claim(market)
     # Exposure is a non-critical leaf — groups/snapshot do NOT depend on it — so
     # a missing/lagging benchmark must not abort the pipeline. Log and continue.
     if _result_failed(result):
@@ -229,7 +214,6 @@ def guard_exposure_result(result: dict | None = None, *, market: str) -> dict:
     queue="celery",
 )
 def guard_group_result(result: dict | None = None, *, market: str) -> dict:
-    _keep_pipeline_chain_claim(market)
     if _result_failed(result):
         raise RuntimeError(f"Daily group ranking failed for {market}: {result}")
     return {"status": "ok", "market": market, "stage": "groups"}
@@ -240,7 +224,6 @@ def guard_group_result(result: dict | None = None, *, market: str) -> dict:
     queue="celery",
 )
 def guard_snapshot_result(result: dict | None = None, *, market: str) -> dict:
-    _keep_pipeline_chain_claim(market)
     if isinstance(result, dict) and result.get("auto_scan_id"):
         guarded = {
             "status": "ok",
