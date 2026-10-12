@@ -10,6 +10,27 @@ Docker deployments use **PostgreSQL** as the application database. The shared `.
 - Docker Compose v2 (`docker compose` or `docker-compose`)
 - Python 3.11+ on the host for `scripts/docker-compose-enabled-markets.sh`; set `STOCKSCREEN_PYTHON=/path/to/python3.11` if your default `python3` is older.
 
+## One-Command Install (Recommended)
+
+```bash
+git clone https://github.com/xang1234/stock-screener.git
+cd stock-screener
+scripts/quickstart.sh
+```
+
+`scripts/quickstart.sh`:
+
+- creates `.env.docker` from `.env.docker.example` on first run, with a generated login password and session secret (printed once at the end);
+- picks the published GHCR images that match your checkout (the release tag when you cloned one, otherwise that commit's `sha-*` image, otherwise `latest`);
+- on Linux, hands `./data` to the container user (uid 1000), using `sudo` if needed;
+- pulls the images, starts the stack with the production and release overlays, and waits until every service is healthy.
+
+Optional settings, saved to `.env.docker` when given: `ENABLED_MARKETS=US,HK` (default `US`), `FRONTEND_PORT=8080` (default `80`). `APP_IMAGE_TAG=vX.Y.Z` pins a specific image tag. Re-run the script after `git pull` to upgrade; your password and other settings in `.env.docker` are kept. For a fixed release, clone it directly: `git clone --branch vX.Y.Z ...`.
+
+CI runs this exact script against the images published for every `main` commit and release tag (`quickstart-smoke` in `.github/workflows/ci.yml`), and a GitHub Release is only created after it passes.
+
+The rest of this guide covers the same stack configured by hand.
+
 ## Quick Start (Local Development)
 
 Zero-config local deployment:
@@ -55,9 +76,9 @@ Use pre-built images from GitHub Container Registry instead of building from sou
 # 1. Configure environment
 cp .env.docker.example .env.docker
 # Edit .env.docker:
-#   BACKEND_IMAGE=ghcr.io/<owner>/stockscreenclaude-backend
-#   FRONTEND_IMAGE=ghcr.io/<owner>/stockscreenclaude-frontend
-#   APP_IMAGE_TAG=v1.3.0
+#   BACKEND_IMAGE=ghcr.io/xang1234/stockscreenclaude-backend
+#   FRONTEND_IMAGE=ghcr.io/xang1234/stockscreenclaude-frontend
+#   APP_IMAGE_TAG=vX.Y.Z   (a release tag from https://github.com/xang1234/stock-screener/releases)
 #   SERVER_AUTH_PASSWORD=choose-a-long-random-password
 #   CORS_ORIGINS=https://stocks.yourdomain.com
 

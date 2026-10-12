@@ -20,18 +20,13 @@ def test_release_workflow_uses_curated_release_notes() -> None:
     assert "generate_release_notes: true" not in content
 
 
-def test_readme_documents_current_release_compose_flow() -> None:
+def test_readme_quickstart_is_the_one_command_install() -> None:
     content = (ROOT / "README.md").read_text()
 
-    assert _documented_release_tags(content) == {"v1.3.0"}
-    assert (
-        "scripts/docker-compose-enabled-markets.sh --env-file .env.docker "
-        "-f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.release.yml pull"
-    ) in content
-    assert (
-        "scripts/docker-compose-enabled-markets.sh --env-file .env.docker "
-        "-f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.release.yml up -d --no-build"
-    ) in content
+    assert "scripts/quickstart.sh" in content
+    # quickstart.sh picks the image tag; a pinned example tag in the README goes stale.
+    assert _documented_release_tags(content) == set()
+    assert "<owner>" not in content
 
 
 def test_install_docker_uses_current_release_example() -> None:

@@ -373,9 +373,49 @@ jobs:
           cache-from: type=gha,scope=frontend-image
           cache-to: type=gha,mode=max,scope=frontend-image
 
+  # The README's one-command install, run against the images just published.
+  # A release is only created when a new user could install it. Pull requests
+  # that change install files run it too, against the newest main images.
+  quickstart-smoke:
+    name: Quickstart Install Smoke
+    needs: [publish-images]
+    if: ${{ !cancelled() && (needs.publish-images.result == 'success' || github.event_name == 'pull_request') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Run scripts/quickstart.sh against the published images
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          export IMAGE_OWNER="${GITHUB_REPOSITORY_OWNER,,}"
+          if [[ "$EVENT_NAME" == "pull_request" ]]; then
+            if ! gh pr diff "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --name-only \
+              | grep -qE '^(scripts/quickstart\.sh|scripts/run_quickstart_smoke\.sh|scripts/docker-compose-enabled-markets\.sh|docker-compose[^/]*\.yml|\.env\.docker\.example)$'; then
+              echo "No install files changed; skipping."
+              exit 0
+            fi
+            # A PR commit has no published image, so quickstart.sh falls back to latest.
+            export EXPECTED_IMAGE_TAG=latest
+          elif [[ "$REF_TYPE" == "tag" ]]; then
+            export EXPECTED_IMAGE_TAG="$REF_NAME"
+          else
+            export EXPECTED_IMAGE_TAG="sha-${GITHUB_SHA::7}"
+          fi
+          bash scripts/run_quickstart_smoke.sh
+
   release:
     name: Create GitHub Release
-    needs: [backend, frontend, publish-images]
+    needs: [backend, frontend, publish-images, quickstart-smoke]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:

@@ -88,3 +88,16 @@ def test_backend_unit_shards_use_cache_free_equal_weight_split_and_exclude_opt_i
     assert "--splitting-algorithm least_duration \\" in shard_script
     assert "--collect-only" not in shard_script
     assert "index % 4" not in shard_script
+
+
+def test_releases_wait_for_the_quickstart_install_smoke():
+    jobs = yaml.safe_load((REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text())["jobs"]
+    smoke = jobs["quickstart-smoke"]
+
+    assert smoke["needs"] == ["publish-images"]
+    # Runs after every successful image publish (main and tags), and on PRs.
+    assert "needs.publish-images.result == 'success'" in smoke["if"]
+    assert "github.event_name == 'pull_request'" in smoke["if"]
+    assert "!cancelled()" in smoke["if"]
+    assert any("scripts/run_quickstart_smoke.sh" in str(step.get("run", "")) for step in smoke["steps"])
+    assert "quickstart-smoke" in jobs["release"]["needs"]
