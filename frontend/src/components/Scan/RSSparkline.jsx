@@ -1,6 +1,7 @@
 import { useMemo, memo } from 'react';
-import { BarChart, Bar, Cell, ResponsiveContainer, YAxis } from 'recharts';
 import { Box, Tooltip, useTheme } from '@mui/material';
+
+import { barRects, roundedTopRectPath } from './sparklineGeometry';
 
 /**
  * RS Sparkline Component
@@ -85,37 +86,32 @@ function RSSparkline({ data, trend, width = 60, height = 20 }) {
       placement="top"
     >
       <Box sx={{ width, height, cursor: 'pointer' }}>
-        <ResponsiveContainer width="100%" height="100%">
-          <BarChart
-            data={chartData}
-            margin={{ top: 1, right: 0, left: 0, bottom: 1 }}
-          >
-            <YAxis domain={domain} hide />
-            <Bar
-              dataKey="value"
-              maxBarSize={3}
-              radius={[1, 1, 0, 0]}
-            >
-              {chartData.map((entry, index) => {
-                // Color coding matching Google Sheets, in theme colours:
-                // - Accent: highest value (highcolor)
-                // - Red: lowest value (lowcolor)
-                // - Lighter green: all other bars (color)
-                const extreme = index === maxIndex || index === minIndex;
-                const fillColor = index === maxIndex
-                  ? palette.primary.main
-                  : index === minIndex ? palette.error.main : palette.success.main;
-                return (
-                  <Cell
-                    key={`cell-${index}`}
-                    fill={fillColor}
-                    fillOpacity={extreme ? 1 : 0.55}
-                  />
-                );
-              })}
-            </Bar>
-          </BarChart>
-        </ResponsiveContainer>
+        <svg width={width} height={height} style={{ display: 'block' }}>
+          {barRects(chartData.map((entry) => entry.value), {
+            width,
+            height,
+            margin: 1,
+            domain,
+            maxBarSize: 3,
+          }).map((rect, index) => {
+            // Color coding matching Google Sheets, in theme colours:
+            // - Accent: highest value (highcolor)
+            // - Red: lowest value (lowcolor)
+            // - Lighter green: all other bars (color)
+            const extreme = index === maxIndex || index === minIndex;
+            const fillColor = index === maxIndex
+              ? palette.primary.main
+              : index === minIndex ? palette.error.main : palette.success.main;
+            return (
+              <path
+                key={index}
+                d={roundedTopRectPath(rect, 1)}
+                fill={fillColor}
+                fillOpacity={extreme ? 1 : 0.55}
+              />
+            );
+          })}
+        </svg>
       </Box>
     </Tooltip>
   );

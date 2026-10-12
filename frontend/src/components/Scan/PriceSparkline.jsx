@@ -1,6 +1,13 @@
 import { useMemo, memo } from 'react';
-import { AreaChart, Area, ResponsiveContainer, YAxis } from 'recharts';
 import { Box, Tooltip, Typography, useTheme } from '@mui/material';
+
+import { monotoneXPath, scaleLinear } from './sparklineGeometry';
+
+// The chart's own width is set by flex layout, so the SVG stretches a fixed
+// viewBox horizontally: 1 unit = 1px vertically (margins and stroke stay in
+// pixels) and the curve keeps its shape under the horizontal stretch.
+const VIEW_WIDTH = 1000;
+const MARGIN = 2;
 
 /**
  * Price Sparkline Component
@@ -28,17 +35,15 @@ function PriceSparkline({
 }) {
   const { palette } = useTheme();
 
+  const viewHeight = typeof height === 'number' ? height : 28;
+
   // Transform data for chart
-  const { chartData, domain, color } = useMemo(() => {
+  const { chartData, line, area, color } = useMemo(() => {
     if (!data || !Array.isArray(data) || data.length === 0) {
-      return { chartData: [], domain: [0, 1], color: palette.text.disabled };
+      return { chartData: [], color: palette.text.disabled };
     }
 
-    // Convert to chart format
-    const chartData = data.map((value, index) => ({
-      index,
-      value,
-    }));
+    const chartData = data;
 
     const minVal = Math.min(...data);
     const maxVal = Math.max(...data);
@@ -50,12 +55,14 @@ function PriceSparkline({
     // trend: 1 = up, -1 = down, 0 = flat
     const color = trend === 1 ? palette.success.main : trend === -1 ? palette.error.main : palette.text.disabled;
 
-    return {
-      chartData,
-      domain: [minVal - padding, maxVal + padding],
-      color,
-    };
-  }, [data, trend, palette]);
+    const y = scaleLinear([minVal - padding, maxVal + padding], [viewHeight - MARGIN, MARGIN]);
+    const step = data.length > 1 ? VIEW_WIDTH / (data.length - 1) : 0;
+    const line = monotoneXPath(data.map((value, i) => [i * step, y(value)]));
+    // Filled down to the padded minimum, like recharts' Area.
+    const area = data.length > 1 ? `${line}L${VIEW_WIDTH},${viewHeight - MARGIN}L0,${viewHeight - MARGIN}Z` : '';
+
+    return { chartData, line, area, color };
+  }, [data, trend, palette, viewHeight]);
 
   // Format 1-day change for display
   const changeText = useMemo(() => {
@@ -128,22 +135,16 @@ function PriceSparkline({
             minWidth: 0,
           }}
         >
-          <ResponsiveContainer width="100%" height="100%">
-            <AreaChart
-              data={chartData}
-              margin={{ top: 2, right: 0, left: 0, bottom: 2 }}
-            >
-              <YAxis domain={domain} hide />
-              <Area
-                type="monotone"
-                dataKey="value"
-                stroke={color}
-                strokeWidth={1.5}
-                fill={color}
-                fillOpacity={0.25}
-              />
-            </AreaChart>
-          </ResponsiveContainer>
+          <svg
+            width="100%"
+            height="100%"
+            viewBox={`0 0 ${VIEW_WIDTH} ${viewHeight}`}
+            preserveAspectRatio="none"
+            style={{ display: 'block' }}
+          >
+            <path d={area} fill={color} fillOpacity={0.25} />
+            <path d={line} fill="none" stroke={color} strokeWidth={1.5} vectorEffect="non-scaling-stroke" />
+          </svg>
         </Box>
 
         {/* 1-Day Change Badge */}
