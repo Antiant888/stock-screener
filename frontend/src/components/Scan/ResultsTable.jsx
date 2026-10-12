@@ -155,6 +155,9 @@ const SORT_NAMES = {
   rs_line_blue_dot_recent: 'RS blue dot',
   action_state: 'Action state',
 };
+// Sortable aliases of a table column (scanFilterFields.json): `price` sorts
+// the same column as current_price.
+const SORT_ALIASES = { price: 'current_price' };
 const sortName = (id) => SORT_NAMES[id] || CARD_METRICS[id]?.name || columns.find((column) => column.id === id)?.label || 'Current sort';
 // Common sorts lead the phone picker; every other sortable column follows.
 const MOBILE_SORT_FIELDS = [
@@ -881,7 +884,9 @@ function ResultsTable({
     const commonIds = new Set(MOBILE_SORT_FIELDS.map(([id]) => id));
     const moreSorts = visibleColumns
       .filter((column) => column.sortable && !commonIds.has(column.id))
-      .map((column) => [column.id, sortName(column.id)]);
+      // An active alias takes over its column's option, so the picker lists it
+      // once and keeps the preset's own sort key.
+      .map((column) => [SORT_ALIASES[sortBy] === column.id ? sortBy : column.id, sortName(column.id)]);
     const listedIds = new Set([...commonIds, ...moreSorts.map(([id]) => id)]);
     if (sortBy && !listedIds.has(sortBy)) moreSorts.push([sortBy, sortName(sortBy)]);
     return (

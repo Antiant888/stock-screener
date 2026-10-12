@@ -69,7 +69,7 @@ export default function StockRowCard({
               aria-label={`Open ${row.symbol} chart`}
               sx={{
                 all: 'unset',
-                // The ticker keeps its width; the badge beside it truncates instead.
+                // The ticker keeps its width beside the action icons.
                 flexShrink: 0,
                 maxWidth: '70%',
                 overflow: 'hidden',
@@ -87,40 +87,54 @@ export default function StockRowCard({
           ) : (
             <Typography component="span" noWrap sx={{ fontWeight: 700, fontSize: '14px', flexShrink: 0, maxWidth: '70%' }}>{row.symbol}</Typography>
           )}
-          {badge || actions ? (
+          {actions ? (
             // Above the stretched overlay, but only interactive children take the
-            // tap; an inert badge (a rating chip) lets it fall through to open.
+            // tap. Actions stay on the ticker row; badges go on the company line
+            // so the two can't squeeze each other out at 360px.
             <Box
               sx={{
                 position: 'relative',
                 zIndex: 1,
-                minWidth: 0,
-                pointerEvents: 'none',
+                flexShrink: 0,
                 display: 'flex',
                 alignItems: 'center',
                 gap: 0.5,
+                pointerEvents: 'none',
                 '& button, & a, & [role="button"]': { pointerEvents: 'auto' },
               }}
             >
-              {badge ? (
-                <Box
-                  sx={{
-                    minWidth: 0,
-                    overflow: 'hidden',
-                    pointerEvents: 'none',
-                    '& .MuiChip-root': { maxWidth: '100%' },
-                    '& button, & a, & [role="button"]': { pointerEvents: 'auto' },
-                  }}
-                >
-                  {badge}
-                </Box>
-              ) : null}
-              {actions ? <Box sx={{ flexShrink: 0, display: 'flex' }}>{actions}</Box> : null}
+              {actions}
             </Box>
           ) : null}
         </Box>
-        {row.company_name ? (
-          <Typography noWrap sx={{ fontSize: '12px', color: 'text.secondary' }}>{row.company_name}</Typography>
+        {row.company_name || badge ? (
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, minWidth: 0 }}>
+            {badge ? (
+              // Badges keep up to 75% of the line; the company name truncates first.
+              // An inert badge (a rating chip) lets taps fall through to open.
+              <Box
+                sx={{
+                  position: 'relative',
+                  zIndex: 1,
+                  flex: '0 0 auto',
+                  maxWidth: '75%',
+                  minWidth: 0,
+                  overflow: 'hidden',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 0.5,
+                  pointerEvents: 'none',
+                  '& .MuiChip-root': { maxWidth: '100%' },
+                  '& button, & a, & [role="button"]': { pointerEvents: 'auto' },
+                }}
+              >
+                {badge}
+              </Box>
+            ) : null}
+            {row.company_name ? (
+              <Typography noWrap sx={{ fontSize: '12px', color: 'text.secondary', minWidth: 0 }}>{row.company_name}</Typography>
+            ) : null}
+          </Box>
         ) : null}
         {group || sortNote ? (
           <Typography noWrap sx={{ fontSize: '11px', color: 'text.disabled' }}>

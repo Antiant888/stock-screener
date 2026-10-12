@@ -726,6 +726,15 @@ describe('ResultsTable', () => {
       expect(screen.getByText('IPO date 2024-03-15')).toBeInTheDocument();
     });
 
+    it('offers the price alias once, keeping the preset\'s sort key', async () => {
+      const onSortChange = vi.fn();
+      renderWithProviders(<ResultsTable {...defaultProps} sortBy="price" onSortChange={onSortChange} />);
+
+      await userEvent.click(screen.getByRole('combobox', { name: 'Sort by' }));
+      expect(screen.getAllByRole('option', { name: 'Price' })).toHaveLength(1);
+      expect(screen.getByRole('option', { name: 'Price' })).toHaveAttribute('aria-selected', 'true');
+    });
+
     it('labels the price sort alias in the picker', () => {
       // scanFilterFields.json marks `price` sortable (same column as current_price).
       renderWithProviders(<ResultsTable {...defaultProps} sortBy="price" />);

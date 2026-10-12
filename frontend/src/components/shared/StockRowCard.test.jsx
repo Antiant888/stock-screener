@@ -82,6 +82,18 @@ describe('StockRowCard', () => {
     expect(screen.getByRole('button', { name: 'Add' }).parentElement).toHaveStyle({ flexShrink: '0' });
   });
 
+  it('puts badges on the company line so actions never squeeze them off the ticker row', () => {
+    renderWithProviders(
+      <StockRowCard row={row} onOpen={vi.fn()} badge={<span>New IPO</span>} actions={<button type="button">Add</button>} />,
+    );
+
+    const tickerLine = screen.getByRole('button', { name: 'Open FORM chart' }).parentElement;
+    const companyLine = screen.getByText('FormFactor Inc').parentElement;
+    expect(companyLine).toContainElement(screen.getByText('New IPO'));
+    expect(tickerLine).not.toContainElement(screen.getByText('New IPO'));
+    expect(tickerLine).toContainElement(screen.getByRole('button', { name: 'Add' }));
+  });
+
   it('shows a dash for a missing or non-numeric change', () => {
     renderWithProviders(<StockRowCard row={{ ...row, price_change_1d: 'n/a' }} />);
 
