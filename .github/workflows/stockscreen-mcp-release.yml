@@ -60,3 +60,11 @@ jobs:
           path: dist/
 
       - uses: pypa/gh-action-pypi-publish@v1.14.2
+
+  mcp-registry:
+    name: Publish to the MCP registry
+    needs: publish
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/stockscreen-mcp-registry.yml

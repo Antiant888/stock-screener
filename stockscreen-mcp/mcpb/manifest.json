@@ -1,0 +1,39 @@
+{
+  "manifest_version": "0.4",
+  "name": "stockscreen-mcp",
+  "display_name": "Stock Screener",
+  "version": "0.1.0",
+  "description": "Daily stock screens, RS ratings, market breadth and group rankings for 12 markets. No API keys.",
+  "long_description": "Minervini, CANSLIM, VCP and 25 more preset screens, relative-strength ratings, market health and StockBee-style breadth, and IBD-style industry group rankings for the US, Canada, Germany, Hong Kong, China, Japan, Korea, Taiwan, India, Singapore, Malaysia and Australia. Reads the end-of-day snapshot the open-source stock-screener project publishes after every market close. Educational screening data, not investment advice.",
+  "author": {
+    "name": "xang1234",
+    "url": "https://github.com/xang1234"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/xang1234/stock-screener"
+  },
+  "homepage": "https://github.com/xang1234/stock-screener/tree/main/stockscreen-mcp",
+  "license": "Apache-2.0",
+  "keywords": ["stocks", "screener", "minervini", "canslim", "relative-strength", "market-breadth"],
+  "server": {
+    "type": "uv",
+    "entry_point": "server.py",
+    "mcp_config": {
+      "command": "uv",
+      "args": ["run", "--directory", "${__dirname}", "server.py"]
+    }
+  },
+  "compatibility": {
+    "platforms": ["darwin", "linux", "win32"],
+    "runtimes": { "python": ">=3.10" }
+  },
+  "tools": [
+    { "name": "list_markets", "description": "Markets in the current publish with data dates and features" },
+    { "name": "list_screens", "description": "Preset screens and their exact rules" },
+    { "name": "run_screen", "description": "Run a preset and/or filters over a market's daily scan" },
+    { "name": "get_stock", "description": "One stock's scan data and the screens it passes" },
+    { "name": "market_overview", "description": "Market exposure, breadth, key markets and top groups" },
+    { "name": "group_rankings", "description": "Industry groups ranked by relative strength" }
+  ]
+}
