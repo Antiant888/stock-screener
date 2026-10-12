@@ -50,10 +50,11 @@ _HK_SECOND_LINE = re.compile(r"-(s|sw|r|wr|swr)$", re.IGNORECASE)
 # before. Paired structures with unrelated names (BEP/BEPC) still derive two.
 _SAME_ISSUER_MARKETS = {"HK": "CN", "CN": "HK"}
 
-_CASHTAG = re.compile(r"(?<![\w$])\$[A-Za-z0-9][A-Za-z0-9.\-]{0,19}")
-# "$10K", "$1.5B", "$300." are money. Numeric listings ("$0700") never resolve
-# without a market either, so a pure number is dropped too.
-_MONEY = re.compile(r"\$\d[\d.,]*[kmbt]?\.?", re.IGNORECASE)
+# ASCII lookbehind: Python counts CJK letters as \w, and "关注$NVDA" is a cashtag.
+_CASHTAG = re.compile(r"(?<![A-Za-z0-9_$])\$[A-Za-z0-9][A-Za-z0-9.\-]{0,19}")
+# "$10K", "$1.5B", "$300." are money; "$6758.T" is Tokyo. Numeric listings ("$0700")
+# never resolve without a market either, so a pure number is dropped too.
+_MONEY = re.compile(r"\$\d+(?:\.\d+)?[kmbt]?\.?", re.IGNORECASE)
 
 
 def cashtags(text: str | None) -> list[str]:

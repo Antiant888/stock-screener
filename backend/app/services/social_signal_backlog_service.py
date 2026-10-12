@@ -27,6 +27,7 @@ logger = logging.getLogger(__name__)
 
 NO_SIGNAL_GATE = "no_signal_gate"
 _WORD = re.compile(r"\w+")
+_SYMBOL = re.compile(r"[A-Za-z0-9]+(?:[.\-][A-Za-z]{1,2})?")  # MU, BRK.B, 0700.HK
 _CJK = re.compile(r"[぀-ヿ㐀-鿿가-힯]")
 
 
@@ -278,7 +279,7 @@ class ProcessSocialBacklog:
         if post.is_repost:
             return False
         text = f"{post.text}\n{post.quoted_text or ''}"
-        if post.attachments or cashtags(text) or _CJK.search(text):
+        if post.attachments or post.prepared_evidence or cashtags(text) or _CJK.search(text):
             return True
         if self._universe_hints is None:
             symbols, names = set(), set()
@@ -292,7 +293,9 @@ class ProcessSocialBacklog:
         symbols, names = self._universe_hints
         # ponytail: first-word name match lets generic names ("General", "First") through;
         # it errs toward an LLM call. CJK text has no word breaks, so it always passes.
-        return (any(len(word) >= 2 and word in symbols for word in _WORD.findall(text))
+        # Aliases that are not a name's first word ("Foxconn") are skipped; add
+        # resolve_alias here if those turn up in skipped posts.
+        return (any(len(word) >= 2 and word in symbols for word in _SYMBOL.findall(text))
                 or any(word in names for word in _WORD.findall(text.casefold())))
 
     def _claim(self, now, limit, admin_work_ids, eligible_work_ids=()):
