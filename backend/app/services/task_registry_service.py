@@ -471,12 +471,10 @@ class TaskRegistryService:
         Returns:
             Dictionary with current status and progress
         """
-        # The worker's task signals record finished runs; trust that first.
-        # A completed run whose summary was dropped (non-JSON result) still
-        # asks Celery, since callers such as the Options page need the result.
+        # The worker's task signals record finished runs; the ledger owns
+        # their status.
         run = db.query(TaskExecutionHistory).filter_by(task_id=task_id).first()
-        run_finished = run is not None and run.status in _FINISHED_STATUSES
-        if run_finished and not (run.status == 'completed' and run.result_summary is None):
+        if run is not None and run.status in _FINISHED_STATUSES:
             response = {
                 'task_id': task_id,
                 'task_name': task_name,
@@ -485,6 +483,8 @@ class TaskRegistryService:
             }
             if run.status == 'completed':
                 response['result'] = run.result_summary
+                if run.result_summary is None:
+                    response['result'] = self._celery_success_result(task_id)
             elif run.error_message:
                 response['error'] = run.error_message
             return response
@@ -504,6 +504,9 @@ class TaskRegistryService:
         }
 
         status = state_mapping.get(celery_state, celery_state.lower())
+        if status == 'queued' and run is not None and run.status == 'running':
+            # task_prerun fires before Celery stores STARTED; never step back.
+            status = 'running'
 
         response = {
             'task_id': task_id,
@@ -524,7 +527,7 @@ class TaskRegistryService:
             response['error'] = str(result.result) if result.result else 'Unknown error'
 
         # Fallback writer for runs whose signal write was lost.
-        if not run_finished and status in _FINISHED_STATUSES:
+        if status in _FINISHED_STATUSES:
             self._update_execution_completed(
                 db,
                 task_id,
@@ -534,6 +537,19 @@ class TaskRegistryService:
             )
 
         return response
+
+    @staticmethod
+    def _celery_success_result(task_id: str) -> Any:
+        """Celery's stored result for a run the ledger finished without a
+        summary (non-JSON result). Enrichment only: past result_expires or
+        with the backend down there is nothing to add, and the ledger's
+        completed status stands either way."""
+        try:
+            outcome = AsyncResult(task_id)
+            return outcome.result if outcome.state == 'SUCCESS' else None
+        except Exception:
+            logger.warning("Could not read Celery result for run %s", task_id, exc_info=True)
+            return None
 
     def _update_execution_completed(
         self,

@@ -309,6 +309,40 @@ def test_status_endpoint_falls_back_to_celery_when_the_ledger_lost_the_result(db
     assert status["result"] == {"status": "published"}
 
 
+@pytest.mark.parametrize(
+    "celery_lookup",
+    [
+        # Past result_expires Celery reports an unknown id as PENDING.
+        lambda _task_id: SimpleNamespace(state="PENDING", result=None, info=None),
+        lambda _task_id: (_ for _ in ()).throw(ConnectionError("redis down")),
+    ],
+    ids=["result-expired", "backend-down"],
+)
+def test_completed_run_without_a_summary_stays_completed(db_session, celery_lookup):
+    task_id = str(uuid4())
+    _start(OPTIONS, task_id, {"market": "US"})
+    _finish(OPTIONS, task_id, {"market": "US"}, state="SUCCESS", retval={"coverage": float("nan")})
+
+    with patch("app.services.task_registry_service.AsyncResult", side_effect=celery_lookup):
+        status = TaskRegistryService().get_task_status("daily-us-options-analytics", task_id, db_session)
+
+    assert (status["status"], status["result"]) == ("completed", None)
+    assert TaskStatusResponse(**status).celery_state == "SUCCESS"
+
+
+def test_celery_pending_does_not_rewind_a_run_the_ledger_has_seen_start(db_session):
+    # task_prerun fires before Celery stores STARTED, so Celery still says
+    # PENDING for a moment after the ledger has recorded the start.
+    task_id = str(uuid4())
+    _start(CLEANUP, task_id, {})
+
+    with patch("app.services.task_registry_service.AsyncResult") as async_result:
+        async_result.return_value = SimpleNamespace(state="PENDING", result=None, info=None)
+        status = TaskRegistryService().get_task_status("weekly-orphaned-scan-cleanup", task_id, db_session)
+
+    assert status["status"] == "running"
+
+
 def test_status_fallback_write_survives_a_nan_result(db_session):
     task_id = str(uuid4())
     _start(CLEANUP, task_id, {})
