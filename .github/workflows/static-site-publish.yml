@@ -153,6 +153,12 @@ jobs:
           VITE_SITE_URL: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/
         run: cd frontend && npm run build
 
+      - name: Render search pages
+        continue-on-error: true
+        run: >-
+          python3 scripts/render_seo_pages.py --dist frontend/dist
+          --site-url https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/
+
       - name: Upload Pages artifact
         id: upload-pages-artifact
         uses: actions/upload-pages-artifact@v5

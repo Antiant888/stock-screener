@@ -1523,3 +1523,22 @@ def test_checkpointed_export_uploads_data_before_manifest_then_fails() -> None:
     fail = _build_market_step("Fail after price-stage checkpoint")
     assert fail["if"] == "${{ steps.export-market.outputs.price_checkpointed == 'true' }}"
     assert "exit 1" in fail["run"] and "Re-run failed jobs" in fail["run"]
+
+
+def test_publisher_renders_seo_pages_into_the_built_site() -> None:
+    steps = [step.get("name") for step in _publish_workflow()["jobs"]["build"]["steps"]]
+    # After the build (dist exists) and before the upload (pages ship).
+    assert steps.index("Build static frontend") < steps.index("Render search pages") < steps.index("Upload Pages artifact")
+    step = _publish_step("Render search pages")
+    # Search pages are extras: a data quirk there must never block the deploy.
+    assert step["continue-on-error"] is True
+    run = step["run"]
+    assert "python3 scripts/render_seo_pages.py --dist frontend/dist" in run
+    assert "--site-url https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/" in run
+
+
+def test_search_console_verification_file_ships_with_the_site() -> None:
+    # Google re-checks this file to keep the Search Console property verified;
+    # Vite copies frontend/public/ to the site root.
+    token = ROOT / "frontend" / "public" / "google2f3dbee9a723186e.html"
+    assert token.read_text().strip() == "google-site-verification: google2f3dbee9a723186e.html"

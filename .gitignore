@@ -29,6 +29,7 @@ frontend/public/static-data/
 *.parquet
 *.html
 !frontend/index.html
+!frontend/public/google*.html
 !docs/*.html
 !data/IBD_industry_group.csv
 !data/hk-deep.csv

@@ -18,6 +18,8 @@ Read-only daily snapshot running on GitHub Pages:
 
 Updated daily after market close. 
 
+Plain-HTML pages for every scannable stock, the main screens, group rankings and breadth, in all 12 markets: **[browse by market](https://xang1234.github.io/stock-screener/explore/)**.
+
 See the **[Static Site Guide](docs/STATIC_SITE.md)** for exactly what works in static mode.
 
 ## Ask your AI assistant
