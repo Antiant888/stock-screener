@@ -35,6 +35,17 @@ def test_bundle_declares_an_empty_tools_list():
     # real tools from the running server.
     manifest = json.loads((PACKAGE / "mcpb" / "manifest.json").read_text())
     assert manifest.get("tools") == []
+    # The six tools are discovered at runtime; MCPB says so with tools_generated
+    # (default false, which would declare zero tools to strict hosts).
+    assert manifest.get("tools_generated") is True
+
+
+def test_bundle_states_that_it_needs_uv():
+    # Both bundles launch `uv run`; the Smithery copy can't ask its host to provide uv
+    # (python type), so the requirement must be visible to people installing it.
+    manifest = json.loads((PACKAGE / "mcpb" / "manifest.json").read_text())
+    assert "Requires uv" in manifest["long_description"]
+    assert "https://docs.astral.sh/uv/" in manifest["long_description"]
 
 
 def test_bundle_is_a_uv_bundle_with_a_separate_smithery_variant(tmp_path):
