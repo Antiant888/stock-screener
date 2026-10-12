@@ -127,3 +127,20 @@ def test_latest_images_move_only_after_both_are_published():
     assert "docker buildx imagetools create" in run
     assert '--tag "ghcr.io/$OWNER/$image:latest"' in run
     assert '"ghcr.io/$OWNER/$image:sha-${GITHUB_SHA::7}"' in run
+
+
+def test_stockscreen_mcp_is_tested_in_ci_and_released_by_tag_with_trusted_publishing():
+    ci = yaml.safe_load((REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text())["jobs"]
+    runs = [str(step.get("run", "")) for step in ci["stockscreen-mcp"]["steps"]]
+    assert any("--directory stockscreen-mcp --locked" in run and "pytest" in run for run in runs)
+
+    release = yaml.safe_load((REPO_ROOT / ".github" / "workflows" / "stockscreen-mcp-release.yml").read_text())
+    # PyYAML parses the bare `on` key as True.
+    assert release[True]["push"]["tags"] == ["stockscreen-mcp-v*"]
+    build_runs = " ".join(str(step.get("run", "")) for step in release["jobs"]["build"]["steps"])
+    assert "does not match package version" in build_runs  # tag/version check before publishing
+    publish = release["jobs"]["publish"]
+    assert publish["needs"] == "build"
+    assert publish["environment"]["name"] == "pypi"
+    assert publish["permissions"] == {"id-token": "write"}  # OIDC only, no stored token
+    assert any(str(step.get("uses", "")).startswith("pypa/gh-action-pypi-publish@v1.") for step in publish["steps"])

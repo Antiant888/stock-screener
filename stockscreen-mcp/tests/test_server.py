@@ -1,0 +1,227 @@
+"""Tools exercised end to end through the SDK's in-memory client."""
+
+import copy
+from datetime import datetime, timezone
+
+import pytest
+from mcp import Client
+
+from stockscreen_mcp import server
+
+pytestmark = [pytest.mark.anyio, pytest.mark.usefixtures("use_fake_data")]
+
+
+async def call(tool, **arguments):
+    async with Client(server.mcp) as client:
+        result = await client.call_tool(tool, arguments)
+    assert not result.is_error, result.content
+    return result.structured_content
+
+
+async def call_error(tool, **arguments):
+    async with Client(server.mcp) as client:
+        result = await client.call_tool(tool, arguments)
+    assert result.is_error
+    return result.content[0].text
+
+
+async def test_every_tool_is_listed_as_read_only():
+    async with Client(server.mcp) as client:
+        tools = {tool.name: tool for tool in (await client.list_tools()).tools}
+
+    assert set(tools) == {
+        "list_markets", "list_screens", "run_screen", "get_stock", "market_overview", "group_rankings",
+    }
+    for tool in tools.values():
+        assert tool.annotations.read_only_hint is True
+        assert tool.description
+
+
+async def test_list_markets_reports_dates_status_and_features():
+    result = await call("list_markets")
+
+    us = next(m for m in result["markets"] if m["code"] == "US")
+    assert us == {
+        "code": "US", "name": "United States", "as_of_date": "2026-10-09", "status": "current",
+        "features": ["breadth", "groups", "scan"],
+    }
+    assert result["unavailable_markets"] == ["IN"]
+
+
+async def test_list_screens_hides_opportunity_presets_where_the_site_does():
+    us = {s["id"] for s in (await call("list_screens", market="US"))["screens"]}
+    au = {s["id"] for s in (await call("list_screens", market="AU"))["screens"]}
+
+    assert us == {"minervini", "correction_survivors", "se_cup_handle"}
+    assert au == {"minervini", "se_cup_handle"}
+
+
+async def test_preset_screen_matches_and_sorts_like_the_site():
+    result = await call("run_screen", market="US", screen="minervini")
+
+    assert result["screen"] == "Minervini Trend Template"
+    assert result["total_matches"] == 2
+    assert [row["symbol"] for row in result["rows"]] == ["AAA", "BBB"]
+    assert result["sorted_by"] == "minervini_score desc"
+    first = result["rows"][0]
+    assert first["rs_rating"] == 95 and first["minervini_score"] == 90
+    assert "price_sparkline_data" not in first
+
+
+async def test_custom_filters_combine_with_a_preset_and_show_their_fields():
+    result = await call(
+        "run_screen", market="US", screen="minervini",
+        filters=[{"field": "ibd_group_rank", "max": 10}],
+    )
+
+    assert [row["symbol"] for row in result["rows"]] == ["AAA"]
+    assert result["rows"][0]["ibd_group_rank"] == 3
+
+
+async def test_filters_alone_use_the_market_default_sort_and_respect_limit():
+    result = await call("run_screen", market="US", filters=[{"field": "stage", "equals": 2}], limit=2)
+
+    assert result["total_matches"] == 4
+    assert [row["symbol"] for row in result["rows"]] == ["AAA", "DDD"]
+    assert result["sorted_by"] == "composite_score desc"
+
+
+async def test_unknown_screen_and_unknown_field_are_explained():
+    assert "minervini" in await call_error("run_screen", market="US", screen="minerva")
+    message = await call_error("run_screen", market="US", filters=[{"field": "rs_ratin", "min": 90}])
+    assert "rs_ratin" in message and "rs_rating" in message
+    assert "Pass a screen" in await call_error("run_screen", market="US")
+
+
+async def test_get_stock_returns_the_row_and_the_screens_it_passes():
+    result = await call("get_stock", symbol="aaa", market="US")
+
+    assert result["symbol"] == "AAA"
+    assert result["rs_rating"] == 95
+    assert result["passes_screens"] == ["minervini", "correction_survivors", "se_cup_handle"]
+    assert "field_availability" not in result
+    assert "not found" in await call_error("get_stock", symbol="ZZZ", market="US")
+
+
+async def test_market_overview_summarises_health_breadth_and_groups():
+    result = await call("market_overview", market="US")
+
+    assert result["exposure"]["exposure_score"] == 45.0
+    assert result["exposure"]["stance"] == "Downtrend/Caution"
+    assert "history" not in result["exposure"]
+    assert result["breadth"]["latest"]["stocks_up_4pct"] == 29
+    assert "eligibility_signature" not in result["breadth"]["latest"]
+    assert [day["date"] for day in result["breadth"]["recent"]] == [
+        "2026-10-09", "2026-10-08", "2026-10-07", "2026-10-06", "2026-10-05",
+    ]
+    assert result["key_markets"][0] == {
+        "symbol": "SPY", "name": "S&P 500 ETF", "close": 778.57, "change_1d_pct": 0.6, "date": "2026-10-09",
+    }
+    assert result["top_groups"][0]["group"] == "Semiconductors"
+
+
+async def test_market_overview_says_when_breadth_is_not_published():
+    result = await call("market_overview", market="AU")
+
+    assert result["breadth"] == {"available": False, "reason": "Breadth is not published for AU."}
+
+
+async def test_group_rankings_list_and_one_group_in_detail():
+    ranked = await call("group_rankings", market="US")
+    assert [g["group"] for g in ranked["groups"]] == ["Semiconductors", "Software"]
+    assert ranked["movers_1w"]["losers"][0] == {"group": "Software", "rank": 2, "rank_change_1w": -30}
+
+    detail = await call("group_rankings", market="US", group="semiconductors", limit=1)
+    assert detail["group"]["group"] == "Semiconductors"
+    assert [s["symbol"] for s in detail["group"]["stocks"]] == ["CCC"]  # highest RS first
+    assert "price_sparkline_data" not in detail["group"]["stocks"][0]
+    assert detail["group"]["rank_history"][0] == {"date": "2026-10-09", "rank": 9, "avg_rs_rating": 89.0}
+    assert len(detail["group"]["rank_history"]) == 8
+    assert "Semiconductors" in await call_error("group_rankings", market="US", group="Semis Typo")
+
+
+@pytest.mark.parametrize(
+    ("publication", "status"),
+    [
+        ({"state": "current", "session_date": "2026-10-09", "late_after": "2099-01-01T00:00:00Z"}, "current"),
+        ({"state": "current", "session_date": "2026-10-09", "late_after": "2000-01-01T00:00:00Z"}, "late"),
+        ({"state": "stale", "session_date": "2026-10-08", "late_after": None}, "late"),
+        ({"state": "pending", "session_date": "2026-10-09", "late_after": "2099-01-01T00:00:00Z"}, "current"),
+        ({"state": "unknown", "session_date": "2026-10-09", "late_after": "2099-01-01T00:00:00Z"}, "unknown"),
+        ({"state": "current", "session_date": None, "late_after": "2099-01-01T00:00:00Z"}, "unknown"),
+        ({"state": "current", "session_date": "2026-10-09", "late_after": "not a date"}, "unknown"),
+        ({"state": "current", "session_date": "2026-10-09", "late_after": "2099-01-01T00:00:00"}, "current"),
+    ],
+)
+def test_publication_status_follows_the_site(publication, status):
+    now = datetime(2026, 10, 12, tzinfo=timezone.utc)
+    assert server._status({"publication": publication}, now) == status
+
+
+def test_picked_rows_never_contain_non_json_numbers():
+    row = {"symbol": "X", "scan_mode": "listing_only", "volume": 5.0, "x": float("nan")}
+    assert server._pick(row, ["symbol", "listing_aware_volume", "x", "volume"]) == {"symbol": "X", "volume": 5.0}
+
+
+async def test_presets_without_an_expression_are_skipped(use_fake_data):
+    scan, _ = use_fake_data.scan("US")
+    scan["preset_screens"].append({"id": "legacy", "name": "Legacy", "filters": {"minRs": 80}})
+
+    screens = await call("list_screens", market="US")
+    assert "legacy" not in {s["id"] for s in screens["screens"]}
+    assert (await call("get_stock", symbol="AAA", market="US"))["symbol"] == "AAA"
+
+
+async def test_preset_order_breaks_ties_by_symbol_like_the_site(use_fake_data):
+    _, rows = use_fake_data.scan("US")
+    rows.reverse()  # insertion order now puts BBB before AAA
+    for row in rows:
+        if row["symbol"] in {"AAA", "BBB"}:
+            row["minervini_score"] = 80  # tie
+
+    result = await call("run_screen", market="US", screen="minervini")
+    assert [row["symbol"] for row in result["rows"]] == ["AAA", "BBB"]
+
+
+async def test_group_constituents_without_an_rs_rating_come_last(use_fake_data):
+    # 80 of 191 live US groups include unrated stocks; they must not crowd out the leaders.
+    stocks = use_fake_data.page("US", "groups")["payload"]["group_details"]["Semiconductors"]["stocks"]
+    stocks.insert(0, {"symbol": "NEW", "company_name": "New Listing", "rs_rating": None})
+
+    detail = await call("group_rankings", market="US", group="Semiconductors")
+    assert [s["symbol"] for s in detail["group"]["stocks"]] == ["CCC", "AAA", "NEW"]
+
+
+async def test_group_constituents_with_equal_rs_keep_the_higher_composite_first(use_fake_data):
+    # group_detail_payloads.py publishes constituents by (rs_rating, composite_score) desc;
+    # live groups have thousands of equal-RS neighbours, so ties decide who makes the limit.
+    stocks = use_fake_data.page("US", "groups")["payload"]["group_details"]["Semiconductors"]["stocks"]
+    stocks[:] = [
+        {"symbol": "AAB", "rs_rating": 95.0, "composite_score": 40.0},
+        {"symbol": "ZZZ", "rs_rating": 95.0, "composite_score": 90.0},
+        {"symbol": "MMM", "rs_rating": 95.0, "composite_score": None},
+    ]
+
+    detail = await call("group_rankings", market="US", group="Semiconductors", limit=2)
+    assert [s["symbol"] for s in detail["group"]["stocks"]] == ["ZZZ", "AAB"]
+
+
+async def test_run_screen_honours_preset_groups_like_get_stock(use_fake_data):
+    scan, _ = use_fake_data.scan("US")
+    grouped = copy.deepcopy(scan["preset_screens"][0])  # minervini: AAA and BBB pass
+    grouped["id"] = "minervini_semis"
+    grouped["filter_expression"]["groups"] = [
+        {"id": "semis", "name": "Semis", "enabled": True, "match": "all",
+         "conditions": [{"field": "ibd_industry_group", "kind": "categorical", "values": ["Semiconductors"]}]},
+    ]
+    scan["preset_screens"].append(grouped)
+
+    result = await call("run_screen", market="US", screen="minervini_semis")
+    assert [row["symbol"] for row in result["rows"]] == ["AAA"]
+    assert "minervini_semis" not in (await call("get_stock", symbol="BBB", market="US"))["passes_screens"]
+
+
+async def test_group_lookup_accepts_a_unique_partial_name():
+    # IBD names are abbreviated ("Elec-Semiconductor Equip"); a unique substring should do.
+    detail = await call("group_rankings", market="US", group="semiconduct")
+    assert detail["group"]["group"] == "Semiconductors"
