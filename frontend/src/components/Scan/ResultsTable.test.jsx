@@ -651,7 +651,10 @@ describe('ResultsTable', () => {
       // Any sortable column a custom preset can save, formatted like the desktop cell.
       expectPill('sales_growth_qq', 'Sales 31.0%', 'Sales growth Q/Q 31.0%');
       expectPill('volume', '$Vol $2.5B', 'Dollar volume $2.5B');
-      expectPill('market_cap', 'MCap $132.3B', 'Market cap $132.3B');
+      // market_cap sorts by the native value, so it shows in local currency;
+      // market_cap_usd is its own sort.
+      expectPill('market_cap', 'MCap $1.0T', 'Market cap $1.0T');
+      expectPill('market_cap_usd', 'MCap$ $132.3B', 'Market cap USD $132.3B');
       expectPill('adv_usd', 'ADV $45.2M', 'Average dollar volume $45.2M');
       expectPill('vcp_pivot', 'Pvt $101.25', 'VCP pivot $101.25');
       expectPill('stage', 'Stg S2', 'Stage S2');

@@ -95,13 +95,10 @@ const CARD_METRICS = {
   se_pivot_price: { label: 'Pvt', name: 'Pivot price', format: (v, row) => formatLocalCurrency(v, row.currency) },
   vcp_pivot: { label: 'Pvt', name: 'VCP pivot', format: (v, row) => formatLocalCurrency(v, row.currency) },
   volume: { label: '$Vol', name: 'Dollar volume', format: (v, row) => formatLargeNumber(v, getCurrencyPrefix(row.currency)) },
-  market_cap: {
-    label: 'MCap',
-    name: 'Market cap',
-    format: (v, row) => (row.market_cap_usd != null
-      ? formatLargeNumber(row.market_cap_usd, '$')
-      : formatLargeNumber(v, getCurrencyPrefix(row.currency))),
-  },
+  // market_cap sorts by the native value (backend mixed_market_policy), so show
+  // that, in local currency; market_cap_usd is a separate sort.
+  market_cap: { label: 'MCap', name: 'Market cap', format: (v, row) => formatLargeNumber(v, getCurrencyPrefix(row.currency)) },
+  market_cap_usd: { label: 'MCap$', name: 'Market cap USD', format: (v) => formatLargeNumber(v, '$') },
   adv_usd: { label: 'ADV', name: 'Average dollar volume', format: (v) => formatLargeNumber(v, '$') },
   ipo_date: { label: 'IPO', name: 'IPO age', format: (v) => formatIpoAge(v), text: true },
   gap_percent: { label: 'Gap', name: 'Gap', format: pct },
