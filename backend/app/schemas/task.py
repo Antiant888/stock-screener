@@ -50,7 +50,7 @@ class TaskStatusResponse(BaseModel):
 
     task_id: str = Field(..., description="Celery task ID")
     task_name: str = Field(..., description="Name of the task")
-    status: str = Field(..., description="Status: queued, running, completed, failed")
+    status: str = Field(..., description="Status: queued, running, completed, failed, cancelled")
     celery_state: str = Field(..., description="Raw Celery state")
     progress: Optional[float] = Field(None, description="Progress percentage (0-100)")
     message: Optional[str] = Field(None, description="Progress message")

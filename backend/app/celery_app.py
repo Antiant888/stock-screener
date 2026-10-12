@@ -20,7 +20,14 @@ os.environ['OBJC_DISABLE_INITIALIZE_FORK_SAFETY'] = 'YES'
 
 from celery import Celery
 from celery.schedules import crontab
-from celery.signals import worker_process_init, worker_ready, worker_shutting_down
+from celery.signals import (
+    task_postrun,
+    task_prerun,
+    task_revoked,
+    worker_process_init,
+    worker_ready,
+    worker_shutting_down,
+)
 from .config import settings
 
 
@@ -325,6 +332,47 @@ def _graceful_db_shutdown(sender=None, **kwargs):
         _logger.info("Worker shutdown: DB connections closed")
     except Exception as e:
         _logger.warning("Worker shutdown DB cleanup failed (non-fatal): %s", e)
+
+
+_POSTRUN_STATUS = {'SUCCESS': 'completed', 'FAILURE': 'failed', 'RETRY': 'queued', 'REVOKED': 'cancelled'}
+
+
+# Scheduled-task run history is written here, in the worker, so it is correct
+# for Beat runs and does not depend on a browser polling the status endpoint.
+@task_prerun.connect
+def _record_registry_run_started(sender=None, task_id=None, kwargs=None, **_):
+    from .services.task_registry_service import record_task_run
+
+    record_task_run(task_id, getattr(sender, 'name', None), kwargs, 'running')
+
+
+@task_postrun.connect
+def _record_registry_run_finished(sender=None, task_id=None, kwargs=None, retval=None, state=None, **_):
+    from .services.task_registry_service import record_task_run
+
+    status = _POSTRUN_STATUS.get(state)
+    if status is None:
+        return
+    record_task_run(
+        task_id,
+        getattr(sender, 'name', None),
+        kwargs,
+        status,
+        result=retval,
+        error=str(retval) if status == 'failed' else None,
+    )
+
+
+@task_revoked.connect
+def _record_registry_run_revoked(sender=None, request=None, **_):
+    from .services.task_registry_service import record_task_run
+
+    record_task_run(
+        getattr(request, 'id', None),
+        getattr(sender, 'name', None),
+        getattr(request, 'kwargs', None),
+        'cancelled',
+    )
 
 
 # Task routing: set conservative defaults so any caller that omits an explicit

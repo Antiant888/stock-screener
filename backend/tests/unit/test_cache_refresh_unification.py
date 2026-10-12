@@ -1218,9 +1218,9 @@ def test_task_registry_triggers_daily_market_pipeline_with_market(monkeypatch):
     fake_task.apply_async.assert_called_once_with(
         kwargs={"market": "HK"},
         headers={"origin": "manual"},
+        task_id=result["task_id"],
         queue="market_jobs_hk",
     )
-    assert result["task_id"] == "task-123"
     assert result["task_name"] == "daily-market-pipeline-hk"
     assert result["execution_id"] == 99
 
@@ -1245,9 +1245,9 @@ def test_task_registry_triggers_hk_weekly_universe_refresh_on_hk_queue(monkeypat
     fake_task.apply_async.assert_called_once_with(
         kwargs={"market": "HK"},
         headers={"origin": "manual"},
+        task_id=result["task_id"],
         queue="data_fetch_shared",
     )
-    assert result["task_id"] == "task-hk-123"
     assert result["task_name"] == "weekly-universe-refresh-hk"
     assert result["execution_id"] == 101
 

@@ -26,6 +26,7 @@ from app.services.market_activity_service import (
     RUNTIME_ACTIVITY_CATEGORY,
 )
 from app.services.runtime_activity_contract import progress_mode
+from app.services.task_registry_service import record_task_run
 from app.tasks.market_queues import (
     SHARED_DATA_FETCH_QUEUE,
     SHARED_USER_SCANS_QUEUE,
@@ -878,6 +879,9 @@ class OperationsJobService:
         if strategy == "revoke_and_remove_from_queue":
             removed, queue_name = self._remove_queued_task(task_id=task_id)
             if removed:
+                # The message never reaches a worker, so no task signal will
+                # close its run-history row; close it here.
+                record_task_run(task_id, record.task_name, record.kwargs, "cancelled")
                 message = f"Removed task {task_id} from queue {queue_name} and revoked it."
                 self._record_cancel_action(db, task_id=task_id, strategy=strategy, outcome="accepted", message=message)
                 return {"status": "accepted", "cancel_strategy": strategy, "message": message}

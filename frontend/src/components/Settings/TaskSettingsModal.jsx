@@ -62,6 +62,11 @@ function getStatusDisplay(status) {
       return { color: 'warning', icon: <ScheduleIcon fontSize="small" />, label: 'Queued' };
     case 'failed':
       return { color: 'error', icon: <ErrorIcon fontSize="small" />, label: 'Failed' };
+    case 'cancelled':
+      return { color: 'default', icon: null, label: 'Cancelled' };
+    case 'lost':
+      // Still open past Celery's 24h hard limit: the worker died mid-run.
+      return { color: 'error', icon: <ErrorIcon fontSize="small" />, label: 'Lost' };
     default:
       return { color: 'default', icon: null, label: status || 'Unknown' };
   }
@@ -102,7 +107,7 @@ function TaskSettingsModal({ open, onClose }) {
 
       setRunningTasks(prev => {
         const updated = { ...prev };
-        if (status.status === 'completed' || status.status === 'failed') {
+        if (['completed', 'failed', 'cancelled'].includes(status.status)) {
           // Task is done - remove from running tasks and refresh list
           delete updated[taskName];
           queryClient.invalidateQueries({ queryKey: ['scheduledTasks'] });

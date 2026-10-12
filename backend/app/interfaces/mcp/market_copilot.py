@@ -258,7 +258,7 @@ class MarketCopilotService:
         failed_tasks = [
             task
             for task in tasks
-            if (task.get("last_run") or {}).get("status") == "failed"
+            if (task.get("last_run") or {}).get("status") in {"failed", "lost"}
         ]
         summary_parts: list[str] = []
         next_actions: list[str] = []
@@ -838,7 +838,7 @@ class MarketCopilotService:
                     tasks=[],
                 )
 
-        failed = [task for task in task_rows if self._last_run(task).get("status") == "failed"]
+        failed = [task for task in task_rows if self._last_run(task).get("status") in {"failed", "lost"}]
         running = [task for task in task_rows if self._last_run(task).get("status") == "running"]
         return self._envelope(
             f"{len(task_rows)} scheduled tasks tracked; {len(failed)} recently failed and {len(running)} are currently running.",
