@@ -419,11 +419,11 @@ describe('ResultsTable', () => {
       expect(screen.getByText('No results found')).toBeInTheDocument();
     });
 
-    it('shows loading spinner when loading=true', () => {
+    it('shows a table-shaped loading placeholder when loading=true', () => {
       renderWithProviders(
         <ResultsTable {...defaultProps} loading={true} />
       );
-      expect(screen.getByRole('progressbar')).toBeInTheDocument();
+      expect(screen.getByRole('status')).toHaveTextContent('Loading scan results');
     });
 
     it('renders pagination controls', () => {

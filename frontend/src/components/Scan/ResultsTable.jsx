@@ -13,7 +13,6 @@ import {
   Chip,
   Typography,
   Box,
-  CircularProgress,
   IconButton,
   ListSubheader,
   MenuItem,
@@ -35,6 +34,7 @@ import OpportunityEvidenceDrawer from '../shared/OpportunityEvidenceDrawer';
 import ActionStateBadge from '../shared/ActionStateBadge';
 import StockRowCard from '../shared/StockRowCard';
 import { useIsMobileShell } from '../Layout/shellNav';
+import { TableSkeleton } from '../common/LoadingSkeletons';
 import OpportunityResultCells from './OpportunityResultCells';
 import { useOpportunityEvidenceSelection } from './useOpportunityEvidenceSelection';
 import {
@@ -810,9 +810,7 @@ function ResultsTable({
 
   if (loading) {
     return (
-      <Box sx={{ display: 'flex', justifyContent: 'center', p: 5 }}>
-        <CircularProgress />
-      </Box>
+      <TableSkeleton label="Loading scan results" rows={10} columns={8} title={false} />
     );
   }
 
