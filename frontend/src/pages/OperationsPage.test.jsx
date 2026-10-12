@@ -34,6 +34,11 @@ vi.mock('../hooks/useRuntimeActivity', () => ({
   useRuntimeActivity: (...args) => useRuntimeActivity(...args),
 }));
 
+vi.mock('../api/tasks', () => ({
+  getScheduledTasks: () => Promise.resolve({ tasks: [], total_tasks: 0 }),
+  triggerTask: vi.fn(),
+}));
+
 const SUMMARY_US = {
   market: 'US',
   freshness_lag: { lag_seconds: 1800, last_refresh_at_epoch: 1700000000 },
@@ -189,6 +194,18 @@ describe('OperationsPage', () => {
     expect(screen.queryByText(/No active alerts/)).not.toBeInTheDocument();
     expect(screen.getByText('warning')).toBeInTheDocument();
     expect(screen.getByText('open')).toBeInTheDocument();
+  });
+
+  it('shows scheduled jobs only when the tasks feature is enabled', async () => {
+    const { unmount } = renderWithProviders(<OperationsPage />);
+    expect(screen.queryByRole('heading', { name: 'Scheduled jobs' })).not.toBeInTheDocument();
+    unmount();
+
+    runtimeState.features = { themes: true, tasks: true };
+    renderWithProviders(<OperationsPage />);
+
+    expect(screen.getByRole('heading', { name: 'Scheduled jobs' })).toBeInTheDocument();
+    expect(await screen.findByText(/No scheduled tasks/)).toBeInTheDocument();
   });
 
   it('clicking Ack calls acknowledgeAlert', async () => {

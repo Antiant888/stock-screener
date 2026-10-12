@@ -190,14 +190,16 @@ The Operations page includes:
 
 Use the filters (state, queue, market, task text) to narrow the job console before cancelling anything.
 
-## Scheduled Tasks
+## Scheduled Jobs
 
-When the tasks feature is enabled, the header settings icon opens **Scheduled Tasks**.
+When the tasks feature is enabled, **Operations** has a **Scheduled jobs** section right after the job console. Open Operations from the runtime activity chip in the header.
 
-![Scheduled Tasks — registered jobs with schedules, last run, and run-now actions](screenshots/scheduled-tasks.png)
-*Scheduled Tasks — registered jobs with schedule, last-run, status, and run-now*
+![Operations — the job console followed by Scheduled jobs, with schedules, last run, status, and run-now actions](screenshots/scheduled-tasks.png)
+*Operations — job console, then Scheduled jobs with schedule, last run, status, and run-now*
 
-The dialog shows each task's display name and description, schedule, last run time and duration, last status, and a run-now action (with polling while a task is active). Tasks are feature-gated; deployments without task support do not show this control.
+Each job shows its schedule, last run time and duration, and status. Status comes from the server's run history, which the worker writes, so Beat runs show up as well as manual ones. A failed run shows its error message. **Unknown** means no outcome was recorded within about 25 hours (Celery's 24-hour hard time limit plus a margin); it is not counted as a failure.
+
+**Run now** queues the job. The job console shows it once a worker starts it, and also while it waits if its queue is one the console reads (the general `celery` queue and the data-fetch, market-job, and user-scan queues). Social Signals refreshes wait on `social_ingestion`, which the console does not read. Run is unavailable while the job is queued or running, so a second click cannot start it twice. A run queued for more than 10 minutes is marked **Not picked up** (for example, no worker on its queue, or a lost broker message). Its message may still be in the broker, so queueing another would run the job twice once a worker comes up. Cancel it in the job console instead: that removes the message, revokes the task, and marks the run cancelled, which enables Run again. A queued Social Signals refresh is not listed in the console. Start the social worker, or wait until the run reads as Unknown. On phones, the section shows one card per job. Deployments without task support do not show the section.
 
 ## Options Command Center Operations
 
@@ -205,7 +207,7 @@ Options analytics are US-only and opt in with `OPTIONS_ANALYTICS_ENABLED=true`; 
 
 The bounded cohort is the independently ranked top 40 scan Candidates plus top 40 Leaders after requiring daily USD volume strictly above $100 million. Overlap keeps both source ranks. Up to 20 recently dropped symbols remain in collection for five US sessions, while only current symbols appear in the Command Center. A normal full 100-symbol cohort uses one `^IRX` history request plus one expiration-list and one selected-chain request per symbol (201 Yahoo operations). With the three-attempt per-symbol retry budget, the hard ceiling is 601 operations. Fetch concurrency is capped at two and uses the shared yfinance limiter.
 
-In Operations, look for **Daily US Options Analytics** and the **Options Analytics** runtime stage. Its final message reports expected, completed, core-valid, failed, retried, and coverage counts. A manual canary can be started from Scheduled Tasks or the live Command Center Refresh action. Start with a source Feature run whose current cohort contains no more than three symbols; inspect the selected monthly expiration (14–45 DTE), observation timestamp, request/retry counts, coverage, unavailable reasons, and the recorded `^IRX` risk-free/dividend assumptions before testing the full cohort.
+In Operations, look for **Daily US Options Analytics** and the **Options Analytics** runtime stage. Its final message reports expected, completed, core-valid, failed, retried, and coverage counts. A manual canary can be started from Scheduled jobs on Operations or the live Command Center Refresh action. Start with a source Feature run whose current cohort contains no more than three symbols; inspect the selected monthly expiration (14–45 DTE), observation timestamp, request/retry counts, coverage, unavailable reasons, and the recorded `^IRX` risk-free/dividend assumptions before testing the full cohort.
 
 Publication is atomic. At least 90% of current symbols must have core-valid chains; otherwise the attempted run is retained for diagnostics but the published pointer does not move. Readers continue to receive the prior published run. A static build similarly keeps fresh equity output and may copy the last compatible options bundle with `stale_relative_to_equity` shown in its manifest, command-center payload, and symbol payloads.
 

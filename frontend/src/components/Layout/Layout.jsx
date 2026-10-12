@@ -26,7 +26,6 @@ import AutoAwesomeIcon from '@mui/icons-material/AutoAwesome';
 import CheckIcon from '@mui/icons-material/Check';
 import HistoryIcon from '@mui/icons-material/History';
 import LogoutIcon from '@mui/icons-material/Logout';
-import SettingsIcon from '@mui/icons-material/Settings';
 import PersonIcon from '@mui/icons-material/Person';
 import SmartToyIcon from '@mui/icons-material/SmartToy';
 import MarketSelector from './MarketSelector';
@@ -56,7 +55,6 @@ import {
 
 const AssistantDrawerContent = lazy(() => import('../AssistantChat/AssistantDrawerContent'));
 const PipelineProgressCard = lazy(() => import('../PipelineProgressCard'));
-const TaskSettingsModal = lazy(() => import('../Settings/TaskSettingsModal'));
 
 function DrawerLoadingFallback() {
   return (
@@ -264,7 +262,6 @@ function Layout({ children }) {
   const isMobile = useIsMobileShell();
   const { auth, features, isLoggingOut, logout, marketCatalog, primaryMarket } = useRuntime();
   const { selectedMarket } = useMarket();
-  const [settingsOpen, setSettingsOpen] = useState(false);
   const [assistantOpen, setAssistantOpen] = useState(false);
   const prefetchPage = useNavPrefetch();
 
@@ -289,12 +286,6 @@ function Layout({ children }) {
     <>
       <MobileProfileItems onDone={close} />
       <Divider sx={{ my: 0.5 }} />
-      {features.tasks && (
-        <ListItemButton onClick={() => { close(); setSettingsOpen(true); }}>
-          <ListItemIcon><SettingsIcon /></ListItemIcon>
-          <ListItemText primary="Scheduled tasks" />
-        </ListItemButton>
-      )}
       <ColorModeListItem onDone={close} />
       {canSignOut && (
         <ListItemButton disabled={isLoggingOut} onClick={() => { close(); logout(); }}>
@@ -322,16 +313,6 @@ function Layout({ children }) {
               <Box sx={{ flexGrow: 1 }} />
               <DesktopNav items={navItems} onIntent={prefetchPage} />
               <StrategyProfileControl />
-              {features.tasks && (
-                <IconButton
-                  onClick={() => setSettingsOpen(true)}
-                  title="Scheduled Tasks"
-                  size="small"
-                  sx={{ color: 'text.secondary' }}
-                >
-                  <SettingsIcon fontSize="small" />
-                </IconButton>
-              )}
               {canSignOut && (
                 <Button
                   size="small"
@@ -355,12 +336,6 @@ function Layout({ children }) {
       {isMobile && <MobileBottomNav items={navItems} extras={mobileExtras} onIntent={prefetchPage} />}
 
       {features.themes && <PipelineProgressOverlay />}
-
-      {features.tasks && settingsOpen && (
-        <Suspense fallback={null}>
-          <TaskSettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} />
-        </Suspense>
-      )}
 
       {assistantAvailable && location.pathname !== '/chatbot' && (
         <>

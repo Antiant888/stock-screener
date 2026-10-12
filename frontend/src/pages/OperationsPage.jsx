@@ -36,6 +36,7 @@ import { useRuntimeActivity } from '../hooks/useRuntimeActivity';
 import { useRuntime } from '../contexts/RuntimeContext';
 import SocialSignalHealthPanel from '../features/socialSignals/SocialSignalHealthPanel';
 import ExposureResearchWorkspace from '../features/companyExposure/ExposureResearchWorkspace';
+import SchedulesSection from '../components/Operations/SchedulesSection';
 
 const POLL_MS = 30000;
 const ACTIVE_JOB_STATES = new Set(['queued', 'waiting', 'reserved', 'running', 'stale', 'stuck']);
@@ -735,6 +736,8 @@ export default function OperationsPage() {
           cancelInFlight={cancelMutation.isPending}
         />
       )}
+
+      {features.tasks && <SchedulesSection />}
 
       <Typography variant="h6" sx={{ mt: 3, mb: 1 }}>
         Lease status
