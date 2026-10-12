@@ -23,6 +23,13 @@ def test_every_listing_carries_the_package_version():
     assert bundle["dependencies"] == [f"stockscreen-mcp=={__version__}"]
 
 
+def test_bundle_declares_no_static_tools():
+    # `smithery mcp publish` rejects any bundle with a `tools` array (HTTP 400,
+    # arcadeai-labs/smithery-cli#787); hosts list the tools from the running server.
+    manifest = json.loads((PACKAGE / "mcpb" / "manifest.json").read_text())
+    assert "tools" not in manifest
+
+
 def test_registry_name_matches_the_readme_ownership_marker():
     # The MCP registry verifies PyPI ownership by finding `mcp-name: <name>` in the README.
     server = json.loads((PACKAGE / "server.json").read_text())

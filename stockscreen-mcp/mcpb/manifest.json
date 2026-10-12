@@ -27,13 +27,5 @@
   "compatibility": {
     "platforms": ["darwin", "linux", "win32"],
     "runtimes": { "python": ">=3.10" }
-  },
-  "tools": [
-    { "name": "list_markets", "description": "Markets in the current publish with data dates and features" },
-    { "name": "list_screens", "description": "Preset screens and their exact rules" },
-    { "name": "run_screen", "description": "Run a preset and/or filters over a market's daily scan" },
-    { "name": "get_stock", "description": "One stock's scan data and the screens it passes" },
-    { "name": "market_overview", "description": "Market exposure, breadth, key markets and top groups" },
-    { "name": "group_rankings", "description": "Industry groups ranked by relative strength" }
-  ]
+  }
 }
