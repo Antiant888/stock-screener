@@ -101,6 +101,9 @@ def test_single_listing_common_stock_derives_its_own_company_identity(db_session
     ([("YUMC", "US", "Yum China Holdings Inc"), ("9987.HK", "HK", "YUM CHINA")], "$9987.HK"),
     # The same name in two markets is likely one issuer listed twice.
     ([("SONY", "US", "Sony Group Corporation"), ("6758.T", "JP", "Sony Group Corporation")], "$SONY"),
+    # Legal-form variants of one name are still the same name.
+    ([("SONY", "US", "Sony Group Corp."), ("6758.T", "JP", "Sony Group Corporation")], "$SONY"),
+    ([("ABCD", "US", "Abcd Ltd"), ("ABCE", "US", "ABCD, Limited")], "$ABCD"),
     # Repeats are found however the database lowercases non-ASCII letters.
     ([("ENGA", "US", "Énergie SA"), ("ENGB", "US", "énergie SA")], "$ENGA"),
 ])

@@ -35,6 +35,11 @@ _COMPANY_SUFFIX = re.compile(
     r"bancorp|bancorporation|bancshares|sa|s\.a|nv|n\.v|ag|se|llc|lp|l\.p|ab|asa|spa|oyj)\.?$",
     re.IGNORECASE,
 )
+# Legal-form words dropped from the end of a name before comparing issuers.
+_LEGAL_FORMS = frozenset({
+    "inc", "incorporated", "corp", "corporation", "co", "company", "ltd", "limited", "plc",
+    "sa", "s", "a", "nv", "n", "v", "ag", "se", "llc", "lp", "l", "p", "ab", "asa", "spa", "oyj",
+})
 # HK names carry no suffix, but mark secondary listings (-S, -SW) and RMB
 # counters (-R, -WR, -SWR on 8xxxx codes).
 _HK_SECOND_LINE = re.compile(r"-(s|sw|r|wr|swr)$", re.IGNORECASE)
@@ -134,6 +139,14 @@ class SocialTickerResolver:
         # Python, not SQL: databases disagree on lowercasing non-ASCII letters.
         return " ".join((value or "").casefold().split())
 
+    @classmethod
+    def _issuer_key(cls, value) -> str:
+        """The name without punctuation or trailing legal form: "Sony Group Corp." == "Sony Group Corporation"."""
+        words = re.sub(r"[^\w\s]", " ", cls._normalized_name(value)).split()
+        while len(words) > 1 and words[-1] in _LEGAL_FORMS:
+            words.pop()
+        return " ".join(words)
+
     def _single_listing(self, security) -> bool:
         name = self._normalized_name(security.name)
         if not name or _NOT_A_COMPANY_LINE.search(name):
@@ -142,7 +155,7 @@ class SocialTickerResolver:
             rows = [(market, self._normalized_name(value)) for market, value in self.db.query(
                 StockUniverse.market, StockUniverse.name).filter(StockUniverse.active_filter())]
             # A name seen twice anywhere (share classes, or one issuer in two markets).
-            counts = Counter(value for _, value in rows if value)
+            counts = Counter(self._issuer_key(value) for _, value in rows if value)
             us_name_starts = set()
             for market, value in set(rows):
                 if market == "US" and value:
@@ -154,7 +167,7 @@ class SocialTickerResolver:
                 us_name_starts,
             )
         markets, repeated, us_name_starts = self._listing_census
-        if _SAME_ISSUER_MARKETS.get(security.market) in markets or name in repeated:
+        if _SAME_ISSUER_MARKETS.get(security.market) in markets or self._issuer_key(name) in repeated:
             return False
         if security.market == "HK":
             # An HK name that opens a US company's name is likely its other line (YUM CHINA).
