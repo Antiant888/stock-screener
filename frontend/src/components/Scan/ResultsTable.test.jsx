@@ -627,6 +627,17 @@ describe('ResultsTable', () => {
       expect(within(ratedCard).getByText('Strong Buy')).toBeInTheDocument();
     });
 
+    it('shows the score the list is sorted by, labelled, instead of the composite', () => {
+      const row = { ...fullSeRow, composite_score: 66, minervini_score: 56.2 };
+      const { rerender } = renderWithProviders(
+        <ResultsTable {...defaultProps} results={[row]} sortBy="minervini_score" />,
+      );
+      expect(screen.getByLabelText('Min score 56.2')).toHaveTextContent('Min 56.2');
+
+      rerender(<ResultsTable {...defaultProps} results={[row]} sortBy="symbol" />);
+      expect(screen.getByLabelText('Score 66.0')).toBeInTheDocument();
+    });
+
     it('keeps an active sort that the picker does not list', () => {
       renderWithProviders(<ResultsTable {...defaultProps} sortBy="beta" />);
 

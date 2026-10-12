@@ -14,7 +14,7 @@ const oneDecimal = (value) => (Number.isFinite(Number(value)) && value != null ?
  * `badge` (e.g. a clickable action state) sits above the overlay as a sibling,
  * not nested inside the button.
  */
-export default function StockRowCard({ row, scoreField = 'composite_score', badge = null, meta = null, onOpen = null }) {
+export default function StockRowCard({ row, scoreField = 'composite_score', scoreLabel = null, badge = null, meta = null, onOpen = null }) {
   const change = Number(row.price_change_1d);
   const hasChange = row.price_change_1d != null && Number.isFinite(change);
   // Rank first: long industry names truncate, and the rank is the part worth keeping.
@@ -103,10 +103,10 @@ export default function StockRowCard({ row, scoreField = 'composite_score', badg
       <Box sx={{ textAlign: 'right' }}>
         <Typography
           component="span"
-          aria-label={`Score ${oneDecimal(row[scoreField])}`}
+          aria-label={`${scoreLabel ? `${scoreLabel} score` : 'Score'} ${oneDecimal(row[scoreField])}`}
           sx={{ display: 'inline-block', px: 0.75, borderRadius: 1, bgcolor: 'action.selected', fontSize: '11px', fontWeight: 700 }}
         >
-          {oneDecimal(row[scoreField])}
+          {scoreLabel ? `${scoreLabel} ` : ''}{oneDecimal(row[scoreField])}
         </Typography>
         <Typography sx={{ fontSize: '13px', fontWeight: 600, mt: 0.25 }}>
           {formatLocalCurrency(row.current_price, row.currency)}
