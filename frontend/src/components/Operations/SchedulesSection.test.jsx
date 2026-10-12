@@ -104,8 +104,11 @@ describe('SchedulesSection', () => {
 
     const row = rowFor('Daily Market Pipeline (US)');
     expect(within(row).getByText('Handed off')).toBeInTheDocument();
-    expect(within(row).getByText('Stages queued. Follow them in Market activity and the job console.'))
-      .toBeInTheDocument();
+    // Run stays available (the backend cannot yet tell when the chain is
+    // done), so the note warns against starting a second chain.
+    expect(within(row).getByText(
+      'Stages queued. Follow them in Market activity and the job console; running it again before they finish starts a second pipeline.',
+    )).toBeInTheDocument();
   });
 
   it('runs only the clicked task and refreshes the list', async () => {

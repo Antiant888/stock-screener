@@ -201,7 +201,15 @@ def _outcome(status: str, result: Any, error: Optional[str] = None) -> tuple[str
         return status, error
     if reported := _reported_error(result):
         return 'failed', reported
-    if result.get('status') == 'skipped' or result.get('skipped') is True:
+    # refresh_social_signals returns asdict(SocialRunResult): processing_status
+    # instead of status. 'deferred' collected and resumes later, so it stays
+    # completed.
+    processing = result.get('processing_status')
+    if processing == 'blocked' and 'source_participation_failed' in (result.get('reason_codes') or ()):
+        return 'failed', 'Social source collection failed (source_participation_failed)'
+    # 'skipped' is True only for a skipped run; refresh_all_fundamentals
+    # reports a count of skipped symbols under the same key.
+    if result.get('status') == 'skipped' or result.get('skipped') is True or processing in ('skipped', 'blocked'):
         return 'skipped', None
     if result.get('status') == 'queued':
         return 'dispatched', None
@@ -209,13 +217,19 @@ def _outcome(status: str, result: Any, error: Optional[str] = None) -> tuple[str
 
 
 def _skip_detail(summary: Any) -> Optional[str]:
-    """Why a run skipped, from its stored result (reason or reason_codes)."""
+    """Why a run skipped, from its stored result.
+
+    reason (pipeline, universe), reason_codes (options, social), or message
+    (serialized_data_fetch_task's 'Data fetch already in progress').
+    """
     if not isinstance(summary, dict):
         return None
     if summary.get('reason'):
         return str(summary['reason'])
     codes = summary.get('reason_codes')
-    return ', '.join(str(code) for code in codes) if codes else None
+    if codes:
+        return ', '.join(str(code) for code in codes)
+    return str(summary['message']) if summary.get('message') else None
 
 
 def _registry_entry_for(task_function: str, kwargs: Dict[str, Any]) -> Optional[str]:
