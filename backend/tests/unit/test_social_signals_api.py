@@ -721,7 +721,7 @@ async def test_evidence_lists_this_candidates_extracted_claims_supported_first(
         claim("$ZZZ", "Data center power", "equipment supplier", "$ZZZ supplies the turbines", "supported"),
         claim("$AAA", "Nuclear power", "generator", "signed a 20-year nuclear PPA", "supported"),
         claim("AAA", "Nuclear restarts", "operator", "add 800 MW by 2028", "supported", "a" * 64),
-    ), 1, 1, (ExtractionPostJudgment("p-1", True, "aaa-nuclear-ppa"),))
+    ), 1, 1, (ExtractionPostJudgment("p-1", True, "aaa-nuclear-ppa", "news", "bullish"),))
     work = SocialExtractionWork(
         content_item_id=item.id, input_hash=input_hash, prompt_version="v1", schema_version="v1",
         selected_model="requested", actual_provider="synthetic", actual_model="actual",
@@ -736,7 +736,7 @@ async def test_evidence_lists_this_candidates_extracted_claims_supported_first(
     old_snapshot = {**serialized_post, "text": old_post.text}
     old_result = ExtractionResult(old_hash, "synthetic", "actual", "v1", "v1", (
         claim("$AAA", "Stale theme", "rumor", "nuclear deal coming", "supported"),
-    ), 1, 1, (ExtractionPostJudgment("p-1", True, "aaa-draft"),))
+    ), 1, 1, (ExtractionPostJudgment("p-1", True, "aaa-draft", "chatter", "bearish"),))
     old_work = SocialExtractionWork(
         content_item_id=item.id, input_hash=old_hash, prompt_version="v1", schema_version="v1",
         selected_model="requested", actual_provider="synthetic", actual_model="actual",
@@ -762,6 +762,9 @@ async def test_evidence_lists_this_candidates_extracted_claims_supported_first(
     )
 
     assert response.status_code == 200
+    # The newest work's post hints label the source post; the stale revision's do not.
+    [source_post] = response.json()["posts"]
+    assert (source_post["post_kind"], source_post["stance"]) == ("news", "bullish")
     shared = {"post_id": "p-1", "author_handle": "analyst", "created_at": "2026-09-07T10:00:00Z",
               "url": "https://x.com/analyst/status/p-1"}
     # Attachment-backed wording is attributed to its article, not to the poster.

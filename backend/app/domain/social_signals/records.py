@@ -13,6 +13,9 @@ from urllib.parse import urlparse
 
 SUPPORTED_PROVIDERS = frozenset({"official", "xui"})
 SUPPORTED_MARKETS = frozenset({"US", "HK", "CN", "JP", "TW"})
+# Model hints about a post: what kind of post it is, and its overall stance.
+POST_KINDS = frozenset({"setup", "thesis", "news", "macro", "chatter"})
+POST_STANCES = frozenset({"bullish", "bearish", "neutral", "mixed"})
 _MAX_CLOCK_SKEW = timedelta(minutes=5)
 _MAX_PREPARED_EVIDENCE = 10
 _MAX_PREPARED_EVIDENCE_CHARACTERS = 6_000
@@ -538,6 +541,9 @@ class ExtractionPostJudgment:
     post_id: str
     has_new_thesis: bool
     canonical_claim_key: str | None
+    # Model hints (social-extraction-v3); None on results saved before v3.
+    post_kind: str | None = None
+    stance: str | None = None
 
     def __post_init__(self) -> None:
         _required(self.post_id, "post_id")
@@ -545,6 +551,11 @@ class ExtractionPostJudgment:
             raise ValueError("invalid_has_new_thesis")
         if self.canonical_claim_key is not None:
             _required(self.canonical_claim_key, "canonical_claim_key")
+        if (self.post_kind is None) != (self.stance is None):
+            raise ValueError("partial_post_hints")
+        if self.post_kind is not None:
+            _choice(self.post_kind, POST_KINDS, "post_kind")
+            _choice(self.stance, POST_STANCES, "stance")
 
 
 @dataclass(frozen=True, slots=True)

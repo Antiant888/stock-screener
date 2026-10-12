@@ -63,6 +63,22 @@ describe('SocialEvidenceDrawer', () => {
       .toHaveAttribute('href', 'https://x.com/analyst/status/p-1');
   });
 
+  it('labels source posts with the model post kind and stance hints', () => {
+    const post = {
+      post_id: 'p-1', author_handle: 'analyst', created_at: '2026-09-07T10:00:00Z',
+      excerpt: '$CEG breakout over the pivot', url: 'https://x.com/analyst/status/p-1',
+      source_names: [], engagement: { likes: 3 },
+    };
+    renderDrawer({
+      available: true, item: { canonical_symbol: 'CEG' }, claims: [],
+      posts: [{ ...post, post_kind: 'setup', stance: 'bullish' }, { ...post, post_id: 'p-2' }],
+    });
+
+    expect(screen.getByText('Setup · Bullish').closest('[title]'))
+      .toHaveAttribute('title', 'Model hint, not verified');
+    expect(screen.getAllByText(/Setup ·/)).toHaveLength(1);
+  });
+
   it('says so when no claims were extracted', () => {
     renderDrawer({ available: true, item: { canonical_symbol: 'CEG' }, posts: [], claims: [] });
     expect(screen.getByText('No company claims extracted in this window.')).toBeInTheDocument();

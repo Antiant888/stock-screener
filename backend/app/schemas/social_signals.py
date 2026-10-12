@@ -100,6 +100,9 @@ class SocialEvidencePost(BaseModel):
     url: str
     source_names: list[str] = Field(default_factory=list)
     engagement: dict[str, int | None] = Field(default_factory=dict)
+    # Model hints from the post's newest extraction; None before it ran or before v3.
+    post_kind: Literal["setup", "thesis", "news", "macro", "chatter"] | None = None
+    stance: Literal["bullish", "bearish", "neutral", "mixed"] | None = None
 
 
 class SocialEvidenceClaim(BaseModel):
