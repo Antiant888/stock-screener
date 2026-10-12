@@ -164,8 +164,12 @@ async def test_live_without_publication_is_typed_unavailable(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(("second_status", "expected_status"), [
+    ("success", "processing"),
+    ("failed", "collection_failed"),
+])
 async def test_unpublished_queue_exposes_sanitized_latest_source_outcomes(
-    db_session, social_runtime, monkeypatch
+    db_session, social_runtime, monkeypatch, second_status, expected_status
 ):
     from datetime import datetime, timezone
 
@@ -189,7 +193,7 @@ async def test_unpublished_queue_exposes_sanitized_latest_source_outcomes(
                 "coverage_reason_codes": ["provider_unavailable"],
             },
             "2": {
-                "read_status": "success", "processing_status": "pending",
+                "read_status": second_status, "processing_status": "pending",
                 "history_status": "warming_up", "received_count": 50,
                 "coverage_reason_codes": ["bounded_provider_read"],
             },
@@ -215,7 +219,7 @@ async def test_unpublished_queue_exposes_sanitized_latest_source_outcomes(
     attempt = response.json().get("latest_attempt")
     assert attempt == {
         "run_id": "failed-collection-1",
-        "status": "collection_failed",
+        "status": expected_status,
         "started_at": "2026-09-08T05:49:14Z",
         "completed_at": None,
         "sources": [
@@ -225,7 +229,7 @@ async def test_unpublished_queue_exposes_sanitized_latest_source_outcomes(
                 "reason_codes": ["provider_unavailable"],
             },
             {
-                "name": "AI Investing", "read_status": "success",
+                "name": "AI Investing", "read_status": second_status,
                 "received_count": 50, "history_status": "warming_up",
                 "reason_codes": ["bounded_provider_read"],
             },

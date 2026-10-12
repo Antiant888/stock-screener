@@ -213,6 +213,11 @@ class SocialScoringEvidenceReader:
                             content_ids[post.provider_post_id] = entry["content_item_id"]
 
             canonical = self._merge_metrics_across_sources(canonical)
+            # A list failed in this generation (or the saved one it replays) leaves
+            # the current window unobserved, whatever an earlier read covered.
+            for source_id in source_ids:
+                if outcomes.get(source_id, {}).get("read_status") == "failed":
+                    latest_source_completeness[source_id] = False
             history_complete = all(
                 latest_source_completeness.get(source_id, False)
                 for source_id in source_ids

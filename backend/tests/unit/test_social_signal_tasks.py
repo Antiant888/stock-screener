@@ -73,8 +73,12 @@ def test_off_delivery_is_a_noop_and_does_not_schedule_resume(monkeypatch):
     assert tasks.refresh_social_signals.run()["processing_status"] == "skipped"
 
 
-def test_budget_resume_ignores_runs_with_failed_source_collection(
-    db_session, monkeypatch
+@pytest.mark.parametrize(("second_status", "expected"), [
+    ("failed", "failed-collection"),
+    ("pending", None),
+])
+def test_budget_resume_needs_one_collected_source_and_every_source_settled(
+    db_session, monkeypatch, second_status, expected
 ):
     from sqlalchemy.orm import sessionmaker
 
@@ -97,7 +101,7 @@ def test_budget_resume_ignores_runs_with_failed_source_collection(
         mode="live", provider="official", status="running",
         source_outcomes_json={
             "1": {"read_status": "success"},
-            "2": {"read_status": "failed"},
+            "2": {"read_status": second_status},
         },
         application_progress_json={
             "sources": {"1": {}, "2": {}},
@@ -112,7 +116,7 @@ def test_budget_resume_ignores_runs_with_failed_source_collection(
         sessionmaker(db_session.get_bind(), expire_on_commit=False),
     )
 
-    assert tasks._latest_resumable_run() is None
+    assert tasks._latest_resumable_run() == expected
 
 
 def test_budget_resume_ignores_generation_with_replay_descendant(
@@ -172,6 +176,58 @@ def test_budget_resume_ignores_generation_with_replay_descendant(
     )
 
     assert tasks._latest_resumable_run() is None
+
+
+def test_budget_resume_skips_generations_older_than_the_latest_publication(
+    db_session, monkeypatch
+):
+    from sqlalchemy.orm import sessionmaker
+
+    from app import database
+    from app.infra.db.models.social_signals import (
+        SocialSignalRun,
+        SocialSourceRegistry,
+    )
+    from app.interfaces.tasks import social_signal_tasks as tasks
+
+    registry = db_session.get(SocialSourceRegistry, 1)
+    if registry is None:
+        registry = SocialSourceRegistry(id=1, version=1)
+        db_session.add(registry)
+    elif registry.version is None:
+        registry.version = 1
+    registry.mode, registry.provider = "live", "official"
+    state = {"sources": {"1": {}, "2": {}}, "observations": {"1": {}, "2": {}}}
+    outcomes = {"1": {"read_status": "success"}, "2": {"read_status": "failed"}}
+
+    def run(run_id, status, hours):
+        return SocialSignalRun(
+            id=run_id, registry_id=1, registry_version=registry.version,
+            mode="live", provider="official", status=status,
+            source_outcomes_json=outcomes, application_progress_json=state,
+            feature_run_ids_json={}, exposure_dates_json={}, coverage_json={},
+            created_at=NOW + timedelta(hours=hours),
+        )
+
+    db_session.add_all([run("stale", "running", 0), run("published", "published", 1)])
+    db_session.commit()
+    monkeypatch.setattr(
+        database,
+        "SessionLocal",
+        sessionmaker(db_session.get_bind(), expire_on_commit=False),
+    )
+
+    assert tasks._latest_resumable_run() is None
+    # A resume scheduled for the budget reset names its run explicitly.
+    from app.wiring import use_case_factories
+    monkeypatch.setattr(use_case_factories, "get_refresh_social_signals_use_case",
+                        lambda: (_ for _ in ()).throw(AssertionError("replayed")))
+    assert tasks.resume_social_analysis.run("stale") == {
+        "status": "skipped", "reason_codes": ["generation_superseded"],
+    }
+    # An admin retry of the published generation itself still replays.
+    with pytest.raises(AssertionError, match="replayed"):
+        tasks.resume_social_analysis.run("published")
 
 
 def test_source_task_returns_redacted_typed_outcome_without_outer_provider_retry(monkeypatch):

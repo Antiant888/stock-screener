@@ -298,8 +298,10 @@ stores queue evidence nor publishes a Social Signal Run.
 
 At least two Social Sources must remain enabled. An administrator cannot
 disable or archive a source if that would leave fewer than two enabled sources;
-a replacement must be tested and enabled first. Every enabled source must
-complete successfully for a refresh to publish. Pending, disabled, and
+a replacement must be tested and enabled first. A refresh publishes when at
+least one enabled source completes successfully; a failed source is recorded
+as a coverage gap on every candidate (amended 2026-10-12: one list timing out
+on its first backfill had blocked every generation). Pending, disabled, and
 archived sources are not part of the pinned run source set.
 
 **Approved concurrent administration protection:** Serialize source-registry
@@ -326,10 +328,12 @@ by itself block publication. Later source reads use bounded overlapping reads of
 retaining previously observed posts so engagement observations can be refreshed.
 
 **Approved warming-up publication:** Separate successful participation and
-processing from historical coverage. Every enabled source must return a valid,
-successful bounded read, and collected posts included in the run must finish
-analysis before publication. A failed source or unfinished analysis still blocks
-replacement of the previous snapshot. Successfully processed bounded reads may
+processing from historical coverage. At least one enabled source must return a
+valid, successful bounded read, and collected posts included in the run must
+finish analysis before publication. Failed sources publish as coverage gaps
+(their error code joins each candidate's coverage reasons and their history
+counts as incomplete). A generation where every source failed, or unfinished
+analysis, still blocks replacement of the previous snapshot. Successfully processed bounded reads may
 publish with explicit per-source/window warming-up or limited-history metadata;
 they must not claim complete historical coverage. This applies both at startup
 and when an additional list joins.
@@ -1066,8 +1070,8 @@ changing existing Theme identities.
   without an application or worker-image rebuild; ordinary users cannot.
 - New lists remain pending until an explicit five-post-or-fewer test succeeds
   for the currently selected provider.
-- At least two lists remain enabled and publication requires every enabled list
-  to complete successfully.
+- At least two lists remain enabled and publication requires at least one
+  enabled list to complete successfully; failed lists are coverage gaps.
 - Identical pinned inputs and formula version produce identical scores and
   ordering.
 - Cross-list posts are deduplicated without losing list attribution; distinct

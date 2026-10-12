@@ -36,6 +36,7 @@ _NETWORK_REASONS = (
     "timed out", "timeout", "dns",
 )
 _RETRY_DELAY_SECONDS = 30
+_INCREMENTAL_CAP = 200
 
 
 class XuiCliSocialProvider:
@@ -80,16 +81,18 @@ class XuiCliSocialProvider:
         if not self._authenticated(auth_payload, auth_result.returncode):
             return self._failed(request, "reauthentication_required", cooldown=True)
 
-        intent_cap = {"initial": 1000, "incremental": 200, "test": 5}[request.intent]
-        effective_limit = min(request.limit, intent_cap)
-        read_command = [
-            "xui", "read", "--path", self._config_path, "--profile", self._profile,
-            "--limit", str(effective_limit), "--json", "--sources", f"list:{request.list_id}",
-        ]
+        intent_cap = {"initial": 1000, "incremental": _INCREMENTAL_CAP, "test": 5}[request.intent]
+        requested_limit = effective_limit = min(request.limit, intent_cap)
         for attempt in range(2):
-            read_result = self._execute(read_command)
+            read_result = self._execute([
+                "xui", "read", "--path", self._config_path, "--profile", self._profile,
+                "--limit", str(effective_limit), "--json", "--sources", f"list:{request.list_id}",
+            ])
             if isinstance(read_result, str):
                 if read_result == "provider_timeout" and attempt == 0:
+                    # A long scroll that timed out will time out again; retry at the
+                    # incremental size so a first backfill can still land.
+                    effective_limit = min(effective_limit, _INCREMENTAL_CAP)
                     time.sleep(_RETRY_DELAY_SECONDS)
                     continue
                 return self._failed(request, read_result)
@@ -117,7 +120,10 @@ class XuiCliSocialProvider:
         return SocialSourceBatch(request, tuple(posts), SocialSourceOutcome(
             read_status="success", processing_status="pending",
             history_status="warming_up" if request.intent == "initial" else "limited",
-            coverage_reason_codes=("bounded_provider_read",), known_gap_intervals=(),
+            coverage_reason_codes=("bounded_provider_read",) + (
+                ("initial_read_truncated",) if effective_limit < requested_limit else ()
+            ),
+            known_gap_intervals=(),
             observed_oldest_at=min(timestamps) if timestamps else None,
             observed_newest_at=max(timestamps) if timestamps else None,
             received_count=len(posts), committed_progress=None, error_code=None,

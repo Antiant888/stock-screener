@@ -50,6 +50,23 @@ def refresh_social_signals(self, origin="scheduled", scheduled_for=None):
     return _run_result(result)
 
 
+def _superseded(run, all_runs):
+    """A generation older than the latest publication would republish stale reads."""
+    published_at = max((value.created_at for value in all_runs if value.status == "published"), default=None)
+    return published_at is not None and run.created_at <= published_at
+
+
+def _resume_superseded(run_id):
+    from app.database import SessionLocal
+    from app.infra.db.models.social_signals import SocialSignalRun
+    with SessionLocal() as db:
+        run = db.get(SocialSignalRun, run_id)
+        # Only deferred (running) generations resume automatically; admin retries
+        # of published or failed generations are deliberate.
+        return (run is not None and run.status == "running"
+                and _superseded(run, db.scalars(select(SocialSignalRun)).all()))
+
+
 def _latest_resumable_run():
     from app.database import SessionLocal
     from app.infra.db.models.social_signals import SocialSignalRun, SocialSourceRegistry
@@ -68,14 +85,19 @@ def _latest_resumable_run():
         runs = (
             run for run in all_runs
             if run.status == "running" and run.id not in replayed_run_ids
+            and not _superseded(run, all_runs)
         )
         return next((run.id for run in runs if (
             set(run.application_progress_json.get("observations", {}))
             == set(run.application_progress_json.get("sources", {}))
+            and set(run.source_outcomes_json) == set(run.application_progress_json.get("sources", {}))
             and all(
-                run.source_outcomes_json.get(source_id, {}).get("read_status")
-                == "success"
-                for source_id in run.application_progress_json.get("sources", {})
+                run.source_outcomes_json[source_id].get("read_status") in {"success", "failed"}
+                for source_id in run.source_outcomes_json
+            )
+            and any(
+                outcome.get("read_status") == "success"
+                for outcome in run.source_outcomes_json.values()
             )
         )), None)
 
@@ -86,6 +108,8 @@ def _latest_resumable_run():
 )
 def resume_social_analysis(self, saved_run_id=None, scheduled_for=None):
     from app.wiring.use_case_factories import get_refresh_social_signals_use_case
+    if saved_run_id is not None and _resume_superseded(saved_run_id):
+        return {"status": "skipped", "reason_codes": ["generation_superseded"]}
     saved_run_id = saved_run_id or _latest_resumable_run()
     if saved_run_id is None:
         return {"status": "skipped", "reason_codes": ["no_resumable_generation"]}
