@@ -20,6 +20,7 @@ from sqlalchemy.orm import Session
 from app.celery_app import _MARKET_JOB_TASKS, celery_app
 from app.config import settings
 from app.models.app_settings import AppSetting
+from app.models.scan_result import Scan
 from app.services.job_backend import CeleryJobBackend
 from app.services.market_activity_service import (
     MARKET_ACTIVITY_KEY_PREFIX,
@@ -193,6 +194,9 @@ def _extract_scan_id(task_name: str, args: list[Any], kwargs: dict[str, Any]) ->
 
 
 def _cancel_strategy_for(record: _JobRecord) -> str:
+    if record.wait_reason == "scheduled_eta":
+        # A worker holds the message until its ETA; it is not in the broker list.
+        return "revoke"
     if record.state in {"queued", "waiting"}:
         return "revoke_and_remove_from_queue"
     if record.state == "reserved":
@@ -466,6 +470,13 @@ class OperationsJobService:
                 if record:
                     jobs.append(record)
 
+        jobs.extend(self._scheduled_records(scheduled, queue_map))
+        return jobs, workers
+
+    def _scheduled_records(
+        self, scheduled: dict[str, Any], queue_map: dict[str, list[str]]
+    ) -> list[_JobRecord]:
+        jobs: list[_JobRecord] = []
         for worker, entries in scheduled.items():
             worker_queues = queue_map.get(worker, [])
             default_queue = worker_queues[0] if len(worker_queues) == 1 else None
@@ -477,8 +488,7 @@ class OperationsJobService:
                     record.wait_reason = "scheduled_eta"
                     record.cancel_strategy = "revoke"
                     jobs.append(record)
-
-        return jobs, workers
+        return jobs
 
     def _lock_holder_record(self, market: str) -> _JobRecord | None:
         current_task = get_data_fetch_lock().get_current_task(market=market)
@@ -785,6 +795,10 @@ class OperationsJobService:
                 continue
             if not isinstance(action, dict) or action.get("outcome") != "accepted":
                 continue
+            # A force action finishes on the spot; a leftover stale row after it
+            # should keep its button rather than read "requested" for a day.
+            if str(action.get("strategy", "")).startswith("force_"):
+                continue
             task_id = action.get("task_id")
             previous = requests.get(task_id)
             if task_id and (
@@ -861,7 +875,8 @@ class OperationsJobService:
         records: list[_JobRecord] = []
         for worker, tasks in replies.items():
             state, request = (tasks or {}).get(task_id) or (None, None)
-            # ETA-scheduled tasks also report "reserved"; both are revoked.
+            # ETA-scheduled tasks are not in worker requests until their ETA;
+            # _find_job_record falls back to inspect.scheduled() for them.
             mapped = {"active": "running", "reserved": "reserved"}.get(state)
             if not mapped or not isinstance(request, dict):
                 continue
@@ -878,6 +893,9 @@ class OperationsJobService:
         live = [job for job in self._queued_jobs(lease_snapshot) if job.task_id == task_id]
         if not live:
             live = self._query_task(task_id)
+        if not live:
+            scheduled = self._scheduled_records(self._inspect().scheduled() or {}, {})
+            live = [job for job in scheduled if job.task_id == task_id]
         records = self._merge_live_jobs(live)
         if task_id not in records:
             self._augment_with_runtime_activity(db, records, lease_snapshot)
@@ -951,6 +969,10 @@ class OperationsJobService:
 
         if strategy == "scan_cancel":
             scan_id = _extract_scan_id(record.task_name, record.args or [], record.kwargs or {})
+            if not scan_id:
+                # Lease-only rows (a busy solo worker skips inspect) carry no
+                # args; the scan row records its Celery task id.
+                scan_id = db.query(Scan.scan_id).filter(Scan.task_id == task_id).scalar()
             if not scan_id:
                 message = f"Could not resolve scan id for task {task_id}."
                 self._record_cancel_action(db, task_id=task_id, strategy=strategy, outcome="blocked", message=message)

@@ -782,3 +782,84 @@ def test_list_jobs_marks_rows_with_an_accepted_cancel_request():
     job = next(job for job in payload["jobs"] if job["task_id"] == "scan-task-1")
     assert job["cancel_requested_at"] == "2026-10-13T10:05:00+00:00"
     assert job["cancel_requested_strategy"] == "scan_cancel"
+
+
+def test_force_actions_do_not_mark_rows_cancel_requested():
+    db = MagicMock()
+    db.query.return_value.filter.return_value.filter.return_value.all.return_value = [
+        SimpleNamespace(value=json.dumps({
+            "task_id": "lease-1", "strategy": "force_release_market_lease",
+            "outcome": "accepted", "timestamp": "2026-10-13T10:00:00+00:00",
+        })),
+    ]
+
+    assert OperationsJobService()._cancel_requests(db) == {}
+
+
+_ETA_REQUEST = {
+    "id": "eta-1",
+    "name": "app.tasks.cache_tasks.smart_refresh_cache",
+    "args": [],
+    "kwargs": {"market": "US"},
+    "delivery_info": {"routing_key": "data_fetch_us"},
+}
+
+
+def test_eta_scheduled_job_lists_and_resolves_as_revoke():
+    """An ETA task is held by a worker, not in the broker list or worker
+    requests: the listing and the cancel lookup must agree it is revoked."""
+
+    class _EtaInspect(_FakeInspect):
+        def scheduled(self):
+            return {"datafetch@host": [{"eta": "2026-10-14T00:00:00", "request": _ETA_REQUEST}]}
+
+        def query_task(self, _task_id):
+            return {"datafetch@host": {}}
+
+    service = OperationsJobService()
+    service._broker = lambda: _FakeBroker({})
+    service._inspect = lambda: _EtaInspect()
+    service._runtime_activity_records = lambda _db: []
+    lock = MagicMock()
+    lock.get_current_task.return_value = None
+
+    with patch("app.services.operations_job_service.get_workload_coordination") as mock_get_coordination, patch(
+        "app.services.operations_job_service.get_data_fetch_lock", return_value=lock
+    ):
+        mock_get_coordination.return_value.get_external_fetch_holder.return_value = None
+        mock_get_coordination.return_value.get_market_workload_holders.return_value = {"US": None}
+        listed = next(job for job in service.list_jobs(MagicMock())["jobs"] if job["task_id"] == "eta-1")
+        record = service._find_job_record(MagicMock(), "eta-1")
+
+    assert listed["cancel_strategy"] == "revoke"
+    assert record is not None
+    assert record.cancel_strategy == "revoke"
+
+
+def test_scan_cancel_resolves_scan_id_from_task_id_for_lease_only_rows():
+    service = OperationsJobService()
+    service._record_cancel_action = lambda *args, **kwargs: None
+    cancelled = []
+    service._cancel_scan = lambda _db, scan_id: cancelled.append(scan_id) or ("accepted", "ok")
+    service._find_job_record = lambda _db, _task_id: _JobRecord(
+        task_id="scan-task-9",
+        task_name="app.tasks.scan_tasks.run_bulk_scan",
+        queue="user_scans_us",
+        market="US",
+        state="running",
+        worker=None,
+        age_seconds=60,
+        wait_reason=None,
+        heartbeat_lag_seconds=None,
+        cancel_strategy="scan_cancel",
+        args=[],
+        kwargs={"market": "US"},
+        source="market_lease",
+    )
+    db = MagicMock()
+    db.query.return_value.filter.return_value.scalar.return_value = "scan-009"
+
+    result = service.cancel_job(db, "scan-task-9", expected_strategy="scan_cancel")
+
+    assert result["status"] == "accepted"
+    assert cancelled == ["scan-009"]
