@@ -111,8 +111,11 @@ def test_latest_images_move_only_after_both_are_published():
     names = [step.get("name", "") for step in steps]
 
     for meta in ("Backend image metadata", "Frontend image metadata"):
-        tags = steps[names.index(meta)]["with"]["tags"]
-        assert "value=latest" not in tags, meta
+        inputs = steps[names.index(meta)]["with"]
+        assert "value=latest" not in inputs["tags"], meta
+        # metadata-action's default `latest=auto` also emits `latest` for
+        # type=ref,event=tag and type=semver, i.e. on every v* tag push.
+        assert "latest=false" in inputs.get("flavor", ""), meta
 
     promote = names.index("Promote latest after both images are published")
     assert promote > names.index("Build and push backend image")

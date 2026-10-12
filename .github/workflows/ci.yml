@@ -328,6 +328,8 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ghcr.io/${{ steps.registry.outputs.owner }}/stockscreenclaude-backend
+          # `latest` moves only in the promote step below, after both images exist.
+          flavor: latest=false
           tags: |
             type=ref,event=branch
             type=ref,event=tag
@@ -351,6 +353,8 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ghcr.io/${{ steps.registry.outputs.owner }}/stockscreenclaude-frontend
+          # `latest` moves only in the promote step below, after both images exist.
+          flavor: latest=false
           tags: |
             type=ref,event=branch
             type=ref,event=tag
