@@ -2,11 +2,30 @@ import { Box, Paper, Skeleton, Stack } from '@mui/material';
 
 // Placeholders shaped like the content that is loading, so the page has its
 // final layout immediately and nothing jumps when data arrives. Each is a
-// labelled status region, so screen readers hear what is loading.
+// status region with visually hidden text, so screen readers can announce
+// what is loading (an aria-label alone isn't announced on insertion).
 
-export function TableSkeleton({ label = 'Loading', rows = 8, columns = 6, title = true }) {
+const visuallyHidden = {
+  position: 'absolute',
+  width: 1,
+  height: 1,
+  overflow: 'hidden',
+  clip: 'rect(0 0 0 0)',
+  whiteSpace: 'nowrap',
+};
+
+const LoadingText = ({ children }) => <Box component="span" sx={visuallyHidden}>{children}</Box>;
+
+/** `bare` drops the outlined card for use inside an existing Paper. */
+export function TableSkeleton({ label = 'Loading', rows = 8, columns = 6, title = true, bare = false }) {
   return (
-    <Paper variant="outlined" role="status" aria-busy="true" aria-label={label} sx={{ p: 1.5 }}>
+    <Box
+      component={bare ? 'div' : Paper}
+      {...(bare ? {} : { variant: 'outlined' })}
+      role="status"
+      sx={{ p: bare ? 0 : 1.5 }}
+    >
+      <LoadingText>{label}</LoadingText>
       {title ? <Skeleton variant="text" width={180} height={24} sx={{ mb: 1 }} /> : null}
       <Skeleton variant="rounded" height={28} sx={{ mb: 1 }} />
       <Stack spacing={1}>
@@ -19,13 +38,14 @@ export function TableSkeleton({ label = 'Loading', rows = 8, columns = 6, title 
           </Box>
         ))}
       </Stack>
-    </Paper>
+    </Box>
   );
 }
 
 export function PageSkeleton({ label = 'Loading page' }) {
   return (
-    <Box role="status" aria-busy="true" aria-label={label} sx={{ py: 1 }}>
+    <Box role="status" sx={{ py: 1 }}>
+      <LoadingText>{label}</LoadingText>
       <Skeleton variant="text" width={260} height={36} />
       <Skeleton variant="text" width={180} height={20} sx={{ mb: 2 }} />
       <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr 1fr', md: 'repeat(4, 1fr)' }, gap: 1.5, mb: 2 }}>

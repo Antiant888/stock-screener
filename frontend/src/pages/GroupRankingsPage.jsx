@@ -701,7 +701,7 @@ function GroupRankingsPage() {
 
   if (!runtimeReady) {
     return (
-      <Container maxWidth="xl" sx={{ mt: 4, mb: 4 }}>
+      <Container maxWidth="xl" sx={{ mt: 2, mb: 2 }}>
         <PageSkeleton label="Loading group rankings" />
       </Container>
     );
@@ -780,7 +780,7 @@ function GroupRankingsPage() {
             {/* Movers Cards */}
             <Box sx={{ p: 2 }}>
               {isLoadingMovers ? (
-                <TableSkeleton label="Loading rank movers" rows={5} columns={3} />
+                <TableSkeleton label="Loading rank movers" rows={5} columns={3} bare />
               ) : (
                 <Grid container spacing={1} direction="column">
                   <Grid item>

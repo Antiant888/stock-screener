@@ -139,7 +139,7 @@ describe('ScanPage', () => {
   it('renders without a temporal-dead-zone crash before runtime bootstrap completes', () => {
     renderWithProviders(<ScanPage />);
 
-    expect(screen.getByRole('progressbar')).toBeInTheDocument();
+    expect(screen.getByRole('status')).toHaveTextContent('Loading scan');
   });
 
   it('hydrates scan controls from runtime scan defaults', async () => {

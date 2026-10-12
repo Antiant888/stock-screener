@@ -420,7 +420,7 @@ describe('ResultsTable', () => {
       renderWithProviders(
         <ResultsTable {...defaultProps} loading={true} />
       );
-      expect(screen.getByRole('status', { name: 'Loading scan results' })).toHaveAttribute('aria-busy', 'true');
+      expect(screen.getByRole('status')).toHaveTextContent('Loading scan results');
     });
 
     it('renders pagination controls', () => {

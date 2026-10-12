@@ -1,11 +1,12 @@
 import { useCallback, useMemo, useRef, useState } from 'react';
-import { Alert, Box, Button, Chip, CircularProgress, MenuItem, Paper, Stack, TextField, ToggleButton, ToggleButtonGroup, Typography } from '@mui/material';
+import { Alert, Box, Button, Chip, MenuItem, Paper, Stack, TextField, ToggleButton, ToggleButtonGroup, Typography } from '@mui/material';
 import { useTheme } from '@mui/material/styles';
 import { buildMatrixModel, groupLabel, sectorLabel } from './groupMatrixModel';
 import { MATRIX_METRICS, matrixColor, matrixLegend } from './groupMatrixColors';
 import GroupMatrixLayouts from './GroupMatrixLayouts';
 import GroupMatrixDetails from './GroupMatrixDetails';
 import GroupMatrixTileInspector from './GroupMatrixTileInspector';
+import { TableSkeleton } from '../../../components/common/LoadingSkeletons';
 
 const EMPTY_STOCKS = [];
 const UNAVAILABLE = {
@@ -47,7 +48,7 @@ export default function GroupMatrixPanel({ data, isLoading, error, onRetry, pref
     const target = triggerRef.current?.isConnected ? triggerRef.current : listButtonRef.current;
     setTimeout(() => target?.focus(), 0);
   };
-  if (isLoading) return <Box sx={{ p: 6, textAlign: 'center' }}><CircularProgress aria-label="Loading matrix" /></Box>;
+  if (isLoading) return <TableSkeleton label="Loading group matrix" />;
   if (error) return <Alert severity="error" action={<Button onClick={onRetry}>Retry</Button>}>Failed to load the stock matrix.</Alert>;
   if (!data?.available) return <Alert severity="info">{UNAVAILABLE[data?.reason] || 'Matrix data is not available in this snapshot.'}</Alert>;
 
