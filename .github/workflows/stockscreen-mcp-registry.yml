@@ -1,0 +1,60 @@
+name: Publish stockscreen-mcp to the MCP registry
+
+# Publishes stockscreen-mcp/server.json to https://registry.modelcontextprotocol.io.
+# Called by stockscreen-mcp-release.yml after the PyPI upload (the registry checks
+# that the PyPI package exists and its README carries the matching mcp-name), and
+# runnable by hand to (re)register the current version.
+
+on:
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  registry:
+    name: Publish server.json
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write  # GitHub OIDC login proves ownership of io.github.xang1234/*
+    env:
+      MCP_PUBLISHER_VERSION: v1.8.1
+      # sha256 of mcp-publisher_linux_amd64.tar.gz from that release's checksums file
+      MCP_PUBLISHER_SHA256: a06c9096dcb9727c13555b6be26c7effa707b01f06a4c561ba7a3635443cf2cc
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install mcp-publisher
+        shell: bash
+        run: |
+          curl -fsSL -o mcp-publisher.tar.gz \
+            "https://github.com/modelcontextprotocol/registry/releases/download/${MCP_PUBLISHER_VERSION}/mcp-publisher_linux_amd64.tar.gz"
+          echo "${MCP_PUBLISHER_SHA256}  mcp-publisher.tar.gz" | sha256sum --check
+          tar xzf mcp-publisher.tar.gz mcp-publisher
+
+      - name: Publish
+        shell: bash
+        run: |
+          ./mcp-publisher validate stockscreen-mcp/server.json
+          # PyPI's JSON API can lag a fresh upload; the registry verifies against it.
+          # Log in on every attempt so a retry never outlives the registry token.
+          for attempt in 1 2 3 4 5; do
+            output=""
+            if ./mcp-publisher login github-oidc && output="$(./mcp-publisher publish stockscreen-mcp/server.json 2>&1)"; then
+              echo "$output"
+              exit 0
+            fi
+            echo "$output"
+            # Registry versions are immutable; a rerun for a registered version is done.
+            if [[ "$output" == *"cannot publish duplicate version"* ]]; then
+              echo "This version is already in the MCP registry; nothing to publish."
+              exit 0
+            fi
+            echo "Publish attempt $attempt failed; retrying in 30s" >&2
+            sleep 30
+          done
+          exit 1

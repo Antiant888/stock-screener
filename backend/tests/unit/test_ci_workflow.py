@@ -144,3 +144,28 @@ def test_stockscreen_mcp_is_tested_in_ci_and_released_by_tag_with_trusted_publis
     assert publish["environment"]["name"] == "pypi"
     assert publish["permissions"] == {"id-token": "write"}  # OIDC only, no stored token
     assert any(str(step.get("uses", "")).startswith("pypa/gh-action-pypi-publish@v1.") for step in publish["steps"])
+
+
+def test_stockscreen_mcp_registers_in_the_mcp_registry_after_pypi_with_a_verified_publisher():
+    workflows = REPO_ROOT / ".github" / "workflows"
+    release = yaml.safe_load((workflows / "stockscreen-mcp-release.yml").read_text())["jobs"]
+    registry_call = release["mcp-registry"]
+    # The registry verifies the PyPI package, so it must run after the upload.
+    assert registry_call["needs"] == "publish"
+    assert registry_call["uses"] == "./.github/workflows/stockscreen-mcp-registry.yml"
+    assert registry_call["permissions"]["id-token"] == "write"
+
+    registry = yaml.safe_load((workflows / "stockscreen-mcp-registry.yml").read_text())
+    assert set(registry[True]) == {"workflow_dispatch", "workflow_call"}  # bare `on` parses as True
+    job = registry["jobs"]["registry"]
+    assert job["permissions"]["id-token"] == "write"
+    assert job["env"]["MCP_PUBLISHER_VERSION"].startswith("v")  # pinned, never releases/latest
+    assert len(job["env"]["MCP_PUBLISHER_SHA256"]) == 64
+    script = " ".join(str(step.get("run", "")) for step in job["steps"])
+    assert "releases/latest" not in script
+    assert "sha256sum --check" in script
+    assert "login github-oidc" in script
+    assert "publish stockscreen-mcp/server.json" in script
+    # Registry versions are immutable: a manual rerun for a registered version must
+    # succeed instead of retrying (registry internal/database ErrInvalidVersion text).
+    assert "cannot publish duplicate version" in script
