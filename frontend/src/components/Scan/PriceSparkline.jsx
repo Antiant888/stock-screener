@@ -1,6 +1,13 @@
 import { useMemo, memo } from 'react';
-import { AreaChart, Area, ResponsiveContainer, YAxis } from 'recharts';
 import { Box, Tooltip, Typography, useTheme } from '@mui/material';
+
+import { baseValue, monotoneXPath, scaleLinear } from './sparklineGeometry';
+
+// The chart's own width is set by flex layout, so the SVG stretches a fixed
+// viewBox horizontally: 1 unit = 1px vertically (margins and stroke stay in
+// pixels) and the curve keeps its shape under the horizontal stretch.
+const VIEW_WIDTH = 1000;
+const MARGIN = 2;
 
 /**
  * Price Sparkline Component
@@ -28,17 +35,12 @@ function PriceSparkline({
 }) {
   const { palette } = useTheme();
 
-  // Transform data for chart
-  const { chartData, domain, color } = useMemo(() => {
-    if (!data || !Array.isArray(data) || data.length === 0) {
-      return { chartData: [], domain: [0, 1], color: palette.text.disabled };
-    }
+  const viewHeight = typeof height === 'number' ? height : 28;
 
-    // Convert to chart format
-    const chartData = data.map((value, index) => ({
-      index,
-      value,
-    }));
+  const { hasData, line, area, dotY, color } = useMemo(() => {
+    if (!data || !Array.isArray(data) || data.length === 0) {
+      return { hasData: false, color: palette.text.disabled };
+    }
 
     const minVal = Math.min(...data);
     const maxVal = Math.max(...data);
@@ -50,12 +52,21 @@ function PriceSparkline({
     // trend: 1 = up, -1 = down, 0 = flat
     const color = trend === 1 ? palette.success.main : trend === -1 ? palette.error.main : palette.text.disabled;
 
-    return {
-      chartData,
-      domain: [minVal - padding, maxVal + padding],
-      color,
-    };
-  }, [data, trend, palette]);
+    const domain = [minVal - padding, maxVal + padding];
+    const y = scaleLinear(domain, [viewHeight - MARGIN, MARGIN]);
+    if (data.length === 1) {
+      // recharts drew a lone point as a dot rather than a line.
+      return { hasData: true, dotY: y(data[0]), color };
+    }
+    const step = VIEW_WIDTH / (data.length - 1);
+    const line = monotoneXPath(data.map((value, i) => [i * step, y(value)]));
+    // Filled to the padded floor, or to zero if the padding dips below it,
+    // like recharts' Area.
+    const base = y(baseValue(domain));
+    const area = `${line}L${VIEW_WIDTH},${base}L0,${base}Z`;
+
+    return { hasData: true, line, area, color };
+  }, [data, trend, palette, viewHeight]);
 
   // Format 1-day change for display
   const changeText = useMemo(() => {
@@ -89,7 +100,7 @@ function PriceSparkline({
   }, [industry, trend, data]);
 
   // No data - show placeholder
-  if (!chartData || chartData.length === 0) {
+  if (!hasData) {
     return (
       <Box
         sx={{
@@ -128,22 +139,23 @@ function PriceSparkline({
             minWidth: 0,
           }}
         >
-          <ResponsiveContainer width="100%" height="100%">
-            <AreaChart
-              data={chartData}
-              margin={{ top: 2, right: 0, left: 0, bottom: 2 }}
+          {dotY === undefined ? (
+            <svg
+              width="100%"
+              height="100%"
+              viewBox={`0 0 ${VIEW_WIDTH} ${viewHeight}`}
+              preserveAspectRatio="none"
+              style={{ display: 'block' }}
             >
-              <YAxis domain={domain} hide />
-              <Area
-                type="monotone"
-                dataKey="value"
-                stroke={color}
-                strokeWidth={1.5}
-                fill={color}
-                fillOpacity={0.25}
-              />
-            </AreaChart>
-          </ResponsiveContainer>
+              <path d={area} fill={color} fillOpacity={0.25} />
+              <path d={line} fill="none" stroke={color} strokeWidth={1.5} vectorEffect="non-scaling-stroke" />
+            </svg>
+          ) : (
+            // Unstretched, so the dot stays round.
+            <svg width="100%" height="100%" style={{ display: 'block' }}>
+              <circle cx="50%" cy={dotY} r={3} stroke={color} strokeWidth={1.5} fill={color} fillOpacity={0.25} />
+            </svg>
+          )}
         </Box>
 
         {/* 1-Day Change Badge */}
