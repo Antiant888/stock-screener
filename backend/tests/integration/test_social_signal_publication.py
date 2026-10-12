@@ -65,15 +65,33 @@ def test_limited_history_can_publish_and_reader_freezes_one_run(store):
         assert db.query(SocialSignalSnapshot).count() == 2
 
 
-@pytest.mark.parametrize("problem", ["missing_source", "failed_read", "unfinished", "no_work_link"])
-def test_publication_requires_every_pinned_read_and_exact_finished_inputs(store, problem):
+def failed_batch(source):
+    b = empty_batch(source)
+    return replace(b, outcome=replace(b.outcome, read_status="failed", processing_status="failed",
+        error_code="provider_error", proposed_progress=None))
+
+
+def test_one_failed_read_publishes_as_a_coverage_gap(store):
     w = writer(store)
     w.create_run("run", NOW)
     w.persist_observations(empty_batch(1), run_id="run")
-    if problem == "failed_read":
-        b = empty_batch(2)
-        b = replace(b, outcome=replace(b.outcome, read_status="failed", error_code="provider_error", proposed_progress=None))
-        w.persist_observations(b, run_id="run")
+    w.persist_observations(failed_batch(2), run_id="run")
+    w.prepare_run("run", (row("run"),), NOW)
+    with store() as db:
+        version = db.get(SocialSignalRun, "run").registry_version
+    assert w.publish("run", version).published
+    with store() as db:
+        assert db.get(SocialSignalRun, "run").source_outcomes_json["2"]["processing_status"] == "failed"
+    assert len(w.read_run_inputs("run").batches) == 2
+
+
+@pytest.mark.parametrize("problem", ["missing_source", "every_read_failed", "unfinished", "no_work_link"])
+def test_publication_requires_every_pinned_read_and_exact_finished_inputs(store, problem):
+    w = writer(store)
+    w.create_run("run", NOW)
+    w.persist_observations(failed_batch(1) if problem == "every_read_failed" else empty_batch(1), run_id="run")
+    if problem == "every_read_failed":
+        w.persist_observations(failed_batch(2), run_id="run")
     elif problem in {"unfinished", "no_work_link"}:
         w.persist_observations(batch(2), run_id="run")
         if problem == "unfinished":
