@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from datetime import date, datetime
 from typing import Any
+from uuid import uuid4
 
 from celery import chain
 
@@ -49,6 +50,12 @@ def _active_formula_for_market(market: str) -> str:
         )
     finally:
         db.close()
+
+
+def _pipeline_chain_claims():
+    from app.wiring.bootstrap import get_workload_coordination
+
+    return get_workload_coordination()
 
 
 def _nonfatal_group_taxonomy_skip(result: dict) -> bool:
@@ -348,6 +355,60 @@ def _build_daily_market_pipeline_signatures(market: str, trading_date: date) -> 
     return signatures
 
 
+@celery_app.task(
+    name="app.tasks.daily_market_pipeline_tasks.release_daily_market_pipeline_claim",
+    queue="celery",
+)
+def release_daily_market_pipeline_claim(*, market: str, token: str) -> dict:
+    """Free the market's pipeline-chain claim: the chain's last stage, and the
+    error callback of every stage.
+
+    Keyword-only on purpose: Celery calls an errback task inline with
+    (request, exc, traceback) when it takes more than one positional argument;
+    this way it is published as a task and its immutable signature ignores the
+    failed task's id.
+    """
+    try:
+        released = _pipeline_chain_claims().release_pipeline_chain(token, market=market)
+    except Exception:
+        # The claim's TTL (PIPELINE_CHAIN_TTL_SECONDS) frees it regardless.
+        logger.warning("Could not release the %s pipeline chain claim", market, exc_info=True)
+        released = False
+    return {"status": "ok", "market": market, "stage": "release", "released": released}
+
+
+def _claim_pipeline_chain(market: str, token: str) -> tuple[Any, bool | None]:
+    """(claims, True) when claimed, (claims, False) when another chain holds
+    the claim, (claims or None, None) when the claim store is unavailable.
+
+    None fails open, like the workload-holder check: the daily run matters
+    more than duplicate protection.
+    """
+    claims = None
+    try:
+        claims = _pipeline_chain_claims()
+        return claims, claims.claim_pipeline_chain(token, market=market)
+    except Exception:
+        logger.warning(
+            "Could not claim the %s pipeline chain; dispatching without duplicate protection",
+            market,
+            exc_info=True,
+        )
+        return claims, None
+
+
+def _pipeline_chain_holder(claims: Any, market: str) -> dict | None:
+    """The current holder, None if the claim is free, {} if it cannot be read.
+
+    {} keeps a lost SET NX a skip: a chain does hold the claim.
+    """
+    try:
+        return claims.get_pipeline_chain_holder(market)
+    except Exception:
+        logger.warning("Could not read the %s pipeline chain holder", market, exc_info=True)
+        return {}
+
+
 def _market_pipeline_active(market: str) -> dict | None:
     try:
         from app.wiring.bootstrap import get_workload_coordination
@@ -424,7 +485,49 @@ def queue_daily_market_pipeline(self, market: str) -> dict:
         }
 
     trading_day = calendar.last_completed_trading_day(market_code)
-    task = chain(*_build_daily_market_pipeline_signatures(market_code, trading_day)).apply_async()
+    signatures = _build_daily_market_pipeline_signatures(market_code, trading_day)
+    token = uuid4().hex
+    # Built before claiming, so nothing between the claim and the publish's
+    # try can raise and leak the claim.
+    release = release_daily_market_pipeline_claim.si(market=market_code, token=token).set(
+        queue=market_jobs_queue_for_market(market_code)
+    )
+    claims, claimed = _claim_pipeline_chain(market_code, token)
+    chain_holder = None
+    if claimed is False:
+        chain_holder = _pipeline_chain_holder(claims, market_code)
+        if chain_holder is None:
+            # Freed between SET NX and GET: nothing is running, so try once more.
+            claims, claimed = _claim_pipeline_chain(market_code, token)
+            if claimed is False:
+                chain_holder = _pipeline_chain_holder(claims, market_code) or {}
+    if claimed is False:
+        return {
+            "status": "skipped",
+            "reason": "market_pipeline_already_active",
+            "market": market_code,
+            # The claim token, not a Celery task id.
+            "active_chain_token": chain_holder.get("task_id"),
+            "active_since": chain_holder.get("started_at"),
+            "timestamp": datetime.now().isoformat(),
+        }
+    publish_options: dict = {}
+    if claimed:
+        signatures = [*signatures, release]
+        publish_options["link_error"] = release
+
+    try:
+        task = chain(*signatures).apply_async(**publish_options)
+    except Exception:
+        if claimed:
+            try:
+                claims.release_pipeline_chain(token, market=market_code)
+            except Exception:
+                # Keep the publish error; the claim's TTL frees it regardless.
+                logger.warning(
+                    "Could not release the %s pipeline chain claim", market_code, exc_info=True
+                )
+        raise
     logger.info(
         "Queued daily market pipeline",
         extra={"market": market_code, "task_id": task.id, "as_of_date": trading_day.isoformat()},

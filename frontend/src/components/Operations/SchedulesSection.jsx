@@ -134,13 +134,9 @@ function statusNote(task) {
   }
   if (run?.status === 'skipped' && run.detail) return [humanizeReason(run.detail), 'text.secondary'];
   if (run?.status === 'dispatched') {
-    // The pipeline's already-active guard only sees a stage while it runs, not
-    // the gaps between stages, so a second Run can start a second chain.
-    return [
-      'Stages queued. Follow them in Market activity and the job console; '
-        + 'running it again before they finish starts a second pipeline.',
-      'warning.main',
-    ];
+    // A second Run while the chain holds its claim reads Skipped
+    // ('market_pipeline_already_active'), so no duplicate warning is needed.
+    return ['Stages queued. Follow them in Market activity and the job console.', 'text.secondary'];
   }
   return [null, null];
 }

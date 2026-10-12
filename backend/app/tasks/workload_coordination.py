@@ -31,6 +31,17 @@ from .workload_fence import LeaseLost, workload_fence
 
 EXTERNAL_FETCH_GLOBAL_KEY = "external_fetch_global"
 MARKET_WORKLOAD_PREFIX = "market_workload"
+PIPELINE_CHAIN_PREFIX = "pipeline_chain"
+# Held from dispatch until the daily pipeline chain's last stage or first
+# failure. Fixed from dispatch and never renewed: one concurrency-1 worker
+# serves every market's data-fetch queue (start_celery.sh), so a stage can
+# wait many hours before it starts and nothing could renew the claim in
+# time. 20h covers normal waits, and a claim no release frees (a stage
+# revoked from the console fires no errback) still expires before the
+# market's next scheduled run, 24h after this one. It does not cover an
+# unbounded backlog (a chain still queued after 20h can be overlapped); a
+# liveness-based claim would (#605).
+PIPELINE_CHAIN_TTL_SECONDS = 20 * 3600
 COORDINATION_WAIT_MAX_RETRIES = 10_000
 logger = logging.getLogger(__name__)
 _SERIALIZED_MARKET_WORKLOAD_DISABLED: ContextVar[bool] = ContextVar(
@@ -49,6 +60,10 @@ return 0
 
 def _market_workload_key(market: Optional[str]) -> str:
     return f"{MARKET_WORKLOAD_PREFIX}:{market_suffix(market)}"
+
+
+def _pipeline_chain_key(market: Optional[str]) -> str:
+    return f"{PIPELINE_CHAIN_PREFIX}:{market_suffix(market)}"
 
 
 def _parse_task_id(lock_value: bytes) -> Optional[str]:
@@ -158,6 +173,24 @@ class WorkloadCoordination:
 
     def get_market_workload_holder(self, market: Optional[str]) -> Optional[Dict[str, Any]]:
         return self._holder(_market_workload_key(market))
+
+    def claim_pipeline_chain(self, token: str, *, market: Optional[str]) -> bool:
+        """Claim the market's daily pipeline chain; False if one already holds it.
+
+        The per-stage market workload lease is free between stages, so it
+        cannot stop a second chain; this lease spans the whole chain.
+        """
+        value = f"daily_market_pipeline:{token}:{datetime.now(timezone.utc).isoformat()}"
+        return bool(
+            self.redis.set(_pipeline_chain_key(market), value, nx=True, ex=PIPELINE_CHAIN_TTL_SECONDS)
+        )
+
+    def release_pipeline_chain(self, token: str, *, market: Optional[str]) -> bool:
+        """Release only if this token still holds it (never a newer chain's)."""
+        return self._release(_pipeline_chain_key(market), token)
+
+    def get_pipeline_chain_holder(self, market: Optional[str]) -> Optional[Dict[str, Any]]:
+        return self._holder(_pipeline_chain_key(market))
 
     def get_market_workload_holders(self) -> dict[str, Optional[Dict[str, Any]]]:
         holders: dict[str, Optional[Dict[str, Any]]] = {}
