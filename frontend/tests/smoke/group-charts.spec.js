@@ -35,7 +35,6 @@ async function installGroupChartFixtures(page) {
   const batchRequests = [];
   const json = (route, body, status = 200) =>
     route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
-  await page.route(/fonts\.(googleapis|gstatic)\.com/, (route) => route.abort());
   await page.route('**/api/v1/**', async (route) => {
     const { pathname } = new URL(route.request().url());
     if (pathname.endsWith('/app-capabilities')) {
