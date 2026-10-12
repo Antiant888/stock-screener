@@ -134,6 +134,21 @@ COMPOSE=(
 cd "$ROOT_DIR"
 echo "Pulling images ($TAG)..."
 "${COMPOSE[@]}" pull
+
+# Compose leaves containers of now-inactive profiles running (even with
+# --remove-orphans), so remove per-market workers for markets dropped from
+# ENABLED_MARKETS. Other services, e.g. a manually started db-backup, stay.
+enabled_services="$("${COMPOSE[@]}" config --services | grep -v '=' || true)"
+stale=()
+while read -r container service; do
+  [[ "$service" =~ ^celery-(marketjobs|userscans)-[a-z]+$ ]] || continue
+  grep -qxF "$service" <<< "$enabled_services" || stale+=("$container")
+done < <(docker ps -a --filter "label=com.docker.compose.project.working_dir=$ROOT_DIR" \
+  --format '{{.ID}} {{.Label "com.docker.compose.service"}}')
+if (( ${#stale[@]} > 0 )); then
+  echo "Removing workers for markets no longer in ENABLED_MARKETS..."
+  docker rm -f "${stale[@]}" >/dev/null
+fi
 echo "Starting the stack and waiting for every service to be healthy (up to ${WAIT_TIMEOUT}s)..."
 "${COMPOSE[@]}" up -d --no-build --wait --wait-timeout "$WAIT_TIMEOUT"
 

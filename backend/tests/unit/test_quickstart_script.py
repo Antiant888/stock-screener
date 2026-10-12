@@ -20,6 +20,8 @@ if [[ "$1" == "manifest" ]]; then
 fi
 if [[ "$1 $2 $3" == "compose version --short" ]]; then echo "${FAKE_COMPOSE_VERSION:-2.29.1}"; fi
 if [[ "$1" == "compose" && " $* " == *" up "* ]]; then exit "${FAKE_UP_EXIT:-0}"; fi
+if [[ "$1" == "compose" && " $* " == *" config --services "* ]]; then printf '%b\\n' "${FAKE_SERVICES:-backend}"; fi
+if [[ "$1" == "ps" ]]; then [[ -z "${FAKE_CONTAINERS:-}" ]] || printf '%b\\n' "$FAKE_CONTAINERS"; fi
 exit 0
 """
 FAKE_SUDO = """#!/usr/bin/env bash
@@ -166,6 +168,32 @@ def test_env_file_is_private_before_secrets_are_written(run):
     modes = [line.split()[1] for line in calls.splitlines() if line.startswith("env-mode ")]
     assert modes[0] == "0o600"
     assert oct(run.env_file.stat().st_mode & 0o777) == "0o600"
+
+
+def test_rerun_removes_workers_for_markets_no_longer_enabled(run):
+    # Compose keeps containers of now-inactive profiles running, even with
+    # --remove-orphans, so narrowing ENABLED_MARKETS left the old workers up.
+    _, _, calls = run(
+        FAKE_SERVICES="backend\\ncelery-userscans\\ncelery-marketjobs-us\\ncelery-userscans-us",
+        FAKE_CONTAINERS=(
+            "c1 backend\\nc2 celery-marketjobs-us\\nc3 celery-marketjobs-hk\\n"
+            "c4 celery-userscans-hk\\nc5 db-backup\\nc6 celery-userscans"
+        ),
+    )
+
+    assert f"label=com.docker.compose.project.working_dir={REPO_ROOT}" in calls
+    removed = [line for line in calls.splitlines() if line.startswith("docker rm ")]
+    assert removed == ["docker rm -f c3 c4"]
+    assert calls.index("docker rm -f c3 c4") < calls.index(" up -d ")
+
+
+def test_rerun_with_the_same_markets_removes_nothing(run):
+    _, _, calls = run(
+        FAKE_SERVICES="backend\\ncelery-marketjobs-us",
+        FAKE_CONTAINERS="c1 backend\\nc2 celery-marketjobs-us",
+    )
+
+    assert "docker rm " not in calls
 
 
 def test_explicit_tag_wins(run):
