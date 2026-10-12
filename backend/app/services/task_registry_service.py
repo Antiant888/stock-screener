@@ -13,6 +13,7 @@ from celery.result import AsyncResult
 from sqlalchemy import desc, inspect
 from sqlalchemy.orm import Session
 
+from ..celery_app import celery_app
 from ..database import SessionLocal
 from ..models.task_execution import TaskExecutionHistory
 from ..config import settings
@@ -137,13 +138,29 @@ _REGISTRY_FUNCTIONS = frozenset(info['task_function'] for info in SCHEDULED_TASK
 _CELERY_STATE_FOR = {'completed': 'SUCCESS', 'failed': 'FAILURE', 'cancelled': 'REVOKED'}
 _STATUS_FOR_CELERY_STATE = {state: status for status, state in _CELERY_STATE_FOR.items()}
 _FINISHED_STATUSES = frozenset(_CELERY_STATE_FOR)
-# Matches celery_app's global task_time_limit (a running task older than this
-# has been killed) and result_expires (Celery no longer knows its outcome), so
-# a run still open past it, running or still queued, will never be closed.
-RUN_LOST_AFTER = timedelta(seconds=86400)
+# Celery kills a task at the global task_time_limit and stores FAILURE for
+# it; the margin leaves the reconcile job time to record that. A run still
+# open after this was never started, or its worker died without a stored
+# outcome (or ran under --pool=solo, where time limits are not enforced), so
+# its result is unknown.
+RUN_LOST_AFTER = timedelta(seconds=celery_app.conf.task_time_limit) + timedelta(hours=1)
 # Callers that tag the origin kwarg outside these dispatch the task ad hoc
 # (e.g. per-attachment social refreshes), not as the scheduled job.
 _TRACKED_ORIGINS = frozenset({'manual', 'scheduled'})
+
+
+def _result_summary(result: Any, task_id: str) -> Optional[Dict[str, Any]]:
+    """A task's dict result as JSON, or None (PostgreSQL JSON rejects NaN).
+
+    Dropping the summary must never also drop the run's outcome.
+    """
+    if not isinstance(result, dict):
+        return None
+    try:
+        return json.loads(json.dumps(result, default=str, allow_nan=False))
+    except ValueError:
+        logger.warning("Dropping non-JSON result summary for run %s", task_id)
+        return None
 
 
 def _registry_entry_for(task_function: str, kwargs: Dict[str, Any]) -> Optional[str]:
@@ -209,13 +226,7 @@ def record_task_run(
                 started_at = _coerce_utc_datetime(row.started_at)
                 if started_at:
                     row.duration_seconds = (now - started_at).total_seconds()
-                if isinstance(result, dict):
-                    try:
-                        # PostgreSQL JSON rejects NaN; losing the summary must
-                        # not also lose the outcome.
-                        row.result_summary = json.loads(json.dumps(result, default=str, allow_nan=False))
-                    except ValueError:
-                        logger.warning("Dropping non-JSON result summary for %s run %s", task_name, task_id)
+                row.result_summary = _result_summary(result, task_id)
                 if error:
                     row.error_message = error
             db.commit()
@@ -311,11 +322,12 @@ class TaskRegistryService:
             if last_run:
                 status = last_run.status
                 started_at = _coerce_utc_datetime(last_run.started_at)
-                if status not in _FINISHED_STATUSES and started_at:
-                    if datetime.now(timezone.utc) - started_at > RUN_LOST_AFTER:
-                        status = 'lost'
-                    else:
-                        status = self._reconcile_open_run(db, last_run)
+                if (
+                    status not in _FINISHED_STATUSES
+                    and started_at
+                    and datetime.now(timezone.utc) - started_at > RUN_LOST_AFTER
+                ):
+                    status = 'lost'
                 task_data['last_run'] = {
                     'id': last_run.id,
                     'task_id': last_run.task_id,
@@ -331,24 +343,41 @@ class TaskRegistryService:
 
         return result
 
-    def _reconcile_open_run(self, db: Session, run: TaskExecutionHistory) -> str:
-        """Close an open run from Celery's stored outcome when no signal did.
+    def reconcile_open_runs(self, db: Session) -> int:
+        """Close open runs from Celery's stored outcome when no signal did.
 
         A hard time limit or a lost worker kills the child before
         task_postrun, and revokes are announced in the worker's parent
         process; Celery still stores FAILURE/REVOKED in the result backend.
+        Runs in a worker (see task_history_tasks) because the result backend
+        retries for minutes while Redis is down. Returns the number closed.
         """
-        try:
-            outcome = AsyncResult(run.task_id)
-            status = _STATUS_FOR_CELERY_STATE.get(outcome.state)
-            error = str(outcome.result) if status == 'failed' else None
-        except Exception:
-            logger.warning("Could not read Celery state for run %s", run.task_id, exc_info=True)
-            return run.status
-        if status is None:
-            return run.status
-        self._update_execution_completed(db, run.task_id, status, error=error)
-        return status
+        cutoff = datetime.now(timezone.utc) - RUN_LOST_AFTER
+        open_runs = db.query(TaskExecutionHistory).filter(
+            TaskExecutionHistory.status.in_(('queued', 'running')),
+            TaskExecutionHistory.task_id.isnot(None),
+            TaskExecutionHistory.started_at >= cutoff,
+        ).all()
+        closed = 0
+        for run in open_runs:
+            task_id = run.task_id
+            try:
+                outcome = AsyncResult(task_id)
+                status = _STATUS_FOR_CELERY_STATE.get(outcome.state)
+                if status is None:
+                    continue
+                self._update_execution_completed(
+                    db,
+                    task_id,
+                    status,
+                    result=outcome.result if status == 'completed' else None,
+                    error=str(outcome.result) if status == 'failed' else None,
+                )
+                closed += 1
+            except Exception:
+                db.rollback()
+                logger.warning("Could not read Celery state for run %s", task_id, exc_info=True)
+        return closed
 
     def trigger_task(self, task_name: str, db: Session) -> Dict:
         """
@@ -443,8 +472,11 @@ class TaskRegistryService:
             Dictionary with current status and progress
         """
         # The worker's task signals record finished runs; trust that first.
+        # A completed run whose summary was dropped (non-JSON result) still
+        # asks Celery, since callers such as the Options page need the result.
         run = db.query(TaskExecutionHistory).filter_by(task_id=task_id).first()
-        if run is not None and run.status in _FINISHED_STATUSES:
+        run_finished = run is not None and run.status in _FINISHED_STATUSES
+        if run_finished and not (run.status == 'completed' and run.result_summary is None):
             response = {
                 'task_id': task_id,
                 'task_name': task_name,
@@ -488,14 +520,18 @@ class TaskRegistryService:
             response['total'] = result.info.get('total', 0)
         elif celery_state == 'SUCCESS':
             response['result'] = result.result
-            # Update database record
-            self._update_execution_completed(db, task_id, 'completed', result.result)
         elif celery_state == 'FAILURE':
             response['error'] = str(result.result) if result.result else 'Unknown error'
-            # Update database record
-            self._update_execution_completed(db, task_id, 'failed', error=str(result.result))
-        elif celery_state == 'REVOKED':
-            self._update_execution_completed(db, task_id, 'cancelled')
+
+        # Fallback writer for runs whose signal write was lost.
+        if not run_finished and status in _FINISHED_STATUSES:
+            self._update_execution_completed(
+                db,
+                task_id,
+                status,
+                result=result.result if status == 'completed' else None,
+                error=str(result.result) if status == 'failed' else None,
+            )
 
         return response
 
@@ -521,7 +557,7 @@ class TaskRegistryService:
                 if started_at and completed_at:
                     execution.duration_seconds = (completed_at - started_at).total_seconds()
             if result:
-                execution.result_summary = result
+                execution.result_summary = _result_summary(result, task_id)
             if error:
                 execution.error_message = error
             db.commit()

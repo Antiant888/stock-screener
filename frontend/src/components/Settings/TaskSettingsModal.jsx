@@ -65,8 +65,9 @@ function getStatusDisplay(status) {
     case 'cancelled':
       return { color: 'default', icon: null, label: 'Cancelled' };
     case 'lost':
-      // Still open past Celery's 24h hard limit: the worker died mid-run.
-      return { color: 'error', icon: <ErrorIcon fontSize="small" />, label: 'Lost' };
+      // No outcome recorded within Celery's 24h hard limit: never picked up,
+      // or the worker died without a stored result. Not known to have failed.
+      return { color: 'warning', icon: null, label: 'Unknown' };
     default:
       return { color: 'default', icon: null, label: status || 'Unknown' };
   }

@@ -98,6 +98,7 @@ celery_app = Celery(
         'app.tasks.telemetry_tasks',  # Weekly telemetry governance audit (asia.10.4)
         'app.tasks.runtime_bootstrap_tasks',  # Local-default first-run bootstrap orchestration
         'app.tasks.static_export_tasks',  # Scheduled static-data bundle export
+        'app.tasks.task_history_tasks',  # Closes runs no task signal reported
         'app.interfaces.tasks.feature_store_tasks',  # Daily feature snapshot
         'app.interfaces.tasks.options_analytics_tasks',  # US options follow-on
         'app.interfaces.tasks.cot_tasks',  # Global CFTC positioning refresh
@@ -333,14 +334,17 @@ def _graceful_db_shutdown(sender=None, **kwargs):
         _logger.warning("Worker shutdown DB cleanup failed (non-fatal): %s", e)
 
 
-# RETRY is left out: the row stays running and the retry's prerun restarts it.
-_POSTRUN_STATUS = {'SUCCESS': 'completed', 'FAILURE': 'failed', 'REVOKED': 'cancelled'}
+# task_postrun reports SUCCESS, FAILURE, RETRY, REJECTED or IGNORED. RETRY is
+# left out: the row stays running and the retry's prerun restarts it. No
+# registry task raises Reject/Ignore; if one did, its run would read as lost.
+_POSTRUN_STATUS = {'SUCCESS': 'completed', 'FAILURE': 'failed'}
 
 
 # Scheduled-task run history is written here, in the task's own process, so it
 # is correct for Beat runs and does not depend on a browser polling the status
 # endpoint. Outcomes no signal reports here (hard time limit, lost worker,
-# revoke) are read back from the result backend by TaskRegistryService.
+# revoke) are read back from the result backend by the task-run-reconcile
+# Beat job.
 @task_prerun.connect
 def _record_registry_run_started(sender=None, task_id=None, kwargs=None, **_):
     from .services.task_registry_service import record_task_run
@@ -762,6 +766,14 @@ def _build_cache_warmup_beat_schedule(enabled_markets: list[str]) -> dict:
             'task': 'app.tasks.economic_taxonomy_tasks.calculate_economic_theme_metrics',
             'schedule': crontab(minute='25,55'),
             'options': {'queue': 'celery'},
+        },
+
+        # Closes scheduled-task runs killed by a hard time limit or a lost
+        # worker, or revoked, from Celery's stored result (no signal fires).
+        'task-run-reconcile': {
+            'task': 'app.tasks.task_history_tasks.reconcile_task_runs',
+            'schedule': 300.0,
+            'options': {'queue': 'celery', 'expires': 290},
         },
 
         # Weekly telemetry governance audit (bead asia.10.4).

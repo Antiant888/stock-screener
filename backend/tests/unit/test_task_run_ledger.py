@@ -19,6 +19,7 @@ from app.services.task_registry_service import TaskRegistryService, record_task_
 PIPELINE = "app.tasks.daily_market_pipeline_tasks.queue_daily_market_pipeline"
 CLEANUP = "app.tasks.cache_tasks.cleanup_orphaned_scans"
 SOCIAL = "app.interfaces.tasks.social_signal_tasks.refresh_social_signals"
+OPTIONS = "app.interfaces.tasks.options_analytics_tasks.refresh_options_analytics"
 
 
 class _Task:
@@ -139,7 +140,7 @@ def test_recording_failure_is_logged_not_raised(monkeypatch, caplog):
         ("REVOKED", None, "cancelled", None),
     ],
 )
-def test_open_run_is_closed_from_celery_result_when_no_signal_fired(
+def test_reconcile_closes_open_runs_from_the_celery_result(
     db_session, celery_state, result, expected_status, expected_error,
 ):
     # A hard time limit or a lost worker kills the child before task_postrun,
@@ -149,21 +150,60 @@ def test_open_run_is_closed_from_celery_result_when_no_signal_fired(
 
     with patch("app.services.task_registry_service.AsyncResult") as async_result:
         async_result.return_value = SimpleNamespace(state=celery_state, result=result)
-        last_run = _last_run(db_session, "weekly-full-refresh")
+        assert TaskRegistryService().reconcile_open_runs(db_session) == 1
 
-    assert last_run["status"] == expected_status
     [row] = _rows(db_session, task_id)
     assert row.status == expected_status
     assert row.error_message == expected_error
 
 
-def test_open_run_stays_open_while_celery_reports_it_running(db_session):
+def test_reconcile_leaves_runs_celery_still_reports_open(db_session):
     task_id = str(uuid4())
     _start("app.tasks.cache_tasks.weekly_full_refresh", task_id, {"market": "US"})
 
     with patch("app.services.task_registry_service.AsyncResult") as async_result:
         async_result.return_value = SimpleNamespace(state="STARTED", result=None)
+        assert TaskRegistryService().reconcile_open_runs(db_session) == 0
+
+    [row] = _rows(db_session, task_id)
+    assert row.status == "running"
+
+
+def test_reconcile_keeps_going_when_one_lookup_fails(db_session, caplog):
+    broken, closable = str(uuid4()), str(uuid4())
+    _start("app.tasks.cache_tasks.weekly_full_refresh", broken, {"market": "US"})
+    _start(CLEANUP, closable, {})
+
+    def async_result(task_id):
+        if task_id == broken:
+            raise ConnectionError("redis down")
+        return SimpleNamespace(state="SUCCESS", result={"deleted": 3})
+
+    with patch("app.services.task_registry_service.AsyncResult", side_effect=async_result):
+        assert TaskRegistryService().reconcile_open_runs(db_session) == 1
+
+    assert _rows(db_session, closable)[0].status == "completed"
+    assert "Could not read Celery state" in caplog.text
+
+
+def test_reconcile_runs_in_a_worker_on_a_beat_schedule():
+    from app.celery_app import celery_app
+
+    entry = celery_app.conf.beat_schedule["task-run-reconcile"]
+    assert entry["task"] == "app.tasks.task_history_tasks.reconcile_task_runs"
+    assert entry["options"]["queue"] == "celery"
+    assert "app.tasks.task_history_tasks" in celery_app.conf.include
+
+
+def test_task_list_is_read_only_and_never_waits_on_the_result_backend(db_session):
+    # The result backend retries for minutes when Redis is down; the list is
+    # polled by the UI and the copilot, so it must only read the database.
+    task_id = str(uuid4())
+    _start("app.tasks.cache_tasks.weekly_full_refresh", task_id, {"market": "US"})
+
+    with patch("app.services.task_registry_service.AsyncResult") as async_result:
         assert _last_run(db_session, "weekly-full-refresh")["status"] == "running"
+    async_result.assert_not_called()
 
 
 def test_manual_trigger_writes_its_row_before_dispatch_and_worker_updates_it(db_session):
@@ -218,21 +258,68 @@ def test_dispatch_error_does_not_overwrite_a_run_the_worker_already_started(db_s
     assert row.status == "running"
 
 
-def test_run_open_longer_than_celery_hard_time_limit_reads_as_lost(db_session):
+def _open_cleanup_run(db_session, *, age):
     db_session.add(TaskExecutionHistory(
         task_name="monthly-price-data-cleanup",
         task_function="app.tasks.cache_tasks.cleanup_old_price_data",
         task_id=str(uuid4()),
         status="running",
-        started_at=datetime.now(timezone.utc) - timedelta(hours=25),
+        started_at=datetime.now(timezone.utc) - age,
         triggered_by="auto",
     ))
     db_session.commit()
 
+
+def test_run_killed_at_the_hard_time_limit_is_still_reconcilable_not_lost(db_session):
+    # Celery stores FAILURE when it kills a task at task_time_limit (24h), so
+    # the run must stay open a little past it for reconcile to record that.
+    _open_cleanup_run(db_session, age=timedelta(hours=24, minutes=30))
+
+    assert _last_run(db_session, "monthly-price-data-cleanup")["status"] == "running"
+
     with patch("app.services.task_registry_service.AsyncResult") as async_result:
-        assert _last_run(db_session, "monthly-price-data-cleanup")["status"] == "lost"
-    # Past Celery's result expiry there is nothing left to ask.
+        async_result.return_value = SimpleNamespace(state="FAILURE", result=TimeLimitExceeded(86400))
+        assert TaskRegistryService().reconcile_open_runs(db_session) == 1
+
+
+def test_run_open_past_the_hard_time_limit_and_margin_reads_as_lost(db_session):
+    _open_cleanup_run(db_session, age=timedelta(hours=26))
+
+    assert _last_run(db_session, "monthly-price-data-cleanup")["status"] == "lost"
+    with patch("app.services.task_registry_service.AsyncResult") as async_result:
+        assert TaskRegistryService().reconcile_open_runs(db_session) == 0
     async_result.assert_not_called()
+
+
+def test_status_endpoint_falls_back_to_celery_when_the_ledger_lost_the_result(db_session):
+    # The Options page needs result.status; a NaN-bearing result is stored
+    # without its summary, so the status endpoint must still return it.
+    task_id = str(uuid4())
+    _start(OPTIONS, task_id, {"market": "US"})
+    _finish(OPTIONS, task_id, {"market": "US"}, state="SUCCESS",
+            retval={"status": "published", "coverage": float("nan")})
+
+    with patch("app.services.task_registry_service.AsyncResult") as async_result:
+        async_result.return_value = SimpleNamespace(
+            state="SUCCESS", result={"status": "published"}, info=None,
+        )
+        status = TaskRegistryService().get_task_status("daily-us-options-analytics", task_id, db_session)
+
+    assert status["status"] == "completed"
+    assert status["result"] == {"status": "published"}
+
+
+def test_status_fallback_write_survives_a_nan_result(db_session):
+    task_id = str(uuid4())
+    _start(CLEANUP, task_id, {})
+
+    with patch("app.services.task_registry_service.AsyncResult") as async_result:
+        async_result.return_value = SimpleNamespace(state="SUCCESS", result={"ratio": float("nan")}, info=None)
+        status = TaskRegistryService().get_task_status("weekly-orphaned-scan-cleanup", task_id, db_session)
+
+    assert status["status"] == "completed"
+    [row] = _rows(db_session, task_id)
+    assert (row.status, row.result_summary) == ("completed", None)
 
 
 def test_status_endpoint_reads_finished_runs_from_the_ledger(db_session):
