@@ -199,7 +199,7 @@ When the tasks feature is enabled, **Operations** has a **Scheduled jobs** secti
 
 Each job shows its schedule, last run time and duration, and status. Status comes from the server's run history, which the worker writes, so Beat runs show up as well as manual ones. A failed run shows its error message. **Unknown** means no outcome was recorded within about 25 hours (Celery's 24-hour hard time limit plus a margin); it is not counted as a failure.
 
-**Run now** queues the job, and it then appears in the job console. Run is unavailable while the job is running or was queued in the last 10 minutes. A run queued for longer than that is marked **Not picked up** (for example, a lost broker message or no worker on its queue) and can be started again. On phones, the section shows one card per job. Deployments without task support do not show the section.
+**Run now** queues the job. The job console shows it once a worker starts it, and also while it waits if its queue is one the console reads (the general `celery` queue and the data-fetch, market-job, and user-scan queues). Social Signals refreshes wait on `social_ingestion`, which the console does not read. Run is unavailable while the job is running or was queued in the last 10 minutes. A run queued for longer than that is marked **Not picked up** (for example, a lost broker message or no worker on its queue) and can be started again. On phones, the section shows one card per job. Deployments without task support do not show the section.
 
 ## Options Command Center Operations
 

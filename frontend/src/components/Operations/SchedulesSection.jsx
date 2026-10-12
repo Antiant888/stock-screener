@@ -183,7 +183,8 @@ function JobsTable({ tasks, pendingNames, onRun }) {
 // Phones: one card per job instead of a five-column table (matches #577).
 function JobCards({ tasks, pendingNames, onRun }) {
   return (
-    <Box component="ul" aria-label="Scheduled jobs" sx={{ listStyle: 'none', p: 0, m: 0 }}>
+    // role="list": WebKit drops list semantics from a ul styled list-style: none.
+    <Box component="ul" role="list" aria-label="Scheduled jobs" sx={{ listStyle: 'none', p: 0, m: 0 }}>
       {tasks.map((task) => (
         <Box
           component="li"
@@ -276,7 +277,7 @@ export default function SchedulesSection() {
         Scheduled jobs
       </Typography>
       <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
-        Beat schedules and their last run. Run now queues the job immediately; it then appears in the job console above.
+        Beat schedules and their last run. Run now queues the job right away; once a worker starts it, it shows in the job console above.
       </Typography>
       {error && (
         <Alert severity="error" sx={{ mb: 1.5 }} onClose={() => setError(null)}>
