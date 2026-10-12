@@ -609,6 +609,24 @@ describe('ResultsTable', () => {
       expect(screen.getByRole('listitem')).toHaveAttribute('aria-setsize', '1');
     });
 
+    it('keeps the scan status or rating as the card badge without opportunity state', () => {
+      const ipoRow = {
+        ...fullSeRow,
+        symbol: 'NEWCO',
+        scan_mode: 'listing_only',
+        data_status: 'insufficient_history',
+        is_scannable: false,
+      };
+      const ratedRow = { ...fullSeRow, symbol: 'RATED', rating: 'Strong Buy' };
+      renderWithProviders(
+        <ResultsTable {...defaultProps} showOpportunityState={false} results={[ipoRow, ratedRow]} />,
+      );
+
+      const [ipoCard, ratedCard] = screen.getAllByRole('listitem');
+      expect(within(ipoCard).getByText('New IPO')).toBeInTheDocument();
+      expect(within(ratedCard).getByText('Strong Buy')).toBeInTheDocument();
+    });
+
     it('keeps an active sort that the picker does not list', () => {
       renderWithProviders(<ResultsTable {...defaultProps} sortBy="beta" />);
 

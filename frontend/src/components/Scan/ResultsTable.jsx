@@ -745,6 +745,32 @@ function ResultsTable({
     />
   );
 
+  // One badge per card, most explanatory first: the scan status says why a
+  // card can't open (e.g. "New IPO"), then the action state, then the rating
+  // the desktop table shows in its last column.
+  const mobileBadge = (row) => {
+    const status = getStatusChipProps(row);
+    if (status) {
+      return <Chip label={status.label} color={status.color} title={status.title} size="small" sx={{ height: 18, fontSize: 10 }} />;
+    }
+    if (showOpportunityState) {
+      return (
+        <ActionStateBadge
+          state={row.action_state}
+          onClick={row.opportunity_state
+            ? (event) => {
+              event.stopPropagation();
+              handleOpenOpportunity(row);
+            }
+            : undefined}
+        />
+      );
+    }
+    return row.rating
+      ? <Chip label={row.rating} color={getRatingColor(row.rating)} variant="outlined" size="small" sx={{ height: 18, fontSize: 10 }} />
+      : null;
+  };
+
   if (isMobile) {
     const sortOptions = !sortBy || MOBILE_SORT_FIELDS.some(([id]) => id === sortBy)
       ? MOBILE_SORT_FIELDS
@@ -797,17 +823,7 @@ function ResultsTable({
                 >
                   <StockRowCard
                     row={row}
-                    badge={showOpportunityState ? (
-                      <ActionStateBadge
-                        state={row.action_state}
-                        onClick={row.opportunity_state
-                          ? (event) => {
-                            event.stopPropagation();
-                            handleOpenOpportunity(row);
-                          }
-                          : undefined}
-                      />
-                    ) : null}
+                    badge={mobileBadge(row)}
                     onOpen={chartEnabled ? () => handleRowClick(row.symbol) : null}
                   />
                 </Box>
