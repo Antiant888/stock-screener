@@ -133,6 +133,16 @@ def test_attested_identity_wins_over_a_derived_one(db_session):
     assert SocialTickerResolver(db_session).company_id_for(row) is None
 
 
+def test_derived_identity_never_reuses_an_attested_company_id(db_session):
+    from app.services.social_ticker_resolver import SocialTickerResolver
+    row = _named(db_session, "CEG", "US", "Constellation Energy Corp")
+    _named(db_session, "OTHR", "US", "Other Issuer Inc")
+    resolver = SocialTickerResolver(db_session, verified_company_ids={"OTHR": f"security:{row.id}"})
+    result = resolver.resolve("$CEG")
+    assert result.company_id is None and not result.company_count_eligible
+    assert resolver.company_id_for(row) is None
+
+
 def test_recorded_identity_policy_names_single_listing_derivation(db_session):
     from app.services.social_company_identity_service import SocialCompanyIdentityService
     assert SocialCompanyIdentityService(db_session).read().policy_version == (

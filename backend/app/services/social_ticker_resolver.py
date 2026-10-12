@@ -56,7 +56,7 @@ class SocialTickerResolver:
             raise ValueError("invalid_verified_company_id")
         self.security_kinds = MappingProxyType({"SPY": "broad_etf", "QQQ": "broad_etf",
             "SMH": "thematic_etf", "REMX": "thematic_etf", **(security_kinds or {})})
-        self._listing_census = None  # (loaded markets, repeated names), read once
+        self._listing_census = None  # (loaded markets, repeated names, US name openings), read once
 
     def resolve(self, raw_token: str, explicit_market: str | None = None) -> TickerResolution:
         def unresolved(reason):
@@ -96,7 +96,7 @@ class SocialTickerResolver:
                 return unresolved("conflicting_market")
             kind = self.security_kinds.get(canonical, "stock" if security.is_common_stock else "macro")
             company_id = self.company_ids.get(canonical)
-            derived = company_id is None and kind == "stock" and self._single_listing(security)
+            derived = self._derived_id(security) if company_id is None and kind == "stock" else None
             related = ()
             if company_id:
                 candidates = [symbol for symbol, identity in self.company_ids.items()
@@ -106,7 +106,7 @@ class SocialTickerResolver:
                         StockUniverse.symbol.in_(candidates), StockUniverse.active_filter(),
                         StockUniverse.market.in_(SUPPORTED_MARKETS)).order_by(StockUniverse.symbol).all())
             if derived:
-                company_id = f"security:{security.id}"
+                company_id = derived
             reasons = (("company_identity_single_listing",) if derived
                        else () if company_id else ("company_identity_unknown",))
             return TickerResolution(raw_token, canonical, security.market, str(security.id), "resolved",
@@ -120,7 +120,14 @@ class SocialTickerResolver:
             return attested
         kind = self.security_kinds.get(security.symbol, "stock" if security.is_common_stock else "macro")
         eligible = kind == "stock" and security.is_active and security.market in SUPPORTED_MARKETS
-        return f"security:{security.id}" if eligible and self._single_listing(security) else None
+        return self._derived_id(security) if eligible else None
+
+    def _derived_id(self, security) -> str | None:
+        candidate = f"security:{security.id}"
+        # An attested id may already use this text; sharing it would merge two issuers.
+        if candidate in self.company_ids.values():
+            return None
+        return candidate if self._single_listing(security) else None
 
     @staticmethod
     def _normalized_name(value) -> str:
