@@ -192,6 +192,20 @@ async def test_group_constituents_without_an_rs_rating_come_last(use_fake_data):
     assert [s["symbol"] for s in detail["group"]["stocks"]] == ["CCC", "AAA", "NEW"]
 
 
+async def test_group_constituents_with_equal_rs_keep_the_higher_composite_first(use_fake_data):
+    # group_detail_payloads.py publishes constituents by (rs_rating, composite_score) desc;
+    # live groups have thousands of equal-RS neighbours, so ties decide who makes the limit.
+    stocks = use_fake_data.page("US", "groups")["payload"]["group_details"]["Semiconductors"]["stocks"]
+    stocks[:] = [
+        {"symbol": "AAB", "rs_rating": 95.0, "composite_score": 40.0},
+        {"symbol": "ZZZ", "rs_rating": 95.0, "composite_score": 90.0},
+        {"symbol": "MMM", "rs_rating": 95.0, "composite_score": None},
+    ]
+
+    detail = await call("group_rankings", market="US", group="Semiconductors", limit=2)
+    assert [s["symbol"] for s in detail["group"]["stocks"]] == ["ZZZ", "AAB"]
+
+
 async def test_run_screen_honours_preset_groups_like_get_stock(use_fake_data):
     scan, _ = use_fake_data.scan("US")
     grouped = copy.deepcopy(scan["preset_screens"][0])  # minervini: AAA and BBB pass

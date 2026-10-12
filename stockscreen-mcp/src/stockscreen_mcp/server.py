@@ -278,6 +278,13 @@ def market_overview(market: Market = "US") -> dict[str, Any]:
     }
 
 
+def _constituent_key(stock: dict[str, Any]) -> tuple[float, float]:
+    """backend/app/services/group_detail_payloads.py constituent_sort_key: (rs, composite),
+    missing values as -inf, so unrated stocks go last and RS ties keep the stronger composite."""
+    rs, composite = stock.get("rs_rating"), stock.get("composite_score")
+    return (-math.inf if rs is None else rs, -math.inf if composite is None else composite)
+
+
 def _group_summary(g: dict[str, Any]) -> dict[str, Any]:
     return {
         "rank": g.get("rank"),
@@ -331,8 +338,7 @@ def group_rankings(
         raise ToolError(f"Unknown group {group!r}. Close matches: {', '.join(close) or 'none'}.")
     detail = details[name]
     history = sorted(detail.get("history", []), key=lambda h: h["date"], reverse=True)
-    # Unrated constituents (new listings) go last, as in the published payload.
-    stocks = sort_rows(detail.get("stocks", []), "rs_rating", descending=True, site_order=False)
+    stocks = sorted(detail.get("stocks", []), key=_constituent_key, reverse=True)
     result["group"] = {
         "group": name,
         "rank": detail.get("current_rank"),
