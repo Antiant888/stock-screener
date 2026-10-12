@@ -1523,3 +1523,12 @@ def test_checkpointed_export_uploads_data_before_manifest_then_fails() -> None:
     fail = _build_market_step("Fail after price-stage checkpoint")
     assert fail["if"] == "${{ steps.export-market.outputs.price_checkpointed == 'true' }}"
     assert "exit 1" in fail["run"] and "Re-run failed jobs" in fail["run"]
+
+
+def test_publisher_renders_seo_pages_into_the_built_site() -> None:
+    steps = [step.get("name") for step in _publish_workflow()["jobs"]["build"]["steps"]]
+    # After the build (dist exists) and before the upload (pages ship).
+    assert steps.index("Build static frontend") < steps.index("Render search pages") < steps.index("Upload Pages artifact")
+    run = _publish_step("Render search pages")["run"]
+    assert "python3 scripts/render_seo_pages.py --dist frontend/dist" in run
+    assert "--site-url https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/" in run
