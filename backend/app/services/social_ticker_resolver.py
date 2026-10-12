@@ -2,9 +2,10 @@
 
 Company identity comes from an administrator attestation or, for a common stock
 with no sign of a second listing, from the listing itself. Signs of a second
-listing (a depositary-receipt name, a name repeated within the market such as
-share classes, HK while mainland listings are loaded) and fund names still need
-attestation.
+listing (depositary receipts, names repeated within a market such as share
+classes, HK secondary listings and RMB counters, HK names that open a US
+company's name, HK while mainland listings are loaded) and non-company names
+(funds, products without a company suffix) still need attestation.
 Double counting needs both listings counted, so excluding one side is enough.
 """
 import re
@@ -22,16 +23,27 @@ from app.services.multi_market_ticker_validator import TICKER_SHAPE_RE
 from app.services.security_master_service import security_master_resolver
 
 
-# Depositary receipts are second listings; funds are flagged as common stock in
-# the universe but are not companies.
-# ponytail: name heuristics also exclude some REITs ("Realty Trust"); those
-# keep needing attestation, as before.
-_NOT_SINGLE_COMPANY = re.compile(
-    r"\b(adrs?|ads|depositary|etfs?|etns?|etps?|fund|index|trust|portfolio|shares)\b|\b\d+x\b",
+# Signs that a listing is not one operating company's only line: depositary
+# receipts, funds and other products, when-issued lines.
+_NOT_A_COMPANY_LINE = re.compile(
+    r"\b(adrs?|ads|depositary|etfs?|etns?|etps?|fund|index|trust|portfolio|shares|when issued)\b|\b\d+x\b",
     re.IGNORECASE,
 )
+# The universe flags many brand-named ETFs as common stock ("ProShares Ultra
+# NVDA"), so outside HK a company name must end like a company.
+_COMPANY_SUFFIX = re.compile(
+    r"\b(inc|incorporated|corp|corporation|co|company|ltd|limited|plc|holdings?|hldgs|group|"
+    r"bancorp|bancorporation|bancshares|sa|s\.a|nv|n\.v|ag|se|llc|lp|l\.p|ab|asa|spa|oyj)\.?$",
+    re.IGNORECASE,
+)
+# HK names carry no suffix, but mark secondary listings (-S, -SW) and RMB
+# counters (-R, -WR, -SWR on 8xxxx codes).
+_HK_SECOND_LINE = re.compile(r"-(s|sw|r|wr|swr)$", re.IGNORECASE)
 # ponytail: A+H dual listings share no name text, so HK and mainland listings
 # derive no identity while the other market is loaded; ISIN links would lift this.
+# Name heuristics also exclude some real companies (REITs named "... Trust",
+# "Johnson & Johnson", "Morgan Stanley"); those keep needing attestation, as
+# before. Paired structures with unrelated names (BEP/BEPC) still derive two.
 _SAME_ISSUER_MARKETS = {"HK": "CN", "CN": "HK"}
 
 
@@ -107,20 +119,33 @@ class SocialTickerResolver:
         attested = self.company_ids.get(security.symbol)
         if attested:
             return attested
-        stock = security.is_common_stock and security.symbol not in self.security_kinds
-        return f"security:{security.id}" if stock and self._single_listing(security) else None
+        kind = self.security_kinds.get(security.symbol, "stock" if security.is_common_stock else "macro")
+        eligible = kind == "stock" and security.is_active and security.market in SUPPORTED_MARKETS
+        return f"security:{security.id}" if eligible and self._single_listing(security) else None
 
     def _single_listing(self, security) -> bool:
         name = (security.name or "").strip().lower()
-        if not name or _NOT_SINGLE_COMPANY.search(name):
+        if not name or _NOT_A_COMPANY_LINE.search(name):
             return False
         if self._listing_census is None:
             normalized = func.lower(func.trim(StockUniverse.name))
             rows = self.db.query(StockUniverse.market, normalized, func.count()).filter(
                 StockUniverse.active_filter()).group_by(StockUniverse.market, normalized).all()
-            self._listing_census = ({market for market, _, _ in rows},
-                                    {(market, value) for market, value, count in rows if value and count > 1})
-        markets, repeated = self._listing_census
-        if _SAME_ISSUER_MARKETS.get(security.market) in markets:
+            us_name_starts = set()
+            for market, value, _ in rows:
+                if market == "US" and value:
+                    words = value.split()
+                    us_name_starts.update(" ".join(words[:end]) for end in range(1, len(words) + 1))
+            self._listing_census = (
+                {market for market, _, _ in rows},
+                {(market, value) for market, value, count in rows if value and count > 1},
+                us_name_starts,
+            )
+        markets, repeated, us_name_starts = self._listing_census
+        if _SAME_ISSUER_MARKETS.get(security.market) in markets or (security.market, name) in repeated:
             return False
-        return (security.market, name) not in repeated
+        if security.market == "HK":
+            # An HK name that opens a US company's name is likely its other line (YUM CHINA).
+            rmb_counter = len(security.symbol.split(".")[0]) == 5
+            return not (rmb_counter or _HK_SECOND_LINE.search(name) or " ".join(name.split()) in us_name_starts)
+        return bool(_COMPANY_SUFFIX.search(name))

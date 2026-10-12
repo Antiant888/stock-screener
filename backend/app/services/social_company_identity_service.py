@@ -1,5 +1,7 @@
 """Administrator-attested issuer mappings; never inferred or machine verified.
 
+Single-listing identities are derived separately by SocialTickerResolver.
+
 HTTP callers must establish admin authority before constructing an authorized
 writer. Reads join the caller transaction; replacements own a short transaction.
 """
@@ -32,7 +34,9 @@ class CompanyIdentityConfiguration:
     registry_version: int
     version: int
     entries: tuple[CompanyIdentityEntry, ...]
-    policy_version: str = POLICY
+    # Recorded on baskets and themes: attested identities plus the resolver's
+    # single-listing identities (social_ticker_resolver).
+    policy_version: str = f"{POLICY}+single-listing-v1"
 
     @property
     def verified_company_ids(self):

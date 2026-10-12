@@ -91,6 +91,14 @@ def test_single_listing_common_stock_derives_its_own_company_identity(db_session
     ([("XLF", "US", "State Street Financial Select Sector SPDR ETF")], "$XLF"),
     ([("TQQQ", "US", "ProShares UltraPro QQQ 3x Shares")], "$TQQQ"),
     ([("GSG", "US", "iShares S&P GSCI Commodity Indexed Trust")], "$GSG"),
+    ([("NVDB", "US", "ProShares Ultra NVDA")], "$NVDB"),
+    ([("VIG", "US", "Vanguard Dividend Appreciation FTF")], "$VIG"),
+    ([("THRMV", "US", "Gentherm Inc - When Issued - Sep 2026")], "$THRMV"),
+    # HK RMB counters, secondary listings, and HK lines of US-listed companies.
+    ([("80700.HK", "HK", "TENCENT-R")], "$80700.HK"),
+    ([("0945.HK", "HK", "MANULIFE-S")], "$0945.HK"),
+    ([("9618.HK", "HK", "JD-SW")], "$9618.HK"),
+    ([("YUMC", "US", "Yum China Holdings Inc"), ("9987.HK", "HK", "YUM CHINA")], "$9987.HK"),
 ])
 def test_possible_cross_listings_and_funds_still_need_attestation(db_session, rows, token):
     from app.services.social_ticker_resolver import SocialTickerResolver
@@ -115,3 +123,13 @@ def test_attested_identity_wins_over_a_derived_one(db_session):
     assert resolver.resolve("$CEG").company_id == "company:ceg"
     assert resolver.company_id_for(row) == "company:ceg"
     assert SocialTickerResolver(db_session).company_id_for(row) == f"security:{row.id}"
+    row.is_active = False
+    db_session.flush()
+    # Matches resolve(), which refuses inactive listings.
+    assert SocialTickerResolver(db_session).company_id_for(row) is None
+
+
+def test_recorded_identity_policy_names_single_listing_derivation(db_session):
+    from app.services.social_company_identity_service import SocialCompanyIdentityService
+    assert SocialCompanyIdentityService(db_session).read().policy_version == (
+        "admin-attested-company-v1+single-listing-v1")
