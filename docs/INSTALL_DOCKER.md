@@ -7,7 +7,7 @@ Docker deployments use **PostgreSQL** as the application database. The shared `.
 ## Prerequisites
 
 - Docker Engine 20.10+
-- Docker Compose v2 (`docker compose` or `docker-compose`)
+- Docker Compose v2.18 or newer (`docker compose`); `docker-compose.release.yml` uses the `!reset` tag, which older Compose cannot parse
 - Python 3.11+ on the host for `scripts/docker-compose-enabled-markets.sh`; set `STOCKSCREEN_PYTHON=/path/to/python3.11` if your default `python3` is older.
 
 ## One-Command Install (Recommended)

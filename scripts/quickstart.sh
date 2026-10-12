@@ -32,10 +32,11 @@ command -v docker >/dev/null 2>&1 || fail "Docker is not installed. Install Dock
 docker compose version >/dev/null 2>&1 || fail "the Docker Compose v2 plugin ('docker compose') is required."
 docker info >/dev/null 2>&1 || fail "Docker is installed but not running. Start Docker and re-run."
 command -v "$PYTHON_BIN" >/dev/null 2>&1 || fail "Python 3.11+ is required (set STOCKSCREEN_PYTHON to use a specific interpreter)."
-# `up --wait-timeout` arrived in Compose 2.17.
-"$PYTHON_BIN" -c 'import re, sys; v = tuple(map(int, re.findall(r"\d+", sys.argv[1])[:2])); sys.exit(v < (2, 17))' \
+# 2.18.0 is the first Compose whose compose-go parses `!reset` (used by
+# docker-compose.release.yml); `up --wait-timeout` needs 2.17.
+"$PYTHON_BIN" -c 'import re, sys; v = tuple(map(int, re.findall(r"\d+", sys.argv[1])[:2])); sys.exit(v < (2, 18))' \
   "$(docker compose version --short 2>/dev/null || echo 0)" \
-  || fail "Docker Compose 2.17 or newer is required (found: $(docker compose version --short 2>/dev/null)). Update Docker."
+  || fail "Docker Compose 2.18 or newer is required (found: $(docker compose version --short 2>/dev/null)). Update Docker."
 
 # Images must match the compose files in this checkout: a release tag when HEAD
 # is one, else the commit's CI image, else the newest main build.
@@ -59,7 +60,9 @@ resolve_image_tag() {
 
 TAG="${APP_IMAGE_TAG:-$(resolve_image_tag)}"
 
-[[ -f "$ENV_FILE" ]] || cp "$ROOT_DIR/.env.docker.example" "$ENV_FILE"
+# Private before any secret is written: cp would keep the template's 0644.
+[[ -f "$ENV_FILE" ]] || (umask 077 && cp "$ROOT_DIR/.env.docker.example" "$ENV_FILE")
+chmod 600 "$ENV_FILE"
 
 # Set KEY=value lines in place (appending missing keys). Keys passed as
 # KEY?=value are only filled when currently empty. Prints the generated password.
@@ -102,7 +105,6 @@ for arg in sys.argv[2:]:
 path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 PY
 )"
-chmod 600 "$ENV_FILE"
 # Show it now: once saved, a retry after a failed start treats it as existing.
 if [[ -n "$NEW_PASSWORD" ]]; then
   echo "Generated login password: $NEW_PASSWORD  (saved in $ENV_FILE as SERVER_AUTH_PASSWORD)"

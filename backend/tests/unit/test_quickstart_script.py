@@ -28,13 +28,23 @@ echo "sudo $*" >> "$FAKE_LOG"
 FAKE_SETFACL = """#!/usr/bin/env bash
 echo "setfacl $*" >> "$FAKE_LOG"
 """
+# Real Python, but records the env file's mode when the script runs its
+# secret-writing block (`python - <env file> ...`).
+RECORDING_PYTHON = """#!/usr/bin/env bash
+if [[ "$1" == "-" ]]; then
+  "$REAL_PYTHON" -c 'import os, sys; print("env-mode", oct(os.stat(sys.argv[1]).st_mode & 0o777))' "$2" >> "$FAKE_LOG"
+fi
+exec "$REAL_PYTHON" "$@"
+"""
 
 
 @pytest.fixture
 def run(tmp_path):
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
-    for name, body in (("docker", FAKE_DOCKER), ("sudo", FAKE_SUDO), ("setfacl", FAKE_SETFACL)):
+    for name, body in (
+        ("docker", FAKE_DOCKER), ("sudo", FAKE_SUDO), ("setfacl", FAKE_SETFACL), ("python-rec", RECORDING_PYTHON),
+    ):
         (bin_dir / name).write_text(body)
         (bin_dir / name).chmod(0o755)
     env_file = tmp_path / ".env.docker"
@@ -48,7 +58,8 @@ def run(tmp_path):
             "PATH": f"{bin_dir}:{os.environ['PATH']}",
             "FAKE_LOG": str(log),
             "STOCKSCREEN_ENV_FILE": str(env_file),
-            "STOCKSCREEN_PYTHON": sys.executable,
+            "STOCKSCREEN_PYTHON": str(bin_dir / "python-rec"),
+            "REAL_PYTHON": sys.executable,
             **extra_env,
         }
         for key in ("APP_IMAGE_TAG", "ENABLED_MARKETS", "FRONTEND_PORT", "COMPOSE_PROFILES"):
@@ -130,12 +141,31 @@ def test_shows_a_new_password_even_when_startup_fails(run):
     assert saved in result.stdout
 
 
-def test_refuses_compose_without_wait_timeout(run):
-    result = run(expect_ok=False, FAKE_COMPOSE_VERSION="2.12.2")
+def test_refuses_compose_that_cannot_parse_the_release_overlay(run):
+    # docker-compose.release.yml uses `build: !reset null`; Compose 2.17.x ships
+    # compose-go 1.13.4, which has no ResetProcessor (added in 1.13.5 / Compose 2.18.0).
+    result = run(expect_ok=False, FAKE_COMPOSE_VERSION="2.17.3")
 
     assert result.returncode != 0
-    assert "Compose 2.17 or newer is required (found: 2.12.2)" in result.stderr
+    assert "Compose 2.18 or newer is required (found: 2.17.3)" in result.stderr
     assert not run.env_file.exists()
+
+
+def test_accepts_the_first_compose_with_reset_support(run):
+    _, values, _ = run(FAKE_COMPOSE_VERSION="2.18.0")
+
+    assert values["APP_IMAGE_TAG"]
+
+
+def test_env_file_is_private_before_secrets_are_written(run):
+    # cp keeps the template's 0644; secrets must never sit in a world-readable file.
+    _, _, calls = run()
+
+    # The first `python -` call is the secret-writing block; later ones are the
+    # compose wrapper reading settings back.
+    modes = [line.split()[1] for line in calls.splitlines() if line.startswith("env-mode ")]
+    assert modes[0] == "0o600"
+    assert oct(run.env_file.stat().st_mode & 0o777) == "0o600"
 
 
 def test_explicit_tag_wins(run):
