@@ -182,9 +182,14 @@ def test_rerun_removes_workers_for_markets_no_longer_enabled(run):
     )
 
     assert f"label=com.docker.compose.project.working_dir={REPO_ROOT}" in calls
-    removed = [line for line in calls.splitlines() if line.startswith("docker rm ")]
-    assert removed == ["docker rm -f c3 c4"]
-    assert calls.index("docker rm -f c3 c4") < calls.index(" up -d ")
+    # `docker stop` honours the stop_grace_period compose stores as StopTimeout,
+    # so a worker mid-task gets its warm shutdown; `rm -f` would SIGKILL it.
+    lines = calls.splitlines()
+    assert "docker stop c3 c4" in lines
+    assert "docker rm c3 c4" in lines
+    assert not any(line.startswith("docker rm -f") for line in lines)
+    assert lines.index("docker stop c3 c4") < lines.index("docker rm c3 c4")
+    assert calls.index("docker rm c3 c4") < calls.index(" up -d ")
 
 
 def test_rerun_with_the_same_markets_removes_nothing(run):
@@ -194,6 +199,7 @@ def test_rerun_with_the_same_markets_removes_nothing(run):
     )
 
     assert "docker rm " not in calls
+    assert "docker stop " not in calls
 
 
 def test_explicit_tag_wins(run):

@@ -101,3 +101,26 @@ def test_releases_wait_for_the_quickstart_install_smoke():
     assert "!cancelled()" in smoke["if"]
     assert any("scripts/run_quickstart_smoke.sh" in str(step.get("run", "")) for step in smoke["steps"])
     assert "quickstart-smoke" in jobs["release"]["needs"]
+
+
+def test_latest_images_move_only_after_both_are_published():
+    # quickstart.sh falls back to `latest` as a backend/frontend pair. Tagging
+    # `latest` in each build step published a new backend `latest` before the
+    # frontend was even built, so a failed frontend left a mismatched pair.
+    steps = yaml.safe_load((REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text())["jobs"]["publish-images"]["steps"]
+    names = [step.get("name", "") for step in steps]
+
+    for meta in ("Backend image metadata", "Frontend image metadata"):
+        tags = steps[names.index(meta)]["with"]["tags"]
+        assert "value=latest" not in tags, meta
+
+    promote = names.index("Promote latest after both images are published")
+    assert promote > names.index("Build and push backend image")
+    assert promote > names.index("Build and push frontend image")
+    step = steps[promote]
+    assert "github.ref == format('refs/heads/{0}', github.event.repository.default_branch)" in step["if"]
+    run = step["run"]
+    assert "for image in stockscreenclaude-backend stockscreenclaude-frontend" in run
+    assert "docker buildx imagetools create" in run
+    assert '--tag "ghcr.io/$OWNER/$image:latest"' in run
+    assert '"ghcr.io/$OWNER/$image:sha-${GITHUB_SHA::7}"' in run

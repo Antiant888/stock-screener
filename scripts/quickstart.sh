@@ -146,8 +146,11 @@ while read -r container service; do
 done < <(docker ps -a --filter "label=com.docker.compose.project.working_dir=$ROOT_DIR" \
   --format '{{.ID}} {{.Label "com.docker.compose.service"}}')
 if (( ${#stale[@]} > 0 )); then
-  echo "Removing workers for markets no longer in ENABLED_MARKETS..."
-  docker rm -f "${stale[@]}" >/dev/null
+  echo "Stopping workers for markets no longer in ENABLED_MARKETS..."
+  # `stop` honours each worker's stop_grace_period (Celery warm shutdown);
+  # `rm -f` would SIGKILL a task mid-run.
+  docker stop "${stale[@]}" >/dev/null
+  docker rm "${stale[@]}" >/dev/null
 fi
 echo "Starting the stack and waiting for every service to be healthy (up to ${WAIT_TIMEOUT}s)..."
 "${COMPOSE[@]}" up -d --no-build --wait --wait-timeout "$WAIT_TIMEOUT"
