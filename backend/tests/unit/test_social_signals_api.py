@@ -681,9 +681,18 @@ async def test_evidence_lists_this_candidates_extracted_claims_supported_first(
     security = StockUniverse(symbol="AAA", market="US", exchange="NASDAQ", is_active=True)
     db_session.add_all([security, StockUniverse(symbol="ZZZ", market="US", is_active=True)])
     text = "$AAA signed a 20-year nuclear PPA with a hyperscaler; $ZZZ supplies the turbines"
+    from hashlib import sha256
+    from app.domain.social_signals.records import SocialPreparedEvidence
+    article_text = "AAA expects the reactor restart to add 800 MW by 2028"
+    article = SocialPreparedEvidence(
+        id="a" * 64, kind="article", url="https://publisher.example.com/aaa-restart",
+        text=article_text, original_text_sha256="b" * 64,
+        text_sha256=sha256(article_text.encode()).hexdigest(),
+        available_at=now - timedelta(hours=1), provenance_json='{"policy_version":"live-attachment-v1"}',
+    )
     post = SocialPostRecord(
         "official", "p-1", "1", text, "https://example.invalid/1", "analyst",
-        now - timedelta(hours=2), now,
+        now - timedelta(hours=2), now, prepared_evidence=(article,), evidence_digest="d" * 64,
     )
     item = ContentItem(source_id=1, source_type="twitter", external_id="p-1", content=text,
                        url=post.url, author="analyst", published_at=post.created_at, fetched_at=now)
@@ -697,11 +706,13 @@ async def test_evidence_lists_this_candidates_extracted_claims_supported_first(
         (("state_reasons", "setup_not_ready"),), (), now, "AAA", "US:AAA", 7, 1, 1, 2,
     )
     serialized_post = {**asdict(post), "created_at": post.created_at.isoformat(),
-                       "observed_at": post.observed_at.isoformat()}
+                       "observed_at": post.observed_at.isoformat(),
+                       "prepared_evidence": [{**asdict(article),
+                                              "available_at": article.available_at.isoformat()}]}
 
-    def claim(token, theme, relationship, excerpt, support):
+    def claim(token, theme, relationship, excerpt, support, evidence_id=None):
         return ExtractionClaim("p-1", theme.lower().replace(" ", "-"), theme, token,
-                               relationship, excerpt, support, ())
+                               relationship, excerpt, support, (), evidence_id)
 
     input_hash = SocialExtractionService.input_hash((post,))
     result = ExtractionResult(input_hash, "synthetic", "actual", "v1", "v1", (
@@ -709,6 +720,7 @@ async def test_evidence_lists_this_candidates_extracted_claims_supported_first(
               "$AAA signed a 20-year nuclear PPA with a hyperscaler", "uncertain"),
         claim("$ZZZ", "Data center power", "equipment supplier", "$ZZZ supplies the turbines", "supported"),
         claim("$AAA", "Nuclear power", "generator", "signed a 20-year nuclear PPA", "supported"),
+        claim("AAA", "Nuclear restarts", "operator", "add 800 MW by 2028", "supported", "a" * 64),
     ), 1, 1, (ExtractionPostJudgment("p-1", True, "aaa-nuclear-ppa"),))
     work = SocialExtractionWork(
         content_item_id=item.id, input_hash=input_hash, prompt_version="v1", schema_version="v1",
@@ -750,15 +762,19 @@ async def test_evidence_lists_this_candidates_extracted_claims_supported_first(
     )
 
     assert response.status_code == 200
+    shared = {"post_id": "p-1", "author_handle": "analyst", "created_at": "2026-09-07T10:00:00Z",
+              "url": "https://x.com/analyst/status/p-1"}
+    # Attachment-backed wording is attributed to its article, not to the poster.
     assert response.json()["claims"] == [
-        {"post_id": "p-1", "author_handle": "analyst", "created_at": "2026-09-07T10:00:00Z",
-         "url": "https://x.com/analyst/status/p-1", "theme": "Nuclear power",
-         "relationship": "generator", "excerpt": "signed a 20-year nuclear PPA",
-         "support": "supported"},
-        {"post_id": "p-1", "author_handle": "analyst", "created_at": "2026-09-07T10:00:00Z",
-         "url": "https://x.com/analyst/status/p-1", "theme": "Data center power",
-         "relationship": "power supplier",
-         "excerpt": "$AAA signed a 20-year nuclear PPA with a hyperscaler", "support": "uncertain"},
+        {**shared, "theme": "Nuclear power", "relationship": "generator",
+         "excerpt": "signed a 20-year nuclear PPA", "support": "supported",
+         "source": "post", "source_url": None},
+        {**shared, "theme": "Nuclear restarts", "relationship": "operator",
+         "excerpt": "add 800 MW by 2028", "support": "supported",
+         "source": "article", "source_url": "https://publisher.example.com/aaa-restart"},
+        {**shared, "theme": "Data center power", "relationship": "power supplier",
+         "excerpt": "$AAA signed a 20-year nuclear PPA with a hyperscaler", "support": "uncertain",
+         "source": "post", "source_url": None},
     ]
 
 

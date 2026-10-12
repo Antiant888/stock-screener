@@ -460,6 +460,9 @@ class SocialSignalQueries:
                 if resolution.status != "resolved" or (resolution.market, resolution.symbol) != listing:
                     continue
                 excerpt = _excerpt(claim.excerpt)
+                # The parser verified a cited excerpt against this attachment's text.
+                attachment = next((item for item in post.prepared_evidence
+                                   if claim.evidence_id and item.id == claim.evidence_id), None)
                 found.setdefault((post.provider_post_id, claim.raw_theme, excerpt), {
                     "post_id": post.provider_post_id,
                     "author_handle": post.author_handle,
@@ -472,6 +475,8 @@ class SocialSignalQueries:
                     "relationship": claim.relationship,
                     "excerpt": excerpt,
                     "support": claim.support,
+                    "source": attachment.kind if attachment else "post",
+                    "source_url": attachment.url if attachment else None,
                 })
         return sorted(found.values(), key=lambda value: (
             self._SUPPORT_ORDER[value["support"]], -value["created_at"].timestamp(), value["post_id"],

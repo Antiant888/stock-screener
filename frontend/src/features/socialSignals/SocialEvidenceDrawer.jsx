@@ -100,6 +100,9 @@ const supportChip = {
   unsupported: { label: 'Unsupported', color: 'default' },
 };
 
+// Attachment-backed excerpts quote the attachment, not the poster.
+const attachmentLabel = { article: 'linked article', image: 'shared image' };
+
 function ClaimList({ claims }) {
   return (
     <Box sx={{ mt: 2 }}>
@@ -118,6 +121,15 @@ function ClaimList({ claims }) {
                 </Stack>
                 <Typography variant="body2" sx={{ my: 0.5 }}>“{claim.excerpt}”</Typography>
                 <Typography variant="caption" color="text.secondary">
+                  {claim.source_url ? (
+                    <>
+                      From a{' '}
+                      <Link href={claim.source_url} target="_blank" rel="noreferrer">
+                        {attachmentLabel[claim.source] || 'attachment'}
+                      </Link>
+                      {' shared by '}
+                    </>
+                  ) : null}
                   <Link href={claim.url} target="_blank" rel="noreferrer">@{claim.author_handle}</Link>
                   {' · '}{new Date(claim.created_at).toLocaleString()}
                 </Typography>

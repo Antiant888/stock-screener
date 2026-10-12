@@ -49,6 +49,20 @@ describe('SocialEvidenceDrawer', () => {
     expect(within(second).getByText('Uncertain')).toBeInTheDocument();
   });
 
+  it('credits attachment wording to its source, not to the poster', () => {
+    renderDrawer({
+      available: true, item: { canonical_symbol: 'CEG' }, posts: [],
+      claims: [claim({ source: 'article', source_url: 'https://publisher.example.com/ceg' })],
+    });
+
+    const [item] = within(screen.getByRole('list', { name: 'Extracted claims' })).getAllByRole('listitem');
+    expect(within(item).getByRole('link', { name: 'linked article' }))
+      .toHaveAttribute('href', 'https://publisher.example.com/ceg');
+    expect(within(item).getByText(/shared by/)).toBeInTheDocument();
+    expect(within(item).getByRole('link', { name: '@analyst' }))
+      .toHaveAttribute('href', 'https://x.com/analyst/status/p-1');
+  });
+
   it('says so when no claims were extracted', () => {
     renderDrawer({ available: true, item: { canonical_symbol: 'CEG' }, posts: [], claims: [] });
     expect(screen.getByText('No company claims extracted in this window.')).toBeInTheDocument();

@@ -103,7 +103,12 @@ class SocialEvidencePost(BaseModel):
 
 
 class SocialEvidenceClaim(BaseModel):
-    """One extracted claim about this candidate; the excerpt is verbatim from the post."""
+    """One extracted claim about this candidate.
+
+    The excerpt is verbatim from the post, or from an attachment of it (an image's
+    text or a linked article) when ``source`` says so; ``source_url`` is then the
+    attachment, and ``url`` remains the post that shared it.
+    """
     post_id: str
     author_handle: str
     created_at: datetime
@@ -112,6 +117,8 @@ class SocialEvidenceClaim(BaseModel):
     relationship: str
     excerpt: str = Field(max_length=280)
     support: Literal["supported", "uncertain", "unsupported"]
+    source: Literal["post", "image", "article"] = "post"
+    source_url: str | None = None
 
 
 class SocialEvidenceResponse(BaseModel):
