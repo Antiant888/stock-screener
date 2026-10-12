@@ -629,35 +629,34 @@ describe('ResultsTable', () => {
       expect(within(ratedCard).getByText('Strong Buy')).toBeInTheDocument();
     });
 
-    it('shows the metric the list is sorted by, labelled, instead of the composite', () => {
+    it('shows the metric the list is sorted by, labelled with its unit, instead of the composite', () => {
       const row = {
         ...fullSeRow, composite_score: 66, minervini_score: 56.2, vcp_score: 81.5, eps_growth_qq: 45.24,
-        se_pattern_primary: 'cup_with_handle',
+        gap_percent: 12, volume_surge: 2.43, adr_percent: 4.1, se_pattern_primary: 'cup_with_handle', mystery_field: 9,
       };
-      const renderSorted = (sortBy) => renderWithProviders(
-        <ResultsTable {...defaultProps} results={[row]} sortBy={sortBy} />,
-      );
+      const expectPill = (sortBy, text, name) => {
+        renderWithProviders(<ResultsTable {...defaultProps} results={[row]} sortBy={sortBy} />);
+        expect(screen.getByLabelText(name)).toHaveTextContent(text);
+        cleanup();
+      };
 
-      renderSorted('minervini_score');
-      expect(screen.getByLabelText('Min 56.2')).toHaveTextContent('Min 56.2');
-      cleanup();
+      expectPill('minervini_score', 'Min 56.2', 'Minervini 56.2');
+      expectPill('vcp_score', 'VScr 81.5', 'VCP score 81.5'); // VCP and Tight presets
+      expectPill('eps_growth_qq', 'EPS 45.2%', 'EPS growth Q/Q 45.2%'); // Growth Rockets
+      expectPill('gap_percent', 'Gap 12.0%', 'Gap 12.0%'); // Episodic Pivot (not a table column)
+      expectPill('volume_surge', 'Vol 2.4×', 'Volume surge 2.4×'); // Pocket Pivot
+      expectPill('adr_percent', 'ADR 4.1%', 'ADR 4.1%');
+      // Non-numeric, unknown and already-visible fields keep the composite.
+      expectPill('se_pattern_primary', '66.0', 'Score 66.0');
+      expectPill('mystery_field', '66.0', 'Score 66.0');
+      expectPill('symbol', '66.0', 'Score 66.0');
+    });
 
-      // The built-in VCP and Tight presets sort by vcp_score.
-      renderSorted('vcp_score');
-      expect(screen.getByLabelText('VScr 81.5')).toBeInTheDocument();
-      cleanup();
+    it('labels a preset-only active sort in the picker without exposing its field id', () => {
+      renderWithProviders(<ResultsTable {...defaultProps} sortBy="gap_percent" />);
 
-      // Growth Rockets sorts by EPS growth, a percentage.
-      renderSorted('eps_growth_qq');
-      expect(screen.getByLabelText('EPS 45.2%')).toBeInTheDocument();
-      cleanup();
-
-      // Non-numeric sorts and fields already on the card keep the composite.
-      renderSorted('se_pattern_primary');
-      expect(screen.getByLabelText('Score 66.0')).toBeInTheDocument();
-      cleanup();
-      renderSorted('symbol');
-      expect(screen.getByLabelText('Score 66.0')).toBeInTheDocument();
+      expect(screen.getByRole('combobox', { name: 'Sort by' })).toHaveTextContent('Gap');
+      expect(screen.getByRole('combobox', { name: 'Sort by' })).not.toHaveTextContent('gap_percent');
     });
 
     it('keeps the watchlist action on cards, including rows that cannot open a chart', () => {
@@ -672,7 +671,7 @@ describe('ResultsTable', () => {
     it('keeps an active sort that the picker does not list', () => {
       renderWithProviders(<ResultsTable {...defaultProps} sortBy="beta" />);
 
-      expect(screen.getByRole('combobox', { name: 'Sort by' })).toHaveTextContent('β');
+      expect(screen.getByRole('combobox', { name: 'Sort by' })).toHaveTextContent('Beta');
     });
   });
 });

@@ -119,7 +119,7 @@ function DailyScanRowsTable({
                 <Box key={row.symbol} role="listitem" sx={{ borderTop: 1, borderColor: 'divider' }}>
                   <StockRowCard
                     row={row}
-                    scoreField={scoreField}
+                    metric={{ field: scoreField }}
                     badge={showActionState
                       ? actionBadge(row)
                       : showRating && row.rating

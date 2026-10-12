@@ -56,11 +56,45 @@ const ROW_HEIGHT = 48;
 // Phone layout: one StockRowCard per result (fixed height keeps the virtualizer
 // exact). Content needs ~75px; the rest is headroom for larger system text.
 const MOBILE_CARD_HEIGHT = 84;
-// Phone cards show the active sort's value (labelled) so the number matches
-// the order, except for fields the card already shows; a non-numeric sort
-// value falls back to the composite inside StockRowCard.
-const CARD_VISIBLE_FIELDS = new Set(['composite_score', 'symbol', 'current_price', 'price_change_1d', 'ibd_group_rank']);
-const PERCENT_FIELD = /(_pct|_pctile|growth|change|perf|distance)/;
+// Metrics a phone card can show in place of the composite when the list is
+// sorted by them, so the visible number matches the order: [pill label, unit,
+// spoken name]. Units follow the desktop columns, or for preset-only fields the
+// preset filters in backend/app/services/preset_screens.py. Any other sort
+// (or a non-numeric value) keeps the composite.
+const CARD_METRICS = {
+  minervini_score: ['Min', '', 'Minervini'],
+  canslim_score: ['CAN', '', 'CANSLIM'],
+  ipo_score: ['IPO', '', 'IPO score'],
+  custom_score: ['Cust', '', 'Custom score'],
+  volume_breakthrough_score: ['VolB', '', 'Volume breakthrough'],
+  se_setup_score: ['SE', '', 'Setup score'],
+  vcp_score: ['VScr', '', 'VCP score'],
+  resilience_score: ['Res', '', 'Resilience'],
+  rs_rating: ['RS', '', 'RS rating'],
+  rs_rating_1m: ['RS1M', '', 'RS rating 1 month'],
+  rs_rating_3m: ['RS3M', '', 'RS rating 3 months'],
+  rs_rating_12m: ['RS12M', '', 'RS rating 12 months'],
+  eps_rating: ['EPS', '', 'EPS rating'],
+  beta: ['β', '', 'Beta'],
+  beta_adj_rs: ['βRS', '', 'Beta-adjusted RS'],
+  eps_growth_qq: ['EPS', '%', 'EPS growth Q/Q'],
+  adr_percent: ['ADR', '%', 'ADR'],
+  se_distance_to_pivot_pct: ['Pvt', '%', 'Distance to pivot'],
+  se_bb_width_pctile_252: ['Sqz', '', 'Squeeze percentile'],
+  se_volume_vs_50d: ['V50', '×', 'Volume vs 50-day'],
+  gap_percent: ['Gap', '%', 'Gap'],
+  perf_week: ['1W', '%', 'Performance 1 week'],
+  perf_6m: ['6M', '%', 'Performance 6 months'],
+  week_52_high_distance: ['52W', '%', 'From 52-week high'],
+  volume_surge: ['Vol', '×', 'Volume surge'],
+  se_up_down_volume_ratio_10d: ['U/D', '×', 'Up/down volume 10 days'],
+};
+const cardMetricFor = (sortBy) => {
+  const entry = CARD_METRICS[sortBy];
+  return entry
+    ? { field: sortBy, label: entry[0], suffix: entry[1], description: entry[2] }
+    : { field: 'composite_score' };
+};
 // Sorts offered by the phone sort picker; the active sort is always included.
 const MOBILE_SORT_FIELDS = [
   ['composite_score', 'Composite score'],
@@ -777,14 +811,13 @@ function ResultsTable({
   };
 
   if (isMobile) {
-    const cardScoreField = sortBy && !CARD_VISIBLE_FIELDS.has(sortBy) ? sortBy : 'composite_score';
-    const cardScoreLabel = cardScoreField === 'composite_score'
-      ? null
-      : columns.find((column) => column.id === cardScoreField)?.label || cardScoreField;
-    const cardScoreSuffix = PERCENT_FIELD.test(cardScoreField) ? '%' : '';
+    const cardMetric = cardMetricFor(sortBy);
     const sortOptions = !sortBy || MOBILE_SORT_FIELDS.some(([id]) => id === sortBy)
       ? MOBILE_SORT_FIELDS
-      : [...MOBILE_SORT_FIELDS, [sortBy, columns.find((column) => column.id === sortBy)?.label || sortBy]];
+      : [...MOBILE_SORT_FIELDS, [
+        sortBy,
+        CARD_METRICS[sortBy]?.[2] || columns.find((column) => column.id === sortBy)?.label || 'Current sort',
+      ]];
     return (
       <Paper elevation={1}>
         {sortingEnabled ? (
@@ -833,9 +866,7 @@ function ResultsTable({
                 >
                   <StockRowCard
                     row={row}
-                    scoreField={cardScoreField}
-                    scoreLabel={cardScoreLabel}
-                    scoreSuffix={cardScoreSuffix}
+                    metric={cardMetric}
                     badge={mobileBadge(row)}
                     actions={showActions && showWatchlistMenu
                       ? <AddToWatchlistMenu symbols={row.symbol} size="small" />

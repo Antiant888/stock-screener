@@ -16,21 +16,21 @@ const oneDecimal = (value) => (Number.isFinite(Number(value)) && value != null ?
  */
 export default function StockRowCard({
   row,
-  scoreField = 'composite_score',
-  scoreLabel = null,
-  scoreSuffix = '',
+  // { field, label, suffix, description }: the value shown in the pill.
+  metric = { field: 'composite_score' },
   badge = null,
   actions = null,
   meta = null,
   onOpen = null,
 }) {
-  // A labelled metric (the active sort) only when it has a number; otherwise
-  // the composite, unlabelled.
-  const metricIsNumeric = Number.isFinite(Number(row[scoreField])) && row[scoreField] != null;
-  const metric = metricIsNumeric || scoreField === 'composite_score'
-    ? { value: oneDecimal(row[scoreField]), label: scoreLabel, suffix: scoreLabel ? scoreSuffix : '' }
-    : { value: oneDecimal(row.composite_score), label: null, suffix: '' };
-  const metricText = `${metric.value}${metric.value === '-' ? '' : metric.suffix}`;
+  // A labelled metric (e.g. the active sort) only when it has a number;
+  // otherwise the composite, unlabelled.
+  const { field = 'composite_score', label = null, suffix = '', description = label } = metric;
+  const raw = row[field];
+  const shown = raw != null && Number.isFinite(Number(raw))
+    ? { value: oneDecimal(raw), label, suffix, description }
+    : { value: oneDecimal(row.composite_score), label: null, suffix: '', description: null };
+  const shownValue = `${shown.value}${shown.value === '-' ? '' : shown.suffix}`;
   const change = Number(row.price_change_1d);
   const hasChange = row.price_change_1d != null && Number.isFinite(change);
   // Rank first: long industry names truncate, and the rank is the part worth keeping.
@@ -137,10 +137,10 @@ export default function StockRowCard({
       <Box sx={{ textAlign: 'right' }}>
         <Typography
           component="span"
-          aria-label={metric.label ? `${metric.label} ${metricText}` : `Score ${metricText}`}
+          aria-label={`${shown.description || 'Score'} ${shownValue}`}
           sx={{ display: 'inline-block', px: 0.75, borderRadius: 1, bgcolor: 'action.selected', fontSize: '11px', fontWeight: 700 }}
         >
-          {metric.label ? `${metric.label} ` : ''}{metricText}
+          {shown.label ? `${shown.label} ` : ''}{shownValue}
         </Typography>
         <Typography sx={{ fontSize: '13px', fontWeight: 600, mt: 0.25 }}>
           {formatLocalCurrency(row.current_price, row.currency)}
