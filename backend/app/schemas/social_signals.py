@@ -102,6 +102,18 @@ class SocialEvidencePost(BaseModel):
     engagement: dict[str, int | None] = Field(default_factory=dict)
 
 
+class SocialEvidenceClaim(BaseModel):
+    """One extracted claim about this candidate; the excerpt is verbatim from the post."""
+    post_id: str
+    author_handle: str
+    created_at: datetime
+    url: str
+    theme: str
+    relationship: str
+    excerpt: str = Field(max_length=280)
+    support: Literal["supported", "uncertain", "unsupported"]
+
+
 class SocialEvidenceResponse(BaseModel):
     supported: bool
     available: bool
@@ -110,6 +122,7 @@ class SocialEvidenceResponse(BaseModel):
     window: WindowCode
     item: SocialQueueItem | None = None
     posts: list[SocialEvidencePost] = Field(default_factory=list, max_length=3)
+    claims: list[SocialEvidenceClaim] = Field(default_factory=list, max_length=5)
     related_listings: list[dict[str, Any]] = Field(default_factory=list)
 
 

@@ -397,12 +397,17 @@ class SocialSignalQueries:
             SocialCompanyIdentityService,
         )
         from app.services.social_ticker_resolver import SocialTickerResolver
-        related = []
+        related, claims = [], []
         if item["canonical_symbol"] and item["market"]:
             identities = SocialCompanyIdentityService(self.db).read()
-            resolution = SocialTickerResolver(
+            resolver = SocialTickerResolver(
                 self.db, verified_company_ids=identities.verified_company_ids,
-            ).resolve(item["canonical_symbol"], item["market"])
+            )
+            resolution = resolver.resolve(item["canonical_symbol"], item["market"])
+            claims = self._claims(
+                run, {post["post_id"] for post in posts},
+                (item["market"], item["canonical_symbol"]), resolver,
+            )
             if resolution.related_symbols:
                 related = [
                     (row.market, row.symbol)
@@ -414,11 +419,53 @@ class SocialSignalQueries:
         return {
             **base, "available": True, "reason_code": None, "item": item,
             "posts": posts[:3],
+            "claims": claims,
             "related_listings": [
                 {"market": market, "canonical_symbol": symbol}
                 for market, symbol in related
             ],
         }
+
+    _SUPPORT_ORDER = {"supported": 0, "uncertain": 1, "unsupported": 2}
+
+    def _claims(self, run, post_ids, listing, resolver, limit=5):
+        """This listing's extracted claims from the run's pinned work, supported first."""
+        from app.infra.db.models.social_analysis import SocialExtractionWork, SocialRunWork
+        from app.services.social_theme_projection_service import _decode
+
+        works = self.db.scalars(select(SocialExtractionWork).join(
+            SocialRunWork, SocialRunWork.work_id == SocialExtractionWork.id,
+        ).where(SocialRunWork.run_id == run.id, SocialExtractionWork.state == "succeeded"))
+        found = {}
+        for work in works:
+            if (work.input_snapshot_json or {}).get("provider_post_id") not in post_ids:
+                continue
+            try:
+                post, result = _decode(work)
+            except ValueError:
+                # A saved result that no longer validates is not evidence to show.
+                continue
+            for claim in result.claims:
+                resolution = resolver.resolve(claim.company_token)
+                if resolution.status != "resolved" or (resolution.market, resolution.symbol) != listing:
+                    continue
+                excerpt = _excerpt(claim.excerpt)
+                found.setdefault((post.provider_post_id, claim.raw_theme, excerpt), {
+                    "post_id": post.provider_post_id,
+                    "author_handle": post.author_handle,
+                    "created_at": post.created_at,
+                    "url": self._canonical_post_url({
+                        "author_handle": post.author_handle,
+                        "provider_post_id": post.provider_post_id,
+                    }),
+                    "theme": claim.raw_theme,
+                    "relationship": claim.relationship,
+                    "excerpt": excerpt,
+                    "support": claim.support,
+                })
+        return sorted(found.values(), key=lambda value: (
+            self._SUPPORT_ORDER[value["support"]], -value["created_at"].timestamp(), value["post_id"],
+        ))[:limit]
     def summary(self, *, market):
         if not self._supported():
             return {

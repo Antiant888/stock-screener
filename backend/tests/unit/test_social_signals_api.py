@@ -30,6 +30,7 @@ async def _request(db_session, method, path, **kwargs):
 def _publish_rows(
     db, records, *, observations=None, context=None,
     theme_evidence=None, projection=None, generated_at=None, published_at=None,
+    before_publish=None,
 ):
     from app.infra.db.models.social_signals import (
         SocialSignalRun, SocialSignalRunPointer, SocialSignalSnapshot,
@@ -81,6 +82,8 @@ def _publish_rows(
             enabled_list_count=record.enabled_list_count,
             normalization_scope=record.normalization_scope,
         ))
+    if before_publish is not None:
+        before_publish(run)  # pinned work can only be linked while running
     db.commit()
     run = db.get(SocialSignalRun, "published-1")
     assert run.status == "running"
@@ -651,6 +654,101 @@ async def test_evidence_is_run_scoped_canonical_and_limited_to_three_plain_excer
     assert payload["posts"][0]["source_names"] == ["One"]
     assert payload["related_listings"] == [
         {"market": "HK", "canonical_symbol": "BBB"},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_evidence_lists_this_candidates_extracted_claims_supported_first(
+    db_session, social_runtime, monkeypatch
+):
+    from dataclasses import asdict
+    from datetime import datetime, timedelta, timezone
+    from decimal import Decimal
+    from app.domain.social_signals.records import (
+        ExtractionClaim, ExtractionPostJudgment, ExtractionResult, SocialPostRecord,
+        SocialSnapshotRecord,
+    )
+    from app.infra.db.models.social_analysis import SocialExtractionWork, SocialRunWork
+    from app.infra.db.models.social_signals import SocialPostTicker
+    from app.models.stock_universe import StockUniverse
+    from app.models.theme import ContentItem
+    from app.services import server_auth
+    from app.services.social_extraction_service import SocialExtractionService
+
+    monkeypatch.setattr(server_auth.settings, "server_auth_enabled", False)
+    runtime = social_runtime.read_runtime()
+    social_runtime.apply_runtime("live", "official", runtime.version, "admin")
+    now = datetime(2026, 9, 7, 12, tzinfo=timezone.utc)
+    security = StockUniverse(symbol="AAA", market="US", exchange="NASDAQ", is_active=True)
+    db_session.add_all([security, StockUniverse(symbol="ZZZ", market="US", is_active=True)])
+    text = "$AAA signed a 20-year nuclear PPA with a hyperscaler; $ZZZ supplies the turbines"
+    post = SocialPostRecord(
+        "official", "p-1", "1", text, "https://example.invalid/1", "analyst",
+        now - timedelta(hours=2), now,
+    )
+    item = ContentItem(source_id=1, source_type="twitter", external_id="p-1", content=text,
+                       url=post.url, author="analyst", published_at=post.created_at, fetched_at=now)
+    db_session.add(item)
+    db_session.flush()
+    db_session.add(SocialPostTicker(
+        content_item_id=item.id, candidate_key="US:AAA", raw_token="$AAA",
+        stock_universe_id=security.id, canonical_symbol="AAA", market="US",
+        mic="XNAS", local_code="AAA", resolution_state="resolved",
+        resolution_policy_version="social-resolution-v1", explanation_json={},
+    ))
+    record = SocialSnapshotRecord(
+        "published-1", "US:AAA", "AAA", "US", "watch",
+        Decimal("80"), Decimal("50"), Decimal("68"),
+        (("state_reasons", "setup_not_ready"),), (), now, "AAA", "US:AAA", 7, 1, 1, 2,
+    )
+    serialized_post = {**asdict(post), "created_at": post.created_at.isoformat(),
+                       "observed_at": post.observed_at.isoformat()}
+    def claim(token, theme, relationship, excerpt, support):
+        return ExtractionClaim("p-1", theme.lower().replace(" ", "-"), theme, token,
+                               relationship, excerpt, support, ())
+
+    input_hash = SocialExtractionService.input_hash((post,))
+    result = ExtractionResult(input_hash, "synthetic", "actual", "v1", "v1", (
+        claim("$AAA", "Data center power", "power supplier",
+              "$AAA signed a 20-year nuclear PPA with a hyperscaler", "uncertain"),
+        claim("$ZZZ", "Data center power", "equipment supplier", "$ZZZ supplies the turbines", "supported"),
+        claim("$AAA", "Nuclear power", "generator", "signed a 20-year nuclear PPA", "supported"),
+    ), 1, 1, (ExtractionPostJudgment("p-1", True, "aaa-nuclear-ppa"),))
+    work = SocialExtractionWork(
+        content_item_id=item.id, input_hash=input_hash, prompt_version="v1", schema_version="v1",
+        selected_model="requested", actual_provider="synthetic", actual_model="actual",
+        result_json=asdict(result), state="succeeded", input_snapshot_json=serialized_post,
+        created_at=now, updated_at=now,
+    )
+
+    def link_work(run):
+        db_session.add(work)
+        db_session.flush()
+        db_session.add(SocialRunWork(run_id=run.id, work_id=work.id, input_hash=input_hash,
+                                     included_at=now))
+
+
+    _publish_rows(db_session, (record,), observations={
+        "1": {"inputs": [{"content_item_id": item.id, "post": serialized_post}],
+              "observed_at": now.isoformat()},
+        "2": {"inputs": [], "observed_at": now.isoformat()},
+    }, before_publish=link_work)
+
+
+    response = await _request(
+        db_session, "GET", "/api/v1/social-signals/candidates/US:AAA/evidence?window=7d",
+    )
+
+    assert response.status_code == 200
+    assert response.json()["claims"] == [
+        {"post_id": "p-1", "author_handle": "analyst", "created_at": "2026-09-07T10:00:00Z",
+         "url": "https://x.com/analyst/status/p-1", "theme": "Nuclear power",
+         "relationship": "generator", "excerpt": "signed a 20-year nuclear PPA",
+         "support": "supported"},
+        {"post_id": "p-1", "author_handle": "analyst", "created_at": "2026-09-07T10:00:00Z",
+         "url": "https://x.com/analyst/status/p-1", "theme": "Data center power",
+         "relationship": "power supplier",
+         "excerpt": "$AAA signed a 20-year nuclear PPA with a hyperscaler", "support": "uncertain"},
     ]
 
 
