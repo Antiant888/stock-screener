@@ -629,10 +629,12 @@ describe('ResultsTable', () => {
       expect(within(ratedCard).getByText('Strong Buy')).toBeInTheDocument();
     });
 
-    it('shows the metric the list is sorted by, labelled with its unit, instead of the composite', () => {
+    it('shows the metric the list is sorted by, formatted like its column, instead of the composite', () => {
       const row = {
         ...fullSeRow, composite_score: 66, minervini_score: 56.2, vcp_score: 81.5, eps_growth_qq: 45.24,
         gap_percent: 12, volume_surge: 2.43, adr_percent: 4.1, se_pattern_primary: 'cup_with_handle', mystery_field: 9,
+        sales_growth_qq: 31.04, volume: 2.5e9, market_cap: 1.0e12, market_cap_usd: 132.3e9, adv_usd: 45.2e6,
+        vcp_pivot: 101.25, stage: 2, currency: 'USD',
       };
       const expectPill = (sortBy, text, name) => {
         renderWithProviders(<ResultsTable {...defaultProps} results={[row]} sortBy={sortBy} />);
@@ -646,6 +648,13 @@ describe('ResultsTable', () => {
       expectPill('gap_percent', 'Gap 12.0%', 'Gap 12.0%'); // Episodic Pivot (not a table column)
       expectPill('volume_surge', 'Vol 2.4×', 'Volume surge 2.4×'); // Pocket Pivot
       expectPill('adr_percent', 'ADR 4.1%', 'ADR 4.1%');
+      // Any sortable column a custom preset can save, formatted like the desktop cell.
+      expectPill('sales_growth_qq', 'Sales 31.0%', 'Sales growth Q/Q 31.0%');
+      expectPill('volume', '$Vol $2.5B', 'Dollar volume $2.5B');
+      expectPill('market_cap', 'MCap $132.3B', 'Market cap $132.3B');
+      expectPill('adv_usd', 'ADV $45.2M', 'Average dollar volume $45.2M');
+      expectPill('vcp_pivot', 'Pvt $101.25', 'VCP pivot $101.25');
+      expectPill('stage', 'Stg S2', 'Stage S2');
       // Non-numeric, unknown and already-visible fields keep the composite.
       expectPill('se_pattern_primary', '66.0', 'Score 66.0');
       expectPill('mystery_field', '66.0', 'Score 66.0');

@@ -56,44 +56,68 @@ const ROW_HEIGHT = 48;
 // Phone layout: one StockRowCard per result (fixed height keeps the virtualizer
 // exact). Content needs ~75px; the rest is headroom for larger system text.
 const MOBILE_CARD_HEIGHT = 84;
-// Metrics a phone card can show in place of the composite when the list is
-// sorted by them, so the visible number matches the order: [pill label, unit,
-// spoken name]. Units follow the desktop columns, or for preset-only fields the
-// preset filters in backend/app/services/preset_screens.py. Any other sort
-// (or a non-numeric value) keeps the composite.
+// Phone cards show the value of the active sort (pill label + desktop-style
+// formatting), so the visible number matches the order. Covers every sortable
+// column the card doesn't already show, plus preset-only sort fields (units from
+// the preset filters in backend/app/services/preset_screens.py). Sorts not
+// listed are text (sector, pattern, action state, RS blue dot) or already on
+// the card (composite, symbol, price, 1D change, group rank, industry), and
+// keep the composite.
+const oneDp = (value) => Number(value).toFixed(1);
+const pct = (value) => `${Number(value).toFixed(1)}%`;
+const ratio = (value) => `${Number(value).toFixed(1)}×`;
+const whole = (value) => Number(value).toFixed(0);
 const CARD_METRICS = {
-  minervini_score: ['Min', '', 'Minervini'],
-  canslim_score: ['CAN', '', 'CANSLIM'],
-  ipo_score: ['IPO', '', 'IPO score'],
-  custom_score: ['Cust', '', 'Custom score'],
-  volume_breakthrough_score: ['VolB', '', 'Volume breakthrough'],
-  se_setup_score: ['SE', '', 'Setup score'],
-  vcp_score: ['VScr', '', 'VCP score'],
-  resilience_score: ['Res', '', 'Resilience'],
-  rs_rating: ['RS', '', 'RS rating'],
-  rs_rating_1m: ['RS1M', '', 'RS rating 1 month'],
-  rs_rating_3m: ['RS3M', '', 'RS rating 3 months'],
-  rs_rating_12m: ['RS12M', '', 'RS rating 12 months'],
-  eps_rating: ['EPS', '', 'EPS rating'],
-  beta: ['β', '', 'Beta'],
-  beta_adj_rs: ['βRS', '', 'Beta-adjusted RS'],
-  eps_growth_qq: ['EPS', '%', 'EPS growth Q/Q'],
-  adr_percent: ['ADR', '%', 'ADR'],
-  se_distance_to_pivot_pct: ['Pvt', '%', 'Distance to pivot'],
-  se_bb_width_pctile_252: ['Sqz', '', 'Squeeze percentile'],
-  se_volume_vs_50d: ['V50', '×', 'Volume vs 50-day'],
-  gap_percent: ['Gap', '%', 'Gap'],
-  perf_week: ['1W', '%', 'Performance 1 week'],
-  perf_6m: ['6M', '%', 'Performance 6 months'],
-  week_52_high_distance: ['52W', '%', 'From 52-week high'],
-  volume_surge: ['Vol', '×', 'Volume surge'],
-  se_up_down_volume_ratio_10d: ['U/D', '×', 'Up/down volume 10 days'],
+  minervini_score: { label: 'Min', name: 'Minervini', format: oneDp },
+  canslim_score: { label: 'CAN', name: 'CANSLIM', format: oneDp },
+  ipo_score: { label: 'IPO', name: 'IPO score', format: oneDp },
+  custom_score: { label: 'Cust', name: 'Custom score', format: oneDp },
+  volume_breakthrough_score: { label: 'VolB', name: 'Volume breakthrough', format: oneDp },
+  se_setup_score: { label: 'SE', name: 'Setup score', format: oneDp },
+  vcp_score: { label: 'VScr', name: 'VCP score', format: oneDp },
+  resilience_score: { label: 'Res', name: 'Resilience', format: oneDp },
+  rs_rating: { label: 'RS', name: 'RS rating', format: whole },
+  rs_rating_1m: { label: 'RS1M', name: 'RS rating 1 month', format: whole },
+  rs_rating_3m: { label: 'RS3M', name: 'RS rating 3 months', format: whole },
+  rs_rating_12m: { label: 'RS12M', name: 'RS rating 12 months', format: whole },
+  rs_trend: { label: 'RS', name: 'RS trend', format: (v) => (v > 0 ? '▲' : v < 0 ? '▼' : '–') },
+  eps_rating: { label: 'EPS', name: 'EPS rating', format: whole },
+  beta: { label: 'β', name: 'Beta', format: (v) => Number(v).toFixed(2) },
+  beta_adj_rs: { label: 'βRS', name: 'Beta-adjusted RS', format: whole },
+  stage: { label: 'Stg', name: 'Stage', format: (v) => `S${whole(v)}` },
+  eps_growth_qq: { label: 'EPS', name: 'EPS growth Q/Q', format: pct },
+  sales_growth_qq: { label: 'Sales', name: 'Sales growth Q/Q', format: pct },
+  adr_percent: { label: 'ADR', name: 'ADR', format: pct },
+  se_distance_to_pivot_pct: { label: 'Pvt', name: 'Distance to pivot', format: pct },
+  se_bb_width_pctile_252: { label: 'Sqz', name: 'Squeeze percentile', format: whole },
+  se_volume_vs_50d: { label: 'V50', name: 'Volume vs 50-day', format: ratio },
+  se_pivot_price: { label: 'Pvt', name: 'Pivot price', format: (v, row) => formatLocalCurrency(v, row.currency) },
+  vcp_pivot: { label: 'Pvt', name: 'VCP pivot', format: (v, row) => formatLocalCurrency(v, row.currency) },
+  volume: { label: '$Vol', name: 'Dollar volume', format: (v, row) => formatLargeNumber(v, getCurrencyPrefix(row.currency)) },
+  market_cap: {
+    label: 'MCap',
+    name: 'Market cap',
+    format: (v, row) => (row.market_cap_usd != null
+      ? formatLargeNumber(row.market_cap_usd, '$')
+      : formatLargeNumber(v, getCurrencyPrefix(row.currency))),
+  },
+  adv_usd: { label: 'ADV', name: 'Average dollar volume', format: (v) => formatLargeNumber(v, '$') },
+  ipo_date: { label: 'IPO', name: 'IPO age', format: (v) => formatIpoAge(v), text: true },
+  gap_percent: { label: 'Gap', name: 'Gap', format: pct },
+  perf_week: { label: '1W', name: 'Performance 1 week', format: pct },
+  perf_6m: { label: '6M', name: 'Performance 6 months', format: pct },
+  week_52_high_distance: { label: '52W', name: 'From 52-week high', format: pct },
+  volume_surge: { label: 'Vol', name: 'Volume surge', format: ratio },
+  se_up_down_volume_ratio_10d: { label: 'U/D', name: 'Up/down volume 10 days', format: ratio },
 };
-const cardMetricFor = (sortBy) => {
-  const entry = CARD_METRICS[sortBy];
-  return entry
-    ? { field: sortBy, label: entry[0], suffix: entry[1], description: entry[2] }
-    : { field: 'composite_score' };
+// The card's labelled metric for this row, or null to keep the composite.
+const cardMetricFor = (row, sortBy) => {
+  const spec = CARD_METRICS[sortBy];
+  const raw = row[sortBy];
+  if (!spec || raw == null || raw === '') return null;
+  if (!spec.text && !Number.isFinite(Number(raw))) return null;
+  const value = spec.format(raw, row);
+  return value && value !== '-' ? { label: spec.label, value, name: spec.name } : null;
 };
 // Sorts offered by the phone sort picker; the active sort is always included.
 const MOBILE_SORT_FIELDS = [
@@ -811,12 +835,11 @@ function ResultsTable({
   };
 
   if (isMobile) {
-    const cardMetric = cardMetricFor(sortBy);
     const sortOptions = !sortBy || MOBILE_SORT_FIELDS.some(([id]) => id === sortBy)
       ? MOBILE_SORT_FIELDS
       : [...MOBILE_SORT_FIELDS, [
         sortBy,
-        CARD_METRICS[sortBy]?.[2] || columns.find((column) => column.id === sortBy)?.label || 'Current sort',
+        CARD_METRICS[sortBy]?.name || columns.find((column) => column.id === sortBy)?.label || 'Current sort',
       ]];
     return (
       <Paper elevation={1}>
@@ -866,7 +889,7 @@ function ResultsTable({
                 >
                   <StockRowCard
                     row={row}
-                    metric={cardMetric}
+                    metric={cardMetricFor(row, sortBy)}
                     badge={mobileBadge(row)}
                     actions={showActions && showWatchlistMenu
                       ? <AddToWatchlistMenu symbols={row.symbol} size="small" />

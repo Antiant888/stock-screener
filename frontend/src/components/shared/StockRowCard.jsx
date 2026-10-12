@@ -16,21 +16,17 @@ const oneDecimal = (value) => (Number.isFinite(Number(value)) && value != null ?
  */
 export default function StockRowCard({
   row,
-  // { field, label, suffix, description }: the value shown in the pill.
-  metric = { field: 'composite_score' },
+  // Unlabelled value for the pill (Daily lists pass e.g. resilience_score).
+  scoreField = 'composite_score',
+  // Optional labelled override, already formatted: { label, value, name }
+  // (the Scan list passes its active sort's value).
+  metric = null,
   badge = null,
   actions = null,
   meta = null,
   onOpen = null,
 }) {
-  // A labelled metric (e.g. the active sort) only when it has a number;
-  // otherwise the composite, unlabelled.
-  const { field = 'composite_score', label = null, suffix = '', description = label } = metric;
-  const raw = row[field];
-  const shown = raw != null && Number.isFinite(Number(raw))
-    ? { value: oneDecimal(raw), label, suffix, description }
-    : { value: oneDecimal(row.composite_score), label: null, suffix: '', description: null };
-  const shownValue = `${shown.value}${shown.value === '-' ? '' : shown.suffix}`;
+  const shown = metric || { label: null, value: oneDecimal(row[scoreField]), name: 'Score' };
   const change = Number(row.price_change_1d);
   const hasChange = row.price_change_1d != null && Number.isFinite(change);
   // Rank first: long industry names truncate, and the rank is the part worth keeping.
@@ -137,10 +133,10 @@ export default function StockRowCard({
       <Box sx={{ textAlign: 'right' }}>
         <Typography
           component="span"
-          aria-label={`${shown.description || 'Score'} ${shownValue}`}
+          aria-label={`${shown.name} ${shown.value}`}
           sx={{ display: 'inline-block', px: 0.75, borderRadius: 1, bgcolor: 'action.selected', fontSize: '11px', fontWeight: 700 }}
         >
-          {shown.label ? `${shown.label} ` : ''}{shownValue}
+          {shown.label ? `${shown.label} ` : ''}{shown.value}
         </Typography>
         <Typography sx={{ fontSize: '13px', fontWeight: 600, mt: 0.25 }}>
           {formatLocalCurrency(row.current_price, row.currency)}
