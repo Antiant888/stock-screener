@@ -6,7 +6,7 @@ import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-d
 import {
   AppBar,
   Box,
-  CircularProgress,
+  Container,
   CssBaseline,
   ThemeProvider,
   Toolbar,
@@ -17,6 +17,7 @@ import { STATIC_SITE_MODE } from './config/runtimeMode';
 
 import Layout from './components/Layout/Layout';
 import { BrandMark } from './components/Layout/AppNav';
+import { PageSkeleton } from './components/common/LoadingSkeletons';
 import { getDesignTokens, useColorMode } from './theme';
 import { PipelineProvider } from './contexts/PipelineContext';
 import { MarketProvider } from './contexts/MarketContext';
@@ -83,19 +84,8 @@ function LiveOptionsRoute({ detail = false }) {
 }
 
 // In-app fallback for lazy page transitions (Layout chrome is already mounted,
-// so a spinner in the content area is the right scope).
-const PageLoadingFallback = () => (
-  <Box
-    sx={{
-      display: 'flex',
-      justifyContent: 'center',
-      alignItems: 'center',
-      minHeight: '50vh',
-    }}
-  >
-    <CircularProgress />
-  </Box>
-);
+// so a page-shaped skeleton in the content area is the right scope).
+const PageLoadingFallback = () => <PageSkeleton />;
 
 // Cold-start fallback shown while appCapabilities is first loading and we don't
 // yet know whether to render the app, the login screen, or the bootstrap setup.
@@ -104,16 +94,16 @@ const PageLoadingFallback = () => (
 // the user immediate visual structure instead of a bare spinner. On refresh,
 // persisted page data can still paint quickly once live capabilities confirm
 // whether the app shell, login screen, or bootstrap setup should render.
-const AppLoadingScreen = () => (
+const AppLoadingScreen = ({ label = 'Stock Scanner' }) => (
   <Box sx={{ display: 'flex', flexDirection: 'column', minHeight: '100vh' }}>
     <AppBar position="static">
       <Toolbar variant="dense" sx={{ minHeight: 52 }}>
-        <BrandMark label="Stock Scanner" />
+        <BrandMark label={label} />
       </Toolbar>
     </AppBar>
-    <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', flex: 1 }}>
-      <CircularProgress />
-    </Box>
+    <Container maxWidth="xl" sx={{ mt: 1 }}>
+      <PageSkeleton label="Loading Stock Scanner" />
+    </Container>
   </Box>
 );
 
@@ -184,7 +174,9 @@ function App() {
   }, [mode, theme]);
 
   const appShell = STATIC_SITE_MODE ? (
-    <Suspense fallback={<PageLoadingFallback />}>
+    // The static shell mounts its own chrome, so its cold start shows the same
+    // app bar + skeleton frame instead of a bare skeleton flush to the edges.
+    <Suspense fallback={<AppLoadingScreen label="Stock Scanner Daily" />}>
       <StaticAppShell />
     </Suspense>
   ) : (

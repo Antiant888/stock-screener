@@ -13,7 +13,6 @@ import {
   Chip,
   Typography,
   Box,
-  CircularProgress,
   IconButton,
   styled,
 } from '@mui/material';
@@ -27,6 +26,7 @@ import MarketBadge from './MarketBadge';
 import MarketThemesList from '../Stock/MarketThemesList';
 import AddToWatchlistMenu from '../common/AddToWatchlistMenu';
 import OpportunityEvidenceDrawer from '../shared/OpportunityEvidenceDrawer';
+import { TableSkeleton } from '../common/LoadingSkeletons';
 import OpportunityResultCells from './OpportunityResultCells';
 import { useOpportunityEvidenceSelection } from './useOpportunityEvidenceSelection';
 import {
@@ -684,9 +684,7 @@ function ResultsTable({
 
   if (loading) {
     return (
-      <Box sx={{ display: 'flex', justifyContent: 'center', p: 5 }}>
-        <CircularProgress />
-      </Box>
+      <TableSkeleton label="Loading scan results" rows={10} columns={8} title={false} />
     );
   }
 

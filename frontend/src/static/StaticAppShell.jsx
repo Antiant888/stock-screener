@@ -1,6 +1,7 @@
-import { lazy } from 'react';
+import { lazy, Suspense } from 'react';
 import { HashRouter as Router, Navigate, Route, Routes } from 'react-router-dom';
 import StaticLayout from './StaticLayout';
+import { PageSkeleton } from '../components/common/LoadingSkeletons';
 import StaticHomePage from './pages/StaticHomePage';
 import StaticScanPage from './pages/StaticScanPage';
 import StaticBreadthPage from './pages/StaticBreadthPage';
@@ -27,15 +28,18 @@ function StaticAppContent() {
       defaultMarket={defaultMarket}
     >
       <StaticLayout>
-        <Routes>
-          <Route path="/" element={<StaticHomePage />} />
-          <Route path="/scan" element={<StaticScanPage />} />
-          <Route path="/breadth" element={<StaticBreadthPage />} />
-          <Route path="/groups" element={<StaticGroupsPage />} />
-          <Route path="/options" element={<StaticOptionsPage />} />
-          <Route path="/options/:symbol" element={<StaticOptionsSymbolPage />} />
-          <Route path="*" element={<Navigate to="/" replace />} />
-        </Routes>
+        {/* Lazy pages (Options) load inside the layout, keeping the app bar. */}
+        <Suspense fallback={<PageSkeleton />}>
+          <Routes>
+            <Route path="/" element={<StaticHomePage />} />
+            <Route path="/scan" element={<StaticScanPage />} />
+            <Route path="/breadth" element={<StaticBreadthPage />} />
+            <Route path="/groups" element={<StaticGroupsPage />} />
+            <Route path="/options" element={<StaticOptionsPage />} />
+            <Route path="/options/:symbol" element={<StaticOptionsSymbolPage />} />
+            <Route path="*" element={<Navigate to="/" replace />} />
+          </Routes>
+        </Suspense>
       </StaticLayout>
     </StaticMarketProvider>
   );

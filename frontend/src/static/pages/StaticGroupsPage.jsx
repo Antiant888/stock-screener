@@ -3,7 +3,7 @@ import { useQuery } from '@tanstack/react-query';
 import {
   Alert,
   Box,
-  CircularProgress,
+  Skeleton,
   Grid,
   Paper,
   Table,
@@ -39,6 +39,7 @@ import {
 } from '../../features/groups/groupRankingFields';
 import { sortGroupRankings } from '../../features/groups/groupRankingSort';
 import { groupRsCellSx, groupRsTone } from '../../features/groups/groupRsVisualEncoding';
+import { PageSkeleton, TableSkeleton } from '../../components/common/LoadingSkeletons';
 
 const GroupMatrixPanel = lazy(() => import('../../features/groups/matrix/GroupMatrixPanel'));
 
@@ -260,9 +261,7 @@ function StaticGroupsPage() {
 
   if (manifestQuery.isLoading) {
     return (
-      <Box display="flex" justifyContent="center" py={8}>
-        <CircularProgress />
-      </Box>
+      <PageSkeleton label="Loading group rankings" />
     );
   }
 
@@ -282,7 +281,10 @@ function StaticGroupsPage() {
         {marketEntry.display_name} Group Rankings
       </Typography>
       <Typography variant="body2" color="text.secondary" sx={{ mb: 2, fontSize: '12px' }}>
-        Latest ranking date: {payload.rankings?.date || '-'}.
+        Latest ranking date:{' '}
+        {groupsQuery.isLoading
+          ? <Skeleton variant="text" width={80} sx={{ display: 'inline-block', verticalAlign: 'middle' }} />
+          : `${payload.rankings?.date || '-'}.`}
       </Typography>
 
       <GroupViewTabs
@@ -298,7 +300,7 @@ function StaticGroupsPage() {
 
       <Box role="tabpanel" id={`group-panel-${view}`} aria-labelledby={`group-tab-${view}`}>
       {view === 'matrix' ? (
-        <Suspense fallback={<CircularProgress />}>
+        <Suspense fallback={<TableSkeleton label="Loading group matrix" />}>
           <GroupMatrixPanel key={selectedMarket} data={matrixQuery.data} isLoading={matrixQuery.isLoading}
             error={matrixQuery.error} onRetry={() => matrixQuery.refetch()}
             preferences={matrixPreferences} onPreferencesChange={setMatrixPreferences} />
@@ -310,7 +312,7 @@ function StaticGroupsPage() {
           error={rrgQuery.isError ? rrgQuery.error : null}
           onSelectGroup={(name) => rrgScope === 'groups' && setSelectedGroup(name)}
         />
-      ) : groupsQuery.isLoading ? <CircularProgress />
+      ) : groupsQuery.isLoading ? <TableSkeleton label="Loading group rankings" rows={12} columns={8} />
         : groupsQuery.isError ? <Alert severity="error">Failed to load group rankings.</Alert>
         : !groupsQuery.data?.available ? <Alert severity="info">{groupsQuery.data?.message || 'No group rankings are available.'}</Alert>
         : (

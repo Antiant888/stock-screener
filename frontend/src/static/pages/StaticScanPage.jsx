@@ -3,7 +3,6 @@ import { useQuery } from '@tanstack/react-query';
 import {
   Alert,
   Box,
-  CircularProgress,
   Paper,
   Typography,
 } from '@mui/material';
@@ -47,6 +46,7 @@ import {
   filterStateReducer,
   selectQuickFilters,
 } from '../../features/scan/filterState';
+import { PageSkeleton } from '../../components/common/LoadingSkeletons';
 
 const HYDRATION_BATCH_SIZE = 2;
 
@@ -345,9 +345,7 @@ function StaticScanPage() {
 
   if (manifestQuery.isLoading || scanManifestQuery.isLoading) {
     return (
-      <Box display="flex" justifyContent="center" py={8}>
-        <CircularProgress />
-      </Box>
+      <PageSkeleton label="Loading scan" />
     );
   }
 

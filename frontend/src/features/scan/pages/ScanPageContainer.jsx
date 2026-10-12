@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Alert, Box, Button, CircularProgress, Container, Paper, Typography } from '@mui/material';
+import { Alert, Button, Container, Paper, Typography } from '@mui/material';
 import {
   cancelScan,
   createScan,
@@ -60,6 +60,7 @@ import {
   getMarketScanBlocker,
   resolveUniverseScopeValue,
 } from '../runtimeUniverseSelections';
+import { PageSkeleton } from '../../../components/common/LoadingSkeletons';
 
 const INITIAL_UNIVERSE_SELECTION = parseLegacyUniverseDefault(DEFAULT_SCAN_DEFAULTS.universe);
 const DEFAULT_SCAN_FILTERS = buildDefaultScanFilters();
@@ -836,10 +837,8 @@ function ScanPage() {
 
   if (!runtimeReady) {
     return (
-      <Container maxWidth="xl" sx={{ mt: 2, mb: 2 }}>
-        <Box display="flex" justifyContent="center" alignItems="center" minHeight="400px">
-          <CircularProgress />
-        </Box>
+      <Container maxWidth="xl" sx={{ pt: 1 }}>
+        <PageSkeleton label="Loading scan" />
       </Container>
     );
   }

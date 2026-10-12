@@ -194,6 +194,11 @@ export const getDesignTokens = (mode) => {
           },
         },
       },
+      MuiSkeleton: {
+        styleOverrides: {
+          root: { '@media (prefers-reduced-motion: reduce)': { animation: 'none' } },
+        },
+      },
       MuiChip: {
         styleOverrides: {
           sizeSmall: {

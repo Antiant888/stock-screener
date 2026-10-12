@@ -69,6 +69,7 @@ import { rrgScopesForMarket } from '../utils/rrgScopes';
 import LiveGroupRankingsTable from '../features/groups/LiveGroupRankingsTable';
 import { getLiveGroupRankingSortValue } from '../features/groups/groupRankingFields';
 import { sortGroupRankings } from '../features/groups/groupRankingSort';
+import { PageSkeleton, TableSkeleton } from '../components/common/LoadingSkeletons';
 
 const GroupMatrixPanel = lazy(() => import('../features/groups/matrix/GroupMatrixPanel'));
 
@@ -198,9 +199,7 @@ const GroupDetailModal = ({ group, market, open, onClose }) => {
       </DialogTitle>
       <DialogContent>
         {isLoading ? (
-          <Box display="flex" justifyContent="center" p={4}>
-            <CircularProgress />
-          </Box>
+          <TableSkeleton label="Loading group detail" rows={6} columns={5} title={false} />
         ) : detail ? (
           <Box>
             <Tabs
@@ -702,10 +701,8 @@ function GroupRankingsPage() {
 
   if (!runtimeReady) {
     return (
-      <Container maxWidth="xl" sx={{ mt: 4, mb: 4 }}>
-        <Box display="flex" justifyContent="center" alignItems="center" minHeight="400px">
-          <CircularProgress />
-        </Box>
+      <Container maxWidth="xl" sx={{ mt: 2, mb: 2 }}>
+        <PageSkeleton label="Loading group rankings" />
       </Container>
     );
   }
@@ -749,7 +746,7 @@ function GroupRankingsPage() {
 
       <Box role="tabpanel" id={`group-panel-${view}`} aria-labelledby={`group-tab-${view}`}>
       {view === 'matrix' ? (
-        <Suspense fallback={<CircularProgress />}>
+        <Suspense fallback={<TableSkeleton label="Loading group matrix" />}>
           <GroupMatrixPanel key={selectedMarket} data={matrixQuery.data} isLoading={matrixQuery.isLoading}
             error={matrixQuery.error} onRetry={() => matrixQuery.refetch()}
             preferences={matrixPreferences} onPreferencesChange={setMatrixPreferences} />
@@ -764,9 +761,7 @@ function GroupRankingsPage() {
       ) : errorRankings ? (
         <Alert severity="error">Error loading rankings: {errorRankings.message}</Alert>
       ) : isLoadingRankings ? (
-        <Box display="flex" justifyContent="center" alignItems="center" minHeight="400px">
-          <CircularProgress />
-        </Box>
+        <TableSkeleton label="Loading group rankings" rows={12} columns={8} />
       ) : (
         <>
           <Grid container spacing={2}>
@@ -785,9 +780,7 @@ function GroupRankingsPage() {
             {/* Movers Cards */}
             <Box sx={{ p: 2 }}>
               {isLoadingMovers ? (
-                <Box display="flex" justifyContent="center" p={2}>
-                  <CircularProgress size={24} />
-                </Box>
+                <TableSkeleton label="Loading rank movers" rows={5} columns={3} bare />
               ) : (
                 <Grid container spacing={1} direction="column">
                   <Grid item>

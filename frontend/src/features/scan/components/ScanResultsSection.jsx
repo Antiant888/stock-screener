@@ -1,7 +1,8 @@
-import { Alert, Box, Button, Chip, CircularProgress, LinearProgress, Paper, Typography } from '@mui/material';
+import { Alert, Box, Button, Chip, LinearProgress, Paper, Typography } from '@mui/material';
 import DownloadIcon from '@mui/icons-material/Download';
 import ResultsTable from '../../../components/Scan/ResultsTable';
 import { expressionSummary } from '../filterExpressionBuilder';
+import { TableSkeleton } from '../../../components/common/LoadingSkeletons';
 
 export default function ScanResultsSection({
   resultsLoading,
@@ -26,12 +27,7 @@ export default function ScanResultsSection({
     || 'The results request failed. Your previous results are still shown.';
 
   if (resultsLoading) {
-    return (
-      <Box sx={{ display: 'flex', justifyContent: 'center', p: 5 }}>
-        <CircularProgress />
-        <Typography sx={{ ml: 2 }}>Loading results...</Typography>
-      </Box>
-    );
+    return <TableSkeleton label="Loading results..." rows={10} columns={8} title={false} />;
   }
 
   if (resultsData && resultsData.results && resultsData.results.length > 0) {
