@@ -746,6 +746,30 @@ def test_find_job_record_asks_workers_about_one_task_only():
     assert record.queue == "market_jobs_us"
 
 
+def test_find_job_record_prefers_the_worker_state_over_a_broker_duplicate():
+    """A redelivered task can be in the broker list and on a worker at once;
+    list_jobs shows the worker state, so the lookup must too (no false 409)."""
+    service = OperationsJobService()
+    raw = _queued_message(task_id="task-1", task_name="app.tasks.cache_tasks.smart_refresh_cache")
+    service._broker = lambda: _FakeBroker({"celery": [raw]})
+    service._inspect = lambda: _QueryOnlyInspect(
+        {"general@host": {"task-1": ["reserved", {
+            "id": "task-1", "name": "app.tasks.cache_tasks.smart_refresh_cache",
+            "args": [], "kwargs": {}, "delivery_info": {"routing_key": "celery"},
+        }]}}
+    )
+
+    with patch.object(service, "broker_queue_names", return_value=["celery"]), patch(
+        "app.services.operations_job_service.get_workload_coordination"
+    ) as mock_get_coordination:
+        mock_get_coordination.return_value.get_external_fetch_holder.return_value = None
+        mock_get_coordination.return_value.get_market_workload_holders.return_value = {}
+        record = service._find_job_record(MagicMock(), "task-1")
+
+    assert record.state == "reserved"
+    assert record.cancel_strategy == "revoke"
+
+
 def test_list_jobs_marks_rows_with_an_accepted_cancel_request():
     service = OperationsJobService()
     raw = _queued_message(

@@ -620,7 +620,7 @@ def test_operations_queue_removal_marks_the_run_cancelled(db_session):
     broker = _FakeBroker({"celery": [raw]})
     ops._broker = lambda: broker
     ops._record_cancel_action = lambda *args, **kwargs: None
-    ops._find_scan_record = lambda _db, _task_id: _JobRecord(
+    ops._find_job_record = lambda _db, _task_id: _JobRecord(
         task_id=task_id,
         task_name=CLEANUP,
         queue="celery", market=None, state="queued", worker=None, age_seconds=None,

@@ -891,8 +891,9 @@ class OperationsJobService:
         whole inventory."""
         lease_snapshot = self._lease_snapshot()
         live = [job for job in self._queued_jobs(lease_snapshot) if job.task_id == task_id]
-        if not live:
-            live = self._query_task(task_id)
+        # Always ask the workers: a redelivered task can be in the broker list
+        # and on a worker at once, and the merge prefers the worker state.
+        live += self._query_task(task_id)
         if not live:
             scheduled = self._scheduled_records(self._inspect().scheduled() or {}, {})
             live = [job for job in scheduled if job.task_id == task_id]
