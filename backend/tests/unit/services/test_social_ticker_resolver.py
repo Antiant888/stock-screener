@@ -62,3 +62,56 @@ def test_etf_context_and_thematic_eligibility(resolver, symbol, kind, eligible):
     assert result.security_kind == kind
     assert result.ranking_eligible is eligible
     assert not result.company_count_eligible
+
+
+def _named(db, symbol, market, name):
+    row = StockUniverse(symbol=symbol, market=market, name=name, is_active=True)
+    db.add(row)
+    db.flush()
+    return row
+
+
+def test_single_listing_common_stock_derives_its_own_company_identity(db_session):
+    from app.services.social_ticker_resolver import SocialTickerResolver
+    row = _named(db_session, "CEG", "US", "Constellation Energy Corp")
+    result = SocialTickerResolver(db_session).resolve("$CEG")
+    assert result.company_id == f"security:{row.id}"
+    assert result.company_count_eligible
+    assert result.reason_codes == ("company_identity_single_listing",)
+
+
+@pytest.mark.parametrize("rows,token", [
+    ([("GOOGL", "US", "Alphabet Inc"), ("GOOG", "US", "Alphabet Inc")], "$GOOGL"),
+    ([("BABA", "US", "Alibaba Group Holding Ltd ADR")], "$BABA"),
+    ([("XYZ", "US", "Some Holdings ADS")], "$XYZ"),
+    ([("0700.HK", "HK", "TENCENT"), ("600519.SS", "CN", "Kweichow Moutai")], "$0700.HK"),
+    ([("NONAME", "US", None)], "$NONAME"),
+    # The universe flags many funds as common stock; a fund is not a company.
+    ([("IWM", "US", "iShares Russell 2000 Index Fund")], "$IWM"),
+    ([("XLF", "US", "State Street Financial Select Sector SPDR ETF")], "$XLF"),
+    ([("TQQQ", "US", "ProShares UltraPro QQQ 3x Shares")], "$TQQQ"),
+    ([("GSG", "US", "iShares S&P GSCI Commodity Indexed Trust")], "$GSG"),
+])
+def test_possible_cross_listings_and_funds_still_need_attestation(db_session, rows, token):
+    from app.services.social_ticker_resolver import SocialTickerResolver
+    for symbol, market, name in rows:
+        _named(db_session, symbol, market, name)
+    result = SocialTickerResolver(db_session).resolve(token)
+    assert result.status == "resolved"
+    assert result.company_id is None and not result.company_count_eligible
+    assert result.reason_codes == ("company_identity_unknown",)
+
+
+def test_hk_listing_derives_identity_while_no_mainland_market_is_loaded(db_session):
+    from app.services.social_ticker_resolver import SocialTickerResolver
+    _named(db_session, "0700.HK", "HK", "TENCENT")
+    assert SocialTickerResolver(db_session).resolve("$0700.HK").company_count_eligible
+
+
+def test_attested_identity_wins_over_a_derived_one(db_session):
+    from app.services.social_ticker_resolver import SocialTickerResolver
+    row = _named(db_session, "CEG", "US", "Constellation Energy Corp")
+    resolver = SocialTickerResolver(db_session, verified_company_ids={"CEG": "company:ceg"})
+    assert resolver.resolve("$CEG").company_id == "company:ceg"
+    assert resolver.company_id_for(row) == "company:ceg"
+    assert SocialTickerResolver(db_session).company_id_for(row) == f"security:{row.id}"

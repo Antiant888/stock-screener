@@ -116,6 +116,18 @@ def test_unsupported_claim_does_not_create_live_theme_or_membership(social_fixtu
     assert f.associations() == []
 
 
+def test_named_single_listings_activate_a_theme_without_attestation(social_fixture):
+    f = social_fixture
+    for symbol, name in (("EEE", "Eee Power Inc"), ("FFF", "Fff Grid Corp"), ("GGG", "Ggg Nuclear Ltd")):
+        f.db.add(StockUniverse(symbol=symbol, market="US", name=name, is_active=True))
+    f.db.commit()
+    for age in (3, 2, 1):
+        f.apply(f.prepare([f.save(("EEE", "FFF", "GGG"), age=age)]))
+    theme = f.db.query(ThemeCluster).one()
+    assert [a.state for a in f.associations()] == ["accepted"] * 3
+    assert theme.lifecycle_state == "active"
+
+
 def test_empty_catalog_proposes_accepts_promotes_and_is_idempotent(social_fixture):
     f = social_fixture
     first = f.save(("AAA", "BBB", "CCC"), age=3)

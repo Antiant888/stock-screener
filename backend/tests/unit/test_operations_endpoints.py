@@ -153,6 +153,8 @@ def test_social_signal_operations_counts_economic_associations_in_economic_mode(
     seed_social_associations(db_session, seed_generation(db_session))
     # AMD is verified but no longer active; the count must still see it as known.
     db_session.query(StockUniverse).filter_by(symbol="AMD").update({"is_active": False})
+    # Without a name there is nothing to derive a single-listing identity from.
+    db_session.query(StockUniverse).filter_by(symbol="NVDA").update({"name": None})
     db_session.add(AppSetting(key=KEY, category="social", value=json.dumps({
         "version": 1, "policy_version": POLICY,
         "entries": [{"symbol": "AMD", "company_id": "amd", "verification_reference": "10-K",
@@ -168,6 +170,11 @@ def test_social_signal_operations_counts_economic_associations_in_economic_mode(
 
     # Only NVDA is proposed without a verified company; the legacy row is not counted.
     assert payload["unknown_company_identity_count"] == 1
+    # A named single listing carries its own identity, as the resolver derives it.
+    db_session.query(StockUniverse).filter_by(symbol="NVDA").update({"name": "NVIDIA Corp"})
+    db_session.flush()
+    payload = SocialSignalOperationsService(redis_client=Redis()).snapshot(db_session)
+    assert payload["unknown_company_identity_count"] == 0
 
 
 def test_social_signal_operations_snapshot_uses_db_runtime_and_shared_ttls(db_session):

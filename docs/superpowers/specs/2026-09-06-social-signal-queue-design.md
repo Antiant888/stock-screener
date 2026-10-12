@@ -411,7 +411,13 @@ met, with administrator review reserved for exceptions. Evidence must explain
 the company's business connection to the theme; a bare ticker mention or price
 co-movement alone is insufficient. Reposts and duplicate list appearances do
 not provide corroboration. Ambiguous company identities and weak connections
-remain proposed and visible. Administrators can accept or reject associations
+remain proposed and visible. A company identity is either administrator-attested
+or, for a named common stock with no sign of a second listing, the listing
+itself (amended 2026-10-12: with attestation alone, no social association could
+ever be accepted). A depositary-receipt name, a name repeated within its market
+(share classes), a fund name, or an HK or mainland listing while the other of
+those markets is loaded still needs attestation. A company is double-counted
+only if both of its listings count, so excluding one side is enough. Administrators can accept or reject associations
 with a recorded reason. Price performance never determines membership.
 
 The approved initial automatic-acceptance threshold is two qualifying posts
