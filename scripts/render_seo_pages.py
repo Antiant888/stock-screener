@@ -170,7 +170,9 @@ def render_market(site: Site, code: str, entry: dict[str, Any], data: dict[str, 
     as_of = entry.get("as_of_date") or data["scan"].get("as_of_date") or ""
     app = f"{site.base}#/scan?market={code}"
     home_crumbs = [("Stock Screener", site.href("explore")), (name, site.href("markets", m))]
-    stocks = [r for r in data["rows"] if r.get("is_scannable") and r.get("symbol")]
+    # IPO-style scans can mark short-history rows scannable without an RS rating.
+    stocks = [r for r in data["rows"] if r.get("is_scannable") and r.get("symbol")
+              and r.get("data_status") == "complete" and r.get("rs_rating") is not None]
     has_page = {r["symbol"] for r in stocks}
     presets = {p["id"]: p for p in data["scan"].get("preset_screens", []) if "filter_expression" in p}
     curated = [presets[i] for i in CURATED_SCREENS if i in presets]
@@ -259,13 +261,14 @@ def render_market(site: Site, code: str, entry: dict[str, Any], data: dict[str, 
     groups = data["groups"]
     if groups and groups.get("available"):
         ranked = groups["payload"]["rankings"]["rankings"]
+        groups_as_of = groups.get("rs_as_of_date") or as_of  # last-good sections can trail the scan
         rows_html = "".join(
             f"<tr><td class=n>{esc(g.get('rank'))}</td><td>{esc(g.get('industry_group'))}</td><td class=n>{num(g.get('avg_rs_rating'))}</td>"
             f"<td class=n>{signed(g.get('rank_change_1w'), '')}</td><td class=n>{signed(g.get('rank_change_1m'), '')}</td>"
             f"<td class=n>{signed(g.get('rank_change_3m'), '')}</td><td>{esc(g.get('top_symbol'))}</td></tr>" for g in ranked)
-        site.write(("groups", m), as_of, f"{name} industry group rankings by relative strength ({as_of})",
+        site.write(("groups", m), groups_as_of, f"{name} industry group rankings by relative strength ({groups_as_of})",
                    f"{len(ranked)} {name} industry groups ranked by relative strength, with 1-week, 1-month and 3-month rank changes.",
-                   f"<h1>{esc(name)} industry group rankings</h1><p class=muted>As of {esc(groups.get('rs_as_of_date') or as_of)}</p>"
+                   f"<h1>{esc(name)} industry group rankings</h1><p class=muted>As of {esc(groups_as_of)}</p>"
                    f"<table><tr><th class=n>Rank</th><th>Group</th><th class=n>Avg RS</th><th class=n>1W</th><th class=n>1M</th>"
                    f"<th class=n>3M</th><th>Top stock</th></tr>{rows_html}</table>",
                    home_crumbs)
@@ -274,6 +277,7 @@ def render_market(site: Site, code: str, entry: dict[str, Any], data: dict[str, 
     breadth = data["breadth"]
     if breadth and breadth.get("available"):
         current = breadth["payload"]["current"]
+        breadth_as_of = current.get("date") or as_of
         recent = sorted(breadth["payload"].get("history_90d", []), key=lambda d: d["date"], reverse=True)[:10]
         latest = [("Stocks up 4%+ today", current.get("stocks_up_4pct")), ("Stocks down 4%+ today", current.get("stocks_down_4pct")),
                   ("5-day ratio", num(current.get("ratio_5day"), 2)), ("10-day ratio", num(current.get("ratio_10day"), 2)),
@@ -281,9 +285,9 @@ def render_market(site: Site, code: str, entry: dict[str, Any], data: dict[str, 
                   ("New 52-week highs", current.get("new_high_52week_count")), ("New 52-week lows", current.get("new_low_52week_count"))]
         rows_html = "".join(f"<tr><td>{esc(d['date'])}</td><td class=n>{esc(d.get('stocks_up_4pct'))}</td>"
                             f"<td class=n>{esc(d.get('stocks_down_4pct'))}</td></tr>" for d in recent)
-        site.write(("breadth", m), as_of, f"{name} market breadth today – 4% movers, T2108 ({as_of})",
+        site.write(("breadth", m), breadth_as_of, f"{name} market breadth – 4% movers, T2108 ({breadth_as_of})",
                    f"StockBee-style market breadth for {name}: stocks up and down 4%, 5- and 10-day ratios, T2108, new highs and lows.",
-                   f"<h1>{esc(name)} market breadth</h1><p class=muted>As of {esc(current.get('date') or as_of)}</p>"
+                   f"<h1>{esc(name)} market breadth</h1><p class=muted>As of {esc(breadth_as_of)}</p>"
                    "<table>" + "".join(f"<tr><th>{esc(k)}</th><td class=n>{esc(v)}</td></tr>" for k, v in latest) + "</table>"
                    f"<h2>Last 10 sessions</h2><table><tr><th>Date</th><th class=n>Up 4%+</th><th class=n>Down 4%+</th></tr>{rows_html}</table>",
                    home_crumbs)

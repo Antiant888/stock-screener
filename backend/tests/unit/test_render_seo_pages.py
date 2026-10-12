@@ -67,6 +67,8 @@ def dist(tmp_path):
         row("CCC", minervini_score=72.0),  # ties BBB; site order breaks ties by symbol
         row("NEW", is_scannable=False, data_status="insufficient_history", rs_rating=None),
         row("BRK/B", minervini_score=10.0),
+        # A short-history listing an IPO scan still marks scannable.
+        row("IPO", data_status="insufficient_history", rs_rating=None),
     ]
     manifest = {
         "data_root": gen, "generated_at": "2026-10-12T05:25:03Z", "unavailable_markets": ["IN"],
@@ -86,13 +88,13 @@ def dist(tmp_path):
     write(tmp_path, gen + "markets/us/scan/chunks/chunk-0001.json", {"rows": us_rows})
     write(tmp_path, gen + "markets/us/home.json", {"as_of_date": "2026-10-09", "market_health_exposure": {
         "exposure_score": 45.0, "stance": "Downtrend/Caution", "distribution_day_count": 8}})
-    write(tmp_path, gen + "markets/us/groups.json", {"available": True, "rs_as_of_date": "2026-10-09", "payload": {
+    write(tmp_path, gen + "markets/us/groups.json", {"available": True, "rs_as_of_date": "2026-10-08", "payload": {
         "rankings": {"rankings": [
             {"rank": 1, "industry_group": "Semiconductors", "avg_rs_rating": 90.0, "rank_change_1w": 2,
              "rank_change_1m": -1, "rank_change_3m": 5, "num_stocks": 10, "top_symbol": "AAA"},
         ]}}})
     write(tmp_path, gen + "markets/us/breadth.json", {"available": True, "payload": {
-        "current": {"date": "2026-10-09", "stocks_up_4pct": 182, "stocks_down_4pct": 116, "t2108_pct": 30.9,
+        "current": {"date": "2026-10-07", "stocks_up_4pct": 182, "stocks_down_4pct": 116, "t2108_pct": 30.9,
                     "ratio_5day": 0.84, "ratio_10day": 0.85, "new_high_52week_count": 168, "new_low_52week_count": 239},
         "history_90d": [{"date": f"2026-10-0{d}", "stocks_up_4pct": 100 + d, "stocks_down_4pct": 50} for d in range(1, 10)],
     }})
@@ -116,6 +118,7 @@ def test_stock_pages_cover_scannable_rows_only(dist):
     assert (dist / "stocks/us/AAA/index.html").exists()
     assert (dist / "stocks/au/BHP.AX/index.html").exists()
     assert not (dist / "stocks/us/NEW").exists()
+    assert not (dist / "stocks/us/IPO").exists()  # incomplete, no RS rating
 
 
 def test_stock_page_content_is_escaped_canonical_and_linked(dist):
@@ -172,6 +175,10 @@ def test_sitemap_lists_every_page_with_market_dates(dist):
     assert entries[SITE + "stocks/au/BHP.AX/"] == "2026-10-08"
     assert SITE + "explore/" in entries and SITE + "groups/us/" in entries
     assert SITE + "stocks/us/NEW/" not in entries
+    # Sections dated by their own snapshot when it trails the scan.
+    assert entries[SITE + "breadth/us/"] == "2026-10-07"
+    assert entries[SITE + "groups/us/"] == "2026-10-08"
+    assert "(2026-10-07)" in page(dist, "breadth/us") and "(2026-10-08)" in page(dist, "groups/us")
     for url in entries:  # every listed URL was written
         assert (dist / url.removeprefix(SITE) / "index.html").exists()
 
