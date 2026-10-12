@@ -102,6 +102,19 @@ describe('OptionsPage', () => {
     },
   );
 
+  it('clears accepted state when the refresh task is revoked', async () => {
+    const user = userEvent.setup();
+    optionsApi.refreshOptionsAnalytics.mockResolvedValue({ status: 'accepted', task_id: 'task-revoked' });
+    optionsApi.getOptionsRefreshStatus.mockResolvedValue({ status: 'cancelled', celery_state: 'REVOKED' });
+    renderWithProviders(<MemoryRouter><OptionsPage /></MemoryRouter>);
+
+    await screen.findByRole('button', { name: 'Open AAPL' });
+    await user.click(screen.getByRole('button', { name: 'Refresh options analytics' }));
+
+    expect(await screen.findByText(/refresh was cancelled/i)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Refresh options analytics' })).toBeEnabled();
+  });
+
   it('clears accepted state when task polling fails', async () => {
     const user = userEvent.setup();
     optionsApi.refreshOptionsAnalytics.mockResolvedValue({ status: 'accepted', task_id: 'task-error' });

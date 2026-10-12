@@ -31,7 +31,7 @@ export default function OptionsPage() {
     enabled: Boolean(accepted?.taskId),
     retry: false,
     refetchInterval: (query) => (
-      ['completed', 'failed'].includes(query.state.data?.status) ? false : 2000
+      ['completed', 'failed', 'cancelled'].includes(query.state.data?.status) ? false : 2000
     ),
   });
   const refreshMutation = useMutation({
@@ -67,6 +67,11 @@ export default function OptionsPage() {
     const resultStatus = String(task.result?.status || '').toLowerCase();
     if (taskStatus === 'failed') {
       setRefreshOutcome(`Refresh failed${task.error ? `: ${task.error}` : '.'}`);
+      setAccepted(null);
+      return;
+    }
+    if (taskStatus === 'cancelled') {
+      setRefreshOutcome('Refresh was cancelled.');
       setAccepted(null);
       return;
     }

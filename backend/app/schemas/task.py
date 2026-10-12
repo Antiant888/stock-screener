@@ -8,11 +8,11 @@ class LastRunInfo(BaseModel):
 
     id: int = Field(..., description="Execution history record ID")
     task_id: Optional[str] = Field(None, description="Celery task ID")
-    status: str = Field(..., description="Status: queued, running, completed, failed")
+    status: str = Field(..., description="Status: queued, running, completed, failed, cancelled, lost")
     started_at: Optional[str] = Field(None, description="Start time (ISO format)")
     completed_at: Optional[str] = Field(None, description="Completion time (ISO format)")
     duration_seconds: Optional[float] = Field(None, description="Duration in seconds")
-    triggered_by: str = Field(..., description="Trigger source: schedule, manual")
+    triggered_by: str = Field(..., description="Trigger source: manual, auto, or the task's origin tag")
     error_message: Optional[str] = Field(None, description="Error message if failed")
 
 
@@ -50,7 +50,7 @@ class TaskStatusResponse(BaseModel):
 
     task_id: str = Field(..., description="Celery task ID")
     task_name: str = Field(..., description="Name of the task")
-    status: str = Field(..., description="Status: queued, running, completed, failed")
+    status: str = Field(..., description="Status: queued, running, completed, failed, cancelled")
     celery_state: str = Field(..., description="Raw Celery state")
     progress: Optional[float] = Field(None, description="Progress percentage (0-100)")
     message: Optional[str] = Field(None, description="Progress message")

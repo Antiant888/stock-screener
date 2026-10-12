@@ -301,7 +301,7 @@ def test_task_registry_rejects_manual_refresh_inside_shared_cooldown():
     assert error.value.retry_after == 47
 
 
-def test_task_registry_releases_manual_cooldown_when_dispatch_fails():
+def test_task_registry_releases_manual_cooldown_when_dispatch_fails(db_session):
     from app.services.social_signal_runtime_gate import RedisSocialSignalGate
     from app.services.task_registry_service import TaskRegistryService
 
@@ -314,7 +314,7 @@ def test_task_registry_releases_manual_cooldown_when_dispatch_fails():
     service._task_imports["social-signal-refresh"] = BrokenTask()
 
     with pytest.raises(RuntimeError, match="broker unavailable"):
-        service.trigger_task("social-signal-refresh", object())
+        service.trigger_task("social-signal-refresh", db_session)
 
     assert gate.acquire_manual_cooldown("next-attempt", 3600) == (True, 3600)
 
@@ -355,8 +355,12 @@ def test_task_registry_projects_db_runtime_and_dispatches_manual_refresh_to_soci
         apply_async=lambda **kwargs: calls.append(kwargs) or SimpleNamespace(id="social-task-1")
     )
     result = service.trigger_task("social-signal-refresh", db_session)
-    assert result["task_id"] == "social-task-1"
-    assert calls == [{"kwargs": {"origin": "manual"}, "headers": None, "queue": "social_ingestion"}]
+    assert calls == [{
+        "kwargs": {"origin": "manual"},
+        "headers": None,
+        "task_id": result["task_id"],
+        "queue": "social_ingestion",
+    }]
 
 
 @pytest.mark.asyncio

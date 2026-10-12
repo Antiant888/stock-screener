@@ -15,7 +15,7 @@ class TaskExecutionHistory(Base):
     task_id = Column(String(100), nullable=True)  # Celery task ID
 
     # Execution details
-    status = Column(String(20), default="queued")  # queued, running, completed, failed
+    status = Column(String(20), default="queued")  # queued, running, completed, failed, cancelled
     started_at = Column(DateTime(timezone=True), server_default=func.now())
     completed_at = Column(DateTime(timezone=True))
     duration_seconds = Column(Float)
@@ -25,8 +25,10 @@ class TaskExecutionHistory(Base):
     error_message = Column(Text)
 
     # Trigger source
-    triggered_by = Column(String(20), default="manual")  # schedule, manual
+    # manual, auto (Beat or another dispatch), or the task's own origin kwarg
+    triggered_by = Column(String(20), default="manual")
 
     __table_args__ = (
         Index("idx_task_name_started", "task_name", "started_at"),
+        Index("idx_task_execution_task_id", "task_id"),
     )

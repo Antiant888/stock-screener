@@ -3,14 +3,18 @@ Service for managing and tracking scheduled Celery tasks.
 
 Provides task metadata, execution history, and manual triggering capabilities.
 """
+import json
 import logging
-from datetime import datetime, timezone
-from typing import Dict, List, Optional
+from datetime import datetime, timedelta, timezone
+from typing import Any, Dict, List, Optional
+from uuid import uuid4
 
 from celery.result import AsyncResult
 from sqlalchemy import desc, inspect
 from sqlalchemy.orm import Session
 
+from ..celery_app import celery_app
+from ..database import SessionLocal
 from ..models.task_execution import TaskExecutionHistory
 from ..config import settings
 from .errors import TaskCooldownError
@@ -130,6 +134,128 @@ SCHEDULED_TASKS = {
 }
 
 
+_REGISTRY_FUNCTIONS = frozenset(info['task_function'] for info in SCHEDULED_TASKS.values())
+_CELERY_STATE_FOR = {'completed': 'SUCCESS', 'failed': 'FAILURE', 'cancelled': 'REVOKED'}
+_STATUS_FOR_CELERY_STATE = {state: status for status, state in _CELERY_STATE_FOR.items()}
+_FINISHED_STATUSES = frozenset(_CELERY_STATE_FOR)
+# Celery kills a task at the global task_time_limit and stores FAILURE for
+# it; the margin leaves the reconcile job time to record that. A run still
+# open after this was never started, or its worker died without a stored
+# outcome (or ran under --pool=solo, where time limits are not enforced), so
+# its result is unknown.
+RUN_LOST_AFTER = timedelta(seconds=celery_app.conf.task_time_limit) + timedelta(hours=1)
+# Callers that tag the origin kwarg outside these dispatch the task ad hoc
+# (e.g. per-attachment social refreshes), not as the scheduled job.
+_TRACKED_ORIGINS = frozenset({'manual', 'scheduled'})
+
+
+def _result_summary(result: Any, task_id: str) -> Optional[Dict[str, Any]]:
+    """A task's dict result as JSON, or None (PostgreSQL JSON rejects NaN).
+
+    Dropping the summary must never also drop the run's outcome.
+    """
+    if not isinstance(result, dict):
+        return None
+    try:
+        return json.loads(json.dumps(result, default=str, allow_nan=False))
+    except ValueError:
+        logger.warning("Dropping non-JSON result summary for run %s", task_id)
+        return None
+
+
+def _reported_error(result: Any) -> Optional[str]:
+    """The error a task returned instead of raising, if any.
+
+    Several registry tasks (weekly_full_refresh, cleanup_old_price_data,
+    refresh_all_fundamentals, refresh_stock_universe) catch their exception
+    and return ``{'error': ...}`` or ``{'status': 'error'}``, so Celery
+    reports SUCCESS. Other statuses (skipped, ok, the Options task's
+    failed_quality gate) are finished runs, not failures.
+    """
+    if not isinstance(result, dict):
+        return None
+    if result.get('error'):
+        return str(result['error'])
+    if result.get('status') in ('error', 'failed'):
+        return f"Task reported status '{result['status']}'"
+    return None
+
+
+def _registry_entry_for(task_function: str, kwargs: Dict[str, Any]) -> Optional[str]:
+    """Map a Celery task to its registry entry, preferring a per-market entry."""
+    market = str(kwargs.get('market') or '').upper()
+    fallback = None
+    for name, info in SCHEDULED_TASKS.items():
+        if info['task_function'] != task_function:
+            continue
+        entry_market = (info.get('manual_dispatch_kwargs') or {}).get('market')
+        if entry_market is None:
+            fallback = fallback or name
+        elif entry_market == market:
+            return name
+    return fallback
+
+
+def record_task_run(
+    task_id: Optional[str],
+    task_function: Optional[str],
+    kwargs: Optional[Dict[str, Any]],
+    status: str,
+    *,
+    result: Any = None,
+    error: Optional[str] = None,
+) -> None:
+    """Record a registry task's lifecycle from the worker (best-effort).
+
+    Called from Celery task signals so history no longer depends on a browser
+    polling the status endpoint. Manual triggers insert their row before
+    dispatch; scheduled runs get their row here. Failures only log a warning:
+    run bookkeeping must never fail the task it describes.
+    """
+    kwargs = kwargs or {}
+    origin = kwargs.get('origin')
+    if not task_id or task_function not in _REGISTRY_FUNCTIONS:
+        return
+    if isinstance(origin, str) and origin not in _TRACKED_ORIGINS:
+        return
+    task_name = _registry_entry_for(task_function, kwargs)
+    if task_name is None:
+        return
+    if status == 'completed' and (reported := _reported_error(result)):
+        status, error = 'failed', reported
+    try:
+        now = datetime.now(timezone.utc)
+        with SessionLocal() as db:
+            row = db.query(TaskExecutionHistory).filter_by(task_id=task_id).first()
+            if row is None:
+                # Manual triggers pre-insert their row, so this is Beat or
+                # another automatic dispatch; only a tagged origin says which.
+                row = TaskExecutionHistory(
+                    task_name=task_name,
+                    task_function=task_function,
+                    task_id=task_id,
+                    started_at=now,
+                    triggered_by=origin if isinstance(origin, str) else 'auto',
+                )
+                db.add(row)
+            if status == 'running' and row.status == 'queued':
+                # Start the clock when a worker first picks up a manual run; a
+                # retry's prerun (row already running) keeps the first start.
+                row.started_at = now
+            row.status = status
+            if status in _FINISHED_STATUSES:
+                row.completed_at = now
+                started_at = _coerce_utc_datetime(row.started_at)
+                if started_at:
+                    row.duration_seconds = (now - started_at).total_seconds()
+                row.result_summary = _result_summary(result, task_id)
+                if error:
+                    row.error_message = error
+            db.commit()
+    except Exception:
+        logger.warning("Failed to record %s run %s as %s", task_name, task_id, status, exc_info=True)
+
+
 class TaskRegistryService:
     """
     Service for managing scheduled Celery tasks.
@@ -216,10 +342,18 @@ class TaskRegistryService:
             }
 
             if last_run:
+                status = last_run.status
+                started_at = _coerce_utc_datetime(last_run.started_at)
+                if (
+                    status not in _FINISHED_STATUSES
+                    and started_at
+                    and datetime.now(timezone.utc) - started_at > RUN_LOST_AFTER
+                ):
+                    status = 'lost'
                 task_data['last_run'] = {
                     'id': last_run.id,
                     'task_id': last_run.task_id,
-                    'status': last_run.status,
+                    'status': status,
                     'started_at': last_run.started_at.isoformat() if last_run.started_at else None,
                     'completed_at': last_run.completed_at.isoformat() if last_run.completed_at else None,
                     'duration_seconds': last_run.duration_seconds,
@@ -230,6 +364,42 @@ class TaskRegistryService:
             result.append(task_data)
 
         return result
+
+    def reconcile_open_runs(self, db: Session) -> int:
+        """Close open runs from Celery's stored outcome when no signal did.
+
+        A hard time limit or a lost worker kills the child before
+        task_postrun, and revokes are announced in the worker's parent
+        process; Celery still stores FAILURE/REVOKED in the result backend.
+        Runs in a worker (see task_history_tasks) because the result backend
+        retries for minutes while Redis is down. Returns the number closed.
+        """
+        cutoff = datetime.now(timezone.utc) - RUN_LOST_AFTER
+        open_runs = db.query(TaskExecutionHistory).filter(
+            TaskExecutionHistory.status.in_(('queued', 'running')),
+            TaskExecutionHistory.task_id.isnot(None),
+            TaskExecutionHistory.started_at >= cutoff,
+        ).all()
+        closed = 0
+        for run in open_runs:
+            task_id = run.task_id
+            try:
+                outcome = AsyncResult(task_id)
+                status = _STATUS_FOR_CELERY_STATE.get(outcome.state)
+                if status is None:
+                    continue
+                self._update_execution_completed(
+                    db,
+                    task_id,
+                    status,
+                    result=outcome.result if status == 'completed' else None,
+                    error=str(outcome.result) if status == 'failed' else None,
+                )
+                closed += 1
+            except Exception:
+                db.rollback()
+                logger.warning("Could not read Celery state for run %s", task_id, exc_info=True)
+        return closed
 
     def trigger_task(self, task_name: str, db: Session) -> Dict:
         """
@@ -258,41 +428,53 @@ class TaskRegistryService:
             if not accepted:
                 raise TaskCooldownError(retry_after)
 
-        # Get the task function and dispatch it
+        # Commit the run row before publishing so the worker's start/finish
+        # signals always find it, however quickly the task is picked up.
+        task_id = str(uuid4())
+        committed = False
         try:
             task_func = self._get_task(task_name)
-            manual_dispatch_kwargs = task_info.get('manual_dispatch_kwargs')
-            manual_dispatch_headers = task_info.get('manual_dispatch_headers')
-            manual_dispatch_options = task_info.get('manual_dispatch_options') or {}
-            if manual_dispatch_kwargs or manual_dispatch_headers or manual_dispatch_options:
-                celery_task = task_func.apply_async(
-                    kwargs=manual_dispatch_kwargs or {},
-                    headers=manual_dispatch_headers,
-                    **manual_dispatch_options,
-                )
-            else:
-                celery_task = task_func.delay()
-        except Exception:
+            execution = TaskExecutionHistory(
+                task_name=task_name,
+                task_function=task_info['task_function'],
+                task_id=task_id,
+                status='queued',
+                started_at=datetime.now(timezone.utc),
+                triggered_by='manual',
+            )
+            db.add(execution)
+            db.commit()
+            committed = True
+            task_func.apply_async(
+                kwargs=task_info.get('manual_dispatch_kwargs') or {},
+                headers=task_info.get('manual_dispatch_headers'),
+                task_id=task_id,
+                **(task_info.get('manual_dispatch_options') or {}),
+            )
+        except Exception as exc:
             if cooldown_owner is not None:
                 self._gate().release_manual_cooldown(cooldown_owner)
+            if committed:
+                # Only a still-queued row: if the publish landed after all, a
+                # worker may already have advanced it.
+                try:
+                    db.query(TaskExecutionHistory).filter_by(
+                        task_id=task_id, status='queued'
+                    ).update({
+                        'status': 'failed',
+                        'completed_at': datetime.now(timezone.utc),
+                        'error_message': f"Dispatch failed: {exc}",
+                    }, synchronize_session=False)
+                    db.commit()
+                except Exception:
+                    db.rollback()
+                    logger.warning("Could not mark manual run %s failed", task_id, exc_info=True)
             raise
 
-        # Record the execution in history
-        execution = TaskExecutionHistory(
-            task_name=task_name,
-            task_function=task_info['task_function'],
-            task_id=celery_task.id,
-            status='queued',
-            started_at=datetime.now(timezone.utc),
-            triggered_by='manual',
-        )
-        db.add(execution)
-        db.commit()
-
-        logger.info(f"Task {task_name} queued with ID: {celery_task.id}")
+        logger.info(f"Task {task_name} queued with ID: {task_id}")
 
         return {
-            'task_id': celery_task.id,
+            'task_id': task_id,
             'task_name': task_name,
             'status': 'queued',
             'execution_id': execution.id,
@@ -311,6 +493,24 @@ class TaskRegistryService:
         Returns:
             Dictionary with current status and progress
         """
+        # The worker's task signals record finished runs; the ledger owns
+        # their status.
+        run = db.query(TaskExecutionHistory).filter_by(task_id=task_id).first()
+        if run is not None and run.status in _FINISHED_STATUSES:
+            response = {
+                'task_id': task_id,
+                'task_name': task_name,
+                'status': run.status,
+                'celery_state': _CELERY_STATE_FOR[run.status],
+            }
+            if run.status == 'completed':
+                response['result'] = run.result_summary
+                if run.result_summary is None:
+                    response['result'] = self._celery_success_result(task_id)
+            elif run.error_message:
+                response['error'] = run.error_message
+            return response
+
         # Get status from Celery
         result = AsyncResult(task_id)
         celery_state = result.state
@@ -322,10 +522,13 @@ class TaskRegistryService:
             'PROGRESS': 'running',
             'SUCCESS': 'completed',
             'FAILURE': 'failed',
-            'REVOKED': 'failed',
+            'REVOKED': 'cancelled',
         }
 
         status = state_mapping.get(celery_state, celery_state.lower())
+        if status == 'queued' and run is not None and run.status == 'running':
+            # task_prerun fires before Celery stores STARTED; never step back.
+            status = 'running'
 
         response = {
             'task_id': task_id,
@@ -342,14 +545,36 @@ class TaskRegistryService:
             response['total'] = result.info.get('total', 0)
         elif celery_state == 'SUCCESS':
             response['result'] = result.result
-            # Update database record
-            self._update_execution_completed(db, task_id, 'completed', result.result)
+            if reported := _reported_error(result.result):
+                status = response['status'] = 'failed'
+                response['error'] = reported
         elif celery_state == 'FAILURE':
             response['error'] = str(result.result) if result.result else 'Unknown error'
-            # Update database record
-            self._update_execution_completed(db, task_id, 'failed', error=str(result.result))
+
+        # Fallback writer for runs whose signal write was lost.
+        if status in _FINISHED_STATUSES:
+            self._update_execution_completed(
+                db,
+                task_id,
+                status,
+                result=response.get('result'),
+                error=response.get('error'),
+            )
 
         return response
+
+    @staticmethod
+    def _celery_success_result(task_id: str) -> Any:
+        """Celery's stored result for a run the ledger finished without a
+        summary (non-JSON result). Enrichment only: past result_expires or
+        with the backend down there is nothing to add, and the ledger's
+        completed status stands either way."""
+        try:
+            outcome = AsyncResult(task_id)
+            return outcome.result if outcome.state == 'SUCCESS' else None
+        except Exception:
+            logger.warning("Could not read Celery result for run %s", task_id, exc_info=True)
+            return None
 
     def _update_execution_completed(
         self,
@@ -360,6 +585,8 @@ class TaskRegistryService:
         error: str = None
     ):
         """Update execution record when task completes."""
+        if status == 'completed' and (reported := _reported_error(result)):
+            status, error = 'failed', reported
         execution = db.query(TaskExecutionHistory).filter(
             TaskExecutionHistory.task_id == task_id
         ).first()
@@ -373,7 +600,7 @@ class TaskRegistryService:
                 if started_at and completed_at:
                     execution.duration_seconds = (completed_at - started_at).total_seconds()
             if result:
-                execution.result_summary = result
+                execution.result_summary = _result_summary(result, task_id)
             if error:
                 execution.error_message = error
             db.commit()
