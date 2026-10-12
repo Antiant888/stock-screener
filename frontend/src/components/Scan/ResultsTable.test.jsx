@@ -634,11 +634,13 @@ describe('ResultsTable', () => {
         ...fullSeRow, composite_score: 66, minervini_score: 56.2, vcp_score: 81.5, eps_growth_qq: 45.24,
         gap_percent: 12, volume_surge: 2.43, adr_percent: 4.1, se_pattern_primary: 'cup_with_handle', mystery_field: 9,
         sales_growth_qq: 31.04, volume: 2.5e9, market_cap: 1.0e12, market_cap_usd: 132.3e9, adv_usd: 45.2e6,
-        vcp_pivot: 101.25, stage: 2, currency: 'USD',
+        vcp_pivot: 101.25, stage: 2, currency: 'USD', perf_3m: 18.5,
       };
       const expectPill = (sortBy, text, name) => {
         renderWithProviders(<ResultsTable {...defaultProps} results={[row]} sortBy={sortBy} />);
-        expect(screen.getByLabelText(name)).toHaveTextContent(text);
+        // Screen readers get the full name as real text; the abbreviation is aria-hidden.
+        const spoken = screen.getAllByText(name).find((el) => el.getAttribute('aria-hidden') !== 'true');
+        expect(spoken.parentElement.querySelector('[aria-hidden="true"]')).toHaveTextContent(text);
         cleanup();
       };
 
@@ -648,6 +650,8 @@ describe('ResultsTable', () => {
       expectPill('gap_percent', 'Gap 12.0%', 'Gap 12.0%'); // Episodic Pivot (not a table column)
       expectPill('volume_surge', 'Vol 2.4×', 'Volume surge 2.4×'); // Pocket Pivot
       expectPill('adr_percent', 'ADR 4.1%', 'ADR 4.1%');
+      // Static-site rows also carry these (static_scan_bundle_exporter extended fields).
+      expectPill('perf_3m', '3M 18.5%', 'Performance 3 months 18.5%');
       // Any sortable column a custom preset can save, formatted like the desktop cell.
       expectPill('sales_growth_qq', 'Sales 31.0%', 'Sales growth Q/Q 31.0%');
       expectPill('volume', '$Vol $2.5B', 'Dollar volume $2.5B');

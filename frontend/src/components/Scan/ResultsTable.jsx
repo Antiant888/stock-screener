@@ -103,9 +103,15 @@ const CARD_METRICS = {
   adv_usd: { label: 'ADV', name: 'Average dollar volume', format: (v) => formatLargeNumber(v, '$') },
   ipo_date: { label: 'IPO', name: 'IPO age', format: (v) => formatIpoAge(v), text: true },
   gap_percent: { label: 'Gap', name: 'Gap', format: pct },
+  // Preset-only fields: present on static-site rows (static_scan_bundle_exporter
+  // extended fields); the live scan API doesn't return them yet, so live cards
+  // fall back to the composite for these sorts.
   perf_week: { label: '1W', name: 'Performance 1 week', format: pct },
+  perf_month: { label: '1M', name: 'Performance 1 month', format: pct },
+  perf_3m: { label: '3M', name: 'Performance 3 months', format: pct },
   perf_6m: { label: '6M', name: 'Performance 6 months', format: pct },
   week_52_high_distance: { label: '52W', name: 'From 52-week high', format: pct },
+  week_52_low_distance: { label: '52WL', name: 'From 52-week low', format: pct },
   volume_surge: { label: 'Vol', name: 'Volume surge', format: ratio },
   se_up_down_volume_ratio_10d: { label: 'U/D', name: 'Up/down volume 10 days', format: ratio },
 };

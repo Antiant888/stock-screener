@@ -2,6 +2,15 @@ import { Box, Typography } from '@mui/material';
 import PriceSparkline from '../Scan/PriceSparkline';
 import { formatLocalCurrency } from '../../utils/formatUtils';
 
+const visuallyHidden = {
+  position: 'absolute',
+  width: 1,
+  height: 1,
+  overflow: 'hidden',
+  clip: 'rect(0 0 0 0)',
+  whiteSpace: 'nowrap',
+};
+
 const oneDecimal = (value) => (Number.isFinite(Number(value)) && value != null ? Number(value).toFixed(1) : '-');
 
 /**
@@ -141,10 +150,12 @@ export default function StockRowCard({
       <Box sx={{ textAlign: 'right' }}>
         <Typography
           component="span"
-          aria-label={`${shown.name} ${shown.value}`}
           sx={{ display: 'inline-block', px: 0.75, borderRadius: 1, bgcolor: 'action.selected', fontSize: '11px', fontWeight: 700 }}
         >
-          {shown.label ? `${shown.label} ` : ''}{shown.value}
+          {/* An aria-label on a span isn't announced; give screen readers the
+              full name as real text and hide the abbreviation from them. */}
+          <span aria-hidden="true">{shown.label ? `${shown.label} ` : ''}{shown.value}</span>
+          <Box component="span" sx={visuallyHidden}>{`${shown.name} ${shown.value}`}</Box>
         </Typography>
         <Typography sx={{ fontSize: '13px', fontWeight: 600, mt: 0.25 }}>
           {formatLocalCurrency(row.current_price, row.currency)}

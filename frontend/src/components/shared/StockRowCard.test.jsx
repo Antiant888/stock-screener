@@ -25,7 +25,8 @@ describe('StockRowCard', () => {
     expect(screen.getByText('FORM')).toBeInTheDocument();
     expect(screen.getByText('FormFactor Inc')).toBeInTheDocument();
     expect(screen.getByText('Grp #27 · Elec-Semiconductor Equip · RS 92')).toBeInTheDocument();
-    expect(screen.getByLabelText('Score 65.4')).toBeInTheDocument();
+    expect(screen.getByText('Score 65.4')).toBeInTheDocument();
+    expect(screen.getByText('65.4')).toHaveAttribute('aria-hidden', 'true');
     expect(screen.getByText('$139.67')).toBeInTheDocument();
     expect(screen.getByText('+1.9%')).toBeInTheDocument();
     expect(screen.getByTestId('price-sparkline')).toBeInTheDocument();
