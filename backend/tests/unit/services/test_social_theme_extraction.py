@@ -244,11 +244,18 @@ def test_saved_v2_judgments_without_kind_or_stance_still_parse():
     {"post_kind": "meme", "stance": "bullish"},
     {"post_kind": "setup", "stance": "very bullish"},
     {"post_kind": "setup"},
+    {"post_kind": None, "stance": "bullish"},
 ])
-def test_unknown_or_partial_kind_and_stance_fail_the_batch(db_session, changes):
-    from app.services.social_extraction_service import SocialExtractionError
-    with pytest.raises(SocialExtractionError):
-        asyncio.run(service(db_session, output(**changes)).extract((post(),)))
+def test_bad_or_partial_hints_drop_to_none_without_failing_the_batch(db_session, changes):
+    # Display-only hints must not fail a paid batch the way a bad claim schema does.
+    result = asyncio.run(service(db_session, output(**changes)).extract((post(),)))
+    assert (result.judgments[0].post_kind, result.judgments[0].stance) == (None, None)
+    assert result.claims and result.judgments[0].has_new_thesis
+
+
+def test_hint_case_is_normalized(db_session):
+    result = asyncio.run(service(db_session, output(post_kind="Setup", stance="BULLISH")).extract((post(),)))
+    assert (result.judgments[0].post_kind, result.judgments[0].stance) == ("setup", "bullish")
 
 
 def test_copied_claim_judgment_and_uncertain_cooccurrence(db_session):

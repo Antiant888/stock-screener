@@ -155,6 +155,7 @@ function PaperPost({ post }) {
       <Stack direction="row" gap={0.5} alignItems="center" flexWrap="wrap">
         {post.post_kind && post.stance ? (
           <Chip size="small" variant="outlined" title="Model hint, not verified"
+            aria-label={`Model hint, not verified: ${post.post_kind}, ${post.stance}`}
             label={`${capitalize(post.post_kind)} · ${capitalize(post.stance)}`} />
         ) : null}
         {(post.source_names || []).map((name) => <Chip key={name} size="small" label={name} />)}

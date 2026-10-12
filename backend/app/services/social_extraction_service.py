@@ -10,7 +10,8 @@ from dataclasses import dataclass
 from typing import ClassVar
 
 from app.domain.social_signals.records import (
-    ExtractionClaim, ExtractionPostJudgment, ExtractionResult, SocialPostRecord,
+    POST_KINDS, POST_STANCES, ExtractionClaim, ExtractionPostJudgment, ExtractionResult,
+    SocialPostRecord,
 )
 from app.models.app_settings import AppSetting
 from app.services.llm.llm_service import LLMService
@@ -118,6 +119,13 @@ class SocialExtractionParser:
             return ClaimParseResult(error_code="invalid_claim")
         return ClaimParseResult(claim=claim)
 
+    @staticmethod
+    def _hints(item):
+        """Display-only hints: a bad or partial pair becomes (None, None), never a failed batch."""
+        kind, stance = (value.strip().lower() if isinstance(value, str) else None
+                        for value in (item.get("post_kind"), item.get("stance")))
+        return (kind, stance) if kind in POST_KINDS and stance in POST_STANCES else (None, None)
+
     def parse_batch(self, posts, content, *, strict_claims=False):
         try:
             data = json.loads(content)
@@ -129,7 +137,7 @@ class SocialExtractionParser:
         seen, claims, judgments = set(), [], []
         for item in data["posts"]:
             # v2 results saved before post hints existed are re-parsed without them.
-            if not isinstance(item, dict) or set(item) not in (self._POST_FIELDS, self._HINTED_POST_FIELDS):
+            if not isinstance(item, dict) or not self._POST_FIELDS <= set(item) <= self._HINTED_POST_FIELDS:
                 raise SocialExtractionError("invalid_post_schema")
             post_id = item["post_id"]
             if not isinstance(post_id, str) or post_id not in by_id or post_id in seen:
@@ -139,8 +147,7 @@ class SocialExtractionParser:
                 raise SocialExtractionError("invalid_claims")
             try:
                 judgment = ExtractionPostJudgment(
-                    post_id, item["has_new_thesis"], item["canonical_claim_key"],
-                    item.get("post_kind"), item.get("stance"),
+                    post_id, item["has_new_thesis"], item["canonical_claim_key"], *self._hints(item),
                 )
             except (TypeError, ValueError):
                 raise SocialExtractionError("invalid_post_judgment") from None
