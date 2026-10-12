@@ -557,6 +557,9 @@ def test_scoring_evidence_retains_older_in_window_post_after_incremental_cap(tmp
     partial = SocialScoringEvidenceReader(sessions).read("partial", NOW)
     assert all(item.history_complete is False for item in partial)
     assert all("provider_timeout" in item.coverage_reasons for item in partial)
+    writer.create_replay_run("partial-replay", "partial", NOW)
+    replayed = SocialScoringEvidenceReader(sessions).read("partial-replay", NOW)
+    assert replayed and all(item.history_complete is False for item in replayed)
     # A retained semantic judgment can be explicitly pinned to the new
     # generation without pretending the old post was recollected.
     from dataclasses import asdict
