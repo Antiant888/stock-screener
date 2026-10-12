@@ -397,19 +397,19 @@ class SocialSignalQueries:
             SocialCompanyIdentityService,
         )
         from app.services.social_ticker_resolver import SocialTickerResolver
-        related, claims = [], []
+        related, resolver, listing = [], None, None
         if item["canonical_symbol"] and item["market"]:
             identities = SocialCompanyIdentityService(self.db).read()
             resolver = SocialTickerResolver(
                 self.db, verified_company_ids=identities.verified_company_ids,
             )
+            listing = (item["market"], item["canonical_symbol"])
+        # Post hints need no listing, so unresolved candidates get them too.
+        claims, hints = self._extractions(run, {post["post_id"] for post in posts}, listing, resolver)
+        for post in posts:
+            post["post_kind"], post["stance"] = hints.get(post["post_id"], (None, None))
+        if resolver is not None:
             resolution = resolver.resolve(item["canonical_symbol"], item["market"])
-            claims, hints = self._extractions(
-                run, {post["post_id"] for post in posts},
-                (item["market"], item["canonical_symbol"]), resolver,
-            )
-            for post in posts:
-                post["post_kind"], post["stance"] = hints.get(post["post_id"], (None, None))
             if resolution.related_symbols:
                 related = [
                     (row.market, row.symbol)
@@ -458,7 +458,8 @@ class SocialSignalQueries:
                 continue
             judgment = result.judgments[0]
             hints[post_id] = (judgment.post_kind, judgment.stance)
-            for claim in result.claims:
+            # Claims are only shown for a resolved listing.
+            for claim in result.claims if listing is not None else ():
                 if claim.company_token not in resolved:
                     resolved[claim.company_token] = resolver.resolve(claim.company_token)
                 resolution = resolved[claim.company_token]

@@ -782,6 +782,68 @@ async def test_evidence_lists_this_candidates_extracted_claims_supported_first(
 
 
 @pytest.mark.asyncio
+async def test_unresolved_candidate_posts_still_carry_post_hints(
+    db_session, social_runtime, monkeypatch
+):
+    from dataclasses import asdict
+    from datetime import datetime, timedelta, timezone
+    from app.domain.social_signals.records import (
+        ExtractionPostJudgment, ExtractionResult, SocialPostRecord, SocialSnapshotRecord,
+    )
+    from app.infra.db.models.social_analysis import SocialExtractionWork, SocialRunWork
+    from app.models.theme import ContentItem
+    from app.services import server_auth
+    from app.services.social_extraction_service import SocialExtractionService
+
+    monkeypatch.setattr(server_auth.settings, "server_auth_enabled", False)
+    runtime = social_runtime.read_runtime()
+    social_runtime.apply_runtime("live", "official", runtime.version, "admin")
+    now = datetime(2026, 9, 7, 12, tzinfo=timezone.utc)
+    # $XYZ is in no universe, so the candidate is unresolved: no market, no claims.
+    post = SocialPostRecord("official", "p-9", "1", "$XYZ breakout over the pivot",
+                            "https://example.invalid/9", "trader", now - timedelta(hours=1), now)
+    item = ContentItem(source_id=1, source_type="twitter", external_id="p-9", content=post.text,
+                       url=post.url, author="trader", published_at=post.created_at, fetched_at=now)
+    db_session.add(item)
+    db_session.flush()
+    snapshot = {**asdict(post), "created_at": post.created_at.isoformat(),
+                "observed_at": post.observed_at.isoformat()}
+    input_hash = SocialExtractionService.input_hash((post,))
+    work = SocialExtractionWork(
+        content_item_id=item.id, input_hash=input_hash, prompt_version="v1", schema_version="v1",
+        selected_model="requested", actual_provider="synthetic", actual_model="actual",
+        result_json=asdict(ExtractionResult(input_hash, "synthetic", "actual", "v1", "v1", (), 1, 1,
+            (ExtractionPostJudgment("p-9", False, None, "setup", "bullish"),))),
+        state="succeeded", input_snapshot_json=snapshot, created_at=now, updated_at=now,
+    )
+
+    def link_work(run):
+        db_session.add(work)
+        db_session.flush()
+        db_session.add(SocialRunWork(run_id=run.id, work_id=work.id, input_hash=input_hash,
+                                     included_at=now))
+
+    record = SocialSnapshotRecord(
+        "published-1", "unresolved:$xyz", None, None, "unresolved", None, None, None,
+        (), (), now, "$XYZ", "unresolved:$xyz", 7, 1, 1, 2,
+    )
+    _publish_rows(db_session, (record,), observations={
+        "1": {"inputs": [{"content_item_id": item.id, "post": snapshot}], "observed_at": now.isoformat()},
+        "2": {"inputs": [], "observed_at": now.isoformat()},
+    }, before_publish=link_work)
+
+    response = await _request(
+        db_session, "GET", "/api/v1/social-signals/candidates/unresolved:$xyz/evidence?window=7d",
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["claims"] == []
+    [source_post] = payload["posts"]
+    assert (source_post["post_kind"], source_post["stance"]) == ("setup", "bullish")
+
+
+@pytest.mark.asyncio
 async def test_admin_routes_require_admin_key_even_when_social_is_off(
     db_session, social_runtime, monkeypatch
 ):
