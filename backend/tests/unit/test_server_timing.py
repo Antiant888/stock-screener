@@ -11,9 +11,11 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.pool import StaticPool
 
-from app.infra.server_timing import ServerTimingMiddleware
+from app.infra.server_timing import ServerTimingMiddleware, install_server_timing
 
-HEADER = re.compile(r'^db;dur=(?P<db>[\d.]+);desc="(?P<queries>\d+) queries", app;dur=(?P<app>[\d.]+)$')
+HEADER = re.compile(
+    r'^db;dur=(?P<db>[\d.]+);desc="(?P<queries>\d+) quer(?:y|ies)", total;dur=(?P<total>[\d.]+)$'
+)
 
 
 def _engine():
@@ -73,20 +75,26 @@ def _app(engine):
         run(1)
         return StreamingResponse(iter([b"a", b"b"]), media_type="text/plain")
 
-    app.add_middleware(ServerTimingMiddleware)
+    @app.get("/crash")
+    def crash_route():
+        run(1)
+        raise RuntimeError("unhandled")
+
+    install_server_timing(app)
     return app
 
 
 def _timing(response):
     match = HEADER.match(response.headers["server-timing"])
     assert match, response.headers["server-timing"]
-    return int(match["queries"]), float(match["db"]), float(match["app"])
+    return int(match["queries"]), float(match["db"]), float(match["total"])
 
 
 @pytest.fixture
 def client():
     engine = _engine()
-    transport = httpx.ASGITransport(app=_app(engine))
+    # Unhandled errors come back as the 500 a real server would send.
+    transport = httpx.ASGITransport(app=_app(engine), raise_app_exceptions=False)
     return httpx.AsyncClient(transport=transport, base_url="http://test")
 
 
@@ -95,9 +103,9 @@ async def test_reports_queries_run_in_the_endpoints_worker_thread(client):
     async with client:
         response = await client.get("/sync/3")
 
-    queries, db_ms, app_ms = _timing(response)
+    queries, db_ms, total_ms = _timing(response)
     assert queries == 3
-    assert 0 <= db_ms <= app_ms
+    assert 0 <= db_ms <= total_ms
 
 
 @pytest.mark.asyncio
@@ -127,6 +135,25 @@ async def test_a_statement_whose_fetch_fails_counts_once(client):
 
 
 @pytest.mark.asyncio
+async def test_one_statement_reads_as_one_query(client):
+    async with client:
+        response = await client.get("/sync/1")
+
+    assert 'desc="1 query"' in response.headers["server-timing"]
+
+
+@pytest.mark.asyncio
+async def test_an_unhandled_error_still_reports_its_timing(client):
+    # Starlette builds the 500 outside every add_middleware layer, so the
+    # slowest failures (a pool timeout) would otherwise go untimed.
+    async with client:
+        response = await client.get("/crash")
+
+    assert response.status_code == 500
+    assert _timing(response)[0] == 1
+
+
+@pytest.mark.asyncio
 async def test_streaming_responses_get_the_header_before_the_body(client):
     async with client:
         response = await client.get("/stream")
@@ -135,10 +162,11 @@ async def test_streaming_responses_get_the_header_before_the_body(client):
     assert _timing(response)[0] == 1
 
 
-def test_queries_outside_a_request_are_not_counted():
+def test_queries_outside_a_request_run_normally():
+    # Celery tasks and scripts that import the app have no request context.
     engine = _engine()
     with engine.connect() as conn:
-        conn.execute(text("select 1"))  # must not raise without a request
+        assert conn.execute(text("select 1")).scalar() == 1
 
 
 @pytest.mark.asyncio
@@ -152,3 +180,9 @@ async def test_the_api_reports_server_timing():
 
     assert response.status_code == 200
     assert _timing(response)[0] == 0
+
+
+def test_the_api_times_outside_its_error_handling():
+    from app.main import app
+
+    assert isinstance(app.build_middleware_stack(), ServerTimingMiddleware)

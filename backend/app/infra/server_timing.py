@@ -1,10 +1,19 @@
-"""Server-Timing response header: wall time and database time per request.
+"""Server-Timing response header: total and database time per request.
 
-Browsers show it in DevTools' Timing tab, so a slow endpoint on the live
-server says whether the time went to the database or to Python, e.g.
-``db;dur=12.3;desc="14 queries", app;dur=41.0``. ``app`` is the time until
-the response headers are sent: the endpoint, its serialization and the
-middleware inside this one; a streamed body is not included.
+Browsers show it in DevTools' Timing tab, e.g.
+``db;dur=12.3;desc="14 queries", total;dur=41.0``.
+
+- ``total``: until the response headers are sent, including the endpoint,
+  its serialization and every other middleware; a streamed body is not.
+- ``db``: time inside the cursor executing the request's statements. An
+  executemany counts as one; insertmanyvalues counts one per batch.
+
+``total`` minus ``db`` is not all Python. It also holds waiting for a pooled
+connection, connecting, the pre-ping and BEGIN/COMMIT/ROLLBACK, none of which
+pass through cursor execution. Statements run in a thread that doesn't
+inherit the request's context (``ThreadPoolExecutor``, ``threading.Thread``,
+``loop.run_in_executor``) are not counted; ``asyncio.to_thread``,
+``run_in_threadpool`` and FastAPI's sync endpoints and dependencies are.
 """
 
 from __future__ import annotations
@@ -17,9 +26,8 @@ from sqlalchemy import event
 from sqlalchemy.engine import Engine
 from starlette.datastructures import MutableHeaders
 
-# [query count, seconds] for the current request. FastAPI runs sync endpoints
-# and dependencies in worker threads with a copy of this context, which
-# still holds the same list, so their queries add to it.
+# [statement count, seconds] for the current request. Worker threads that
+# inherit the context still hold the same list, so their statements add to it.
 _db_time: ContextVar[list | None] = ContextVar("server_timing_db", default=None)
 
 
@@ -66,10 +74,11 @@ class ServerTimingMiddleware:
         async def send_with_timing(message: Any) -> None:
             if message["type"] == "http.response.start":
                 total_ms = (perf_counter() - started) * 1000
+                count = stats[0]
                 MutableHeaders(scope=message).append(
                     "Server-Timing",
-                    f'db;dur={stats[1] * 1000:.1f};desc="{stats[0]} queries", '
-                    f"app;dur={total_ms:.1f}",
+                    f'db;dur={stats[1] * 1000:.1f};desc="{count} {"query" if count == 1 else "queries"}", '
+                    f"total;dur={total_ms:.1f}",
                 )
             await send(message)
 
@@ -77,3 +86,15 @@ class ServerTimingMiddleware:
             await self.app(scope, receive, send_with_timing)
         finally:
             _db_time.reset(token)
+
+
+def install_server_timing(app: Any) -> None:
+    """Time a Starlette/FastAPI app from outside its error handling.
+
+    ``add_middleware`` layers sit inside Starlette's ServerErrorMiddleware,
+    which sends an unhandled error's 500 with the bare ``send``. Wrapping the
+    built stack times those too, and they are often the slowest requests
+    (a connection pool timeout, for one).
+    """
+    build = app.build_middleware_stack
+    app.build_middleware_stack = lambda: ServerTimingMiddleware(build())
