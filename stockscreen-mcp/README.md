@@ -1,0 +1,103 @@
+# stockscreen-mcp
+
+<!-- mcp-name: io.github.xang1234/stockscreen-mcp -->
+
+Daily stock screens, relative-strength ratings, market breadth and industry group rankings for **12 markets**, available to Claude, Cursor, VS Code or any other [MCP](https://modelcontextprotocol.io/) client.
+
+- No API keys and no server to run.
+- It reads the snapshot that the open-source [stock-screener](https://github.com/xang1234/stock-screener) project publishes after every market close.
+- That's the same data as the [live demo](https://xang1234.github.io/stock-screener/).
+
+```bash
+uvx stockscreen-mcp
+```
+
+**Markets:** United States, Canada, Germany, Hong Kong, mainland China, Japan, Korea, Taiwan, India, Singapore, Malaysia and Australia.
+
+## What you can ask
+
+- "Which stocks pass the Minervini trend template in the US today, and which of them are in top-20 industry groups?"
+- "Run the CANSLIM screen for Japan and show the five strongest by 3-month RS."
+- "How healthy is the US market right now? Exposure, distribution days, breadth."
+- "What are the leading industry groups this week, and which groups moved up the most?"
+- "Tell me everything the scan knows about NVDA, and which screens it passes."
+- "Find Hong Kong stocks with RS above 90, in stage 2, with quarterly EPS growth over 25%."
+
+## Tools
+
+All tools are read-only.
+
+| Tool | What it returns |
+|---|---|
+| `list_markets` | Markets in the current publish, with each one's data date, status and features |
+| `list_screens` | The 28 preset screens and their exact rules: Minervini, CANSLIM, VCP, cup with handle, high tight flag, momentum, IPOs and more |
+| `run_screen` | A preset and/or your own filters over every stock in a market's scan, sorted, with the match count. A preset returns exactly the stocks the website shows for it |
+| `get_stock` | One stock: RS ratings (overall, 1M, 3M, 12M), stage, screener scores, growth, group rank, setup and pattern fields, and the screens it passes |
+| `market_overview` | Exposure score and stance, distribution days, follow-through day, StockBee-style breadth (4% movers, 5/10-day ratios, T2108, 52-week highs/lows), key index moves, top groups |
+| `group_rankings` | IBD-style industry groups ranked by relative strength, with 1W/1M/3M/6M rank changes and weekly movers. Pass a group for its rank history and strongest stocks |
+
+### Reading the data
+
+- **RS ratings** (`rs_rating`, `rs_rating_1m/3m/12m`) are percentiles from 1 to 99 *within the stock's own market*, where 99 is the strongest.
+- **Group rank 1** is the strongest group.
+- **Every result has an `as_of_date`:** the last completed session the publish covers. This is end-of-day data with nothing intraday, and it is never fetched live from price providers.
+
+## Setup
+
+The server needs [uv](https://docs.astral.sh/uv/getting-started/installation/), which provides `uvx`.
+
+**Claude Code**
+
+```bash
+claude mcp add stockscreen -- uvx stockscreen-mcp
+```
+
+**Claude Desktop**: add to `claude_desktop_config.json`.
+
+```json
+{
+  "mcpServers": {
+    "stockscreen": { "command": "uvx", "args": ["stockscreen-mcp"] }
+  }
+}
+```
+
+**Cursor**: add the same `mcpServers` entry to `~/.cursor/mcp.json`.
+
+**VS Code**: add to `.vscode/mcp.json`.
+
+```json
+{
+  "servers": {
+    "stockscreen": { "type": "stdio", "command": "uvx", "args": ["stockscreen-mcp"] }
+  }
+}
+```
+
+**Codex CLI**: add to `~/.codex/config.toml`.
+
+```toml
+[mcp_servers.stockscreen]
+command = "uvx"
+args = ["stockscreen-mcp"]
+```
+
+To run the newest version from `main` rather than the latest release, replace `stockscreen-mcp` in `args` with `--from`, `git+https://github.com/xang1234/stock-screener#subdirectory=stockscreen-mcp`, `stockscreen-mcp`.
+
+## How it works
+
+- **Data source:** the server reads the JSON that the static site publishes to GitHub Pages. The root `manifest.json` points at the current publish.
+- **Download and caching:** each market's scan is downloaded once, on first use (US is about 7 MB compressed), and kept in memory. The two most recently used markets stay cached, and the cache refreshes when a new publish appears.
+- **Data URL:** set `STOCKSCREEN_DATA_URL` to read from another publish, such as a fork's GitHub Pages site.
+
+## Development
+
+```bash
+cd stockscreen-mcp
+uv run pytest                                      # unit tests, no network
+STOCKSCREEN_LIVE=1 uv run pytest -m live           # against the real publish
+```
+
+## License and disclaimer
+
+Apache-2.0. This is screening data for education and research, **not investment advice**.

@@ -1,5 +1,7 @@
 # MCP Integration
 
+> **No-install option:** [`stockscreen-mcp`](../stockscreen-mcp/) (`uvx stockscreen-mcp`) serves the published daily snapshot (screens, stock lookup, market health and breadth, group rankings) to any MCP client. It needs no running app. The server described below is the live app's own MCP server, which needs the full stack. It adds feature-run comparisons, watchlists, themes and task status.
+
 StockScreenClaude exposes a [Model Context Protocol](https://modelcontextprotocol.io/) (MCP) server for AI copilot workflows. When connected to an MCP-capable agent (like [Hermes](https://hermes-agent.nousresearch.com/)), the agent can query market state, compare feature runs, inspect watchlists and themes, and prepare automated market briefs.
 
 ## Available Tools

@@ -16,6 +16,16 @@ Updated daily after market close.
 
 See the **[Static Site Guide](docs/STATIC_SITE.md)** for exactly what works in static mode.
 
+## Ask your AI assistant
+
+The same daily data is available to Claude, Cursor, VS Code or any MCP client through **[stockscreen-mcp](stockscreen-mcp/)**. It needs no API keys and no server:
+
+```bash
+claude mcp add stockscreen -- uvx stockscreen-mcp
+```
+
+Then ask, for example: *"Which US stocks pass the Minervini trend template today, and which are in top-20 industry groups?"* It covers screens, RS ratings, market health and breadth, and group rankings for all 12 markets.
+
 ## Features
 
 - **12-market coverage** -  exchange calendars, independent data and scans.

@@ -295,6 +295,26 @@ jobs:
       - name: Assistant profile compose smoke
         run: bash scripts/run_docker_assistant_compose_smoke.sh
 
+  stockscreen-mcp:
+    name: stockscreen-mcp package (Python ${{ matrix.python }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ["3.10", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@v10.2.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: stockscreen-mcp/uv.lock
+
+      - name: Test
+        run: uv run --directory stockscreen-mcp --locked --python ${{ matrix.python }} pytest -q
+
   publish-images:
     name: Publish Docker Images
     needs: [backend, backend-postgres, backend-unit, frontend, frontend-e2e, assistant-compose-smoke]
