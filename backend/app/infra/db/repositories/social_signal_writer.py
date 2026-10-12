@@ -5,7 +5,6 @@ from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from hashlib import sha256
 import json
-import re
 from types import UnionType
 from typing import get_args, get_origin, get_type_hints
 
@@ -446,14 +445,25 @@ class SocialSignalWriter:
 
     @staticmethod
     def _map_cashtags(db, content_id, text):
-        """Explicit observed tokens only; semantic claims remain saved work."""
-        from app.services.social_ticker_resolver import SocialTickerResolver
+        """Explicit observed tokens only; semantic claims remain saved work.
+
+        Each observation replaces the post's rows, so a token resolved before the
+        universe loaded does not linger as unresolved.
+        """
+        from app.services.social_ticker_resolver import SocialTickerResolver, cashtags
         resolver = SocialTickerResolver(db)
-        for token in sorted(set(re.findall(r"\$[A-Za-z0-9][A-Za-z0-9.\-]{0,19}", text))):
+        fresh = {}
+        for token in cashtags(text):
             resolution = resolver.resolve(token)
             key = f"{resolution.market}:{resolution.symbol}" if resolution.status == "resolved" else f"unresolved:{token.casefold()}"
-            existing = db.scalar(select(SocialPostTicker).where(SocialPostTicker.content_item_id == content_id, SocialPostTicker.candidate_key == key))
-            if existing is None:
+            fresh.setdefault(key, (token, resolution))
+        existing = {row.candidate_key: row for row in db.scalars(
+            select(SocialPostTicker).where(SocialPostTicker.content_item_id == content_id))}
+        for key, row in existing.items():
+            if key not in fresh:
+                db.delete(row)
+        for key, (token, resolution) in fresh.items():
+            if key not in existing:
                 db.add(SocialPostTicker(content_item_id=content_id, candidate_key=key, raw_token=token,
                     stock_universe_id=int(resolution.security_id) if resolution.security_id else None,
                     canonical_symbol=resolution.symbol, market=resolution.market, resolution_state=resolution.status,

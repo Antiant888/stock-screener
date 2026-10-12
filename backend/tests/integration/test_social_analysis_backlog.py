@@ -10,7 +10,7 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 
 from app.database import Base
-from app.domain.social_signals.records import SocialPostRecord
+from app.domain.social_signals.records import SocialAttachmentRef, SocialPostRecord
 from app.models.app_settings import AppSetting
 from app.models.theme import ContentItem
 from app.infra.db.models.social_signals import SocialSourceRegistry
@@ -35,7 +35,7 @@ def backlog(tmp_path):
 
 def post(number, age=1):
     return SocialPostRecord(provider="official", provider_post_id=str(number), source_id="list",
-        text="AAA supplies cooling equipment", url=f"https://x.com/a/status/{number}",
+        text="$AAA supplies cooling equipment", url=f"https://x.com/a/status/{number}",
         author_handle="a", created_at=NOW - timedelta(days=age), observed_at=NOW)
 
 
@@ -659,3 +659,51 @@ def test_queued_post_aging_out_before_dispatch_releases_only_unused_reservation(
         assert attempts[0].state == "reconciled" and attempts[0].actual_usd == 2
         assert attempts[1].state == ("reconciled" if admin_requested else "released")
         assert attempts[1].actual_usd == (2 if admin_requested else None)
+
+
+@pytest.mark.parametrize("value", [
+    replace(post(1), text="RT $AAA big news", is_repost=True),
+    replace(post(1), text="Could you recommend some coffee shops in San Jose? 👀"),
+    replace(post(1), text="Paid $10K for $50M of hype"),
+])
+def test_no_signal_posts_finish_without_an_llm_call(backlog, value):
+    from app.infra.db.models.social_analysis import SocialExtractionWork
+    from app.services.social_theme_projection_service import _decode
+
+    configure_budget(backlog)
+    llm = FakeLLM()
+    worker = processor(backlog, llm)
+    work_id = enqueue(backlog, worker, value)
+
+    asyncio.run(worker.execute(NOW, 1))
+
+    assert llm.calls == 0
+    with backlog() as db:
+        work = db.get(SocialExtractionWork, work_id)
+        assert (work.state, work.error_code) == ("succeeded", "skipped:no_signal")
+        _, result = _decode(work)
+        assert result.claims == () and result.judgments[0].has_new_thesis is False
+
+
+@pytest.mark.parametrize("value", [
+    replace(post(1), text="$AAA supplies cooling"),
+    replace(post(1), text="nvidia just guided above the street"),
+    replace(post(1), text="Look at MU here"),
+    replace(post(1), text="雷军说小米汽车订单很多"),
+    replace(post(1), text="this chart", attachments=(SocialAttachmentRef("image", "https://pbs.twimg.com/a.jpg"),)),
+    replace(post(1), text="agreed", quoted_text="$AAA beats"),
+])
+def test_posts_with_a_ticker_name_or_attachment_still_reach_the_llm(backlog, value):
+    from app.models.stock_universe import StockUniverse
+
+    with backlog.begin() as db:
+        db.add(StockUniverse(symbol="NVDA", name="NVIDIA Corp", market="US", exchange="NASDAQ", is_active=True))
+        db.add(StockUniverse(symbol="MU", name="Micron Technology Inc", market="US", exchange="NASDAQ", is_active=True))
+    configure_budget(backlog)
+    llm = FakeLLM()
+    worker = processor(backlog, llm)
+    enqueue(backlog, worker, value)
+
+    asyncio.run(worker.execute(NOW, 1))
+
+    assert llm.calls == 1

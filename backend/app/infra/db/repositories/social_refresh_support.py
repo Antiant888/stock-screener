@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
-import re
 
 from sqlalchemy import select
 
@@ -19,7 +18,7 @@ from app.models.app_settings import AppSetting
 from app.models.theme import ContentSource
 from app.services.social_company_identity_service import SocialCompanyIdentityService
 from app.services.social_source_admin_service import SocialRuntimeState
-from app.services.social_ticker_resolver import SocialTickerResolver
+from app.services.social_ticker_resolver import SocialTickerResolver, cashtags
 
 
 def _utc(value):
@@ -88,7 +87,6 @@ class SocialScoringEvidenceReader:
     so a capped incremental response cannot erase a valid 7/14-day mention.
     """
 
-    _CASHTAG = re.compile(r"\$[A-Za-z0-9][A-Za-z0-9.\-]{0,19}")
     _METRICS = ("likes", "reposts", "replies", "quotes", "bookmarks", "views")
 
     def __init__(self, session_factory):
@@ -260,7 +258,7 @@ class SocialScoringEvidenceReader:
                 if judgment is not None:
                     post = replace(post, has_new_thesis=judgment[0], canonical_claim_key=judgment[1])
                     canonical[(post_id, source_id)] = post
-                resolutions = [resolver.resolve(token) for token in sorted(set(self._CASHTAG.findall(post.text)))]
+                resolutions = [resolver.resolve(token) for token in cashtags(post.text)]
                 resolutions.extend(resolver.resolve(value.get("company_token", ""))
                                     for value in claims.get(post_id, ()))
                 targets = {}
@@ -275,6 +273,9 @@ class SocialScoringEvidenceReader:
                         "resolved": resolved,
                     }
                 for mapping in mappings_by_content.get(content_ids[post_id], ()):
+                    # The text was just resolved fresh; an old unresolved row adds only staleness.
+                    if mapping.resolution_state != "resolved":
+                        continue
                     targets[mapping.candidate_key] = {
                         "symbol": mapping.canonical_symbol or mapping.raw_token,
                         "market": mapping.market,

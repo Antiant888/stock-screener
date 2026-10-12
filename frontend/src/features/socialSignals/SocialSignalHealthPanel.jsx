@@ -279,7 +279,7 @@ function HealthSummary({ health }) {
     <Typography variant="caption" color="text.secondary">
       Reset {budget.next_reset_at ? new Date(budget.next_reset_at).toLocaleString() : '—'} · {budget.timezone || 'Asia/Singapore'} · pricing {budget.pricing_status || 'not configured'}{budget.pricing_version ? ` (${budget.pricing_version})` : ''}{budget.blocked_models?.length ? ` · blocked models: ${budget.blocked_models.join(', ')}` : ''}
     </Typography>
-    <Typography variant="body2">Backlog: {health.backlog?.waiting ?? 0} waiting · {health.backlog?.failed ?? 0} failed · {health.backlog?.outside_window ?? 0} outside window</Typography>
+    <Typography variant="body2">Backlog: {health.backlog?.waiting ?? 0} waiting · {health.backlog?.failed ?? 0} failed · {health.backlog?.outside_window ?? 0} outside window · {health.backlog?.no_signal ?? 0} skipped (no ticker or company)</Typography>
     <Typography variant="body2">Last successful collection {health.last_collection_at ? new Date(health.last_collection_at).toLocaleString() : '—'}</Typography>
     {reauth ? <Alert severity="error" sx={{ mt: 1 }}>
       {health.provider === 'xui'
