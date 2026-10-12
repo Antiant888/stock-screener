@@ -1,5 +1,6 @@
 import {
   Box,
+  Chip,
   CircularProgress,
   Paper,
   Table,
@@ -14,6 +15,8 @@ import {
 import PriceSparkline from '../Scan/PriceSparkline';
 import RSSparkline from '../Scan/RSSparkline';
 import ActionStateBadge from './ActionStateBadge';
+import StockRowCard from './StockRowCard';
+import { useIsMobileShell } from '../Layout/shellNav';
 import TickerCell from '../common/TickerCell';
 import { getGroupRankColor } from '../../utils/colorUtils';
 import { formatLocalCurrency } from '../../utils/formatUtils';
@@ -50,6 +53,7 @@ function DailyScanRowsTable({
   showActionState = false,
   onOpenOpportunity = null,
 }) {
+  const isMobile = useIsMobileShell();
   const isChartEnabled = (symbol) => (
     Boolean(onOpenChart) && (chartEnabledSymbols == null || chartEnabledSymbols.has(symbol))
   );
@@ -59,12 +63,23 @@ function DailyScanRowsTable({
     }
   };
   const colSpan = 8 + (showRs ? 1 : 0) + (showRating ? 1 : 0) + (showActionState ? 1 : 0);
+  const actionBadge = (row) => (
+    <ActionStateBadge
+      state={row.action_state}
+      onClick={row.opportunity_state && onOpenOpportunity
+        ? (event) => {
+          event.stopPropagation();
+          onOpenOpportunity(row);
+        }
+        : undefined}
+    />
+  );
 
   return (
     <Paper
       data-testid={testId}
       elevation={0}
-      sx={{ p: 1.5, mb: 2, border: '1px solid', borderColor: 'divider' }}
+      sx={{ p: 1.5, mb: 2, border: '1px solid', borderColor: 'divider', overflow: 'hidden' }}
     >
       <Box
         sx={{
@@ -86,130 +101,154 @@ function DailyScanRowsTable({
         </Box>
         {action}
       </Box>
-      <TableContainer>
-        <Table size="small" sx={{ minWidth: 720 }}>
-          <TableHead>
-            <TableRow>
-              <TableCell align="center">Symbol</TableCell>
-              <TableCell align="center">Score</TableCell>
-              {showActionState ? <TableCell align="center">Action</TableCell> : null}
-              {showRs ? <TableCell align="center">RS</TableCell> : null}
-              <TableCell align="center">Price</TableCell>
-              <TableCell align="center">MCap</TableCell>
-              {showRating ? <TableCell align="center">Rating</TableCell> : null}
-              <TableCell align="center">Price Trend (30d)</TableCell>
-              <TableCell align="center">RS Trend (30d)</TableCell>
-              <TableCell align="center">IBD Group</TableCell>
-              <TableCell align="center">Grp Rank</TableCell>
-            </TableRow>
-          </TableHead>
-          <TableBody>
-            {isLoading && rows.length === 0 ? (
+      {isMobile ? (
+        // Phones: one card per row instead of a 720px table that scrolls sideways.
+        <>
+          {isLoading && rows.length === 0 ? (
+            <Box sx={{ py: 2, textAlign: 'center' }}><CircularProgress size={18} /></Box>
+          ) : null}
+          {isError && rows.length === 0 ? (
+            <Typography sx={{ color: 'error.main', py: 2, textAlign: 'center' }}>{errorMessage}</Typography>
+          ) : null}
+          {!isLoading && !isError && rows.length === 0 ? (
+            <Typography sx={{ py: 2, textAlign: 'center' }}>{emptyMessage}</Typography>
+          ) : null}
+          {rows.length > 0 ? (
+            <Box role="list" aria-label={typeof title === 'string' ? title : undefined} sx={{ mx: -1.5, mb: -1.5 }}>
+              {rows.map((row) => (
+                <Box key={row.symbol} role="listitem" sx={{ borderTop: 1, borderColor: 'divider' }}>
+                  <StockRowCard
+                    row={row}
+                    scoreField={scoreField}
+                    badge={showActionState
+                      ? actionBadge(row)
+                      : showRating && row.rating
+                        ? <Chip label={row.rating} size="small" variant="outlined" sx={{ height: 18, fontSize: 10 }} />
+                        : null}
+                    meta={showRs && row.rs_rating != null ? `RS ${formatNumber(row.rs_rating, 0)}` : null}
+                    onOpen={isChartEnabled(row.symbol) ? () => handleRowOpen(row.symbol) : null}
+                  />
+                </Box>
+              ))}
+            </Box>
+          ) : null}
+        </>
+      ) : (
+        <TableContainer>
+          <Table size="small" sx={{ minWidth: 720 }}>
+            <TableHead>
               <TableRow>
-                <TableCell align="center" colSpan={colSpan}>
-                  <CircularProgress size={18} />
-                </TableCell>
+                <TableCell align="center">Symbol</TableCell>
+                <TableCell align="center">Score</TableCell>
+                {showActionState ? <TableCell align="center">Action</TableCell> : null}
+                {showRs ? <TableCell align="center">RS</TableCell> : null}
+                <TableCell align="center">Price</TableCell>
+                <TableCell align="center">MCap</TableCell>
+                {showRating ? <TableCell align="center">Rating</TableCell> : null}
+                <TableCell align="center">Price Trend (30d)</TableCell>
+                <TableCell align="center">RS Trend (30d)</TableCell>
+                <TableCell align="center">IBD Group</TableCell>
+                <TableCell align="center">Grp Rank</TableCell>
               </TableRow>
-            ) : null}
-            {isError && rows.length === 0 ? (
-              <TableRow>
-                <TableCell align="center" colSpan={colSpan} sx={{ color: 'error.main', py: 2 }}>
-                  {errorMessage}
-                </TableCell>
-              </TableRow>
-            ) : null}
-            {rows.map((row) => {
-              const rowChartEnabled = isChartEnabled(row.symbol);
-              return (
-                <TableRow
-                  key={row.symbol}
-                  hover={rowChartEnabled}
-                  tabIndex={rowChartEnabled ? 0 : -1}
-                  onClick={() => handleRowOpen(row.symbol)}
-                  onKeyDown={(event) => {
-                    if (!rowChartEnabled || event.target !== event.currentTarget) return;
-                    if (event.key === 'Enter' || event.key === ' ') {
-                      event.preventDefault();
-                      handleRowOpen(row.symbol);
-                    }
-                  }}
-                  sx={{ cursor: rowChartEnabled ? 'pointer' : 'default' }}
-                >
-                  <TableCell align="center">
-                    <TickerCell symbol={row.symbol} companyName={row.company_name} align="center" />
-                  </TableCell>
-                  <TableCell align="center">{formatNumber(row?.[scoreField], 1)}</TableCell>
-                  {showActionState ? (
-                    <TableCell align="center">
-                      <ActionStateBadge
-                        state={row.action_state}
-                        onClick={row.opportunity_state && onOpenOpportunity
-                          ? (event) => {
-                            event.stopPropagation();
-                            onOpenOpportunity(row);
-                          }
-                          : undefined}
-                      />
-                    </TableCell>
-                  ) : null}
-                  {showRs ? <TableCell align="center">{formatNumber(row.rs_rating, 0)}</TableCell> : null}
-                  <TableCell align="center">{formatLocalCurrency(row.current_price, row.currency)}</TableCell>
-                  <TableCell align="center">
-                    {resolveMarketCapDisplay(row, null, { preferUsd: true }).formattedValue}
-                  </TableCell>
-                  {showRating ? <TableCell align="center">{row.rating}</TableCell> : null}
-                  <TableCell align="center">
-                    {row.price_sparkline_data ? (
-                      <Box display="flex" justifyContent="center">
-                        <PriceSparkline
-                          data={row.price_sparkline_data}
-                          trend={row.price_trend}
-                          change1d={row.price_change_1d}
-                          industry={row.ibd_industry_group}
-                          width={priceSparklineWidth}
-                          height={28}
-                          sparklineWidth={priceSparklineInnerWidth}
-                        />
-                      </Box>
-                    ) : '-'}
-                  </TableCell>
-                  <TableCell align="center">
-                    {row.rs_sparkline_data ? (
-                      <Box display="flex" justifyContent="center">
-                        <RSSparkline
-                          data={row.rs_sparkline_data}
-                          trend={row.rs_trend}
-                          width={117}
-                          height={20}
-                        />
-                      </Box>
-                    ) : '-'}
-                  </TableCell>
-                  <TableCell align="center" sx={{
-                    color: 'text.secondary', fontSize: '12px',
-                    overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 140,
-                  }}>
-                    {row.ibd_industry_group || '-'}
-                  </TableCell>
-                  <TableCell align="center" sx={{
-                    fontFamily: 'monospace', fontWeight: row.ibd_group_rank != null && row.ibd_group_rank <= 20 ? 600 : 400,
-                    color: getGroupRankColor(row.ibd_group_rank),
-                  }}>
-                    {row.ibd_group_rank ?? '-'}
+            </TableHead>
+            <TableBody>
+              {isLoading && rows.length === 0 ? (
+                <TableRow>
+                  <TableCell align="center" colSpan={colSpan}>
+                    <CircularProgress size={18} />
                   </TableCell>
                 </TableRow>
-              );
-            })}
-            {!isLoading && !isError && rows.length === 0 ? (
-              <TableRow>
-                <TableCell align="center" colSpan={colSpan}>
-                  {emptyMessage}
-                </TableCell>
-              </TableRow>
-            ) : null}
-          </TableBody>
-        </Table>
-      </TableContainer>
+              ) : null}
+              {isError && rows.length === 0 ? (
+                <TableRow>
+                  <TableCell align="center" colSpan={colSpan} sx={{ color: 'error.main', py: 2 }}>
+                    {errorMessage}
+                  </TableCell>
+                </TableRow>
+              ) : null}
+              {rows.map((row) => {
+                const rowChartEnabled = isChartEnabled(row.symbol);
+                return (
+                  <TableRow
+                    key={row.symbol}
+                    hover={rowChartEnabled}
+                    tabIndex={rowChartEnabled ? 0 : -1}
+                    onClick={() => handleRowOpen(row.symbol)}
+                    onKeyDown={(event) => {
+                      if (!rowChartEnabled || event.target !== event.currentTarget) return;
+                      if (event.key === 'Enter' || event.key === ' ') {
+                        event.preventDefault();
+                        handleRowOpen(row.symbol);
+                      }
+                    }}
+                    sx={{ cursor: rowChartEnabled ? 'pointer' : 'default' }}
+                  >
+                    <TableCell align="center">
+                      <TickerCell symbol={row.symbol} companyName={row.company_name} align="center" />
+                    </TableCell>
+                    <TableCell align="center">{formatNumber(row?.[scoreField], 1)}</TableCell>
+                    {showActionState ? (
+                      <TableCell align="center">{actionBadge(row)}</TableCell>
+                    ) : null}
+                    {showRs ? <TableCell align="center">{formatNumber(row.rs_rating, 0)}</TableCell> : null}
+                    <TableCell align="center">{formatLocalCurrency(row.current_price, row.currency)}</TableCell>
+                    <TableCell align="center">
+                      {resolveMarketCapDisplay(row, null, { preferUsd: true }).formattedValue}
+                    </TableCell>
+                    {showRating ? <TableCell align="center">{row.rating}</TableCell> : null}
+                    <TableCell align="center">
+                      {row.price_sparkline_data ? (
+                        <Box display="flex" justifyContent="center">
+                          <PriceSparkline
+                            data={row.price_sparkline_data}
+                            trend={row.price_trend}
+                            change1d={row.price_change_1d}
+                            industry={row.ibd_industry_group}
+                            width={priceSparklineWidth}
+                            height={28}
+                            sparklineWidth={priceSparklineInnerWidth}
+                          />
+                        </Box>
+                      ) : '-'}
+                    </TableCell>
+                    <TableCell align="center">
+                      {row.rs_sparkline_data ? (
+                        <Box display="flex" justifyContent="center">
+                          <RSSparkline
+                            data={row.rs_sparkline_data}
+                            trend={row.rs_trend}
+                            width={117}
+                            height={20}
+                          />
+                        </Box>
+                      ) : '-'}
+                    </TableCell>
+                    <TableCell align="center" sx={{
+                      color: 'text.secondary', fontSize: '12px',
+                      overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 140,
+                    }}>
+                      {row.ibd_industry_group || '-'}
+                    </TableCell>
+                    <TableCell align="center" sx={{
+                      fontFamily: 'monospace', fontWeight: row.ibd_group_rank != null && row.ibd_group_rank <= 20 ? 600 : 400,
+                      color: getGroupRankColor(row.ibd_group_rank),
+                    }}>
+                      {row.ibd_group_rank ?? '-'}
+                    </TableCell>
+                  </TableRow>
+                );
+              })}
+              {!isLoading && !isError && rows.length === 0 ? (
+                <TableRow>
+                  <TableCell align="center" colSpan={colSpan}>
+                    {emptyMessage}
+                  </TableCell>
+                </TableRow>
+              ) : null}
+            </TableBody>
+          </Table>
+        </TableContainer>
+      )}
     </Paper>
   );
 }

@@ -23,6 +23,7 @@ vi.mock('@tanstack/react-virtual', () => ({
         key: i,
       })),
     getTotalSize: () => count * 32,
+    measure: () => {},
   }),
 }));
 vi.mock('./RSSparkline', () => ({ default: () => <span data-testid="rs-sparkline" /> }));

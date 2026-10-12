@@ -1,4 +1,4 @@
-import { fireEvent, screen } from '@testing-library/react';
+import { cleanup, fireEvent, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { renderWithProviders } from '../../test/renderWithProviders';
 import {
@@ -28,6 +28,7 @@ vi.mock('@tanstack/react-virtual', () => ({
         key: i,
       })),
     getTotalSize: () => count * 32,
+    measure: () => {},
   }),
 }));
 vi.mock('./RSSparkline', () => ({
@@ -40,7 +41,9 @@ vi.mock('./PriceSparkline', () => ({
     <span data-testid="price-sparkline">Price:{data?.length ?? 'none'}:{trend}:{change1d}</span>
   ),
 }));
-vi.mock('../common/AddToWatchlistMenu', () => ({ default: () => null }));
+vi.mock('../common/AddToWatchlistMenu', () => ({
+  default: ({ symbols }) => <span data-testid={`watchlist-${symbols}`} />,
+}));
 
 /** Default props for a basic render — 1 row, page 1. */
 const defaultProps = {
@@ -553,6 +556,213 @@ describe('ResultsTable', () => {
 
     // Stage 2 = success.main in the dark test theme (#2ebd85).
     expect(screen.getByText('S2')).toHaveStyle({ backgroundColor: 'rgb(46, 189, 133)' });
+  });
+
+  describe('on a phone-width screen', () => {
+    beforeEach(() => {
+      // useMediaQuery(breakpoints.down('md')) matches.
+      window.matchMedia = vi.fn().mockReturnValue({
+        matches: true,
+        addListener: vi.fn(),
+        removeListener: vi.fn(),
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+      });
+    });
+
+    afterEach(() => {
+      delete window.matchMedia;
+    });
+
+    it('lists results as cards with a sort picker instead of a wide table', async () => {
+      const onSortChange = vi.fn();
+      const onOpenChart = vi.fn();
+      renderWithProviders(
+        <ResultsTable {...defaultProps} onSortChange={onSortChange} onOpenChart={onOpenChart} />,
+      );
+
+      expect(screen.queryByRole('table')).not.toBeInTheDocument();
+      const list = screen.getByRole('list', { name: 'Scan results' });
+      expect(within(list).getAllByRole('listitem')).toHaveLength(1);
+
+      fireEvent.click(screen.getByRole('button', { name: `Open ${fullSeRow.symbol} chart` }));
+      expect(onOpenChart).toHaveBeenCalledWith(fullSeRow.symbol);
+
+      fireEvent.click(screen.getByRole('button', { name: /Sorted descending/ }));
+      expect(onSortChange).toHaveBeenLastCalledWith('composite_score', 'asc');
+
+      await userEvent.click(screen.getByRole('combobox', { name: 'Sort by' }));
+      await userEvent.click(screen.getByRole('option', { name: 'RS rating' }));
+      expect(onSortChange).toHaveBeenLastCalledWith('rs_rating', 'desc');
+    });
+
+    it('hides the sort picker when sorting is disabled and skips unscannable charts', () => {
+      renderWithProviders(
+        <ResultsTable
+          {...defaultProps}
+          sortingEnabled={false}
+          results={[{ ...fullSeRow, is_scannable: false }]}
+          onOpenChart={vi.fn()}
+        />,
+      );
+
+      expect(screen.queryByRole('combobox', { name: 'Sort by' })).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: /^Open .* chart$/ })).not.toBeInTheDocument();
+      expect(screen.getByRole('listitem')).toHaveAttribute('aria-setsize', '1');
+    });
+
+    it('keeps the scan status or rating as the card badge without opportunity state', () => {
+      const ipoRow = {
+        ...fullSeRow,
+        symbol: 'NEWCO',
+        scan_mode: 'listing_only',
+        data_status: 'insufficient_history',
+        is_scannable: false,
+      };
+      const ratedRow = { ...fullSeRow, symbol: 'RATED', rating: 'Strong Buy' };
+      renderWithProviders(
+        <ResultsTable {...defaultProps} showOpportunityState={false} results={[ipoRow, ratedRow]} />,
+      );
+
+      const [ipoCard, ratedCard] = screen.getAllByRole('listitem');
+      expect(within(ipoCard).getByText('New IPO')).toBeInTheDocument();
+      expect(within(ratedCard).getByText('Strong Buy')).toBeInTheDocument();
+    });
+
+    it('shows the metric the list is sorted by, formatted like its column, instead of the composite', () => {
+      const row = {
+        ...fullSeRow, composite_score: 66, minervini_score: 56.2, vcp_score: 81.5, eps_growth_qq: 45.24,
+        gap_percent: 12, volume_surge: 2.43, adr_percent: 4.1, se_pattern_primary: 'cup_with_handle', mystery_field: 9,
+        sales_growth_qq: 31.04, volume: 2.5e9, market_cap: 1.0e12, market_cap_usd: 132.3e9, adv_usd: 45.2e6,
+        vcp_pivot: 101.25, stage: 2, currency: 'USD', perf_3m: 18.5,
+      };
+      const expectPill = (sortBy, text, name) => {
+        renderWithProviders(<ResultsTable {...defaultProps} results={[row]} sortBy={sortBy} />);
+        // Screen readers get the full name as real text; the abbreviation is aria-hidden.
+        const spoken = screen.getAllByText(name).find((el) => el.getAttribute('aria-hidden') !== 'true');
+        expect(spoken.parentElement.querySelector('[aria-hidden="true"]')).toHaveTextContent(text);
+        cleanup();
+      };
+
+      expectPill('minervini_score', 'Min 56.2', 'Minervini 56.2');
+      expectPill('vcp_score', 'VScr 81.5', 'VCP score 81.5'); // VCP and Tight presets
+      expectPill('eps_growth_qq', 'EPS 45.2%', 'EPS growth Q/Q 45.2%'); // Growth Rockets
+      expectPill('gap_percent', 'Gap 12.0%', 'Gap 12.0%'); // Episodic Pivot (not a table column)
+      expectPill('volume_surge', 'Vol 2.4×', 'Volume surge 2.4×'); // Pocket Pivot
+      expectPill('adr_percent', 'ADR 4.1%', 'ADR 4.1%');
+      // Static-site rows also carry these (static_scan_bundle_exporter extended fields).
+      expectPill('perf_3m', '3M 18.5%', 'Performance 3 months 18.5%');
+      // Any sortable column a custom preset can save, formatted like the desktop cell.
+      expectPill('sales_growth_qq', 'Sales 31.0%', 'Sales growth Q/Q 31.0%');
+      expectPill('volume', '$Vol $2.5B', 'Dollar volume $2.5B');
+      // market_cap sorts by the native value, so it shows in local currency;
+      // market_cap_usd is its own sort.
+      expectPill('market_cap', 'MCap $1.0T', 'Market cap $1.0T');
+      expectPill('market_cap_usd', 'MCap$ $132.3B', 'Market cap USD $132.3B');
+      expectPill('adv_usd', 'ADV $45.2M', 'Average dollar volume $45.2M');
+      expectPill('vcp_pivot', 'Pvt $101.25', 'VCP pivot $101.25');
+      expectPill('stage', 'Stg S2', 'Stage S2');
+      // Non-numeric, unknown and already-visible fields keep the composite.
+      expectPill('se_pattern_primary', '66.0', 'Score 66.0');
+      expectPill('mystery_field', '66.0', 'Score 66.0');
+      expectPill('symbol', '66.0', 'Score 66.0');
+    });
+
+    it('leads the group line with a text sort value', () => {
+      const row = {
+        ...fullSeRow, gics_sector: 'Technology', se_pattern_primary: 'cup_with_handle', rs_line_blue_dot_recent: true,
+        correction_survivor: true,
+      };
+      const leadOf = (sortBy) => {
+        renderWithProviders(<ResultsTable {...defaultProps} results={[row]} sortBy={sortBy} />);
+        const text = screen.getByTestId('card-sort-note').textContent;
+        cleanup();
+        return text;
+      };
+
+      expect(leadOf('gics_sector')).toBe('Technology');
+      expect(leadOf('se_pattern_primary')).toBe('Cup With Handle');
+      expect(leadOf('rs_line_blue_dot_recent')).toBe('RS blue dot');
+      expect(leadOf('correction_survivor')).toBe('Correction survivor');
+    });
+
+    it('offers every sortable column in the picker, common ones first', async () => {
+      const onSortChange = vi.fn();
+      renderWithProviders(<ResultsTable {...defaultProps} onSortChange={onSortChange} />);
+
+      await userEvent.click(screen.getByRole('combobox', { name: 'Sort by' }));
+      const options = screen.getAllByRole('option').map((option) => option.textContent);
+      expect(options.slice(0, 3)).toEqual(['Composite score', 'Minervini', 'CANSLIM']);
+      for (const name of ['Price', 'EPS growth Q/Q', 'VCP score', 'Market cap', 'ADR', 'Beta']) {
+        expect(options).toContain(name);
+      }
+      expect(new Set(options).size).toBe(options.length);
+
+      await userEvent.click(screen.getByRole('option', { name: 'Market cap' }));
+      expect(onSortChange).toHaveBeenLastCalledWith('market_cap', 'desc');
+    });
+
+    it('keeps the desktop symbol cell details on the card', async () => {
+      const row = {
+        ...fullSeRow,
+        market: 'HK',
+        matched_groups: [{ name: 'VCP setup' }, { name: 'Leaders' }],
+        field_availability: { eps_growth_qq: { status: 'unavailable', reason: 'no quarterly data' } },
+      };
+      renderWithProviders(<ResultsTable {...defaultProps} results={[row]} />);
+
+      const card = screen.getByRole('listitem');
+      expect(within(card).getByText('HK')).toBeInTheDocument(); // market badge
+      expect(within(card).getByText('VCP setup +1')).toBeInTheDocument(); // matched setups
+      // Data-availability chip stays interactive and opens its details dialog.
+      await userEvent.click(within(card).getByRole('button', { name: /unavailable or computed/ }));
+      expect(screen.getByRole('dialog')).toBeInTheDocument();
+    });
+
+    it('shows the IPO date (what the list sorts by), not an age', () => {
+      const row = { ...fullSeRow, ipo_date: '2024-03-15' };
+      renderWithProviders(<ResultsTable {...defaultProps} results={[row]} sortBy="ipo_date" />);
+
+      expect(screen.getByText('IPO date 2024-03-15')).toBeInTheDocument();
+    });
+
+    it('offers the price alias once, keeping the preset\'s sort key', async () => {
+      const onSortChange = vi.fn();
+      renderWithProviders(<ResultsTable {...defaultProps} sortBy="price" onSortChange={onSortChange} />);
+
+      await userEvent.click(screen.getByRole('combobox', { name: 'Sort by' }));
+      expect(screen.getAllByRole('option', { name: 'Price' })).toHaveLength(1);
+      expect(screen.getByRole('option', { name: 'Price' })).toHaveAttribute('aria-selected', 'true');
+    });
+
+    it('labels the price sort alias in the picker', () => {
+      // scanFilterFields.json marks `price` sortable (same column as current_price).
+      renderWithProviders(<ResultsTable {...defaultProps} sortBy="price" />);
+
+      expect(screen.getByRole('combobox', { name: 'Sort by' })).toHaveTextContent('Price');
+    });
+
+    it('labels a preset-only active sort in the picker without exposing its field id', () => {
+      renderWithProviders(<ResultsTable {...defaultProps} sortBy="gap_percent" />);
+
+      expect(screen.getByRole('combobox', { name: 'Sort by' })).toHaveTextContent('Gap');
+      expect(screen.getByRole('combobox', { name: 'Sort by' })).not.toHaveTextContent('gap_percent');
+    });
+
+    it('keeps the watchlist action on cards, including rows that cannot open a chart', () => {
+      const row = { ...fullSeRow, is_scannable: false };
+      const { rerender } = renderWithProviders(<ResultsTable {...defaultProps} results={[row]} />);
+      expect(within(screen.getByRole('listitem')).getByTestId(`watchlist-${row.symbol}`)).toBeInTheDocument();
+
+      rerender(<ResultsTable {...defaultProps} results={[row]} showWatchlistMenu={false} />);
+      expect(screen.queryByTestId(`watchlist-${row.symbol}`)).not.toBeInTheDocument();
+    });
+
+    it('keeps an active sort that the picker does not list', () => {
+      renderWithProviders(<ResultsTable {...defaultProps} sortBy="beta" />);
+
+      expect(screen.getByRole('combobox', { name: 'Sort by' })).toHaveTextContent('Beta');
+    });
   });
 
   it('tints score cells by value and leaves a could-not-score 0 plain', () => {

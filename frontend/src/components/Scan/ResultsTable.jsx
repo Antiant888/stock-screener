@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState, useCallback, memo } from 'react';
+import { useLayoutEffect, useMemo, useRef, useState, useCallback, memo } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import {
   Table,
@@ -14,11 +14,16 @@ import {
   Typography,
   Box,
   IconButton,
+  ListSubheader,
+  MenuItem,
+  TextField,
   styled,
 } from '@mui/material';
 import CheckIcon from '@mui/icons-material/Check';
 import CloseIcon from '@mui/icons-material/Close';
 import ShowChartIcon from '@mui/icons-material/ShowChart';
+import ArrowDownwardIcon from '@mui/icons-material/ArrowDownward';
+import ArrowUpwardIcon from '@mui/icons-material/ArrowUpward';
 import RSSparkline from './RSSparkline';
 import PriceSparkline from './PriceSparkline';
 import FieldAvailabilityChip from './FieldAvailabilityChip';
@@ -26,6 +31,9 @@ import MarketBadge from './MarketBadge';
 import MarketThemesList from '../Stock/MarketThemesList';
 import AddToWatchlistMenu from '../common/AddToWatchlistMenu';
 import OpportunityEvidenceDrawer from '../shared/OpportunityEvidenceDrawer';
+import ActionStateBadge from '../shared/ActionStateBadge';
+import StockRowCard from '../shared/StockRowCard';
+import { useIsMobileShell } from '../Layout/shellNav';
 import { TableSkeleton } from '../common/LoadingSkeletons';
 import OpportunityResultCells from './OpportunityResultCells';
 import { useOpportunityEvidenceSelection } from './useOpportunityEvidenceSelection';
@@ -42,11 +50,126 @@ import {
   getIpoAgeColor,
   getCurrencyPrefix,
   formatLocalCurrency,
+  formatPatternName,
 } from '../../utils/formatUtils';
 import { heatClass, heatClassStyles } from '../../utils/scoreHeat';
 
 // Row height constant for virtualization
 const ROW_HEIGHT = 48;
+// Phone layout: one StockRowCard per result (fixed height keeps the virtualizer
+// exact). Content needs ~75px; the rest is headroom for larger system text.
+const MOBILE_CARD_HEIGHT = 84;
+// Phone cards show the value of the active sort (pill label + desktop-style
+// formatting), so the visible number matches the order. Covers every sortable
+// column the card doesn't already show, plus preset-only sort fields (units from
+// the preset filters in backend/app/services/preset_screens.py). Sorts not
+// listed are text (sector, pattern, action state, RS blue dot) or already on
+// the card (composite, symbol, price, 1D change, group rank, industry), and
+// keep the composite.
+const oneDp = (value) => Number(value).toFixed(1);
+const pct = (value) => `${Number(value).toFixed(1)}%`;
+const ratio = (value) => `${Number(value).toFixed(1)}×`;
+const whole = (value) => Number(value).toFixed(0);
+const CARD_METRICS = {
+  minervini_score: { label: 'Min', name: 'Minervini', format: oneDp },
+  canslim_score: { label: 'CAN', name: 'CANSLIM', format: oneDp },
+  ipo_score: { label: 'IPO', name: 'IPO score', format: oneDp },
+  custom_score: { label: 'Cust', name: 'Custom score', format: oneDp },
+  volume_breakthrough_score: { label: 'VolB', name: 'Volume breakthrough', format: oneDp },
+  se_setup_score: { label: 'SE', name: 'Setup score', format: oneDp },
+  vcp_score: { label: 'VScr', name: 'VCP score', format: oneDp },
+  resilience_score: { label: 'Res', name: 'Resilience', format: oneDp },
+  rs_rating: { label: 'RS', name: 'RS rating', format: whole },
+  rs_rating_1m: { label: 'RS1M', name: 'RS rating 1 month', format: whole },
+  rs_rating_3m: { label: 'RS3M', name: 'RS rating 3 months', format: whole },
+  rs_rating_12m: { label: 'RS12M', name: 'RS rating 12 months', format: whole },
+  rs_trend: { label: 'RS', name: 'RS trend', format: (v) => (v > 0 ? '▲' : v < 0 ? '▼' : '–') },
+  eps_rating: { label: 'EPS', name: 'EPS rating', format: whole },
+  beta: { label: 'β', name: 'Beta', format: (v) => Number(v).toFixed(2) },
+  beta_adj_rs: { label: 'βRS', name: 'Beta-adjusted RS', format: whole },
+  stage: { label: 'Stg', name: 'Stage', format: (v) => `S${whole(v)}` },
+  eps_growth_qq: { label: 'EPS', name: 'EPS growth Q/Q', format: pct },
+  sales_growth_qq: { label: 'Sales', name: 'Sales growth Q/Q', format: pct },
+  adr_percent: { label: 'ADR', name: 'ADR', format: pct },
+  se_distance_to_pivot_pct: { label: 'Pvt', name: 'Distance to pivot', format: pct },
+  se_bb_width_pctile_252: { label: 'Sqz', name: 'Squeeze percentile', format: whole },
+  se_volume_vs_50d: { label: 'V50', name: 'Volume vs 50-day', format: ratio },
+  se_pivot_price: { label: 'Pvt', name: 'Pivot price', format: (v, row) => formatLocalCurrency(v, row.currency) },
+  vcp_pivot: { label: 'Pvt', name: 'VCP pivot', format: (v, row) => formatLocalCurrency(v, row.currency) },
+  volume: { label: '$Vol', name: 'Dollar volume', format: (v, row) => formatLargeNumber(v, getCurrencyPrefix(row.currency)) },
+  // market_cap sorts by the native value (backend mixed_market_policy), so show
+  // that, in local currency; market_cap_usd is a separate sort.
+  market_cap: { label: 'MCap', name: 'Market cap', format: (v, row) => formatLargeNumber(v, getCurrencyPrefix(row.currency)) },
+  market_cap_usd: { label: 'MCap$', name: 'Market cap USD', format: (v) => formatLargeNumber(v, '$') },
+  adv_usd: { label: 'ADV', name: 'Average dollar volume', format: (v) => formatLargeNumber(v, '$') },
+  // The list sorts by the raw date, so show the date (an age would read in
+  // the opposite direction to the sort arrow).
+  ipo_date: { label: 'IPO', name: 'IPO date', format: (v) => String(v).slice(0, 10), text: true },
+  gap_percent: { label: 'Gap', name: 'Gap', format: pct },
+  // Preset-only fields: present on static-site rows (static_scan_bundle_exporter
+  // extended fields); the live scan API doesn't return them yet, so live cards
+  // fall back to the composite for these sorts.
+  perf_week: { label: '1W', name: 'Performance 1 week', format: pct },
+  perf_month: { label: '1M', name: 'Performance 1 month', format: pct },
+  perf_3m: { label: '3M', name: 'Performance 3 months', format: pct },
+  perf_6m: { label: '6M', name: 'Performance 6 months', format: pct },
+  week_52_high_distance: { label: '52W', name: 'From 52-week high', format: pct },
+  week_52_low_distance: { label: '52WL', name: 'From 52-week low', format: pct },
+  volume_surge: { label: 'Vol', name: 'Volume surge', format: ratio },
+  se_up_down_volume_ratio_10d: { label: 'U/D', name: 'Up/down volume 10 days', format: ratio },
+};
+// Same text as the desktop symbol cell's matched-setups chip.
+const matchedGroupsLabel = (row) => {
+  const groups = row.matched_groups || [];
+  if (!groups.length) return null;
+  return groups.length === 1 ? groups[0].name : `${groups[0].name} +${groups.length - 1}`;
+};
+// Text sorts the pill can't fit: their value leads the card's group line.
+const CARD_SORT_NOTES = {
+  gics_sector: (row) => row.gics_sector || null,
+  se_pattern_primary: (row) => (row.se_pattern_primary ? formatPatternName(row.se_pattern_primary) : null),
+  rs_line_blue_dot_recent: (row) => (row.rs_line_blue_dot_recent ? 'RS blue dot' : null),
+  correction_survivor: (row) => (row.correction_survivor ? 'Correction survivor' : null),
+};
+// The card's labelled metric for this row, or null to keep the composite.
+const cardMetricFor = (row, sortBy) => {
+  const spec = CARD_METRICS[sortBy];
+  const raw = row[sortBy];
+  if (!spec || raw == null || raw === '') return null;
+  if (!spec.text && !Number.isFinite(Number(raw))) return null;
+  const value = spec.format(raw, row);
+  return value && value !== '-' ? { label: spec.label, value, name: spec.name } : null;
+};
+// Friendly picker names for sortable columns the metric table doesn't name.
+const SORT_NAMES = {
+  symbol: 'Symbol',
+  price_change_1d: '1D change',
+  current_price: 'Price',
+  price: 'Price', // sortable alias of current_price (scanFilterFields.json)
+  correction_survivor: 'Correction survivor',
+  gics_sector: 'Sector',
+  ibd_industry_group: 'Industry',
+  ibd_group_rank: 'Group rank',
+  composite_score: 'Composite score',
+  se_pattern_primary: 'Pattern',
+  rs_line_blue_dot_recent: 'RS blue dot',
+  action_state: 'Action state',
+};
+// Sortable aliases of a table column (scanFilterFields.json): `price` sorts
+// the same column as current_price.
+const SORT_ALIASES = { price: 'current_price' };
+const sortName = (id) => SORT_NAMES[id] || CARD_METRICS[id]?.name || columns.find((column) => column.id === id)?.label || 'Current sort';
+// Common sorts lead the phone picker; every other sortable column follows.
+const MOBILE_SORT_FIELDS = [
+  ['composite_score', 'Composite score'],
+  ['minervini_score', 'Minervini'],
+  ['canslim_score', 'CANSLIM'],
+  ['se_setup_score', 'Setup score'],
+  ['rs_rating', 'RS rating'],
+  ['price_change_1d', '1D change'],
+  ['ibd_group_rank', 'Group rank'],
+  ['symbol', 'Symbol'],
+];
 const SYMBOL_COLUMN_WIDTH = 210;
 const OPPORTUNITY_COLUMNS_WIDTH = 153;
 const TABLE_MIN_WIDTH = Object.freeze({
@@ -632,6 +755,7 @@ function ResultsTable({
   // MCap column display mode — kept as local state; scan-level persistence
   // can lift this up later if users want it to survive navigation.
   const [mcapDisplay, setMcapDisplay] = useState(MCAP_DISPLAY.USD);
+  const isMobile = useIsMobileShell();
   const {
     selectedRow: opportunityRow,
     openEvidence: handleOpenOpportunity,
@@ -675,9 +799,14 @@ function ResultsTable({
   const rowVirtualizer = useVirtualizer({
     count: results?.length || 0,
     getScrollElement: () => parentRef.current,
-    estimateSize: () => ROW_HEIGHT,
+    estimateSize: () => (isMobile ? MOBILE_CARD_HEIGHT : ROW_HEIGHT),
     overscan: 10, // Render 10 extra rows above/below viewport
   });
+  // Row height changes with the layout (e.g. rotating a tablet); drop cached
+  // sizes before paint so cards never draw at the table's row spacing.
+  useLayoutEffect(() => {
+    rowVirtualizer.measure();
+  }, [isMobile, rowVirtualizer]);
 
   // Memoize virtual items to prevent recalculation
   const virtualRows = rowVirtualizer.getVirtualItems();
@@ -694,6 +823,148 @@ function ResultsTable({
         <Typography variant="body1" color="text.secondary">
           No results found
         </Typography>
+      </Paper>
+    );
+  }
+
+  const pagination = (
+    <TablePagination
+      rowsPerPageOptions={[10, 25, 50, 100]}
+      component="div"
+      count={total}
+      rowsPerPage={perPage}
+      page={page - 1} // Material-UI uses 0-based pages
+      onPageChange={handleChangePage}
+      onRowsPerPageChange={(e) => {
+        const nextPerPage = Number(e.target.value);
+        onPerPageChange?.(nextPerPage);
+        onPageChange(1); // Reset to first page when changing per-page
+      }}
+    />
+  );
+  const opportunityDrawer = (
+    <OpportunityEvidenceDrawer
+      open={showOpportunityState && Boolean(opportunityRow)}
+      row={opportunityRow}
+      onClose={handleCloseOpportunity}
+      opportunityTelemetrySurface={opportunityTelemetrySurface}
+    />
+  );
+
+  // One badge per card, most explanatory first: the scan status says why a
+  // card can't open (e.g. "New IPO"), then the action state, then the rating
+  // the desktop table shows in its last column.
+  const mobileBadge = (row) => {
+    const status = getStatusChipProps(row);
+    if (status) {
+      return <Chip label={status.label} color={status.color} title={status.title} size="small" sx={{ height: 18, fontSize: 10 }} />;
+    }
+    if (showOpportunityState) {
+      return (
+        <ActionStateBadge
+          state={row.action_state}
+          onClick={row.opportunity_state
+            ? (event) => {
+              event.stopPropagation();
+              handleOpenOpportunity(row);
+            }
+            : undefined}
+        />
+      );
+    }
+    return row.rating
+      ? <Chip label={row.rating} color={getRatingColor(row.rating)} variant="outlined" size="small" sx={{ height: 18, fontSize: 10 }} />
+      : null;
+  };
+
+  if (isMobile) {
+    // Same sortable columns as the desktop headers (visibleColumns already
+    // drops opportunity columns when that capability is off), common ones
+    // first; a preset-only active sort is appended so the picker can show it.
+    const commonIds = new Set(MOBILE_SORT_FIELDS.map(([id]) => id));
+    const moreSorts = visibleColumns
+      .filter((column) => column.sortable && !commonIds.has(column.id))
+      // An active alias takes over its column's option, so the picker lists it
+      // once and keeps the preset's own sort key.
+      .map((column) => [SORT_ALIASES[sortBy] === column.id ? sortBy : column.id, sortName(column.id)]);
+    const listedIds = new Set([...commonIds, ...moreSorts.map(([id]) => id)]);
+    if (sortBy && !listedIds.has(sortBy)) moreSorts.push([sortBy, sortName(sortBy)]);
+    return (
+      <Paper elevation={1}>
+        {sortingEnabled ? (
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, px: 1.5, py: 1, borderBottom: 1, borderColor: 'divider' }}>
+            <TextField
+              select
+              size="small"
+              label="Sort by"
+              value={sortBy ?? ''}
+              onChange={(event) => onSortChange(event.target.value, sortOrder)}
+              sx={{ minWidth: 170 }}
+            >
+              {MOBILE_SORT_FIELDS.map(([id, label]) => <MenuItem key={id} value={id}>{label}</MenuItem>)}
+              {moreSorts.length ? <ListSubheader>More sorts</ListSubheader> : null}
+              {moreSorts.map(([id, label]) => <MenuItem key={id} value={id}>{label}</MenuItem>)}
+            </TextField>
+            <IconButton
+              aria-label={sortOrder === 'asc' ? 'Sorted ascending; switch to descending' : 'Sorted descending; switch to ascending'}
+              onClick={() => onSortChange(sortBy, sortOrder === 'asc' ? 'desc' : 'asc')}
+            >
+              {sortOrder === 'asc' ? <ArrowUpwardIcon fontSize="small" /> : <ArrowDownwardIcon fontSize="small" />}
+            </IconButton>
+          </Box>
+        ) : null}
+        <Box ref={parentRef} role="list" aria-label="Scan results" sx={{ maxHeight: 'calc(100dvh - 300px)', minHeight: 240, overflow: 'auto' }}>
+          <Box sx={{ height: rowVirtualizer.getTotalSize(), position: 'relative' }}>
+            {virtualRows.map((virtualRow) => {
+              const row = results[virtualRow.index];
+              const chartEnabled = row.is_scannable !== false &&
+                (isChartEnabled ? isChartEnabled(row.symbol) : Boolean(onOpenChart));
+              return (
+                <Box
+                  key={row.symbol}
+                  role="listitem"
+                  aria-setsize={results.length}
+                  aria-posinset={virtualRow.index + 1}
+                  sx={{
+                    position: 'absolute',
+                    top: 0,
+                    left: 0,
+                    right: 0,
+                    height: MOBILE_CARD_HEIGHT,
+                    transform: `translateY(${virtualRow.start}px)`,
+                    borderBottom: 1,
+                    borderColor: 'divider',
+                    overflow: 'hidden',
+                  }}
+                >
+                  <StockRowCard
+                    row={row}
+                    metric={cardMetricFor(row, sortBy)}
+                    sortNote={[CARD_SORT_NOTES[sortBy]?.(row), matchedGroupsLabel(row)].filter(Boolean).join(' · ') || null}
+                    badge={(
+                      <>
+                        <MarketBadge market={row.market} exchange={row.exchange} />
+                        {mobileBadge(row)}
+                      </>
+                    )}
+                    actions={(
+                      <>
+                        <FieldAvailabilityChip
+                          fieldAvailability={row.field_availability}
+                          growthMetricBasis={row.growth_metric_basis}
+                        />
+                        {showActions && showWatchlistMenu ? <AddToWatchlistMenu symbols={row.symbol} size="small" /> : null}
+                      </>
+                    )}
+                    onOpen={chartEnabled ? () => handleRowClick(row.symbol) : null}
+                  />
+                </Box>
+              );
+            })}
+          </Box>
+        </Box>
+        {pagination}
+        {opportunityDrawer}
       </Paper>
     );
   }
@@ -792,26 +1063,9 @@ function ResultsTable({
         </Table>
       </TableContainer>
 
-      <TablePagination
-        rowsPerPageOptions={[10, 25, 50, 100]}
-        component="div"
-        count={total}
-        rowsPerPage={perPage}
-        page={page - 1} // Material-UI uses 0-based pages
-        onPageChange={handleChangePage}
-        onRowsPerPageChange={(e) => {
-          const nextPerPage = Number(e.target.value);
-          onPerPageChange?.(nextPerPage);
-          onPageChange(1); // Reset to first page when changing per-page
-        }}
-      />
+      {pagination}
 
-      <OpportunityEvidenceDrawer
-        open={showOpportunityState && Boolean(opportunityRow)}
-        row={opportunityRow}
-        onClose={handleCloseOpportunity}
-        opportunityTelemetrySurface={opportunityTelemetrySurface}
-      />
+      {opportunityDrawer}
     </Paper>
   );
 }
