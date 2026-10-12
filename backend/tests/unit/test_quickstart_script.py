@@ -15,10 +15,14 @@ SCRIPT = REPO_ROOT / "scripts" / "quickstart.sh"
 FAKE_DOCKER = """#!/usr/bin/env bash
 echo "docker $*" >> "$FAKE_LOG"
 if [[ "$1" == "manifest" ]]; then exit "${FAKE_MANIFEST_EXIT:-0}"; fi
+if [[ "$1 $2 $3" == "compose version --short" ]]; then echo "${FAKE_COMPOSE_VERSION:-2.29.1}"; fi
 exit 0
 """
 FAKE_SUDO = """#!/usr/bin/env bash
 echo "sudo $*" >> "$FAKE_LOG"
+"""
+FAKE_SETFACL = """#!/usr/bin/env bash
+echo "setfacl $*" >> "$FAKE_LOG"
 """
 
 
@@ -26,13 +30,15 @@ echo "sudo $*" >> "$FAKE_LOG"
 def run(tmp_path):
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
-    for name, body in (("docker", FAKE_DOCKER), ("sudo", FAKE_SUDO)):
+    for name, body in (("docker", FAKE_DOCKER), ("sudo", FAKE_SUDO), ("setfacl", FAKE_SETFACL)):
         (bin_dir / name).write_text(body)
         (bin_dir / name).chmod(0o755)
     env_file = tmp_path / ".env.docker"
     log = tmp_path / "calls.log"
 
-    def _run(**extra_env):
+    def _run(env_text=None, expect_ok=True, **extra_env):
+        if env_text is not None:
+            env_file.write_text(env_text)
         env = {
             **os.environ,
             "PATH": f"{bin_dir}:{os.environ['PATH']}",
@@ -47,6 +53,8 @@ def run(tmp_path):
         result = subprocess.run(
             ["bash", str(SCRIPT)], env=env, capture_output=True, text=True, timeout=60,
         )
+        if not expect_ok:
+            return result
         assert result.returncode == 0, result.stdout + result.stderr
         values = dict(
             line.split("=", 1)
@@ -55,6 +63,7 @@ def run(tmp_path):
         )
         return result, values, log.read_text()
 
+    _run.env_file = env_file
     return _run
 
 
@@ -103,6 +112,14 @@ def test_rerun_keeps_secrets_and_user_settings(run):
     assert first["SERVER_AUTH_PASSWORD"] not in result.stdout
 
 
+def test_refuses_compose_without_wait_timeout(run):
+    result = run(expect_ok=False, FAKE_COMPOSE_VERSION="2.12.2")
+
+    assert result.returncode != 0
+    assert "Compose 2.17 or newer is required (found: 2.12.2)" in result.stderr
+    assert not run.env_file.exists()
+
+
 def test_explicit_tag_wins(run):
     _, values, calls = run(APP_IMAGE_TAG="v1.6.0")
 
@@ -120,12 +137,36 @@ def test_falls_back_to_latest_when_the_checkout_has_no_published_image(run):
 
 
 @pytest.mark.skipif(sys.platform != "linux", reason="bind-mount ownership only matters on Linux")
-def test_linux_hands_data_to_the_container_user(run):
+def test_linux_grants_the_container_user_access_without_taking_ownership(run):
     if os.getuid() in (0, 1000):
         pytest.skip("data/ is already writable by uid 1000")
     _, _, calls = run()
 
-    assert f"sudo chown -R 1000:1000 {REPO_ROOT / 'data'}" in calls
+    # An ACL keeps the user's ownership, so updating the checkout can still rewrite tracked data/ files.
+    assert f"setfacl -R -m u:1000:rwX -m d:u:1000:rwX {REPO_ROOT / 'data'}" in calls
+    assert "chown" not in calls
+
+
+def test_fills_quoted_empty_secrets_and_edits_the_last_duplicate_key(run):
+    _, _, _ = run(env_text=(
+        'SERVER_AUTH_PASSWORD=""\n'
+        "APP_IMAGE_TAG=v0.0.1\n"
+        "APP_IMAGE_TAG=v0.0.2\n"
+    ))
+    lines = (run.env_file).read_text().splitlines()
+
+    password = next(line for line in lines if line.startswith("SERVER_AUTH_PASSWORD="))
+    assert len(password.split("=", 1)[1]) >= 16
+    # Compose uses the last duplicate, so that is the one that must change.
+    tags = [line for line in lines if line.startswith("APP_IMAGE_TAG=")]
+    assert tags == ["APP_IMAGE_TAG=v0.0.1", f"APP_IMAGE_TAG={_checkout_tag()}"]
+
+
+def test_frontend_image_healthcheck_targets_ipv4():
+    dockerfile = (REPO_ROOT / "frontend" / "Dockerfile").read_text()
+    healthcheck = dockerfile.split("HEALTHCHECK", 1)[1].split("\n\n", 1)[0]
+
+    assert "127.0.0.1" in healthcheck and "localhost" not in healthcheck
 
 
 def test_release_images_pin_the_only_published_platform():

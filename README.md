@@ -70,7 +70,7 @@ scripts/quickstart.sh
 # Open the printed URL (http://localhost) and log in with the printed password
 ```
 
-Add markets or change the port with `ENABLED_MARKETS=US,HK FRONTEND_PORT=8080 scripts/quickstart.sh`. Re-run it after `git pull` to upgrade. For the chatbot, add an LLM key such as `GROQ_API_KEY` to `.env.docker` and re-run. CI runs this same install against the images of every `main` commit and release tag, and only creates a GitHub Release once it passes.
+Add markets or change the port with `ENABLED_MARKETS=US,HK FRONTEND_PORT=8080 scripts/quickstart.sh`. Re-run it after `git pull` to upgrade. For the chatbot, add an LLM key such as `GROQ_API_KEY` to `.env.docker` and re-run. CI runs this same install against each published `main` build and release tag, and only creates a GitHub Release once it passes.
 
 On first launch the app opens to a **first-run bootstrap** screen — no pre-seeded database needed. Pick one primary market for startup defaults and optionally enable more to hydrate in the background, then start. Enabling many markets at once noticeably slows the first run, so start with one and add the rest after the workspace is ready.
 

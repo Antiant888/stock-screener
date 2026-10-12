@@ -22,12 +22,14 @@ scripts/quickstart.sh
 
 - creates `.env.docker` from `.env.docker.example` on first run, with a generated login password and session secret (printed once at the end);
 - picks the published GHCR images that match your checkout (the release tag when you cloned one, otherwise that commit's `sha-*` image, otherwise `latest`);
-- on Linux, hands `./data` to the container user (uid 1000), using `sudo` if needed;
+- on Linux, lets the container user (uid 1000) write to `./data` with an ACL (`setfacl`, from the `acl` package), so your own ownership and later `git pull` updates keep working; without `setfacl` it falls back to `sudo chown`;
 - pulls the images, starts the stack with the production and release overlays, and waits until every service is healthy.
 
 Optional settings, saved to `.env.docker` when given: `ENABLED_MARKETS=US,HK` (default `US`), `FRONTEND_PORT=8080` (default `80`). `APP_IMAGE_TAG=vX.Y.Z` pins a specific image tag. Re-run the script after `git pull` to upgrade; your password and other settings in `.env.docker` are kept. For a fixed release, clone it directly: `git clone --branch vX.Y.Z ...`.
 
-CI runs this exact script against the images published for every `main` commit and release tag (`quickstart-smoke` in `.github/workflows/ci.yml`), and a GitHub Release is only created after it passes.
+Images are published for `linux/amd64` only. Docker Desktop on Apple Silicon runs them through Rosetta automatically (slower, especially on first start); ARM Linux hosts need amd64 emulation (`qemu-user-static` / binfmt) installed first.
+
+CI runs this exact script against each published `main` build and release tag, and on pull requests that change install files (`quickstart-smoke` in `.github/workflows/ci.yml`). A GitHub Release is only created after it passes.
 
 The rest of this guide covers the same stack configured by hand.
 

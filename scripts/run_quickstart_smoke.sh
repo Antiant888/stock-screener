@@ -39,7 +39,8 @@ chosen="$(env_value APP_IMAGE_TAG)"
   exit 1
 }
 
-curl -fsS "$BASE_URL/" | grep -q '<div id="root">' || { echo "Frontend did not serve the app" >&2; exit 1; }
+index_html="$(curl -fsS "$BASE_URL/")" || { echo "Frontend did not respond" >&2; exit 1; }
+[[ "$index_html" == *'<div id="root">'* ]] || { echo "Frontend did not serve the app" >&2; exit 1; }
 
 curl -fsS -c "$COOKIE_JAR" -H 'Content-Type: application/json' \
   -d "{\"password\": \"$(env_value SERVER_AUTH_PASSWORD)\"}" \

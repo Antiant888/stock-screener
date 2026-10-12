@@ -382,6 +382,9 @@ jobs:
     if: ${{ !cancelled() && (needs.publish-images.result == 'success' || github.event_name == 'pull_request') }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    permissions:
+      contents: read
+      pull-requests: read
 
     steps:
       - uses: actions/checkout@v4
@@ -399,8 +402,9 @@ jobs:
         run: |
           export IMAGE_OWNER="${GITHUB_REPOSITORY_OWNER,,}"
           if [[ "$EVENT_NAME" == "pull_request" ]]; then
-            if ! gh pr diff "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --name-only \
-              | grep -qE '^(scripts/quickstart\.sh|scripts/run_quickstart_smoke\.sh|scripts/docker-compose-enabled-markets\.sh|docker-compose[^/]*\.yml|\.env\.docker\.example)$'; then
+            # Fail rather than skip when the file list cannot be read.
+            changed="$(gh pr diff "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --name-only)"
+            if ! grep -qE '^(scripts/quickstart\.sh|scripts/run_quickstart_smoke\.sh|scripts/docker-compose-enabled-markets\.sh|docker-compose[^/]*\.yml|\.env\.docker\.example)$' <<< "$changed"; then
               echo "No install files changed; skipping."
               exit 0
             fi

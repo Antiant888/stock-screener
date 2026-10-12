@@ -13,7 +13,9 @@
 #   ENABLED_MARKETS   e.g. US,HK (saved to .env.docker; default US)
 #   FRONTEND_PORT     host port for the web app (saved to .env.docker; default 80)
 #   IMAGE_OWNER       GHCR owner of the images (default xang1234)
-#   STOCKSCREEN_ENV_FILE  config file to use (default .env.docker in the repo root)
+#
+# STOCKSCREEN_ENV_FILE exists for tests only: containers always load
+# ./.env.docker (env_file in docker-compose.prod.yml).
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -30,6 +32,10 @@ command -v docker >/dev/null 2>&1 || fail "Docker is not installed. Install Dock
 docker compose version >/dev/null 2>&1 || fail "the Docker Compose v2 plugin ('docker compose') is required."
 docker info >/dev/null 2>&1 || fail "Docker is installed but not running. Start Docker and re-run."
 command -v "$PYTHON_BIN" >/dev/null 2>&1 || fail "Python 3.11+ is required (set STOCKSCREEN_PYTHON to use a specific interpreter)."
+# `up --wait-timeout` arrived in Compose 2.17.
+"$PYTHON_BIN" -c 'import re, sys; v = tuple(map(int, re.findall(r"\d+", sys.argv[1])[:2])); sys.exit(v < (2, 17))' \
+  "$(docker compose version --short 2>/dev/null || echo 0)" \
+  || fail "Docker Compose 2.17 or newer is required (found: $(docker compose version --short 2>/dev/null)). Update Docker."
 
 # Images must match the compose files in this checkout: a release tag when HEAD
 # is one, else the commit's CI image, else the newest main build.
@@ -77,8 +83,10 @@ for arg in sys.argv[2:]:
     key, value = arg.split("=", 1)
     only_if_empty = key.endswith("?")
     key = key.rstrip("?")
-    index = next((i for i, line in enumerate(lines) if line.split("=", 1)[0].strip() == key), None)
-    current = lines[index].split("=", 1)[1].strip() if index is not None else ""
+    # Compose uses the last occurrence of a key, so edit that one.
+    matches = [i for i, line in enumerate(lines) if line.split("=", 1)[0].strip() == key]
+    index = matches[-1] if matches else None
+    current = lines[index].split("=", 1)[1].strip().strip("'\"") if index is not None else ""
     if only_if_empty:
         if current:
             continue
@@ -95,13 +103,17 @@ PY
 chmod 600 "$ENV_FILE"
 
 # The backend runs as uid 1000 and writes to the ./data bind mount. Docker
-# Desktop maps ownership for you; Linux does not.
+# Desktop maps ownership for you; Linux does not. data/ holds tracked files,
+# so grant access with an ACL and keep the user's ownership (a chown would
+# stop the next `git pull` from updating them).
 if [[ "$(uname -s)" == "Linux" && "$(stat -c %u "$ROOT_DIR/data")" != "1000" ]]; then
-  echo "Giving ./data to the container user (uid 1000) so the backend can write to it..."
-  if [[ "$(id -u)" == "0" ]]; then
-    chown -R 1000:1000 "$ROOT_DIR/data"
+  echo "Letting the container user (uid 1000) write to ./data..."
+  if command -v setfacl >/dev/null 2>&1; then
+    setfacl -R -m u:1000:rwX -m d:u:1000:rwX "$ROOT_DIR/data"
   else
-    sudo chown -R 1000:1000 "$ROOT_DIR/data"
+    echo "quickstart: setfacl not found (install the 'acl' package to avoid this); changing ./data ownership to uid 1000 instead." >&2
+    echo "quickstart: later updates to tracked data/ files will then need sudo." >&2
+    if [[ "$(id -u)" == "0" ]]; then chown -R 1000:1000 "$ROOT_DIR/data"; else sudo chown -R 1000:1000 "$ROOT_DIR/data"; fi
   fi
 fi
 
