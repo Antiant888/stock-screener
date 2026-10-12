@@ -99,6 +99,10 @@ def test_single_listing_common_stock_derives_its_own_company_identity(db_session
     ([("0945.HK", "HK", "MANULIFE-S")], "$0945.HK"),
     ([("9618.HK", "HK", "JD-SW")], "$9618.HK"),
     ([("YUMC", "US", "Yum China Holdings Inc"), ("9987.HK", "HK", "YUM CHINA")], "$9987.HK"),
+    # The same name in two markets is likely one issuer listed twice.
+    ([("SONY", "US", "Sony Group Corporation"), ("6758.T", "JP", "Sony Group Corporation")], "$SONY"),
+    # Repeats are found however the database lowercases non-ASCII letters.
+    ([("ENGA", "US", "Énergie SA"), ("ENGB", "US", "énergie SA")], "$ENGA"),
 ])
 def test_possible_cross_listings_and_funds_still_need_attestation(db_session, rows, token):
     from app.services.social_ticker_resolver import SocialTickerResolver

@@ -2,17 +2,16 @@
 
 Company identity comes from an administrator attestation or, for a common stock
 with no sign of a second listing, from the listing itself. Signs of a second
-listing (depositary receipts, names repeated within a market such as share
-classes, HK secondary listings and RMB counters, HK names that open a US
+listing (depositary receipts, names repeated anywhere such as share classes or
+one issuer in two markets, HK secondary listings and RMB counters, HK names that open a US
 company's name, HK while mainland listings are loaded) and non-company names
 (funds, products without a company suffix) still need attestation.
 Double counting needs both listings counted, so excluding one side is enough.
 """
 import re
+from collections import Counter
 from collections.abc import Mapping
 from types import MappingProxyType
-
-from sqlalchemy import func
 
 from app.domain.social_signals.records import SUPPORTED_MARKETS, TickerResolution
 from app.models.stock_universe import StockUniverse
@@ -123,29 +122,35 @@ class SocialTickerResolver:
         eligible = kind == "stock" and security.is_active and security.market in SUPPORTED_MARKETS
         return f"security:{security.id}" if eligible and self._single_listing(security) else None
 
+    @staticmethod
+    def _normalized_name(value) -> str:
+        # Python, not SQL: databases disagree on lowercasing non-ASCII letters.
+        return " ".join((value or "").casefold().split())
+
     def _single_listing(self, security) -> bool:
-        name = (security.name or "").strip().lower()
+        name = self._normalized_name(security.name)
         if not name or _NOT_A_COMPANY_LINE.search(name):
             return False
         if self._listing_census is None:
-            normalized = func.lower(func.trim(StockUniverse.name))
-            rows = self.db.query(StockUniverse.market, normalized, func.count()).filter(
-                StockUniverse.active_filter()).group_by(StockUniverse.market, normalized).all()
+            rows = [(market, self._normalized_name(value)) for market, value in self.db.query(
+                StockUniverse.market, StockUniverse.name).filter(StockUniverse.active_filter())]
+            # A name seen twice anywhere (share classes, or one issuer in two markets).
+            counts = Counter(value for _, value in rows if value)
             us_name_starts = set()
-            for market, value, _ in rows:
+            for market, value in set(rows):
                 if market == "US" and value:
                     words = value.split()
                     us_name_starts.update(" ".join(words[:end]) for end in range(1, len(words) + 1))
             self._listing_census = (
-                {market for market, _, _ in rows},
-                {(market, value) for market, value, count in rows if value and count > 1},
+                {market for market, _ in rows},
+                {value for value, count in counts.items() if count > 1},
                 us_name_starts,
             )
         markets, repeated, us_name_starts = self._listing_census
-        if _SAME_ISSUER_MARKETS.get(security.market) in markets or (security.market, name) in repeated:
+        if _SAME_ISSUER_MARKETS.get(security.market) in markets or name in repeated:
             return False
         if security.market == "HK":
             # An HK name that opens a US company's name is likely its other line (YUM CHINA).
             rmb_counter = len(security.symbol.split(".")[0]) == 5
-            return not (rmb_counter or _HK_SECOND_LINE.search(name) or " ".join(name.split()) in us_name_starts)
+            return not (rmb_counter or _HK_SECOND_LINE.search(name) or name in us_name_starts)
         return bool(_COMPANY_SUFFIX.search(name))
