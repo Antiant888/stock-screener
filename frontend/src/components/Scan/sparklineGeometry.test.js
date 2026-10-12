@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { barRects, monotoneXPath, roundedTopRectPath, scaleLinear } from './sparklineGeometry';
+import { barRects, baseValue, monotoneXPath, roundedTopRectPath, scaleLinear } from './sparklineGeometry';
 
 // Expected values are what recharts 2.15 drew for the same inputs (dumped
 // from the browser), so the SVG sparklines reproduce its geometry.
@@ -13,6 +13,14 @@ describe('scaleLinear', () => {
     expect(y(10)).toBeCloseTo(14, 6);
     expect(y(9)).toBeCloseTo(24.909, 3);
     expect(y(11)).toBeCloseTo(3.091, 3);
+  });
+});
+
+describe('baseValue', () => {
+  it("is recharts' fill/bar floor: the domain floor, or zero when the domain spans it", () => {
+    expect(baseValue([2, 5])).toBe(2);
+    expect(baseValue([-0.8, 21])).toBe(0);
+    expect(baseValue([-5, -1])).toBe(-1);
   });
 });
 

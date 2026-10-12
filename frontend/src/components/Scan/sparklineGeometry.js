@@ -6,6 +6,10 @@ export const scaleLinear = ([d0, d1], [r0, r1]) => {
   return (v) => r0 + ((v - d0) / span) * (r1 - r0);
 };
 
+// Where recharts' Area fill and Bar columns start: the domain's floor, or
+// zero when the domain spans it (its ceiling if the domain is all negative).
+export const baseValue = ([d0, d1]) => (d0 >= 0 ? d0 : d1 <= 0 ? d1 : 0);
+
 const fmt = (n) => Number(n.toFixed(3));
 const sign = (x) => (x < 0 ? -1 : 1);
 
@@ -56,7 +60,7 @@ export function monotoneXPath(points) {
 // floor (or zero, if the domain spans it).
 export function barRects(values, { width, height, margin, domain, maxBarSize }) {
   const y = scaleLinear(domain, [height - margin, margin]);
-  const base = y(domain[0] >= 0 ? domain[0] : domain[1] <= 0 ? domain[1] : 0);
+  const base = y(baseValue(domain));
   const band = width / values.length;
   const gap = band * 0.1;
   let slot = band - 2 * gap;

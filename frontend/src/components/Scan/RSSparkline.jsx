@@ -17,17 +17,12 @@ import { barRects, roundedTopRectPath } from './sparklineGeometry';
  */
 function RSSparkline({ data, trend, width = 60, height = 20 }) {
   const { palette } = useTheme();
-  // Transform data for chart - use raw RS ratios like Google Sheets
-  const { chartData, domain, maxIndex, minIndex } = useMemo(() => {
-    if (!data || !Array.isArray(data) || data.length === 0) {
-      return { chartData: [], domain: [0, 1], maxIndex: -1, minIndex: -1 };
+  const hasData = Array.isArray(data) && data.length > 0;
+  // Raw RS ratios (stock_price / SPY_price), like Google Sheets
+  const { bars, maxIndex, minIndex } = useMemo(() => {
+    if (!hasData) {
+      return { bars: [], maxIndex: -1, minIndex: -1 };
     }
-
-    // Use raw RS ratio values (stock_price / SPY_price)
-    const chartData = data.map((value, index) => ({
-      index,
-      value,
-    }));
 
     const values = data;
     const minVal = Math.min(...values);
@@ -41,27 +36,29 @@ function RSSparkline({ data, trend, width = 60, height = 20 }) {
     const range = maxVal - minVal || 0.01;
     const padding = range * 0.1;
 
-    return {
-      chartData,
+    const bars = barRects(values, {
+      width,
+      height,
+      margin: 1,
       domain: [minVal - padding, maxVal + padding],
-      maxIndex,
-      minIndex,
-    };
-  }, [data]);
+      maxBarSize: 3,
+    });
+    return { bars, maxIndex, minIndex };
+  }, [data, hasData, width, height]);
 
   // Get trend text and percentage for tooltip
   const tooltipText = useMemo(() => {
-    if (!chartData || chartData.length === 0) return 'No RS data';
+    if (!hasData) return 'No RS data';
     const trendText = trend === 1 ? 'Improving' : trend === -1 ? 'Declining' : 'Flat';
-    const firstVal = chartData[0]?.value || 1;
-    const lastVal = chartData[chartData.length - 1]?.value || 1;
+    const firstVal = data[0] || 1;
+    const lastVal = data[data.length - 1] || 1;
     const change = ((lastVal - firstVal) / firstVal) * 100;
     const sign = change >= 0 ? '+' : '';
     return `RS ${trendText} (${sign}${change.toFixed(1)}% over 30d)`;
-  }, [trend, chartData]);
+  }, [trend, data, hasData]);
 
   // No data - show placeholder
-  if (!chartData || chartData.length === 0) {
+  if (!hasData) {
     return (
       <Box
         sx={{
@@ -87,13 +84,7 @@ function RSSparkline({ data, trend, width = 60, height = 20 }) {
     >
       <Box sx={{ width, height, cursor: 'pointer' }}>
         <svg width={width} height={height} style={{ display: 'block' }}>
-          {barRects(chartData.map((entry) => entry.value), {
-            width,
-            height,
-            margin: 1,
-            domain,
-            maxBarSize: 3,
-          }).map((rect, index) => {
+          {bars.map((rect, index) => {
             // Color coding matching Google Sheets, in theme colours:
             // - Accent: highest value (highcolor)
             // - Red: lowest value (lowcolor)

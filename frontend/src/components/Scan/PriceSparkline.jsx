@@ -1,7 +1,7 @@
 import { useMemo, memo } from 'react';
 import { Box, Tooltip, Typography, useTheme } from '@mui/material';
 
-import { monotoneXPath, scaleLinear } from './sparklineGeometry';
+import { baseValue, monotoneXPath, scaleLinear } from './sparklineGeometry';
 
 // The chart's own width is set by flex layout, so the SVG stretches a fixed
 // viewBox horizontally: 1 unit = 1px vertically (margins and stroke stay in
@@ -37,13 +37,10 @@ function PriceSparkline({
 
   const viewHeight = typeof height === 'number' ? height : 28;
 
-  // Transform data for chart
-  const { chartData, line, area, color } = useMemo(() => {
+  const { hasData, line, area, dotY, color } = useMemo(() => {
     if (!data || !Array.isArray(data) || data.length === 0) {
-      return { chartData: [], color: palette.text.disabled };
+      return { hasData: false, color: palette.text.disabled };
     }
-
-    const chartData = data;
 
     const minVal = Math.min(...data);
     const maxVal = Math.max(...data);
@@ -55,13 +52,20 @@ function PriceSparkline({
     // trend: 1 = up, -1 = down, 0 = flat
     const color = trend === 1 ? palette.success.main : trend === -1 ? palette.error.main : palette.text.disabled;
 
-    const y = scaleLinear([minVal - padding, maxVal + padding], [viewHeight - MARGIN, MARGIN]);
-    const step = data.length > 1 ? VIEW_WIDTH / (data.length - 1) : 0;
+    const domain = [minVal - padding, maxVal + padding];
+    const y = scaleLinear(domain, [viewHeight - MARGIN, MARGIN]);
+    if (data.length === 1) {
+      // recharts drew a lone point as a dot rather than a line.
+      return { hasData: true, dotY: y(data[0]), color };
+    }
+    const step = VIEW_WIDTH / (data.length - 1);
     const line = monotoneXPath(data.map((value, i) => [i * step, y(value)]));
-    // Filled down to the padded minimum, like recharts' Area.
-    const area = data.length > 1 ? `${line}L${VIEW_WIDTH},${viewHeight - MARGIN}L0,${viewHeight - MARGIN}Z` : '';
+    // Filled to the padded floor, or to zero if the padding dips below it,
+    // like recharts' Area.
+    const base = y(baseValue(domain));
+    const area = `${line}L${VIEW_WIDTH},${base}L0,${base}Z`;
 
-    return { chartData, line, area, color };
+    return { hasData: true, line, area, color };
   }, [data, trend, palette, viewHeight]);
 
   // Format 1-day change for display
@@ -96,7 +100,7 @@ function PriceSparkline({
   }, [industry, trend, data]);
 
   // No data - show placeholder
-  if (!chartData || chartData.length === 0) {
+  if (!hasData) {
     return (
       <Box
         sx={{
@@ -135,16 +139,23 @@ function PriceSparkline({
             minWidth: 0,
           }}
         >
-          <svg
-            width="100%"
-            height="100%"
-            viewBox={`0 0 ${VIEW_WIDTH} ${viewHeight}`}
-            preserveAspectRatio="none"
-            style={{ display: 'block' }}
-          >
-            <path d={area} fill={color} fillOpacity={0.25} />
-            <path d={line} fill="none" stroke={color} strokeWidth={1.5} vectorEffect="non-scaling-stroke" />
-          </svg>
+          {dotY === undefined ? (
+            <svg
+              width="100%"
+              height="100%"
+              viewBox={`0 0 ${VIEW_WIDTH} ${viewHeight}`}
+              preserveAspectRatio="none"
+              style={{ display: 'block' }}
+            >
+              <path d={area} fill={color} fillOpacity={0.25} />
+              <path d={line} fill="none" stroke={color} strokeWidth={1.5} vectorEffect="non-scaling-stroke" />
+            </svg>
+          ) : (
+            // Unstretched, so the dot stays round.
+            <svg width="100%" height="100%" style={{ display: 'block' }}>
+              <circle cx="50%" cy={dotY} r={3} stroke={color} strokeWidth={1.5} fill={color} fillOpacity={0.25} />
+            </svg>
+          )}
         </Box>
 
         {/* 1-Day Change Badge */}
