@@ -58,12 +58,12 @@ def test_worker_run_is_recorded_start_to_finish(db_session):
     [row] = _rows(db_session, task_id)
     assert (row.task_name, row.status, row.triggered_by) == ("daily-market-pipeline-hk", "running", "auto")
 
-    _finish(PIPELINE, task_id, {"market": "HK"}, state="SUCCESS", retval={"status": "queued"})
+    _finish(PIPELINE, task_id, {"market": "HK"}, state="SUCCESS", retval={"status": "ok"})
     [row] = _rows(db_session, task_id)
     assert row.status == "completed"
     assert row.completed_at is not None
     assert row.duration_seconds is not None
-    assert row.result_summary == {"status": "queued"}
+    assert row.result_summary == {"status": "ok"}
 
 
 def test_failed_run_records_error_message(db_session):
@@ -85,7 +85,7 @@ def test_failed_run_records_error_message(db_session):
         # refresh_stock_universe tags the status as well.
         ({"status": "error", "error": "feed down"}, "failed", "feed down"),
         ({"status": "failed"}, "failed", "Task reported status 'failed'"),
-        ({"status": "skipped", "reason": "not_trading_day"}, "completed", None),
+        ({"status": "skipped", "reason": "not_trading_day"}, "skipped", None),
         # Options: a quality-gate outcome is a finished run, not a failure.
         ({"status": "failed_quality", "reason_codes": ["low_coverage"]}, "completed", None),
         ({"status": "success", "error": None}, "completed", None),
@@ -100,6 +100,71 @@ def test_error_results_returned_as_success_are_recorded_as_failed(
 
     [row] = _rows(db_session, task_id)
     assert (row.status, row.error_message) == (expected_status, expected_error)
+
+
+@pytest.mark.parametrize(
+    ("retval", "expected_detail"),
+    [
+        # queue_daily_market_pipeline on a weekend / with a run in progress.
+        ({"status": "skipped", "reason": "not_trading_day", "market": "US"}, "not_trading_day"),
+        ({"status": "skipped", "reason": "market_pipeline_already_active"}, "market_pipeline_already_active"),
+        # cache_tasks' older shape.
+        ({"skipped": True, "reason": "Not a trading day"}, "Not a trading day"),
+        # options / social tag reason codes.
+        ({"status": "skipped", "reason_codes": ["market_unsupported", "no_cohort"]}, "market_unsupported, no_cohort"),
+        ({"status": "skipped"}, None),
+    ],
+)
+def test_skipped_runs_are_not_reported_as_completed(db_session, retval, expected_detail):
+    task_id = str(uuid4())
+    _start(PIPELINE, task_id, {"market": "US"})
+    _finish(PIPELINE, task_id, {"market": "US"}, state="SUCCESS", retval=retval)
+
+    last_run = _last_run(db_session, "daily-market-pipeline-us")
+
+    assert (last_run["status"], last_run["detail"]) == ("skipped", expected_detail)
+
+
+def test_pipeline_handoff_is_reported_as_dispatched_not_completed(db_session):
+    # queue_daily_market_pipeline only queues the stage chain and returns in
+    # seconds; the real work (prices, breadth, groups, scan) is still ahead.
+    task_id = str(uuid4())
+    _start(PIPELINE, task_id, {"market": "US"})
+    _finish(PIPELINE, task_id, {"market": "US"}, state="SUCCESS",
+            retval={"status": "queued", "market": "US", "task_id": "chain-1"})
+
+    last_run = _last_run(db_session, "daily-market-pipeline-us")
+
+    assert (last_run["status"], last_run["detail"]) == ("dispatched", None)
+
+
+def test_reconcile_classifies_skipped_results_too(db_session):
+    task_id = str(uuid4())
+    _start(PIPELINE, task_id, {"market": "US"})
+
+    with patch("app.services.task_registry_service.AsyncResult") as async_result:
+        async_result.return_value = SimpleNamespace(state="SUCCESS", result={"status": "skipped", "reason": "x"})
+        assert TaskRegistryService().reconcile_open_runs(db_session) == 1
+
+    [row] = _rows(db_session, task_id)
+    assert row.status == "skipped"
+
+
+def test_status_endpoint_keeps_reporting_skipped_runs_as_completed(db_session):
+    # The Options page polls this endpoint and reads result.status itself; it
+    # only stops on completed/failed/cancelled.
+    task_id = str(uuid4())
+    _start(OPTIONS, task_id, {"market": "US"})
+    _finish(OPTIONS, task_id, {"market": "US"}, state="SUCCESS",
+            retval={"status": "skipped", "reason_codes": ["market_unsupported"]})
+
+    with patch("app.services.task_registry_service.AsyncResult") as async_result:
+        status = TaskRegistryService().get_task_status("daily-us-options-analytics", task_id, db_session)
+
+    assert status["status"] == "completed"
+    assert status["result"] == {"status": "skipped", "reason_codes": ["market_unsupported"]}
+    assert TaskStatusResponse(**status).celery_state == "SUCCESS"
+    async_result.assert_not_called()
 
 
 def test_reconcile_records_an_error_result_as_failed(db_session):

@@ -8,12 +8,16 @@ class LastRunInfo(BaseModel):
 
     id: int = Field(..., description="Execution history record ID")
     task_id: Optional[str] = Field(None, description="Celery task ID")
-    status: str = Field(..., description="Status: queued, running, completed, failed, cancelled, lost")
+    status: str = Field(
+        ...,
+        description="Status: queued, running, completed, skipped, dispatched, failed, cancelled, lost",
+    )
     started_at: Optional[str] = Field(None, description="Start time (ISO format)")
     completed_at: Optional[str] = Field(None, description="Completion time (ISO format)")
     duration_seconds: Optional[float] = Field(None, description="Duration in seconds")
     triggered_by: str = Field(..., description="Trigger source: manual, auto, or the task's origin tag")
     error_message: Optional[str] = Field(None, description="Error message if failed")
+    detail: Optional[str] = Field(None, description="Why the run skipped (reason or reason codes)")
 
 
 class ScheduledTaskResponse(BaseModel):

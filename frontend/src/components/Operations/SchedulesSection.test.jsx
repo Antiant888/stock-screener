@@ -75,6 +75,39 @@ describe('SchedulesSection', () => {
     expect(within(rowFor('Weekly Universe Refresh (US)')).getByText('Never')).toBeInTheDocument();
   });
 
+  it('says a run skipped, and why, instead of calling it completed', async () => {
+    getScheduledTasks.mockResolvedValue(payload([
+      task('daily-market-pipeline-us', 'Daily Market Pipeline (US)', lastRun('skipped', { detail: 'not_trading_day' })),
+      task('options', 'Daily US Options Analytics', lastRun('skipped', { detail: null })),
+    ]));
+
+    renderSection();
+    await screen.findByText('Daily Market Pipeline (US)');
+
+    const pipeline = rowFor('Daily Market Pipeline (US)');
+    expect(within(pipeline).getByText('Skipped')).toBeInTheDocument();
+    expect(within(pipeline).queryByText('Completed')).not.toBeInTheDocument();
+    expect(within(pipeline).getByText('Not trading day')).toBeInTheDocument();
+    // No reason recorded: the chip alone, no empty note.
+    expect(within(rowFor('Daily US Options Analytics')).getByText('Skipped')).toBeInTheDocument();
+    // Skipping did nothing, so it can run again straight away.
+    expect(screen.getByRole('button', { name: 'Run Daily Market Pipeline (US) now' })).toBeEnabled();
+  });
+
+  it('says a pipeline handed its stages off instead of calling it completed', async () => {
+    getScheduledTasks.mockResolvedValue(payload([
+      task('daily-market-pipeline-us', 'Daily Market Pipeline (US)', lastRun('dispatched', { duration_seconds: 1.4 })),
+    ]));
+
+    renderSection();
+    await screen.findByText('Daily Market Pipeline (US)');
+
+    const row = rowFor('Daily Market Pipeline (US)');
+    expect(within(row).getByText('Handed off')).toBeInTheDocument();
+    expect(within(row).getByText('Stages queued. Follow them in Market activity and the job console.'))
+      .toBeInTheDocument();
+  });
+
   it('runs only the clicked task and refreshes the list', async () => {
     getScheduledTasks.mockResolvedValue(payload([
       task('cleanup', 'Weekly Scan Cleanup', lastRun('completed')),

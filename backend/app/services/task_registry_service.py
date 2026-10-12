@@ -135,8 +135,16 @@ SCHEDULED_TASKS = {
 
 
 _REGISTRY_FUNCTIONS = frozenset(info['task_function'] for info in SCHEDULED_TASKS.values())
-_CELERY_STATE_FOR = {'completed': 'SUCCESS', 'failed': 'FAILURE', 'cancelled': 'REVOKED'}
-_STATUS_FOR_CELERY_STATE = {state: status for status, state in _CELERY_STATE_FOR.items()}
+# Finished run outcomes and the Celery state each one ends in. skipped and
+# dispatched runs succeeded as Celery tasks; the outcome says what they did.
+_CELERY_STATE_FOR = {
+    'completed': 'SUCCESS',
+    'skipped': 'SUCCESS',
+    'dispatched': 'SUCCESS',
+    'failed': 'FAILURE',
+    'cancelled': 'REVOKED',
+}
+_STATUS_FOR_CELERY_STATE = {'SUCCESS': 'completed', 'FAILURE': 'failed', 'REVOKED': 'cancelled'}
 _FINISHED_STATUSES = frozenset(_CELERY_STATE_FOR)
 # Celery kills a task at the global task_time_limit and stores FAILURE for
 # it; the margin leaves the reconcile job time to record that. A run still
@@ -181,6 +189,35 @@ def _reported_error(result: Any) -> Optional[str]:
     return None
 
 
+def _outcome(status: str, result: Any, error: Optional[str] = None) -> tuple[str, Optional[str]]:
+    """What a successful task actually did, from the result it returned.
+
+    Celery reports SUCCESS whenever the function returns, so a run that
+    caught its own error, did nothing, or only queued other tasks would all
+    read as completed. ``queued`` is queue_daily_market_pipeline handing its
+    stage chain off; the stages are still ahead.
+    """
+    if status != 'completed' or not isinstance(result, dict):
+        return status, error
+    if reported := _reported_error(result):
+        return 'failed', reported
+    if result.get('status') == 'skipped' or result.get('skipped') is True:
+        return 'skipped', None
+    if result.get('status') == 'queued':
+        return 'dispatched', None
+    return status, error
+
+
+def _skip_detail(summary: Any) -> Optional[str]:
+    """Why a run skipped, from its stored result (reason or reason_codes)."""
+    if not isinstance(summary, dict):
+        return None
+    if summary.get('reason'):
+        return str(summary['reason'])
+    codes = summary.get('reason_codes')
+    return ', '.join(str(code) for code in codes) if codes else None
+
+
 def _registry_entry_for(task_function: str, kwargs: Dict[str, Any]) -> Optional[str]:
     """Map a Celery task to its registry entry, preferring a per-market entry."""
     market = str(kwargs.get('market') or '').upper()
@@ -221,8 +258,7 @@ def record_task_run(
     task_name = _registry_entry_for(task_function, kwargs)
     if task_name is None:
         return
-    if status == 'completed' and (reported := _reported_error(result)):
-        status, error = 'failed', reported
+    status, error = _outcome(status, result, error)
     try:
         now = datetime.now(timezone.utc)
         with SessionLocal() as db:
@@ -359,6 +395,7 @@ class TaskRegistryService:
                     'duration_seconds': last_run.duration_seconds,
                     'triggered_by': last_run.triggered_by,
                     'error_message': last_run.error_message,
+                    'detail': _skip_detail(last_run.result_summary) if status == 'skipped' else None,
                 }
 
             result.append(task_data)
@@ -494,16 +531,19 @@ class TaskRegistryService:
             Dictionary with current status and progress
         """
         # The worker's task signals record finished runs; the ledger owns
-        # their status.
+        # their status. This endpoint reports task execution: skipped and
+        # dispatched runs completed as tasks, and callers (the Options page)
+        # read result.status for what they did.
         run = db.query(TaskExecutionHistory).filter_by(task_id=task_id).first()
         if run is not None and run.status in _FINISHED_STATUSES:
+            celery_state = _CELERY_STATE_FOR[run.status]
             response = {
                 'task_id': task_id,
                 'task_name': task_name,
-                'status': run.status,
-                'celery_state': _CELERY_STATE_FOR[run.status],
+                'status': _STATUS_FOR_CELERY_STATE[celery_state],
+                'celery_state': celery_state,
             }
-            if run.status == 'completed':
+            if celery_state == 'SUCCESS':
                 response['result'] = run.result_summary
                 if run.result_summary is None:
                     response['result'] = self._celery_success_result(task_id)
@@ -585,8 +625,7 @@ class TaskRegistryService:
         error: str = None
     ):
         """Update execution record when task completes."""
-        if status == 'completed' and (reported := _reported_error(result)):
-            status, error = 'failed', reported
+        status, error = _outcome(status, result, error)
         execution = db.query(TaskExecutionHistory).filter(
             TaskExecutionHistory.task_id == task_id
         ).first()
