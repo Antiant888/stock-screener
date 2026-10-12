@@ -661,6 +661,22 @@ describe('ResultsTable', () => {
       expectPill('symbol', '66.0', 'Score 66.0');
     });
 
+    it('offers every sortable column in the picker, common ones first', async () => {
+      const onSortChange = vi.fn();
+      renderWithProviders(<ResultsTable {...defaultProps} onSortChange={onSortChange} />);
+
+      await userEvent.click(screen.getByRole('combobox', { name: 'Sort by' }));
+      const options = screen.getAllByRole('option').map((option) => option.textContent);
+      expect(options.slice(0, 3)).toEqual(['Composite score', 'Minervini', 'CANSLIM']);
+      for (const name of ['Price', 'EPS growth Q/Q', 'VCP score', 'Market cap', 'ADR', 'Beta']) {
+        expect(options).toContain(name);
+      }
+      expect(new Set(options).size).toBe(options.length);
+
+      await userEvent.click(screen.getByRole('option', { name: 'Market cap' }));
+      expect(onSortChange).toHaveBeenLastCalledWith('market_cap', 'desc');
+    });
+
     it('labels a preset-only active sort in the picker without exposing its field id', () => {
       renderWithProviders(<ResultsTable {...defaultProps} sortBy="gap_percent" />);
 

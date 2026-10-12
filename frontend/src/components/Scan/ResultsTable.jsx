@@ -15,6 +15,7 @@ import {
   Box,
   CircularProgress,
   IconButton,
+  ListSubheader,
   MenuItem,
   TextField,
   styled,
@@ -119,7 +120,21 @@ const cardMetricFor = (row, sortBy) => {
   const value = spec.format(raw, row);
   return value && value !== '-' ? { label: spec.label, value, name: spec.name } : null;
 };
-// Sorts offered by the phone sort picker; the active sort is always included.
+// Friendly picker names for sortable columns the metric table doesn't name.
+const SORT_NAMES = {
+  symbol: 'Symbol',
+  price_change_1d: '1D change',
+  current_price: 'Price',
+  gics_sector: 'Sector',
+  ibd_industry_group: 'Industry',
+  ibd_group_rank: 'Group rank',
+  composite_score: 'Composite score',
+  se_pattern_primary: 'Pattern',
+  rs_line_blue_dot_recent: 'RS blue dot',
+  action_state: 'Action state',
+};
+const sortName = (id) => SORT_NAMES[id] || CARD_METRICS[id]?.name || columns.find((column) => column.id === id)?.label || 'Current sort';
+// Common sorts lead the phone picker; every other sortable column follows.
 const MOBILE_SORT_FIELDS = [
   ['composite_score', 'Composite score'],
   ['minervini_score', 'Minervini'],
@@ -835,12 +850,15 @@ function ResultsTable({
   };
 
   if (isMobile) {
-    const sortOptions = !sortBy || MOBILE_SORT_FIELDS.some(([id]) => id === sortBy)
-      ? MOBILE_SORT_FIELDS
-      : [...MOBILE_SORT_FIELDS, [
-        sortBy,
-        CARD_METRICS[sortBy]?.name || columns.find((column) => column.id === sortBy)?.label || 'Current sort',
-      ]];
+    // Same sortable columns as the desktop headers (visibleColumns already
+    // drops opportunity columns when that capability is off), common ones
+    // first; a preset-only active sort is appended so the picker can show it.
+    const commonIds = new Set(MOBILE_SORT_FIELDS.map(([id]) => id));
+    const moreSorts = visibleColumns
+      .filter((column) => column.sortable && !commonIds.has(column.id))
+      .map((column) => [column.id, sortName(column.id)]);
+    const listedIds = new Set([...commonIds, ...moreSorts.map(([id]) => id)]);
+    if (sortBy && !listedIds.has(sortBy)) moreSorts.push([sortBy, sortName(sortBy)]);
     return (
       <Paper elevation={1}>
         {sortingEnabled ? (
@@ -853,7 +871,9 @@ function ResultsTable({
               onChange={(event) => onSortChange(event.target.value, sortOrder)}
               sx={{ minWidth: 170 }}
             >
-              {sortOptions.map(([id, label]) => <MenuItem key={id} value={id}>{label}</MenuItem>)}
+              {MOBILE_SORT_FIELDS.map(([id, label]) => <MenuItem key={id} value={id}>{label}</MenuItem>)}
+              {moreSorts.length ? <ListSubheader>More sorts</ListSubheader> : null}
+              {moreSorts.map(([id, label]) => <MenuItem key={id} value={id}>{label}</MenuItem>)}
             </TextField>
             <IconButton
               aria-label={sortOrder === 'asc' ? 'Sorted ascending; switch to descending' : 'Sorted descending; switch to ascending'}
