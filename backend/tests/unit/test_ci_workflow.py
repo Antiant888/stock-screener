@@ -166,3 +166,6 @@ def test_stockscreen_mcp_registers_in_the_mcp_registry_after_pypi_with_a_verifie
     assert "sha256sum --check" in script
     assert "login github-oidc" in script
     assert "publish stockscreen-mcp/server.json" in script
+    # Registry versions are immutable: a manual rerun for a registered version must
+    # succeed instead of retrying (registry internal/database ErrInvalidVersion text).
+    assert "cannot publish duplicate version" in script
