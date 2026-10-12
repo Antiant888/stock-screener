@@ -6,7 +6,7 @@ import re
 import httpx
 import pytest
 from fastapi import FastAPI
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 from sqlalchemy import create_engine, text
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.pool import StaticPool
@@ -15,6 +15,11 @@ from app.infra.server_timing import ServerTimingMiddleware, install_server_timin
 
 HEADER = re.compile(
     r'^db;dur=(?P<db>[\d.]+);desc="(?P<queries>\d+) quer(?:y|ies)", total;dur=(?P<total>[\d.]+)$'
+)
+# A streamed body runs after the headers, so only what came before is known.
+STREAMED = re.compile(
+    r'^db;dur=(?P<db>[\d.]+);desc="(?P<queries>\d+) quer(?:y|ies) before streaming", '
+    r'headers;dur=(?P<total>[\d.]+)$'
 )
 
 
@@ -75,6 +80,19 @@ def _app(engine):
         run(1)
         return StreamingResponse(iter([b"a", b"b"]), media_type="text/plain")
 
+    @app.get("/stream-queries")
+    def stream_queries_route():
+        def rows():
+            run(3)  # all the database work happens after the headers
+            yield b"done"
+
+        return StreamingResponse(rows(), media_type="text/plain")
+
+    @app.get("/empty")
+    def empty_route():
+        run(1)
+        return Response(status_code=204)
+
     @app.get("/crash")
     def crash_route():
         run(1)
@@ -84,8 +102,8 @@ def _app(engine):
     return app
 
 
-def _timing(response):
-    match = HEADER.match(response.headers["server-timing"])
+def _timing(response, pattern=HEADER):
+    match = pattern.match(response.headers["server-timing"])
     assert match, response.headers["server-timing"]
     return int(match["queries"]), float(match["db"]), float(match["total"])
 
@@ -159,6 +177,26 @@ async def test_streaming_responses_get_the_header_before_the_body(client):
         response = await client.get("/stream")
 
     assert response.text == "ab"
+    assert _timing(response, STREAMED)[0] == 1
+
+
+@pytest.mark.asyncio
+async def test_a_stream_never_passes_for_a_complete_count(client):
+    # /content/export runs every query inside its generator: a plain
+    # "0 queries, total" would read as a cheap request.
+    async with client:
+        response = await client.get("/stream-queries")
+
+    assert response.text == "done"
+    assert _timing(response, STREAMED)[0] == 0
+
+
+@pytest.mark.asyncio
+async def test_an_empty_response_is_complete_not_streamed(client):
+    async with client:
+        response = await client.get("/empty")
+
+    assert response.status_code == 204
     assert _timing(response)[0] == 1
 
 

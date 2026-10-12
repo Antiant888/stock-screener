@@ -4,9 +4,14 @@ Browsers show it in DevTools' Timing tab, e.g.
 ``db;dur=12.3;desc="14 queries", total;dur=41.0``.
 
 - ``total``: until the response headers are sent, including the endpoint,
-  its serialization and every other middleware; a streamed body is not.
+  its serialization and every other middleware.
 - ``db``: time inside the cursor executing the request's statements. An
   executemany counts as one; insertmanyvalues counts one per batch.
+
+A streamed body (no Content-Length: StreamingResponse, SSE) runs after the
+headers, with whatever queries it makes, so such a response reports
+``db;…;desc="N queries before streaming", headers;dur=…`` instead, never a
+total it cannot know.
 
 ``total`` minus ``db`` is not all Python. It also holds waiting for a pooled
 connection, connecting, the pre-ping and BEGIN/COMMIT/ROLLBACK, none of which
@@ -73,13 +78,19 @@ class ServerTimingMiddleware:
 
         async def send_with_timing(message: Any) -> None:
             if message["type"] == "http.response.start":
-                total_ms = (perf_counter() - started) * 1000
+                elapsed_ms = (perf_counter() - started) * 1000
                 count = stats[0]
-                MutableHeaders(scope=message).append(
-                    "Server-Timing",
-                    f'db;dur={stats[1] * 1000:.1f};desc="{count} {"query" if count == 1 else "queries"}", '
-                    f"total;dur={total_ms:.1f}",
-                )
+                queries = f'{count} {"query" if count == 1 else "queries"}'
+                headers = MutableHeaders(scope=message)
+                # No Content-Length means the body streams after these
+                # headers, along with any queries it runs (the CSV export
+                # runs all of its own), so say the counts are partial.
+                streamed = "content-length" not in headers and message["status"] not in (204, 304)
+                if streamed:
+                    timing = f'db;dur={stats[1] * 1000:.1f};desc="{queries} before streaming", headers;dur={elapsed_ms:.1f}'
+                else:
+                    timing = f'db;dur={stats[1] * 1000:.1f};desc="{queries}", total;dur={elapsed_ms:.1f}'
+                headers.append("Server-Timing", timing)
             await send(message)
 
         try:
