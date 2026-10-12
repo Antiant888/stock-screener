@@ -671,6 +671,7 @@ describe('ResultsTable', () => {
     it('leads the group line with a text sort value', () => {
       const row = {
         ...fullSeRow, gics_sector: 'Technology', se_pattern_primary: 'cup_with_handle', rs_line_blue_dot_recent: true,
+        correction_survivor: true,
       };
       const leadOf = (sortBy) => {
         renderWithProviders(<ResultsTable {...defaultProps} results={[row]} sortBy={sortBy} />);
@@ -682,6 +683,7 @@ describe('ResultsTable', () => {
       expect(leadOf('gics_sector')).toBe('Technology');
       expect(leadOf('se_pattern_primary')).toBe('Cup With Handle');
       expect(leadOf('rs_line_blue_dot_recent')).toBe('RS blue dot');
+      expect(leadOf('correction_survivor')).toBe('Correction survivor');
     });
 
     it('offers every sortable column in the picker, common ones first', async () => {
@@ -698,6 +700,13 @@ describe('ResultsTable', () => {
 
       await userEvent.click(screen.getByRole('option', { name: 'Market cap' }));
       expect(onSortChange).toHaveBeenLastCalledWith('market_cap', 'desc');
+    });
+
+    it('labels the price sort alias in the picker', () => {
+      // scanFilterFields.json marks `price` sortable (same column as current_price).
+      renderWithProviders(<ResultsTable {...defaultProps} sortBy="price" />);
+
+      expect(screen.getByRole('combobox', { name: 'Sort by' })).toHaveTextContent('Price');
     });
 
     it('labels a preset-only active sort in the picker without exposing its field id', () => {

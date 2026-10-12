@@ -121,6 +121,7 @@ const CARD_SORT_NOTES = {
   gics_sector: (row) => row.gics_sector || null,
   se_pattern_primary: (row) => (row.se_pattern_primary ? formatPatternName(row.se_pattern_primary) : null),
   rs_line_blue_dot_recent: (row) => (row.rs_line_blue_dot_recent ? 'RS blue dot' : null),
+  correction_survivor: (row) => (row.correction_survivor ? 'Correction survivor' : null),
 };
 // The card's labelled metric for this row, or null to keep the composite.
 const cardMetricFor = (row, sortBy) => {
@@ -136,6 +137,8 @@ const SORT_NAMES = {
   symbol: 'Symbol',
   price_change_1d: '1D change',
   current_price: 'Price',
+  price: 'Price', // sortable alias of current_price (scanFilterFields.json)
+  correction_survivor: 'Correction survivor',
   gics_sector: 'Sector',
   ibd_industry_group: 'Industry',
   ibd_group_rank: 'Group rank',
