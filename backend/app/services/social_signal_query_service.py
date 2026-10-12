@@ -397,17 +397,19 @@ class SocialSignalQueries:
             SocialCompanyIdentityService,
         )
         from app.services.social_ticker_resolver import SocialTickerResolver
-        related, claims = [], []
+        related, resolver, listing = [], None, None
         if item["canonical_symbol"] and item["market"]:
             identities = SocialCompanyIdentityService(self.db).read()
             resolver = SocialTickerResolver(
                 self.db, verified_company_ids=identities.verified_company_ids,
             )
+            listing = (item["market"], item["canonical_symbol"])
+        # Post hints need no listing, so unresolved candidates get them too.
+        claims, hints = self._extractions(run, {post["post_id"] for post in posts}, listing, resolver)
+        for post in posts:
+            post["post_kind"], post["stance"] = hints.get(post["post_id"], (None, None))
+        if resolver is not None:
             resolution = resolver.resolve(item["canonical_symbol"], item["market"])
-            claims = self._claims(
-                run, {post["post_id"] for post in posts},
-                (item["market"], item["canonical_symbol"]), resolver,
-            )
             if resolution.related_symbols:
                 related = [
                     (row.market, row.symbol)
@@ -428,8 +430,9 @@ class SocialSignalQueries:
 
     _SUPPORT_ORDER = {"supported": 0, "uncertain": 1, "unsupported": 2}
 
-    def _claims(self, run, post_ids, listing, resolver, limit=5):
-        """This listing's extracted claims from the run's pinned work, supported first."""
+    def _extractions(self, run, post_ids, listing, resolver, limit=5):
+        """From the run's pinned work: this listing's claims, supported first, and
+        each post's (post_kind, stance) hints."""
         from app.infra.db.models.social_analysis import SocialExtractionWork, SocialRunWork
         from app.services.social_theme_projection_service import _decode
 
@@ -441,19 +444,22 @@ class SocialSignalQueries:
         ).where(
             SocialRunWork.run_id == run.id, SocialExtractionWork.state == "succeeded",
         ).order_by(SocialExtractionWork.id.desc()))
-        found, seen_posts, resolved = {}, set(), {}
+        found, hints, resolved = {}, {}, {}
         for work in works:
             post_id = (work.input_snapshot_json or {}).get("provider_post_id")
             # Newest work per post only: an edited post's older revision is superseded.
-            if post_id not in post_ids or post_id in seen_posts:
+            if post_id not in post_ids or post_id in hints:
                 continue
-            seen_posts.add(post_id)
+            hints[post_id] = (None, None)
             try:
                 post, result = _decode(work)
             except ValueError:
                 # A saved result that no longer validates is not evidence to show.
                 continue
-            for claim in result.claims:
+            judgment = result.judgments[0]
+            hints[post_id] = (judgment.post_kind, judgment.stance)
+            # Claims are only shown for a resolved listing.
+            for claim in result.claims if listing is not None else ():
                 if claim.company_token not in resolved:
                     resolved[claim.company_token] = resolver.resolve(claim.company_token)
                 resolution = resolved[claim.company_token]
@@ -478,9 +484,11 @@ class SocialSignalQueries:
                     "source": attachment.kind if attachment else "post",
                     "source_url": attachment.url if attachment else None,
                 })
-        return sorted(found.values(), key=lambda value: (
+        claims = sorted(found.values(), key=lambda value: (
             self._SUPPORT_ORDER[value["support"]], -value["created_at"].timestamp(), value["post_id"],
         ))[:limit]
+        return claims, hints
+
     def summary(self, *, market):
         if not self._supported():
             return {

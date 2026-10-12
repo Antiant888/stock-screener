@@ -217,10 +217,45 @@ def test_result_identity_metadata_and_no_live_writes(db_session):
     changed = asyncio.run(svc.extract((post(text="$AAA supplies cooling equipment today"),)))
     assert result.input_hash == again.input_hash != changed.input_hash
     assert (result.provider, result.model) == ("synthetic", "actual-model")
-    assert result.prompt_version == result.schema_version == "social-extraction-v2"
+    assert result.prompt_version == result.schema_version == "social-extraction-v3"
     assert result.usage_input_tokens == 100 and result.usage_output_tokens == 20
     assert result.claims[0].post_id == "101" and result.judgments[0].has_new_thesis
     assert not db_session.new and not db_session.dirty
+
+
+def test_post_kind_and_stance_are_requested_and_parsed(db_session):
+    svc = service(db_session, output(post_kind="setup", stance="bullish"))
+    result = asyncio.run(svc.extract((post(),)))
+    prompt = svc.llm.messages[0]["content"]
+    assert '"post_kind": "setup|thesis|news|macro|chatter"' in prompt
+    assert '"stance": "bullish|bearish|neutral|mixed"' in prompt
+    assert (result.judgments[0].post_kind, result.judgments[0].stance) == ("setup", "bullish")
+
+
+def test_saved_v2_judgments_without_kind_or_stance_still_parse():
+    from app.services.social_extraction_service import SocialExtractionParser, SocialExtractionService
+    _, judgments = SocialExtractionParser().parse_batch(
+        SocialExtractionService.source_inputs((post(),)), output(), strict_claims=True,
+    )
+    assert (judgments[0].post_kind, judgments[0].stance) == (None, None)
+
+
+@pytest.mark.parametrize("changes", [
+    {"post_kind": "meme", "stance": "bullish"},
+    {"post_kind": "setup", "stance": "very bullish"},
+    {"post_kind": "setup"},
+    {"post_kind": None, "stance": "bullish"},
+])
+def test_bad_or_partial_hints_drop_to_none_without_failing_the_batch(db_session, changes):
+    # Display-only hints must not fail a paid batch the way a bad claim schema does.
+    result = asyncio.run(service(db_session, output(**changes)).extract((post(),)))
+    assert (result.judgments[0].post_kind, result.judgments[0].stance) == (None, None)
+    assert result.claims and result.judgments[0].has_new_thesis
+
+
+def test_hint_case_is_normalized(db_session):
+    result = asyncio.run(service(db_session, output(post_kind="Setup", stance="BULLISH")).extract((post(),)))
+    assert (result.judgments[0].post_kind, result.judgments[0].stance) == ("setup", "bullish")
 
 
 def test_copied_claim_judgment_and_uncertain_cooccurrence(db_session):
@@ -289,7 +324,7 @@ def test_bare_cooccurrence_judgment_remains_unsupported(db_session):
 
 def test_changed_model_or_prompt_has_separate_result_identity(db_session):
     original = asyncio.run(service(db_session, output()).extract((post(),)))
-    changed = asyncio.run(service(db_session, output(), prompt_version="social-extraction-v3").extract((post(),)))
+    changed = asyncio.run(service(db_session, output(), prompt_version="social-extraction-v4").extract((post(),)))
     assert (original.input_hash, original.model, original.prompt_version) != (changed.input_hash, changed.model, changed.prompt_version)
     with pytest.raises(TypeError):
         replace(original, claims=[original.claims[0]])

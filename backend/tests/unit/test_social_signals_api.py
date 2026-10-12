@@ -721,7 +721,7 @@ async def test_evidence_lists_this_candidates_extracted_claims_supported_first(
         claim("$ZZZ", "Data center power", "equipment supplier", "$ZZZ supplies the turbines", "supported"),
         claim("$AAA", "Nuclear power", "generator", "signed a 20-year nuclear PPA", "supported"),
         claim("AAA", "Nuclear restarts", "operator", "add 800 MW by 2028", "supported", "a" * 64),
-    ), 1, 1, (ExtractionPostJudgment("p-1", True, "aaa-nuclear-ppa"),))
+    ), 1, 1, (ExtractionPostJudgment("p-1", True, "aaa-nuclear-ppa", "news", "bullish"),))
     work = SocialExtractionWork(
         content_item_id=item.id, input_hash=input_hash, prompt_version="v1", schema_version="v1",
         selected_model="requested", actual_provider="synthetic", actual_model="actual",
@@ -736,7 +736,7 @@ async def test_evidence_lists_this_candidates_extracted_claims_supported_first(
     old_snapshot = {**serialized_post, "text": old_post.text}
     old_result = ExtractionResult(old_hash, "synthetic", "actual", "v1", "v1", (
         claim("$AAA", "Stale theme", "rumor", "nuclear deal coming", "supported"),
-    ), 1, 1, (ExtractionPostJudgment("p-1", True, "aaa-draft"),))
+    ), 1, 1, (ExtractionPostJudgment("p-1", True, "aaa-draft", "chatter", "bearish"),))
     old_work = SocialExtractionWork(
         content_item_id=item.id, input_hash=old_hash, prompt_version="v1", schema_version="v1",
         selected_model="requested", actual_provider="synthetic", actual_model="actual",
@@ -762,6 +762,9 @@ async def test_evidence_lists_this_candidates_extracted_claims_supported_first(
     )
 
     assert response.status_code == 200
+    # The newest work's post hints label the source post; the stale revision's do not.
+    [source_post] = response.json()["posts"]
+    assert (source_post["post_kind"], source_post["stance"]) == ("news", "bullish")
     shared = {"post_id": "p-1", "author_handle": "analyst", "created_at": "2026-09-07T10:00:00Z",
               "url": "https://x.com/analyst/status/p-1"}
     # Attachment-backed wording is attributed to its article, not to the poster.
@@ -776,6 +779,68 @@ async def test_evidence_lists_this_candidates_extracted_claims_supported_first(
          "excerpt": "$AAA signed a 20-year nuclear PPA with a hyperscaler", "support": "uncertain",
          "source": "post", "source_url": None},
     ]
+
+
+@pytest.mark.asyncio
+async def test_unresolved_candidate_posts_still_carry_post_hints(
+    db_session, social_runtime, monkeypatch
+):
+    from dataclasses import asdict
+    from datetime import datetime, timedelta, timezone
+    from app.domain.social_signals.records import (
+        ExtractionPostJudgment, ExtractionResult, SocialPostRecord, SocialSnapshotRecord,
+    )
+    from app.infra.db.models.social_analysis import SocialExtractionWork, SocialRunWork
+    from app.models.theme import ContentItem
+    from app.services import server_auth
+    from app.services.social_extraction_service import SocialExtractionService
+
+    monkeypatch.setattr(server_auth.settings, "server_auth_enabled", False)
+    runtime = social_runtime.read_runtime()
+    social_runtime.apply_runtime("live", "official", runtime.version, "admin")
+    now = datetime(2026, 9, 7, 12, tzinfo=timezone.utc)
+    # $XYZ is in no universe, so the candidate is unresolved: no market, no claims.
+    post = SocialPostRecord("official", "p-9", "1", "$XYZ breakout over the pivot",
+                            "https://example.invalid/9", "trader", now - timedelta(hours=1), now)
+    item = ContentItem(source_id=1, source_type="twitter", external_id="p-9", content=post.text,
+                       url=post.url, author="trader", published_at=post.created_at, fetched_at=now)
+    db_session.add(item)
+    db_session.flush()
+    snapshot = {**asdict(post), "created_at": post.created_at.isoformat(),
+                "observed_at": post.observed_at.isoformat()}
+    input_hash = SocialExtractionService.input_hash((post,))
+    work = SocialExtractionWork(
+        content_item_id=item.id, input_hash=input_hash, prompt_version="v1", schema_version="v1",
+        selected_model="requested", actual_provider="synthetic", actual_model="actual",
+        result_json=asdict(ExtractionResult(input_hash, "synthetic", "actual", "v1", "v1", (), 1, 1,
+            (ExtractionPostJudgment("p-9", False, None, "setup", "bullish"),))),
+        state="succeeded", input_snapshot_json=snapshot, created_at=now, updated_at=now,
+    )
+
+    def link_work(run):
+        db_session.add(work)
+        db_session.flush()
+        db_session.add(SocialRunWork(run_id=run.id, work_id=work.id, input_hash=input_hash,
+                                     included_at=now))
+
+    record = SocialSnapshotRecord(
+        "published-1", "unresolved:$xyz", None, None, "unresolved", None, None, None,
+        (), (), now, "$XYZ", "unresolved:$xyz", 7, 1, 1, 2,
+    )
+    _publish_rows(db_session, (record,), observations={
+        "1": {"inputs": [{"content_item_id": item.id, "post": snapshot}], "observed_at": now.isoformat()},
+        "2": {"inputs": [], "observed_at": now.isoformat()},
+    }, before_publish=link_work)
+
+    response = await _request(
+        db_session, "GET", "/api/v1/social-signals/candidates/unresolved:$xyz/evidence?window=7d",
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["claims"] == []
+    [source_post] = payload["posts"]
+    assert (source_post["post_kind"], source_post["stance"]) == ("setup", "bullish")
 
 
 @pytest.mark.asyncio

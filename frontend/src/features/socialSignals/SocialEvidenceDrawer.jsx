@@ -6,6 +6,7 @@ import AddToWatchlistMenu from '../../components/common/AddToWatchlistMenu';
 import { explanationMap, formatSocialScore, socialStateLabel } from './socialSignalPresentation';
 
 const words = (value) => String(value || '').replaceAll('_', ' ');
+const capitalize = (value) => value.charAt(0).toUpperCase() + value.slice(1);
 const stateReasons = (value) => Array.isArray(value)
   ? value
   : String(value || '').split(',').filter(Boolean);
@@ -152,6 +153,11 @@ function PaperPost({ post }) {
       </Typography>
       <Typography variant="body2" sx={{ my: 0.75, whiteSpace: 'pre-wrap' }}>{post.excerpt}</Typography>
       <Stack direction="row" gap={0.5} alignItems="center" flexWrap="wrap">
+        {post.post_kind && post.stance ? (
+          <Chip size="small" variant="outlined" title="Model hint, not verified"
+            aria-label={`Model hint, not verified: ${post.post_kind}, ${post.stance}`}
+            label={`${capitalize(post.post_kind)} · ${capitalize(post.stance)}`} />
+        ) : null}
         {(post.source_names || []).map((name) => <Chip key={name} size="small" label={name} />)}
         <Typography variant="caption">{post.engagement?.likes ?? 0} likes</Typography>
         <Link href={post.url} target="_blank" rel="noreferrer">Open on X</Link>
