@@ -22,6 +22,10 @@ if [[ "$1 $2 $3" == "compose version --short" ]]; then echo "${FAKE_COMPOSE_VERS
 if [[ "$1" == "compose" && " $* " == *" up "* ]]; then exit "${FAKE_UP_EXIT:-0}"; fi
 if [[ "$1" == "compose" && " $* " == *" config --services "* ]]; then printf '%b\\n' "${FAKE_SERVICES:-backend}"; fi
 if [[ "$1" == "ps" ]]; then [[ -z "${FAKE_CONTAINERS:-}" ]] || printf '%b\\n' "$FAKE_CONTAINERS"; fi
+if [[ "$1 $2 $3" == "buildx imagetools inspect" ]]; then
+  [[ -n "${FAKE_LATEST_REVISION:-}" ]] || exit 1
+  echo "$FAKE_LATEST_REVISION"
+fi
 exit 0
 """
 FAKE_SUDO = """#!/usr/bin/env bash
@@ -215,7 +219,33 @@ def test_falls_back_to_latest_when_the_checkout_has_no_published_image(run):
     result, values, _ = run(FAKE_MANIFEST_EXIT="1")
 
     assert values["APP_IMAGE_TAG"] == "latest"
-    assert "latest" in result.stderr
+    assert "no published image for this checkout" in result.stderr
+
+
+def test_newest_main_build_is_pinned_to_one_commit_for_both_images(run):
+    # The two `latest` tags move in separate registry writes; resolving the
+    # backend's `latest` to its commit and pulling that commit's sha-* tags
+    # keeps the pair matched even mid-promotion.
+    if _checkout_tag().startswith("v"):
+        pytest.skip("release checkouts never fall back")
+    revision = "abcdef1234567890abcdef1234567890abcdef12"
+    result, values, calls = run(
+        FAKE_MANIFEST_MISSING=_checkout_tag(),  # no image for this checkout
+        FAKE_LATEST_REVISION=revision,
+    )
+
+    assert values["APP_IMAGE_TAG"] == "sha-abcdef1"
+    assert "ghcr.io/xang1234/stockscreenclaude-backend:latest" in calls
+    assert "ghcr.io/xang1234/stockscreenclaude-frontend:sha-abcdef1" in calls
+    assert "sha-abcdef1" in result.stderr
+
+
+def test_uses_plain_latest_when_the_latest_revision_cannot_be_read(run):
+    if _checkout_tag().startswith("v"):
+        pytest.skip("release checkouts never fall back")
+    _, values, _ = run(FAKE_MANIFEST_MISSING=_checkout_tag())
+
+    assert values["APP_IMAGE_TAG"] == "latest"
 
 
 def test_falls_back_when_only_the_backend_image_was_published(run):

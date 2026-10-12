@@ -47,15 +47,28 @@ resolve_image_tag() {
     return
   fi
   # Both images: CI pushes the backend before building the frontend.
-  if sha="$(git -C "$ROOT_DIR" rev-parse HEAD 2>/dev/null)" \
-    && docker manifest inspect "$BACKEND_IMAGE:sha-${sha:0:7}" >/dev/null 2>&1 \
-    && docker manifest inspect "$FRONTEND_IMAGE:sha-${sha:0:7}" >/dev/null 2>&1; then
+  if sha="$(git -C "$ROOT_DIR" rev-parse HEAD 2>/dev/null)" && commit_images_exist "$sha"; then
     echo "sha-${sha:0:7}"
     return
   fi
-  echo "quickstart: no published image for this checkout; using 'latest' (newest main build)." >&2
+  echo "quickstart: no published image for this checkout; using the newest main build." >&2
   echo "quickstart: for a pinned release, clone a tag: git clone --branch vX.Y.Z ..." >&2
+  # The two `latest` tags move in separate registry writes, so pin both images
+  # to the commit behind the backend's `latest` rather than pulling `latest`.
+  local revision
+  revision="$(docker buildx imagetools inspect "$BACKEND_IMAGE:latest" \
+    --format '{{ index .Image.Config.Labels "org.opencontainers.image.revision" }}' 2>/dev/null || true)"
+  if [[ "$revision" =~ ^[0-9a-f]{7,}$ ]] && commit_images_exist "$revision"; then
+    echo "quickstart: newest main build is sha-${revision:0:7}." >&2
+    echo "sha-${revision:0:7}"
+    return
+  fi
   echo latest
+}
+
+commit_images_exist() {
+  docker manifest inspect "$BACKEND_IMAGE:sha-${1:0:7}" >/dev/null 2>&1 \
+    && docker manifest inspect "$FRONTEND_IMAGE:sha-${1:0:7}" >/dev/null 2>&1
 }
 
 TAG="${APP_IMAGE_TAG:-$(resolve_image_tag)}"

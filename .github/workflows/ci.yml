@@ -424,8 +424,9 @@ jobs:
               echo "No install files changed; skipping."
               exit 0
             fi
-            # A PR commit has no published image, so quickstart.sh falls back to latest.
-            export EXPECTED_IMAGE_TAG=latest
+            # A PR commit has no published image, so quickstart.sh pins the newest
+            # main build to its commit's sha-* tags.
+            export EXPECTED_IMAGE_TAG='sha-*'
           elif [[ "$REF_TYPE" == "tag" ]]; then
             export EXPECTED_IMAGE_TAG="$REF_NAME"
           else

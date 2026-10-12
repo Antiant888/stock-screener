@@ -2,7 +2,8 @@
 # CI: run the documented one-command install against the images just published
 # for this commit or release tag, then check a new user can reach and use it.
 #
-# Required: EXPECTED_IMAGE_TAG (the tag quickstart.sh must choose for this checkout).
+# Required: EXPECTED_IMAGE_TAG, the tag (or bash pattern, e.g. sha-*) quickstart.sh
+# must choose for this checkout.
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -34,7 +35,9 @@ FRONTEND_PORT="$FRONTEND_PORT" bash "$ROOT_DIR/scripts/quickstart.sh"
 env_value() { sed -n "s/^$1=//p" "$ENV_FILE" | tail -n 1; }
 
 chosen="$(env_value APP_IMAGE_TAG)"
-[[ "$chosen" == "$EXPECTED_IMAGE_TAG" ]] || {
+# Unquoted on purpose: EXPECTED_IMAGE_TAG may be a pattern such as sha-*.
+# shellcheck disable=SC2053
+[[ "$chosen" == $EXPECTED_IMAGE_TAG ]] || {
   echo "quickstart chose image tag '$chosen', expected '$EXPECTED_IMAGE_TAG'" >&2
   exit 1
 }

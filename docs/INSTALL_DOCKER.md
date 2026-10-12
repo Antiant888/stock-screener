@@ -21,7 +21,7 @@ scripts/quickstart.sh
 `scripts/quickstart.sh`:
 
 - creates `.env.docker` from `.env.docker.example` on first run, with a generated login password and session secret (printed once at the end);
-- picks the published GHCR images that match your checkout (the release tag when you cloned one, otherwise that commit's `sha-*` image, otherwise `latest`);
+- picks the published GHCR images that match your checkout: the release tag when you cloned one, otherwise that commit's `sha-*` images, otherwise the newest `main` build pinned to its commit's `sha-*` images (so backend and frontend always come from the same build);
 - on Linux, lets the container user (uid 1000) write to `./data` with an ACL (`setfacl`, from the `acl` package), so your own ownership and later `git pull` updates keep working; without `setfacl` it falls back to `sudo chown`;
 - pulls the images, starts the stack with the production and release overlays, and waits until every service is healthy.
 
