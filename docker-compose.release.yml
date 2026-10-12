@@ -22,12 +22,17 @@
 #
 # =============================================================================
 
+# ponytail: CI publishes amd64 images only, so ARM hosts (Apple Silicon, ARM
+# homelabs) must pull and emulate amd64 or `pull` fails with "no matching
+# manifest". Drop the pins once publish-images builds linux/arm64 too.
 x-backend-release-service: &backend-release-service
   image: ${BACKEND_IMAGE:?set BACKEND_IMAGE}:${APP_IMAGE_TAG:?set APP_IMAGE_TAG}
+  platform: linux/amd64
   pull_policy: always
 
 x-frontend-release-service: &frontend-release-service
   image: ${FRONTEND_IMAGE:?set FRONTEND_IMAGE}:${APP_IMAGE_TAG:?set APP_IMAGE_TAG}
+  platform: linux/amd64
   pull_policy: always
 
 services:

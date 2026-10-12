@@ -7,8 +7,31 @@ Docker deployments use **PostgreSQL** as the application database. The shared `.
 ## Prerequisites
 
 - Docker Engine 20.10+
-- Docker Compose v2 (`docker compose` or `docker-compose`)
+- Docker Compose v2.18 or newer (`docker compose`); `docker-compose.release.yml` uses the `!reset` tag, which older Compose cannot parse
 - Python 3.11+ on the host for `scripts/docker-compose-enabled-markets.sh`; set `STOCKSCREEN_PYTHON=/path/to/python3.11` if your default `python3` is older.
+
+## One-Command Install (Recommended)
+
+```bash
+git clone https://github.com/xang1234/stock-screener.git
+cd stock-screener
+scripts/quickstart.sh
+```
+
+`scripts/quickstart.sh`:
+
+- creates `.env.docker` from `.env.docker.example` on first run, with a generated login password and session secret (printed once at the end);
+- picks the published GHCR images that match your checkout: the release tag when you cloned one, otherwise that commit's `sha-*` images, otherwise the newest `main` build pinned to its commit's `sha-*` images (so backend and frontend always come from the same build);
+- on Linux, lets the container user (uid 1000) write to `./data` with an ACL (`setfacl`, from the `acl` package), so your own ownership and later `git pull` updates keep working; without `setfacl` it falls back to `sudo chown`;
+- pulls the images, starts the stack with the production and release overlays, and waits until every service is healthy.
+
+Optional settings, saved to `.env.docker` when given: `ENABLED_MARKETS=US,HK` (default `US`), `FRONTEND_PORT=8080` (default `80`). `APP_IMAGE_TAG=vX.Y.Z` pins a specific image tag. Re-run the script after `git pull` to upgrade; your password and other settings in `.env.docker` are kept. For a fixed release, clone it directly: `git clone --branch vX.Y.Z ...`.
+
+Images are published for `linux/amd64` only. Docker Desktop on Apple Silicon runs them through Rosetta automatically (slower, especially on first start); ARM Linux hosts need amd64 emulation (`qemu-user-static` / binfmt) installed first.
+
+CI runs this exact script against each published `main` build and release tag, and on pull requests that change install files (`quickstart-smoke` in `.github/workflows/ci.yml`). A GitHub Release is only created after it passes.
+
+The rest of this guide covers the same stack configured by hand.
 
 ## Quick Start (Local Development)
 
@@ -55,9 +78,9 @@ Use pre-built images from GitHub Container Registry instead of building from sou
 # 1. Configure environment
 cp .env.docker.example .env.docker
 # Edit .env.docker:
-#   BACKEND_IMAGE=ghcr.io/<owner>/stockscreenclaude-backend
-#   FRONTEND_IMAGE=ghcr.io/<owner>/stockscreenclaude-frontend
-#   APP_IMAGE_TAG=v1.3.0
+#   BACKEND_IMAGE=ghcr.io/xang1234/stockscreenclaude-backend
+#   FRONTEND_IMAGE=ghcr.io/xang1234/stockscreenclaude-frontend
+#   APP_IMAGE_TAG=vX.Y.Z   (a release tag from https://github.com/xang1234/stock-screener/releases)
 #   SERVER_AUTH_PASSWORD=choose-a-long-random-password
 #   CORS_ORIGINS=https://stocks.yourdomain.com
 

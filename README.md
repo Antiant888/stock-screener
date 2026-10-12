@@ -61,20 +61,16 @@ See the **[Static Site Guide](docs/STATIC_SITE.md)** for exactly what works in s
 
 ## Quickstart (Docker)
 
-Deploys tagged GHCR images instead of building locally:
+Needs Docker and Python 3.11+. One command pulls the published images that match your checkout, writes `.env.docker` with a generated login password, and waits until every service is healthy:
 
 ```bash
-cp .env.docker.example .env.docker
-# Edit .env.docker:
-#   BACKEND_IMAGE=ghcr.io/<owner>/stockscreenclaude-backend
-#   FRONTEND_IMAGE=ghcr.io/<owner>/stockscreenclaude-frontend
-#   APP_IMAGE_TAG=v1.3.0
-#   SERVER_AUTH_PASSWORD=choose-a-long-random-password
-#   GROQ_API_KEY=...
-ENABLED_MARKETS=US,HK,CN scripts/docker-compose-enabled-markets.sh --env-file .env.docker -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.release.yml pull
-ENABLED_MARKETS=US,HK,CN scripts/docker-compose-enabled-markets.sh --env-file .env.docker -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.release.yml up -d --no-build
-# Open http://localhost
+git clone https://github.com/xang1234/stock-screener.git
+cd stock-screener
+scripts/quickstart.sh
+# Open the printed URL (http://localhost) and log in with the printed password
 ```
+
+Add markets or change the port with `ENABLED_MARKETS=US,HK FRONTEND_PORT=8080 scripts/quickstart.sh`. Re-run it after `git pull` to upgrade. For the chatbot, add an LLM key such as `GROQ_API_KEY` to `.env.docker` and re-run. CI runs this same install against each published `main` build and release tag, and only creates a GitHub Release once it passes.
 
 On first launch the app opens to a **first-run bootstrap** screen — no pre-seeded database needed. Pick one primary market for startup defaults and optionally enable more to hydrate in the background, then start. Enabling many markets at once noticeably slows the first run, so start with one and add the rest after the workspace is ready.
 
