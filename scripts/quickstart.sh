@@ -103,6 +103,10 @@ path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 PY
 )"
 chmod 600 "$ENV_FILE"
+# Show it now: once saved, a retry after a failed start treats it as existing.
+if [[ -n "$NEW_PASSWORD" ]]; then
+  echo "Generated login password: $NEW_PASSWORD  (saved in $ENV_FILE as SERVER_AUTH_PASSWORD)"
+fi
 
 # The backend runs as uid 1000 and writes to the ./data bind mount. Docker
 # Desktop maps ownership for you; Linux does not. data/ holds tracked files,

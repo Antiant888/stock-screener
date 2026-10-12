@@ -19,6 +19,7 @@ if [[ "$1" == "manifest" ]]; then
   exit "${FAKE_MANIFEST_EXIT:-0}"
 fi
 if [[ "$1 $2 $3" == "compose version --short" ]]; then echo "${FAKE_COMPOSE_VERSION:-2.29.1}"; fi
+if [[ "$1" == "compose" && " $* " == *" up "* ]]; then exit "${FAKE_UP_EXIT:-0}"; fi
 exit 0
 """
 FAKE_SUDO = """#!/usr/bin/env bash
@@ -113,6 +114,20 @@ def test_rerun_keeps_secrets_and_user_settings(run):
     assert "http://localhost:8080" in result.stdout
     # A password the user already has is not printed again.
     assert first["SERVER_AUTH_PASSWORD"] not in result.stdout
+
+
+def test_shows_a_new_password_even_when_startup_fails(run):
+    # The password is saved before startup, so a retry would treat it as existing
+    # and never print it: show it as soon as it is generated.
+    result = run(expect_ok=False, FAKE_UP_EXIT="1")
+    saved = next(
+        line.split("=", 1)[1]
+        for line in run.env_file.read_text().splitlines()
+        if line.startswith("SERVER_AUTH_PASSWORD=")
+    )
+
+    assert result.returncode != 0
+    assert saved in result.stdout
 
 
 def test_refuses_compose_without_wait_timeout(run):
