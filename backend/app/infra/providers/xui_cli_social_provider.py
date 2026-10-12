@@ -36,6 +36,7 @@ _NETWORK_REASONS = (
     "timed out", "timeout", "dns",
 )
 _RETRY_DELAY_SECONDS = 30
+_INCREMENTAL_CAP = 200
 
 
 class XuiCliSocialProvider:
@@ -80,16 +81,18 @@ class XuiCliSocialProvider:
         if not self._authenticated(auth_payload, auth_result.returncode):
             return self._failed(request, "reauthentication_required", cooldown=True)
 
-        intent_cap = {"initial": 1000, "incremental": 200, "test": 5}[request.intent]
+        intent_cap = {"initial": 1000, "incremental": _INCREMENTAL_CAP, "test": 5}[request.intent]
         effective_limit = min(request.limit, intent_cap)
-        read_command = [
-            "xui", "read", "--path", self._config_path, "--profile", self._profile,
-            "--limit", str(effective_limit), "--json", "--sources", f"list:{request.list_id}",
-        ]
         for attempt in range(2):
-            read_result = self._execute(read_command)
+            read_result = self._execute([
+                "xui", "read", "--path", self._config_path, "--profile", self._profile,
+                "--limit", str(effective_limit), "--json", "--sources", f"list:{request.list_id}",
+            ])
             if isinstance(read_result, str):
                 if read_result == "provider_timeout" and attempt == 0:
+                    # A long scroll that timed out will time out again; retry at the
+                    # incremental size so a first backfill can still land.
+                    effective_limit = min(effective_limit, _INCREMENTAL_CAP)
                     time.sleep(_RETRY_DELAY_SECONDS)
                     continue
                 return self._failed(request, read_result)

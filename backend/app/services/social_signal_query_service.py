@@ -76,6 +76,8 @@ class SocialSignalQueries:
                 or observations.get(str(source_id))
                 or {}
             )
+            if outcome.get("read_status") == "failed":
+                continue  # a failed list is a coverage gap, not stale data
             if (
                 outcome.get("read_status") != "success"
                 or not observation.get("observed_at")
@@ -126,7 +128,7 @@ class SocialSignalQueries:
                 }),
             })
         statuses = {source["read_status"] for source in sources}
-        if "failed" in statuses:
+        if statuses == {"failed"}:
             status = "collection_failed"
         elif "pending" in statuses or not sources:
             status = "collecting"

@@ -544,7 +544,7 @@ class SocialSignalWriter:
             outcomes = {k: v for k, v in outcomes.items() if k in participants}
         if len(pins) < 2 or set(outcomes) != set(pins) or set(observations) != set(pins):
             raise ValueError("source_participation_incomplete")
-        if any(outcome["read_status"] != "success" for outcome in outcomes.values()):
+        if not any(outcome["read_status"] == "success" for outcome in outcomes.values()):
             raise ValueError("source_participation_failed")
         required = set()
         for source in observations.values():

@@ -72,10 +72,14 @@ def _latest_resumable_run():
         return next((run.id for run in runs if (
             set(run.application_progress_json.get("observations", {}))
             == set(run.application_progress_json.get("sources", {}))
+            and set(run.source_outcomes_json) == set(run.application_progress_json.get("sources", {}))
             and all(
-                run.source_outcomes_json.get(source_id, {}).get("read_status")
-                == "success"
-                for source_id in run.application_progress_json.get("sources", {})
+                run.source_outcomes_json[source_id].get("read_status") in {"success", "failed"}
+                for source_id in run.source_outcomes_json
+            )
+            and any(
+                outcome.get("read_status") == "success"
+                for outcome in run.source_outcomes_json.values()
             )
         )), None)
 

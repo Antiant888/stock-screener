@@ -217,7 +217,7 @@ function LatestAttemptPanel({ attempt, onOpenOperations }) {
         })}
       </Stack>
       {collectionFailed ? <Typography variant="body2" sx={{ mt: 1 }}>
-        Analysis did not start because every enabled list must collect successfully.
+        Analysis did not start because no enabled list collected successfully.
       </Typography> : null}
       {analysisFailed ? <Typography variant="body2" sx={{ mt: 1 }}>
         Collected posts were not published because analysis failed. Review and retry failed work in Operations.

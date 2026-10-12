@@ -73,8 +73,12 @@ def test_off_delivery_is_a_noop_and_does_not_schedule_resume(monkeypatch):
     assert tasks.refresh_social_signals.run()["processing_status"] == "skipped"
 
 
-def test_budget_resume_ignores_runs_with_failed_source_collection(
-    db_session, monkeypatch
+@pytest.mark.parametrize(("second_status", "expected"), [
+    ("failed", "failed-collection"),
+    ("pending", None),
+])
+def test_budget_resume_needs_one_collected_source_and_every_source_settled(
+    db_session, monkeypatch, second_status, expected
 ):
     from sqlalchemy.orm import sessionmaker
 
@@ -97,7 +101,7 @@ def test_budget_resume_ignores_runs_with_failed_source_collection(
         mode="live", provider="official", status="running",
         source_outcomes_json={
             "1": {"read_status": "success"},
-            "2": {"read_status": "failed"},
+            "2": {"read_status": second_status},
         },
         application_progress_json={
             "sources": {"1": {}, "2": {}},
@@ -112,7 +116,7 @@ def test_budget_resume_ignores_runs_with_failed_source_collection(
         sessionmaker(db_session.get_bind(), expire_on_commit=False),
     )
 
-    assert tasks._latest_resumable_run() is None
+    assert tasks._latest_resumable_run() == expected
 
 
 def test_budget_resume_ignores_generation_with_replay_descendant(

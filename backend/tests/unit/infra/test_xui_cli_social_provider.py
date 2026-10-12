@@ -220,6 +220,22 @@ def test_timed_out_list_read_retries_once_after_a_delay(monkeypatch):
     assert delays == [30]
 
 
+def test_timed_out_initial_read_retries_at_the_incremental_size(monkeypatch):
+    monkeypatch.setattr("time.sleep", lambda seconds: None)
+    runner = SyntheticRunner(
+        auth(),
+        subprocess.TimeoutExpired(["xui", "read"], 45),
+        completed(json.loads(FIXTURE.read_text())),
+    )
+
+    batch = provider(runner).read_source(request(intent="initial", limit=1000))
+
+    limits = [call[0][call[0].index("--limit") + 1] for call in runner.calls[1:]]
+    assert limits == ["1000", "200"]
+    assert batch.outcome.read_status == "success"
+    assert batch.outcome.history_status == "warming_up"
+
+
 def test_timed_out_list_read_stops_after_the_single_retry(monkeypatch):
     delays = []
     monkeypatch.setattr("time.sleep", lambda seconds: delays.append(seconds))

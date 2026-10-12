@@ -75,15 +75,15 @@ class Lease:
 
 
 class Provider:
-    def __init__(self, events, *, fail_source=None):
+    def __init__(self, events, *, fail_sources=()):
         self.events = events
-        self.fail_source = fail_source
+        self.fail_sources = set(fail_sources)
         self.requests = []
 
     def read_source(self, request):
         self.events.append(f"provider.{request.source_id}")
         self.requests.append(request)
-        if request.source_id == self.fail_source:
+        if request.source_id in self.fail_sources:
             outcome = SocialSourceOutcome(
                 "failed", "failed", "limited", ("provider_error",), (), None, None,
                 0, None, "provider_error",
@@ -241,12 +241,12 @@ class ConfirmationReader:
         )
 
 
-def use_case(*, mode="live", fail_source=None, deferred=0, failed=0, current=True):
+def use_case(*, mode="live", fail_sources=(), deferred=0, failed=0, current=True):
     from app.use_cases.social_signals.refresh import RefreshSocialSignals
 
     events = []
     catalog = Catalog(mode=mode, current=current)
-    provider = Provider(events, fail_source=fail_source)
+    provider = Provider(events, fail_sources=fail_sources)
     writer = Writer(events, mode=mode)
     backlog = Backlog(events, deferred=deferred, failed=failed)
     evidence = EvidenceReader(events)
@@ -295,8 +295,18 @@ async def test_refresh_orders_collection_before_metered_work_and_publishes_all_w
 
 
 @pytest.mark.asyncio
-async def test_failed_enabled_source_blocks_analysis_and_publication_but_keeps_audit_batch():
-    refresh, events, _, writer, backlog, _ = use_case(fail_source="2")
+async def test_one_failed_list_is_a_coverage_gap_and_the_other_lists_still_publish():
+    refresh, events, _, writer, backlog, _ = use_case(fail_sources={"2"})
+    result = await refresh.execute("scheduled", NOW)
+    assert result.published is True
+    assert len(writer.batches) == 2
+    assert [post.source_id for _, post, _ in backlog.enqueued] == ["1"]
+    assert "writer.publish" in events
+
+
+@pytest.mark.asyncio
+async def test_every_list_failing_blocks_analysis_and_publication_but_keeps_audit_batches():
+    refresh, events, _, writer, backlog, _ = use_case(fail_sources={"1", "2"})
     result = await refresh.execute("scheduled", NOW)
     assert result.published is False
     assert result.reason_codes == ("source_participation_failed",)
@@ -572,7 +582,8 @@ def test_scoring_evidence_retains_older_in_window_post_after_incremental_cap(tmp
 
 
 @pytest.mark.asyncio
-async def test_refresh_runs_through_real_writer_backlog_and_publication_with_fixture_io(tmp_path):
+@pytest.mark.parametrize("fail_sources", [(), ("2",)])
+async def test_refresh_runs_through_real_writer_backlog_and_publication_with_fixture_io(tmp_path, fail_sources):
     import json
     from types import SimpleNamespace
 
@@ -623,7 +634,7 @@ async def test_refresh_runs_through_real_writer_backlog_and_publication_with_fix
             )
 
     events = []
-    provider = Provider(events)
+    provider = Provider(events, fail_sources=fail_sources)
     confirmation = ConfirmationReader(events)
     writer = SocialSignalWriter(
         sessions, clock=lambda: NOW, confirmation_reader_factory=lambda db: confirmation

@@ -136,10 +136,12 @@ class RefreshSocialSignals:
                 return self._result(run_id, runtime.mode, "deferred", "provider_lease_unavailable", sources=enabled)
             try:
                 provider = self._provider(runtime.provider)
-                failed = False
+                # A failed list is recorded as a coverage gap on every candidate;
+                # only a generation with no collected list is withheld.
+                collected_any = False
                 for source in enabled:
                     if source.source_id in collected:
-                        failed = failed or collected[source.source_id].outcome.read_status != "success"
+                        collected_any = collected_any or collected[source.source_id].outcome.read_status == "success"
                         continue
                     if not self.catalog.admitted(
                         version=runtime.version, mode=runtime.mode, provider=runtime.provider
@@ -159,8 +161,8 @@ class RefreshSocialSignals:
                         )
                     batch = provider.read_source(self._request(run_id, source, runtime.provider, now))
                     saved = self.writer.persist_observations(batch, run_id=run_id)
-                    failed = failed or saved.outcome.read_status != "success"
-                if failed:
+                    collected_any = collected_any or saved.outcome.read_status == "success"
+                if not collected_any:
                     return self._result(
                         run_id, runtime.mode, "blocked", "source_participation_failed", sources=enabled
                     )
