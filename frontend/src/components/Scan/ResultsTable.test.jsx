@@ -41,7 +41,9 @@ vi.mock('./PriceSparkline', () => ({
     <span data-testid="price-sparkline">Price:{data?.length ?? 'none'}:{trend}:{change1d}</span>
   ),
 }));
-vi.mock('../common/AddToWatchlistMenu', () => ({ default: () => null }));
+vi.mock('../common/AddToWatchlistMenu', () => ({
+  default: ({ symbols }) => <span data-testid={`watchlist-${symbols}`} />,
+}));
 
 /** Default props for a basic render — 1 row, page 1. */
 const defaultProps = {
@@ -636,6 +638,15 @@ describe('ResultsTable', () => {
 
       rerender(<ResultsTable {...defaultProps} results={[row]} sortBy="symbol" />);
       expect(screen.getByLabelText('Score 66.0')).toBeInTheDocument();
+    });
+
+    it('keeps the watchlist action on cards, including rows that cannot open a chart', () => {
+      const row = { ...fullSeRow, is_scannable: false };
+      const { rerender } = renderWithProviders(<ResultsTable {...defaultProps} results={[row]} />);
+      expect(within(screen.getByRole('listitem')).getByTestId(`watchlist-${row.symbol}`)).toBeInTheDocument();
+
+      rerender(<ResultsTable {...defaultProps} results={[row]} showWatchlistMenu={false} />);
+      expect(screen.queryByTestId(`watchlist-${row.symbol}`)).not.toBeInTheDocument();
     });
 
     it('keeps an active sort that the picker does not list', () => {

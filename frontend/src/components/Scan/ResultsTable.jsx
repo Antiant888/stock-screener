@@ -837,6 +837,9 @@ function ResultsTable({
                     scoreField={cardScoreField}
                     scoreLabel={cardScoreLabel}
                     badge={mobileBadge(row)}
+                    actions={showActions && showWatchlistMenu
+                      ? <AddToWatchlistMenu symbols={row.symbol} size="small" />
+                      : null}
                     onOpen={chartEnabled ? () => handleRowClick(row.symbol) : null}
                   />
                 </Box>

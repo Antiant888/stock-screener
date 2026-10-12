@@ -14,7 +14,7 @@ const oneDecimal = (value) => (Number.isFinite(Number(value)) && value != null ?
  * `badge` (e.g. a clickable action state) sits above the overlay as a sibling,
  * not nested inside the button.
  */
-export default function StockRowCard({ row, scoreField = 'composite_score', scoreLabel = null, badge = null, meta = null, onOpen = null }) {
+export default function StockRowCard({ row, scoreField = 'composite_score', scoreLabel = null, badge = null, actions = null, meta = null, onOpen = null }) {
   const change = Number(row.price_change_1d);
   const hasChange = row.price_change_1d != null && Number.isFinite(change);
   // Rank first: long industry names truncate, and the rank is the part worth keeping.
@@ -62,19 +62,23 @@ export default function StockRowCard({ row, scoreField = 'composite_score', scor
           ) : (
             <Typography component="span" noWrap sx={{ fontWeight: 700, fontSize: '14px', minWidth: 0 }}>{row.symbol}</Typography>
           )}
-          {badge ? (
-            // Above the stretched overlay, but only interactive badges take the
-            // tap; an inert one (a rating chip) lets it fall through to open.
+          {badge || actions ? (
+            // Above the stretched overlay, but only interactive children take the
+            // tap; an inert badge (a rating chip) lets it fall through to open.
             <Box
               sx={{
                 position: 'relative',
                 zIndex: 1,
                 flexShrink: 0,
                 pointerEvents: 'none',
+                display: 'flex',
+                alignItems: 'center',
+                gap: 0.5,
                 '& button, & a, & [role="button"]': { pointerEvents: 'auto' },
               }}
             >
               {badge}
+              {actions}
             </Box>
           ) : null}
         </Box>
