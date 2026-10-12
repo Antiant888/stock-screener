@@ -40,10 +40,10 @@ jobs:
         shell: bash
         run: |
           ./mcp-publisher validate stockscreen-mcp/server.json
-          ./mcp-publisher login github-oidc
           # PyPI's JSON API can lag a fresh upload; the registry verifies against it.
+          # Log in on every attempt so a retry never outlives the registry token.
           for attempt in 1 2 3 4 5; do
-            ./mcp-publisher publish stockscreen-mcp/server.json && exit 0
+            ./mcp-publisher login github-oidc && ./mcp-publisher publish stockscreen-mcp/server.json && exit 0
             echo "Publish attempt $attempt failed; retrying in 30s" >&2
             sleep 30
           done
