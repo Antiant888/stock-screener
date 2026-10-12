@@ -113,6 +113,15 @@ def test_site_order_puts_nulls_first_when_descending_except_for_score_fields():
     assert symbols(sort_rows(ROWS, "composite_score", descending=False)) == ["C", "D", "B", "A", "E"]
 
 
+@pytest.mark.parametrize("site_order", [True, False])
+def test_rating_sorts_by_rank_not_alphabetically(site_order):
+    # scanClient.js getSortValue maps rating labels to ranks before comparing.
+    rows = [{"symbol": s, "rating": r} for s, r in
+            [("A", "Watch"), ("B", "Strong Buy"), ("C", "Pass"), ("D", "Buy"), ("E", "Insufficient Data")]]
+    ordered = sort_rows(rows, "rating", descending=True, site_order=site_order)
+    assert [r["rating"] for r in ordered] == ["Strong Buy", "Buy", "Watch", "Pass", "Insufficient Data"]
+
+
 def test_caller_sorts_keep_rows_without_the_field_last():
     assert symbols(sort_rows(ROWS, "v", descending=True, site_order=False)) == ["B", "C", "D", "A", "E"]
 

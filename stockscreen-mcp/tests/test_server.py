@@ -1,5 +1,6 @@
 """Tools exercised end to end through the SDK's in-memory client."""
 
+import copy
 from datetime import datetime, timezone
 
 import pytest
@@ -180,6 +181,30 @@ async def test_preset_order_breaks_ties_by_symbol_like_the_site(use_fake_data):
 
     result = await call("run_screen", market="US", screen="minervini")
     assert [row["symbol"] for row in result["rows"]] == ["AAA", "BBB"]
+
+
+async def test_group_constituents_without_an_rs_rating_come_last(use_fake_data):
+    # 80 of 191 live US groups include unrated stocks; they must not crowd out the leaders.
+    stocks = use_fake_data.page("US", "groups")["payload"]["group_details"]["Semiconductors"]["stocks"]
+    stocks.insert(0, {"symbol": "NEW", "company_name": "New Listing", "rs_rating": None})
+
+    detail = await call("group_rankings", market="US", group="Semiconductors")
+    assert [s["symbol"] for s in detail["group"]["stocks"]] == ["CCC", "AAA", "NEW"]
+
+
+async def test_run_screen_honours_preset_groups_like_get_stock(use_fake_data):
+    scan, _ = use_fake_data.scan("US")
+    grouped = copy.deepcopy(scan["preset_screens"][0])  # minervini: AAA and BBB pass
+    grouped["id"] = "minervini_semis"
+    grouped["filter_expression"]["groups"] = [
+        {"id": "semis", "name": "Semis", "enabled": True, "match": "all",
+         "conditions": [{"field": "ibd_industry_group", "kind": "categorical", "values": ["Semiconductors"]}]},
+    ]
+    scan["preset_screens"].append(grouped)
+
+    result = await call("run_screen", market="US", screen="minervini_semis")
+    assert [row["symbol"] for row in result["rows"]] == ["AAA"]
+    assert "minervini_semis" not in (await call("get_stock", symbol="BBB", market="US"))["passes_screens"]
 
 
 async def test_group_lookup_accepts_a_unique_partial_name():

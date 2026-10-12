@@ -185,14 +185,12 @@ def run_screen(
         raise ToolError("Pass a screen (see list_screens) or filters, or both.")
     scan, rows = data.scan(market)
 
-    conditions: list[dict[str, Any]] = []
     preset = None
     if screen is not None:
         presets = {p["id"]: p for p in _visible_presets(market, scan)}
         preset = presets.get(screen.strip().lower())
         if preset is None:
             raise ToolError(f"Unknown screen {screen!r}. Available: {', '.join(presets)}.")
-        conditions += preset["filter_expression"]["required"]["conditions"]
 
     filter_dicts = [f.model_dump() for f in filters or []]
     row_fields = set().union(*(row.keys() for row in rows))
@@ -204,10 +202,10 @@ def run_screen(
             close = difflib.get_close_matches(field, sorted(known), n=5)
             hint = f" Did you mean: {', '.join(close)}?" if close else ""
             raise ToolError(f"Unknown field {field!r}.{hint}")
-    conditions += filters_to_conditions(filter_dicts)
-
-    expression = {"required": {"match": "all", "conditions": conditions}, "groups": []}
-    matches = [row for row in rows if evaluate_expression(row, expression)]
+    # The whole preset expression (groups included), AND every custom filter.
+    custom = {"required": {"match": "all", "conditions": filters_to_conditions(filter_dicts)}, "groups": []}
+    expressions = [preset["filter_expression"], custom] if preset else [custom]
+    matches = [row for row in rows if all(evaluate_expression(row, e) for e in expressions)]
 
     site_order = sort_by is None
     if site_order:
@@ -216,7 +214,8 @@ def run_screen(
         descending = ((preset or {}).get("sort_order") or default_sort.get("order", "desc")) == "desc"
     matches = sort_rows(matches, sort_by, descending=descending, site_order=site_order)
 
-    extra = [f for f in (*expression_fields(expression), sort_by) if f not in ROW_FIELDS]
+    used = [field for e in expressions for field in expression_fields(e)]
+    extra = [f for f in (*used, sort_by) if f not in ROW_FIELDS]
     columns = [*ROW_FIELDS, *dict.fromkeys(extra)]
     return {
         "market": market.upper(),
@@ -332,7 +331,8 @@ def group_rankings(
         raise ToolError(f"Unknown group {group!r}. Close matches: {', '.join(close) or 'none'}.")
     detail = details[name]
     history = sorted(detail.get("history", []), key=lambda h: h["date"], reverse=True)
-    stocks = sort_rows(detail.get("stocks", []), "rs_rating", descending=True)
+    # Unrated constituents (new listings) go last, as in the published payload.
+    stocks = sort_rows(detail.get("stocks", []), "rs_rating", descending=True, site_order=False)
     result["group"] = {
         "group": name,
         "rank": detail.get("current_rank"),

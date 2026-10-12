@@ -152,8 +152,16 @@ def filters_to_conditions(filters: list[dict[str, Any]]) -> list[dict[str, Any]]
     return conditions
 
 
-# frontend/src/static/scanClient.js: SCORE_SORT_FIELDS keep nulls last in both directions.
+# frontend/src/static/scanClient.js: SCORE_SORT_FIELDS keep nulls last in both directions,
+# and getSortValue ranks rating labels instead of comparing them as text.
 SCORE_SORT_FIELDS = frozenset({"composite_score", "resilience_score"})
+RATING_SORT_ORDER = {"Strong Buy": 5, "Buy": 4, "Watch": 3, "Pass": 2, "Error": 1, "Insufficient Data": 0}
+
+
+def _sort_value(row: dict[str, Any], field: str) -> Any:
+    if field == "rating":
+        return RATING_SORT_ORDER.get(row.get("rating"), 0)
+    return row.get(field)
 
 
 def _compare_values(left: Any, right: Any) -> int:
@@ -184,7 +192,7 @@ def sort_rows(
     nulls_last = field in SCORE_SORT_FIELDS or not site_order
 
     def compare(left: dict[str, Any], right: dict[str, Any]) -> int:
-        left_value, right_value = left.get(field), right.get(field)
+        left_value, right_value = _sort_value(left, field), _sort_value(right, field)
         if nulls_last:
             if left_value is None and right_value is None:
                 return _compare_values(left.get("symbol"), right.get("symbol"))
