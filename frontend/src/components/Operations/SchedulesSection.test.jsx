@@ -1,5 +1,4 @@
 import { fireEvent, screen, waitFor, within } from '@testing-library/react';
-import { MemoryRouter } from 'react-router-dom';
 import { QueryClient } from '@tanstack/react-query';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -44,12 +43,8 @@ function rowFor(displayName) {
   return screen.getByText(displayName).closest('tr');
 }
 
-function renderSection(path = '/operations') {
-  return renderWithProviders(
-    <MemoryRouter initialEntries={[path]}>
-      <SchedulesSection />
-    </MemoryRouter>,
-  );
+function renderSection() {
+  return renderWithProviders(<SchedulesSection />);
 }
 
 describe('SchedulesSection', () => {
@@ -73,8 +68,10 @@ describe('SchedulesSection', () => {
     expect(within(rowFor('Weekly Scan Cleanup')).getByText('5m ago · 42s')).toBeInTheDocument();
     expect(within(rowFor('Weekly Full Refresh')).getByText('Failed')).toBeInTheDocument();
     expect(within(rowFor('Weekly Full Refresh')).getByText('db locked')).toBeInTheDocument();
-    // No recorded outcome is not a failure.
-    expect(within(rowFor('Monthly Price Data Cleanup')).getByText('Unknown')).toBeInTheDocument();
+    // No recorded outcome is not a failure, and must not look like Queued.
+    const unknown = within(rowFor('Monthly Price Data Cleanup')).getByText('Unknown').closest('.MuiChip-root');
+    expect(unknown).toHaveClass('MuiChip-outlined');
+    expect(unknown).not.toHaveClass('MuiChip-colorWarning');
     expect(within(rowFor('Weekly Universe Refresh (US)')).getByText('Never')).toBeInTheDocument();
   });
 
@@ -160,6 +157,21 @@ describe('SchedulesSection', () => {
 
     const button = await screen.findByRole('button', { name: 'Run Weekly Full Refresh now' });
     expect(button).toBeEnabled();
+    // Says why this Queued row can run while a fresh Queued row cannot.
+    expect(within(rowFor('Weekly Full Refresh')).getByText('Not picked up for 30m')).toBeInTheDocument();
+  });
+
+  it('does not flag a freshly queued run as stuck', async () => {
+    getScheduledTasks.mockResolvedValue(payload([
+      task('refresh', 'Weekly Full Refresh', lastRun('queued', {
+        started_at: new Date(Date.now() - 2 * 60 * 1000).toISOString(),
+      })),
+    ]));
+
+    renderSection();
+    await screen.findByText('Weekly Full Refresh');
+
+    expect(screen.queryByText(/Not picked up/)).not.toBeInTheDocument();
   });
 
   it('warns when the list could not be refreshed but keeps the last data', async () => {
@@ -169,10 +181,7 @@ describe('SchedulesSection', () => {
     ]));
     getScheduledTasks.mockRejectedValue(new Error('network down'));
 
-    renderWithProviders(
-      <MemoryRouter><SchedulesSection /></MemoryRouter>,
-      { queryClient },
-    );
+    renderWithProviders(<SchedulesSection />, { queryClient });
     await queryClient.refetchQueries({ queryKey: ['scheduledTasks'] });
 
     expect(await screen.findByText(/Couldn't refresh scheduled jobs/)).toBeInTheDocument();
@@ -203,54 +212,41 @@ describe('SchedulesSection', () => {
     expect(await screen.findByText(/manual_refresh_cooldown/)).toBeInTheDocument();
   });
 
-  describe('when linked from the scheduled-tasks gear', () => {
-    const scrollIntoView = vi.fn();
-
+  describe('on a phone-width screen', () => {
     beforeEach(() => {
-      scrollIntoView.mockReset();
-      Element.prototype.scrollIntoView = scrollIntoView;
-      getScheduledTasks.mockResolvedValue(payload([]));
+      // useMediaQuery(breakpoints.down('md')) matches, as in the Layout tests.
+      window.matchMedia = vi.fn().mockReturnValue({
+        matches: true,
+        addListener: vi.fn(),
+        removeListener: vi.fn(),
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+      });
     });
 
     afterEach(() => {
-      delete Element.prototype.scrollIntoView;
+      delete window.matchMedia;
     });
 
-    it('scrolls itself into view for the #schedules link', () => {
-      renderSection('/operations#schedules');
+    it('lists jobs as cards instead of a five-column table', async () => {
+      getScheduledTasks.mockResolvedValue(payload([
+        task('refresh', 'Weekly Full Refresh', lastRun('failed', { duration_seconds: 42, error_message: 'db locked' })),
+        task('cleanup', 'Weekly Scan Cleanup', lastRun('running')),
+      ]));
 
-      expect(screen.getByRole('heading', { name: 'Scheduled jobs' })).toHaveAttribute('id', 'schedules');
-      expect(scrollIntoView).toHaveBeenCalledTimes(1);
-    });
+      renderSection();
 
-    it('scrolls again once the content above it has loaded', () => {
-      const { rerender } = renderWithProviders(
-        <MemoryRouter initialEntries={['/operations#schedules']}>
-          <SchedulesSection contentAboveReady={false} />
-        </MemoryRouter>,
-      );
-      expect(scrollIntoView).toHaveBeenCalledTimes(1);
-
-      rerender(
-        <MemoryRouter initialEntries={['/operations#schedules']}>
-          <SchedulesSection contentAboveReady />
-        </MemoryRouter>,
-      );
-      expect(scrollIntoView).toHaveBeenCalledTimes(2);
-
-      // Later refetches do not yank the page back.
-      rerender(
-        <MemoryRouter initialEntries={['/operations#schedules']}>
-          <SchedulesSection contentAboveReady />
-        </MemoryRouter>,
-      );
-      expect(scrollIntoView).toHaveBeenCalledTimes(2);
-    });
-
-    it('stays put without the hash', () => {
-      renderSection('/operations');
-
-      expect(scrollIntoView).not.toHaveBeenCalled();
+      const list = await screen.findByRole('list', { name: 'Scheduled jobs' });
+      expect(screen.queryByRole('table')).not.toBeInTheDocument();
+      const card = within(list).getByText('Weekly Full Refresh').closest('li');
+      expect(within(card).getByText('Failed')).toBeInTheDocument();
+      expect(within(card).getByText('5m ago · 42s')).toBeInTheDocument();
+      expect(within(card).getByText('Sunday 2:00 AM ET')).toBeInTheDocument();
+      expect(within(card).getByText('db locked')).toBeInTheDocument();
+      // Descriptions are dropped on phones; the name and schedule say enough.
+      expect(within(card).queryByText('Weekly Full Refresh description')).not.toBeInTheDocument();
+      expect(within(card).getByRole('button', { name: 'Run Weekly Full Refresh now' })).toBeEnabled();
+      expect(screen.getByRole('button', { name: 'Run Weekly Scan Cleanup now' })).toBeDisabled();
     });
   });
 });

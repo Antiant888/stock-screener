@@ -737,11 +737,7 @@ export default function OperationsPage() {
         />
       )}
 
-      {features.tasks && (
-        <SchedulesSection
-          contentAboveReady={!activityQuery.isLoading && !bootstrapStatusQuery.isLoading && !jobsQuery.isLoading}
-        />
-      )}
+      {features.tasks && <SchedulesSection />}
 
       <Typography variant="h6" sx={{ mt: 3, mb: 1 }}>
         Lease status

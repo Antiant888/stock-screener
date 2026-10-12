@@ -1,5 +1,4 @@
 import { fireEvent, screen, waitFor } from '@testing-library/react';
-import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { renderWithProviders } from '../test/renderWithProviders';
@@ -198,12 +197,12 @@ describe('OperationsPage', () => {
   });
 
   it('shows scheduled jobs only when the tasks feature is enabled', async () => {
-    const { unmount } = renderWithProviders(<MemoryRouter><OperationsPage /></MemoryRouter>);
+    const { unmount } = renderWithProviders(<OperationsPage />);
     expect(screen.queryByRole('heading', { name: 'Scheduled jobs' })).not.toBeInTheDocument();
     unmount();
 
     runtimeState.features = { themes: true, tasks: true };
-    renderWithProviders(<MemoryRouter><OperationsPage /></MemoryRouter>);
+    renderWithProviders(<OperationsPage />);
 
     expect(screen.getByRole('heading', { name: 'Scheduled jobs' })).toBeInTheDocument();
     expect(await screen.findByText(/No scheduled tasks/)).toBeInTheDocument();

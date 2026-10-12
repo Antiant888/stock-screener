@@ -45,7 +45,6 @@ It is read once at startup, so changing it means editing `.env` and recreating t
 - **Market selector** — sets the active market context for market-aware pages.
 - **Ticker search** — jump to `/stocks/:ticker`.
 - **Strategy profile selector** — switches scan defaults (screeners, universe, filters, composite scoring).
-- **Scheduled Tasks** — *(feature-gated)* view and trigger registered background jobs.
 - **Assistant drawer** — *(feature-gated)* research assistant when chatbot support is enabled.
 - **Theme toggle** — dark/light mode.
 - **Sign out** — appears when server auth is enabled.
@@ -67,9 +66,9 @@ It is read once at startup, so changing it means editing `.env` and recreating t
 | `/themes` | Themes | *(feature-gated)* theme rankings, review/merge queues, source and pipeline controls |
 | `/chatbot` | Assistant | *(feature-gated)* AI research assistant with web search, citations, history, watchlist actions |
 | `/stocks/:ticker` | Stock Detail | Charts, fundamentals, technicals, theme membership, watchlist actions, validation history |
-| `/operations` | Operations | Runtime activity, telemetry alerts, queue/job inventory, leases, safe job controls |
+| `/operations` | Operations | Runtime activity, telemetry alerts, queue/job inventory, leases, safe job controls, *(feature-gated)* scheduled jobs with run-now |
 
-Themes, Assistant, and Scheduled Tasks are gated by backend feature flags and related API keys. A disabled feature's route/control is intentionally absent.
+Themes, Assistant, and the scheduled jobs section are gated by backend feature flags and related API keys. A disabled feature's route/control is intentionally absent.
 
 ---
 

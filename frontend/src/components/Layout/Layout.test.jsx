@@ -364,14 +364,14 @@ describe('Layout', () => {
     expect(screen.queryByRole('link', { name: 'Options' })).not.toBeInTheDocument();
   });
 
-  it('links the scheduled-tasks gear to the Operations schedules section', () => {
+  it('has no scheduled-tasks gear: scheduled jobs live on the Operations page', () => {
     useRuntimeActivityMock.mockReturnValue({ data: null });
     runtimeState.features = { ...runtimeState.features, tasks: true };
     renderInApp('/scan');
 
-    expect(screen.getByRole('link', { name: 'Scheduled tasks' }))
-      .toHaveAttribute('href', '/operations#schedules');
-    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: /scheduled tasks/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /scheduled tasks/i })).not.toBeInTheDocument();
+    expect(screen.queryByTitle(/scheduled tasks/i)).not.toBeInTheDocument();
   });
 
   describe('on a phone-width screen', () => {
@@ -441,14 +441,14 @@ describe('Layout', () => {
       await vi.waitFor(() => expect(api.getBreadthBootstrap).toHaveBeenCalledWith('US'));
     });
 
-    it('links Scheduled tasks in the More sheet to the Operations schedules section', () => {
+    it('has no Scheduled tasks item in the More sheet', () => {
       runtimeState.features = { ...runtimeState.features, tasks: true };
       renderInApp('/');
 
       fireEvent.click(within(screen.getByRole('navigation', { name: 'Main' })).getByRole('button', { name: 'More' }));
 
-      expect(screen.getByRole('link', { name: 'Scheduled tasks' }))
-        .toHaveAttribute('href', '/operations#schedules');
+      expect(screen.getByRole('list', { name: 'More' })).toBeInTheDocument();
+      expect(screen.queryByText('Scheduled tasks')).not.toBeInTheDocument();
     });
 
     it('loads a More-sheet page when its link is touched', () => {

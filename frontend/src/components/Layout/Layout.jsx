@@ -20,13 +20,12 @@ import {
   IconButton,
   useTheme,
 } from '@mui/material';
-import { Link as RouterLink, matchPath, useLocation, useNavigate } from 'react-router-dom';
+import { matchPath, useLocation, useNavigate } from 'react-router-dom';
 import CandlestickChartIcon from '@mui/icons-material/CandlestickChart';
 import AutoAwesomeIcon from '@mui/icons-material/AutoAwesome';
 import CheckIcon from '@mui/icons-material/Check';
 import HistoryIcon from '@mui/icons-material/History';
 import LogoutIcon from '@mui/icons-material/Logout';
-import SettingsIcon from '@mui/icons-material/Settings';
 import PersonIcon from '@mui/icons-material/Person';
 import SmartToyIcon from '@mui/icons-material/SmartToy';
 import MarketSelector from './MarketSelector';
@@ -56,8 +55,6 @@ import {
 
 const AssistantDrawerContent = lazy(() => import('../AssistantChat/AssistantDrawerContent'));
 const PipelineProgressCard = lazy(() => import('../PipelineProgressCard'));
-// Scheduled tasks live on the Operations page next to the live job console.
-const SCHEDULES_PATH = '/operations#schedules';
 
 function DrawerLoadingFallback() {
   return (
@@ -289,12 +286,6 @@ function Layout({ children }) {
     <>
       <MobileProfileItems onDone={close} />
       <Divider sx={{ my: 0.5 }} />
-      {features.tasks && (
-        <ListItemButton component={RouterLink} to={SCHEDULES_PATH} onClick={close}>
-          <ListItemIcon><SettingsIcon /></ListItemIcon>
-          <ListItemText primary="Scheduled tasks" />
-        </ListItemButton>
-      )}
       <ColorModeListItem onDone={close} />
       {canSignOut && (
         <ListItemButton disabled={isLoggingOut} onClick={() => { close(); logout(); }}>
@@ -322,18 +313,6 @@ function Layout({ children }) {
               <Box sx={{ flexGrow: 1 }} />
               <DesktopNav items={navItems} onIntent={prefetchPage} />
               <StrategyProfileControl />
-              {features.tasks && (
-                <IconButton
-                  component={RouterLink}
-                  to={SCHEDULES_PATH}
-                  aria-label="Scheduled tasks"
-                  title="Scheduled tasks"
-                  size="small"
-                  sx={{ color: 'text.secondary' }}
-                >
-                  <SettingsIcon fontSize="small" />
-                </IconButton>
-              )}
               {canSignOut && (
                 <Button
                   size="small"
