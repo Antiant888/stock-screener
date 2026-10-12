@@ -1,5 +1,7 @@
 """Tools exercised end to end through the SDK's in-memory client."""
 
+from datetime import datetime, timezone
+
 import pytest
 from mcp import Client
 
@@ -135,6 +137,49 @@ async def test_group_rankings_list_and_one_group_in_detail():
     assert detail["group"]["rank_history"][0] == {"date": "2026-10-09", "rank": 9, "avg_rs_rating": 89.0}
     assert len(detail["group"]["rank_history"]) == 8
     assert "Semiconductors" in await call_error("group_rankings", market="US", group="Semis Typo")
+
+
+@pytest.mark.parametrize(
+    ("publication", "status"),
+    [
+        ({"state": "current", "session_date": "2026-10-09", "late_after": "2099-01-01T00:00:00Z"}, "current"),
+        ({"state": "current", "session_date": "2026-10-09", "late_after": "2000-01-01T00:00:00Z"}, "late"),
+        ({"state": "stale", "session_date": "2026-10-08", "late_after": None}, "late"),
+        ({"state": "pending", "session_date": "2026-10-09", "late_after": "2099-01-01T00:00:00Z"}, "current"),
+        ({"state": "unknown", "session_date": "2026-10-09", "late_after": "2099-01-01T00:00:00Z"}, "unknown"),
+        ({"state": "current", "session_date": None, "late_after": "2099-01-01T00:00:00Z"}, "unknown"),
+        ({"state": "current", "session_date": "2026-10-09", "late_after": "not a date"}, "unknown"),
+        ({"state": "current", "session_date": "2026-10-09", "late_after": "2099-01-01T00:00:00"}, "current"),
+    ],
+)
+def test_publication_status_follows_the_site(publication, status):
+    now = datetime(2026, 10, 12, tzinfo=timezone.utc)
+    assert server._status({"publication": publication}, now) == status
+
+
+def test_picked_rows_never_contain_non_json_numbers():
+    row = {"symbol": "X", "scan_mode": "listing_only", "volume": 5.0, "x": float("nan")}
+    assert server._pick(row, ["symbol", "listing_aware_volume", "x", "volume"]) == {"symbol": "X", "volume": 5.0}
+
+
+async def test_presets_without_an_expression_are_skipped(use_fake_data):
+    scan, _ = use_fake_data.scan("US")
+    scan["preset_screens"].append({"id": "legacy", "name": "Legacy", "filters": {"minRs": 80}})
+
+    screens = await call("list_screens", market="US")
+    assert "legacy" not in {s["id"] for s in screens["screens"]}
+    assert (await call("get_stock", symbol="AAA", market="US"))["symbol"] == "AAA"
+
+
+async def test_preset_order_breaks_ties_by_symbol_like_the_site(use_fake_data):
+    _, rows = use_fake_data.scan("US")
+    rows.reverse()  # insertion order now puts BBB before AAA
+    for row in rows:
+        if row["symbol"] in {"AAA", "BBB"}:
+            row["minervini_score"] = 80  # tie
+
+    result = await call("run_screen", market="US", screen="minervini")
+    assert [row["symbol"] for row in result["rows"]] == ["AAA", "BBB"]
 
 
 async def test_group_lookup_accepts_a_unique_partial_name():

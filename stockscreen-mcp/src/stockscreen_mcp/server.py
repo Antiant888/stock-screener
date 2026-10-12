@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import difflib
+import math
 from datetime import datetime, timezone
 from typing import Annotated, Any
 
@@ -86,26 +87,40 @@ def _pick(row: dict[str, Any], fields: tuple[str, ...] | list[str]) -> dict[str,
     picked = {}
     for field in fields:
         value = row_value(row, field)
-        if value is not None:
-            picked[field] = value
+        if value is None or (isinstance(value, float) and not math.isfinite(value)):
+            continue  # inf/NaN (e.g. listing_aware_volume) are not valid JSON
+        picked[field] = value
     return picked
+
+
+def _parse_deadline(value: Any) -> datetime | None:
+    try:
+        deadline = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return deadline if deadline.tzinfo else deadline.replace(tzinfo=timezone.utc)
 
 
 def _status(entry: dict[str, Any], now: datetime) -> str:
     """StaticLayout.publicationStatus: late once past its deadline, unknown without one."""
-    publication = entry.get("publication") or {}
+    publication = entry.get("publication")
+    if not publication or publication.get("state") == "unknown" or not publication.get("session_date"):
+        return "unknown"
     if publication.get("state") == "stale":
         return "late"
-    if publication.get("state") != "current" or not publication.get("late_after"):
+    deadline = _parse_deadline(publication.get("late_after")) if publication.get("late_after") else None
+    if deadline is None:
         return "unknown"
-    deadline = datetime.fromisoformat(publication["late_after"].replace("Z", "+00:00"))
     return "late" if now > deadline else "current"
 
 
 def _visible_presets(code: str, scan: dict[str, Any]) -> list[dict[str, Any]]:
+    # Presets without a filter_expression use the site's legacy filter format; all current
+    # publishes use expressions, so those are skipped rather than translated.
+    presets = [p for p in scan.get("preset_screens", []) if "filter_expression" in p]
     if data.market(code).get("features", {}).get("opportunity_state"):
-        return scan.get("preset_screens", [])
-    return [p for p in scan.get("preset_screens", []) if not preset_requires_opportunity_state(p)]
+        return presets
+    return [p for p in presets if not preset_requires_opportunity_state(p)]
 
 
 @mcp.tool(annotations=READ_ONLY)
@@ -158,7 +173,7 @@ def run_screen(
     screen: Annotated[str | None, Field(description="Preset id from list_screens, e.g. minervini, canslim, vcp.")] = None,
     filters: Annotated[list[Filter] | None, Field(description="Extra conditions, all of which must hold.")] = None,
     sort_by: Annotated[str | None, Field(description="Field to sort by; defaults to the screen's own sort.")] = None,
-    descending: bool = True,
+    descending: Annotated[bool, Field(description="Direction for sort_by; ignored without sort_by.")] = True,
     limit: Annotated[int, Field(ge=1, le=100)] = 25,
 ) -> dict[str, Any]:
     """Run a preset screen and/or custom filters over a market's full daily scan (every listed stock).
@@ -180,8 +195,11 @@ def run_screen(
         conditions += preset["filter_expression"]["required"]["conditions"]
 
     filter_dicts = [f.model_dump() for f in filters or []]
-    known = set().union(*(row.keys() for row in rows)) | {"price", "perf_week", "perf_month", "market_cap_usd"}
-    for field in [f["field"] for f in filter_dicts] + ([sort_by] if sort_by else []):
+    row_fields = set().union(*(row.keys() for row in rows))
+    # Filters accept the evaluator's aliases; sorting reads raw row fields, as on the site.
+    filter_fields = row_fields | {"price", "perf_week", "perf_month", "market_cap_usd"}
+    checks = [(f["field"], filter_fields) for f in filter_dicts] + ([(sort_by, row_fields)] if sort_by else [])
+    for field, known in checks:
         if field not in known:
             close = difflib.get_close_matches(field, sorted(known), n=5)
             hint = f" Did you mean: {', '.join(close)}?" if close else ""
@@ -191,11 +209,12 @@ def run_screen(
     expression = {"required": {"match": "all", "conditions": conditions}, "groups": []}
     matches = [row for row in rows if evaluate_expression(row, expression)]
 
-    if sort_by is None:
+    site_order = sort_by is None
+    if site_order:
         default_sort = scan.get("sort") or {}
         sort_by = (preset or {}).get("sort_by") or default_sort.get("field", "composite_score")
         descending = ((preset or {}).get("sort_order") or default_sort.get("order", "desc")) == "desc"
-    matches = sort_rows(matches, sort_by, descending=descending)
+    matches = sort_rows(matches, sort_by, descending=descending, site_order=site_order)
 
     extra = [f for f in (*expression_fields(expression), sort_by) if f not in ROW_FIELDS]
     columns = [*ROW_FIELDS, *dict.fromkeys(extra)]

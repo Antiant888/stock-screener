@@ -6,6 +6,7 @@ site shows for it.
 
 from __future__ import annotations
 
+import functools
 import math
 from typing import Any
 
@@ -39,11 +40,35 @@ def row_value(row: dict[str, Any], field: str) -> Any:
     return row.get(field)
 
 
+def _js_number(value: Any) -> float:
+    """JS Number(): booleans are 0/1, numeric strings convert, anything else is NaN."""
+    if isinstance(value, bool):
+        return float(value)
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return 0.0
+        try:
+            return float(text)
+        except ValueError:
+            return math.nan
+    return math.nan
+
+
 def _less(a: Any, b: Any) -> bool:
-    try:
+    """JS `a < b`: string vs string compares text, otherwise numbers (NaN is never less)."""
+    if isinstance(a, str) and isinstance(b, str):
         return a < b
-    except TypeError:  # JS: "n/a" < 70 is false (NaN), so the bound is not violated
-        return False
+    return _js_number(a) < _js_number(b)
+
+
+def _js_equal(a: Any, b: Any) -> bool:
+    """JS `===` / includes(): true is not 1, 1 is 1.0."""
+    if isinstance(a, bool) or isinstance(b, bool):
+        return isinstance(a, bool) and isinstance(b, bool) and a == b
+    return a == b
 
 
 def _range(row: dict[str, Any], condition: dict[str, Any]) -> bool:
@@ -59,7 +84,7 @@ def _range(row: dict[str, Any], condition: dict[str, Any]) -> bool:
 
 def _categorical(row: dict[str, Any], condition: dict[str, Any]) -> bool:
     value = row_value(row, condition["field"])
-    included = value is not None and value in condition.get("values", [])
+    included = value is not None and any(_js_equal(value, v) for v in condition.get("values", []))
     if condition.get("mode") == "exclude":
         return value is None or not included
     return included
@@ -67,7 +92,7 @@ def _categorical(row: dict[str, Any], condition: dict[str, Any]) -> bool:
 
 def _boolean(row: dict[str, Any], condition: dict[str, Any]) -> bool:
     value = row_value(row, condition["field"])
-    return isinstance(value, bool) and value == condition.get("value")
+    return isinstance(value, bool) and _js_equal(value, condition.get("value"))
 
 
 def _text(row: dict[str, Any], condition: dict[str, Any]) -> bool:
@@ -127,9 +152,49 @@ def filters_to_conditions(filters: list[dict[str, Any]]) -> list[dict[str, Any]]
     return conditions
 
 
-def sort_rows(rows: list[dict[str, Any]], field: str, *, descending: bool) -> list[dict[str, Any]]:
-    """Sort by a field with missing values last in either direction."""
-    present = [r for r in rows if row_value(r, field) is not None]
-    missing = [r for r in rows if row_value(r, field) is None]
-    present.sort(key=lambda r: row_value(r, field), reverse=descending)
-    return present + missing
+# frontend/src/static/scanClient.js: SCORE_SORT_FIELDS keep nulls last in both directions.
+SCORE_SORT_FIELDS = frozenset({"composite_score", "resilience_score"})
+
+
+def _compare_values(left: Any, right: Any) -> int:
+    """scanClient.js compareValues: nulls last (before the direction is applied)."""
+    if left is None and right is None:
+        return 0
+    if left is None:
+        return 1
+    if right is None:
+        return -1
+    if isinstance(left, str) or isinstance(right, str):
+        # ponytail: approximates localeCompare's collation (case-insensitive first) without ICU.
+        lkey, rkey = (str(left).casefold(), str(left)), (str(right).casefold(), str(right))
+        return (lkey > rkey) - (lkey < rkey)
+    diff = _js_number(left) - _js_number(right)
+    return 0 if math.isnan(diff) else (diff > 0) - (diff < 0)
+
+
+def sort_rows(
+    rows: list[dict[str, Any]], field: str, *, descending: bool, site_order: bool = True
+) -> list[dict[str, Any]]:
+    """Sort like the site's sortStaticScanRows: ties by symbol, ascending in both directions.
+
+    With site_order (presets, default order) nulls follow the site: last for score fields,
+    first when descending otherwise. A caller-chosen sort keeps rows without the field last.
+    """
+    direction = -1 if descending else 1
+    nulls_last = field in SCORE_SORT_FIELDS or not site_order
+
+    def compare(left: dict[str, Any], right: dict[str, Any]) -> int:
+        left_value, right_value = left.get(field), right.get(field)
+        if nulls_last:
+            if left_value is None and right_value is None:
+                return _compare_values(left.get("symbol"), right.get("symbol"))
+            if left_value is None:
+                return 1
+            if right_value is None:
+                return -1
+        comparison = _compare_values(left_value, right_value)
+        if comparison:
+            return comparison * direction
+        return _compare_values(left.get("symbol"), right.get("symbol"))
+
+    return sorted(rows, key=functools.cmp_to_key(compare))

@@ -1,3 +1,4 @@
+import http.client
 import urllib.error
 
 import pytest
@@ -78,6 +79,49 @@ def test_a_replaced_generation_is_reloaded_from_the_new_publish(static_data, fak
 
     assert len(rows) == 5
     assert any(url.startswith(BASE + "g/2/") for url in fake_publish.calls)
+
+
+def test_a_scan_reads_one_publish_even_if_the_manifest_refreshes_mid_load(static_data, fake_publish, clock):
+    # The manifest TTL expires between the scan manifest and its chunks while a new
+    # publish is live and the old one is still briefly served.
+    old_files = dict(fake_publish.files)
+
+    def expire_and_republish(url):
+        if url.endswith("g/1/markets/us/scan/manifest.json"):
+            fake_publish.on_fetch = None
+            clock.now += MANIFEST_TTL_SECONDS + 1
+            fake_publish.republish("g/2/")
+            fake_publish.files.update(old_files)
+
+    fake_publish.on_fetch = expire_and_republish
+    static_data.scan("US")
+    first_load = [u for u in fake_publish.calls if "/chunks/" in u]
+    assert first_load == [BASE + "g/1/markets/us/scan/chunks/chunk-0001.json"]
+
+    static_data.scan("US")  # the manifest now names g/2: nothing from g/1 may be reused
+    assert [u for u in fake_publish.calls if "/chunks/" in u][-1] == BASE + "g/2/markets/us/scan/chunks/chunk-0001.json"
+
+
+def test_a_publish_replaced_twice_during_one_load_is_a_tool_error(static_data, fake_publish):
+    static_data.manifest()
+    generation = iter(range(2, 10))
+
+    def replace_on_every_chunk(url):
+        if "/chunks/" in url:
+            fake_publish.republish(f"g/{next(generation)}/")
+
+    fake_publish.on_fetch = replace_on_every_chunk
+    with pytest.raises(ToolError, match="changed while loading"):
+        static_data.scan("US")
+
+
+@pytest.mark.parametrize("error", [EOFError("truncated gzip"), http.client.IncompleteRead(b"")])
+def test_truncated_downloads_become_tool_errors(clock, error):
+    def truncated(url):
+        raise error
+
+    with pytest.raises(ToolError, match="Could not reach the published data"):
+        StaticData(base_url=BASE, fetch=truncated, clock=clock).manifest()
 
 
 def test_a_missing_file_in_the_current_generation_is_a_tool_error(static_data, fake_publish):

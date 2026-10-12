@@ -28,7 +28,12 @@
 - **A preset replaces the default filter**, as on the site. This was verified against the live publish of 2026-10-09: the preset alone gives Minervini 37, CANSLIM 72 and VCP 10, the site's chip counts; preset plus the default filter would give 7, 17 and 3.
 - **Hidden presets:** as on the site, presets using opportunity-state fields (`correction_survivor`, `resilience_score`, `action_state`) are hidden for markets without `features.opportunity_state`.
 - **Custom filters** are `{field, min, max}` or `{field, equals}`. They AND with the chosen preset. Unknown fields are rejected with suggestions.
-- **Sorting:** the preset's `sort_by`/`sort_order`, otherwise the manifest default (`composite_score` desc). Nulls sort last.
+- **Sorting:** the preset's `sort_by`/`sort_order`, otherwise the manifest default (`composite_score` desc). The comparator is ported from `frontend/src/static/scanClient.js` `sortStaticScanRows`:
+  - ties break by symbol ascending in both directions;
+  - nulls sort last for `composite_score`/`resilience_score`, and first in descending order for other fields.
+
+  Verified on the live US publish: every preset's full order is identical to the site's JS. A caller-chosen `sort_by` keeps rows that lack the field last.
+- **Consistent publish:** each load reads a single publish (`data_root` pinned at the start), and a publish replaced mid-load is never cached.
 
 ## Tools (`server.py`, `mcp>=2.3,<3`, `MCPServer`, all read-only)
 

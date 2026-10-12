@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import gzip
+import http.client
 import json
 import os
 import threading
 import time
 import urllib.error
 import urllib.request
+import zlib
 from collections import OrderedDict
 from collections.abc import Callable
 from typing import Any
@@ -22,8 +24,8 @@ DEFAULT_BASE_URL = "https://xang1234.github.io/stock-screener/static-data/"
 MANIFEST_TTL_SECONDS = 600
 # Chart series and per-field availability notes: large and unused by any tool.
 HEAVY_FIELDS = frozenset({"price_sparkline_data", "rs_sparkline_data", "field_availability"})
-# ponytail: a large market (US, ~10k rows) is a few hundred MB as Python objects, so keep
-# only the most recently used markets' files; raise for big machines or switch to columnar rows.
+# ponytail: pruned US rows are ~100 MB as Python objects (more while a chunk is parsed),
+# so keep only the most recently used markets' files; raise it or switch to columnar rows.
 MAX_CACHED_MARKETS = 2
 
 
@@ -75,8 +77,9 @@ class StaticData:
             return self._fetch(url)
         except urllib.error.HTTPError:
             raise
-        except (urllib.error.URLError, TimeoutError, OSError, ValueError) as exc:
-            raise ToolError(f"Could not reach the published data at {url}: {exc}") from exc
+        # OSError covers URLError and timeouts; ValueError bad JSON; the rest truncated bodies.
+        except (OSError, ValueError, EOFError, zlib.error, http.client.HTTPException) as exc:
+            raise ToolError(f"Could not reach the published data at {url}: {exc!r}") from exc
 
     def manifest(self, *, refresh: bool = False) -> dict[str, Any]:
         with self._lock:
@@ -114,8 +117,13 @@ class StaticData:
             prefix = f"markets/{evicted}/"
             self._cache = {k: v for k, v in self._cache.items() if not k[1].startswith(prefix)}
 
-    def _load(self, path: str, *, cache: bool = True) -> Any:
-        root = self.manifest()["data_root"]
+    def _store(self, root: str, key: tuple[str, str], value: Any) -> None:
+        # A publish replaced mid-load is still read consistently, but never cached.
+        if root == self.manifest()["data_root"]:
+            self._cache[key] = value
+
+    def _load(self, path: str, root: str, *, cache: bool = True) -> Any:
+        """One file of the publish under `root` (pinned for the whole load)."""
         key = (root, path)
         self._touch_market(path)
         if key in self._cache:
@@ -127,19 +135,21 @@ class StaticData:
                 raise _GenerationReplaced from exc
             raise ToolError(f"Published file {root}{path} is unavailable ({exc.code}).") from exc
         if cache:
-            self._cache[key] = value
+            self._store(root, key, value)
         return value
 
-    def _retrying(self, load: Callable[[], Any]) -> Any:
-        """Only the newest publish is deployed: restart a load that straddles a new one."""
+    def _retrying(self, load: Callable[[str], Any]) -> Any:
+        """Run a load against one publish; only the newest is deployed, so restart on a new one."""
         with self._lock:
-            try:
-                return load()
-            except _GenerationReplaced:
-                return load()
+            for _ in range(2):
+                try:
+                    return load(self.manifest()["data_root"])
+                except _GenerationReplaced:
+                    continue
+            raise ToolError("The published data changed while loading; try again in a minute.")
 
     def load(self, path: str) -> Any:
-        return self._retrying(lambda: self._load(path))
+        return self._retrying(lambda root: self._load(path, root))
 
     def page(self, code: str, page: str) -> Any | None:
         """A market page (home, breadth, groups, scan), or None if not published for it."""
@@ -154,17 +164,19 @@ class StaticData:
         if self.page_entry(code, "scan") is None:
             raise ToolError(f"Scan results are not published for {code.upper()}.")
 
-        def load_all() -> tuple[dict[str, Any], list[dict[str, Any]]]:
+        def load_all(root: str) -> tuple[dict[str, Any], list[dict[str, Any]]]:
             scan_path = self.page_entry(code, "scan")["path"]
-            scan = self._load(scan_path)
+            scan = self._load(scan_path, root)
             # Lives under the market's prefix so eviction drops it with the market's files.
-            key = (self.manifest()["data_root"], scan_path.rsplit("/", 1)[0] + "/rows")
-            if key not in self._cache:
-                rows = {row["symbol"]: row for row in scan.get("initial_rows", [])}
-                for chunk in scan.get("chunks", []):
-                    for row in self._load(chunk["path"], cache=False)["rows"]:
-                        rows[row["symbol"]] = row
-                self._cache[key] = list(rows.values())
-            return scan, self._cache[key]
+            key = (root, scan_path.rsplit("/", 1)[0] + "/rows")
+            if key in self._cache:
+                return scan, self._cache[key]
+            merged = {row["symbol"]: row for row in scan.get("initial_rows", [])}
+            for chunk in scan.get("chunks", []):
+                for row in self._load(chunk["path"], root, cache=False)["rows"]:
+                    merged[row["symbol"]] = row
+            rows = list(merged.values())
+            self._store(root, key, rows)
+            return scan, rows
 
         return self._retrying(load_all)

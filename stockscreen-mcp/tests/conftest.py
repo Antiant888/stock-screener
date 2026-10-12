@@ -223,6 +223,7 @@ class FakePublish:
     def __init__(self):
         self.manifest, self.files = publish("g/1/")
         self.calls = []
+        self.on_fetch = None  # optional side effect run before serving a URL
 
     def republish(self, root):
         """Simulate a new generation replacing the old one (#504: only one is deployed)."""
@@ -230,6 +231,8 @@ class FakePublish:
 
     def __call__(self, url):
         self.calls.append(url)
+        if self.on_fetch:
+            self.on_fetch(url)
         path = url.removeprefix(BASE)
         if path == "manifest.json":
             return copy.deepcopy(self.manifest)

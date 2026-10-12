@@ -87,7 +87,48 @@ def test_filters_become_frontend_conditions():
     ]
 
 
-def test_sort_puts_missing_values_last_in_both_directions():
-    rows = [{"s": "B", "v": 1}, {"s": "A", "v": None}, {"s": "C", "v": 3}, {"s": "D"}]
-    assert [r["s"] for r in sort_rows(rows, "v", descending=True)] == ["C", "B", "A", "D"]
-    assert [r["s"] for r in sort_rows(rows, "v", descending=False)] == ["B", "C", "A", "D"]
+ROWS = [
+    {"symbol": "D", "v": 2, "composite_score": 2},
+    {"symbol": "A", "v": None, "composite_score": None},
+    {"symbol": "C", "v": 2, "composite_score": 2},
+    {"symbol": "B", "v": 5, "composite_score": 5},
+    {"symbol": "E"},
+]
+
+
+def symbols(rows):
+    return [r["symbol"] for r in rows]
+
+
+def test_site_order_breaks_ties_by_symbol_in_both_directions():
+    # sortStaticScanRows: the symbol tiebreak is not reversed for descending sorts.
+    assert symbols(sort_rows(ROWS, "v", descending=True))[-2:] == ["C", "D"]
+    assert symbols(sort_rows(ROWS, "v", descending=False))[:2] == ["C", "D"]
+
+
+def test_site_order_puts_nulls_first_when_descending_except_for_score_fields():
+    assert symbols(sort_rows(ROWS, "v", descending=True)) == ["A", "E", "B", "C", "D"]
+    assert symbols(sort_rows(ROWS, "v", descending=False)) == ["C", "D", "B", "A", "E"]
+    assert symbols(sort_rows(ROWS, "composite_score", descending=True)) == ["B", "C", "D", "A", "E"]
+    assert symbols(sort_rows(ROWS, "composite_score", descending=False)) == ["C", "D", "B", "A", "E"]
+
+
+def test_caller_sorts_keep_rows_without_the_field_last():
+    assert symbols(sort_rows(ROWS, "v", descending=True, site_order=False)) == ["B", "C", "D", "A", "E"]
+
+
+@pytest.mark.parametrize(
+    ("row", "cond", "expected"),
+    [
+        # JS converts numeric strings for < and >: "50" < 70 rejects the row.
+        ({"rs_rating": "50"}, condition("rs_rating", "range", min=70, max=None), False),
+        ({"rs_rating": "80"}, condition("rs_rating", "range", min=70, max=None), True),
+        # Strict equality: true is not 1 in includes() or ===.
+        ({"p": 1}, condition("p", "categorical", values=[True], mode="include"), False),
+        ({"p": True}, condition("p", "categorical", values=[1], mode="include"), False),
+        ({"p": 1.0}, condition("p", "categorical", values=[1], mode="include"), True),
+        ({"flag": True}, condition("flag", "boolean", value=1), False),
+    ],
+)
+def test_js_coercion_and_strict_equality(row, cond, expected):
+    assert evaluate_condition(row, cond) is expected
