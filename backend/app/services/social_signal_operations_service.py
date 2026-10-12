@@ -56,11 +56,15 @@ def _unknown_identity_count(db):
 
         # The joined security directly, not re-resolved: a deactivated security
         # keeps its association and its verified identity.
-        verified = SocialCompanyIdentityService(db).read().verified_company_ids
+        from app.services.social_ticker_resolver import SocialTickerResolver
+
+        resolver = SocialTickerResolver(
+            db, verified_company_ids=SocialCompanyIdentityService(db).read().verified_company_ids
+        )
         return sum(
             1
             for _, revision, security in EconomicSocialTaxonomyAdapter(db).latest_associations()
-            if revision.state == "proposed" and security.symbol not in verified
+            if revision.state == "proposed" and resolver.company_id_for(security) is None
         )
     return db.scalar(select(func.count()).select_from(
         SocialThemeAssociation

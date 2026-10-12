@@ -273,7 +273,8 @@ class SocialThemeProjectionService:
                 *model.__table__.primary_key.columns)).all()
             rows.append((model.__tablename__, [tuple(row) for row in values]))
         values = self.db.execute(select(StockUniverse.id, StockUniverse.symbol, StockUniverse.market,
-            StockUniverse.is_active, StockUniverse.is_common_stock, StockUniverse.exchange).order_by(StockUniverse.id)).all()
+            StockUniverse.is_active, StockUniverse.is_common_stock, StockUniverse.exchange,
+            StockUniverse.name).order_by(StockUniverse.id)).all()
         rows.append(("security_identity", [tuple(row) for row in values]))
         return sha256(json.dumps(rows, sort_keys=True, default=str).encode()).hexdigest()
 
@@ -314,7 +315,8 @@ class SocialThemeProjectionService:
         # Security resolution can change without the Social registry. Pin the
         # small identity columns, not every stored stock/feature payload.
         values = self.db.execute(select(StockUniverse.id, StockUniverse.symbol, StockUniverse.market,
-            StockUniverse.is_active, StockUniverse.is_common_stock, StockUniverse.exchange).order_by(StockUniverse.id)).all()
+            StockUniverse.is_active, StockUniverse.is_common_stock, StockUniverse.exchange,
+            StockUniverse.name).order_by(StockUniverse.id)).all()
         rows.append(("security_identity", [tuple(row) for row in values]))
         return sha256(json.dumps(rows, sort_keys=True, default=str).encode()).hexdigest()
 

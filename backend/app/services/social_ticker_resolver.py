@@ -1,4 +1,15 @@
-"""Read-only listing resolution; company equivalence requires a trusted mapping."""
+"""Read-only listing resolution.
+
+Company identity comes from an administrator attestation or, for a common stock
+with no sign of a second listing, from the listing itself. Signs of a second
+listing (depositary receipts, names repeated anywhere such as share classes or
+one issuer in two markets, HK secondary listings and RMB counters, HK names that open a US
+company's name, HK while mainland listings are loaded) and non-company names
+(funds, products without a company suffix) still need attestation.
+Double counting needs both listings counted, so excluding one side is enough.
+"""
+import re
+from collections import Counter
 from collections.abc import Mapping
 from types import MappingProxyType
 
@@ -11,6 +22,35 @@ from app.services.multi_market_ticker_validator import TICKER_SHAPE_RE
 from app.services.security_master_service import security_master_resolver
 
 
+# Signs that a listing is not one operating company's only line: depositary
+# receipts, funds and other products, when-issued lines.
+_NOT_A_COMPANY_LINE = re.compile(
+    r"\b(adrs?|ads|depositary|etfs?|etns?|etps?|fund|index|trust|portfolio|shares|when issued)\b|\b\d+x\b",
+    re.IGNORECASE,
+)
+# The universe flags many brand-named ETFs as common stock ("ProShares Ultra
+# NVDA"), so outside HK a company name must end like a company.
+_COMPANY_SUFFIX = re.compile(
+    r"\b(inc|incorporated|corp|corporation|co|company|ltd|limited|plc|holdings?|hldgs|group|"
+    r"bancorp|bancorporation|bancshares|sa|s\.a|nv|n\.v|ag|se|llc|lp|l\.p|ab|asa|spa|oyj)\.?$",
+    re.IGNORECASE,
+)
+# Legal-form words dropped from the end of a name before comparing issuers.
+_LEGAL_FORMS = frozenset({
+    "inc", "incorporated", "corp", "corporation", "co", "company", "ltd", "limited", "plc",
+    "sa", "s", "a", "nv", "n", "v", "ag", "se", "llc", "lp", "l", "p", "ab", "asa", "spa", "oyj",
+})
+# HK names carry no suffix, but mark secondary listings (-S, -SW) and RMB
+# counters (-R, -WR, -SWR on 8xxxx codes).
+_HK_SECOND_LINE = re.compile(r"-(s|sw|r|wr|swr)$", re.IGNORECASE)
+# ponytail: A+H dual listings share no name text, so HK and mainland listings
+# derive no identity while the other market is loaded; ISIN links would lift this.
+# Name heuristics also exclude some real companies (REITs named "... Trust",
+# "Johnson & Johnson", "Morgan Stanley"); those keep needing attestation, as
+# before. Paired structures with unrelated names (BEP/BEPC) still derive two.
+_SAME_ISSUER_MARKETS = {"HK": "CN", "CN": "HK"}
+
+
 class SocialTickerResolver:
     def __init__(self, db, *, verified_company_ids: Mapping[str, str] | None = None,
                  security_kinds: Mapping[str, str] | None = None):
@@ -21,6 +61,7 @@ class SocialTickerResolver:
             raise ValueError("invalid_verified_company_id")
         self.security_kinds = MappingProxyType({"SPY": "broad_etf", "QQQ": "broad_etf",
             "SMH": "thematic_etf", "REMX": "thematic_etf", **(security_kinds or {})})
+        self._listing_census = None  # (loaded markets, repeated names, US name openings), read once
 
     def resolve(self, raw_token: str, explicit_market: str | None = None) -> TickerResolution:
         def unresolved(reason):
@@ -58,7 +99,9 @@ class SocialTickerResolver:
                 return unresolved("unsupported_market")
             if explicit_market is not None and security.market != explicit_market:
                 return unresolved("conflicting_market")
+            kind = self.security_kinds.get(canonical, "stock" if security.is_common_stock else "macro")
             company_id = self.company_ids.get(canonical)
+            derived = self._derived_id(security) if company_id is None and kind == "stock" else None
             related = ()
             if company_id:
                 candidates = [symbol for symbol, identity in self.company_ids.items()
@@ -67,8 +110,67 @@ class SocialTickerResolver:
                     related = tuple(row.symbol for row in self.db.query(StockUniverse).filter(
                         StockUniverse.symbol.in_(candidates), StockUniverse.active_filter(),
                         StockUniverse.market.in_(SUPPORTED_MARKETS)).order_by(StockUniverse.symbol).all())
-            kind = self.security_kinds.get(canonical, "stock" if security.is_common_stock else "macro")
-            reasons = () if company_id else ("company_identity_unknown",)
+            if derived:
+                company_id = derived
+            reasons = (("company_identity_single_listing",) if derived
+                       else () if company_id else ("company_identity_unknown",))
             return TickerResolution(raw_token, canonical, security.market, str(security.id), "resolved",
                 reasons, company_id, related, kind, kind in {"stock", "thematic_etf"},
                 bool(company_id) and kind == "stock", explicit)
+
+    def company_id_for(self, security) -> str | None:
+        """The attested or single-listing identity of a known universe row."""
+        attested = self.company_ids.get(security.symbol)
+        if attested:
+            return attested
+        kind = self.security_kinds.get(security.symbol, "stock" if security.is_common_stock else "macro")
+        eligible = kind == "stock" and security.is_active and security.market in SUPPORTED_MARKETS
+        return self._derived_id(security) if eligible else None
+
+    def _derived_id(self, security) -> str | None:
+        candidate = f"security:{security.id}"
+        # An attested id may already use this text; sharing it would merge two issuers.
+        if candidate in self.company_ids.values():
+            return None
+        return candidate if self._single_listing(security) else None
+
+    @staticmethod
+    def _normalized_name(value) -> str:
+        # Python, not SQL: databases disagree on lowercasing non-ASCII letters.
+        return " ".join((value or "").casefold().split())
+
+    @classmethod
+    def _issuer_key(cls, value) -> str:
+        """The name without punctuation or trailing legal form: "Sony Group Corp." == "Sony Group Corporation"."""
+        words = re.sub(r"[^\w\s]", " ", cls._normalized_name(value)).split()
+        while len(words) > 1 and words[-1] in _LEGAL_FORMS:
+            words.pop()
+        return " ".join(words)
+
+    def _single_listing(self, security) -> bool:
+        name = self._normalized_name(security.name)
+        if not name or _NOT_A_COMPANY_LINE.search(name):
+            return False
+        if self._listing_census is None:
+            rows = [(market, self._normalized_name(value)) for market, value in self.db.query(
+                StockUniverse.market, StockUniverse.name).filter(StockUniverse.active_filter())]
+            # A name seen twice anywhere (share classes, or one issuer in two markets).
+            counts = Counter(self._issuer_key(value) for _, value in rows if value)
+            us_name_starts = set()
+            for market, value in set(rows):
+                if market == "US" and value:
+                    words = value.split()
+                    us_name_starts.update(" ".join(words[:end]) for end in range(1, len(words) + 1))
+            self._listing_census = (
+                {market for market, _ in rows},
+                {value for value, count in counts.items() if count > 1},
+                us_name_starts,
+            )
+        markets, repeated, us_name_starts = self._listing_census
+        if _SAME_ISSUER_MARKETS.get(security.market) in markets or self._issuer_key(name) in repeated:
+            return False
+        if security.market == "HK":
+            # An HK name that opens a US company's name is likely its other line (YUM CHINA).
+            rmb_counter = len(security.symbol.split(".")[0]) == 5
+            return not (rmb_counter or _HK_SECOND_LINE.search(name) or name in us_name_starts)
+        return bool(_COMPANY_SUFFIX.search(name))
