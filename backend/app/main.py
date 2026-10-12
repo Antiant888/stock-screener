@@ -16,6 +16,7 @@ from .config import settings
 from .database import SessionLocal, engine
 from .infra.db.migrations import migrate_database_to_head
 from .infra.db.portability import table_exists
+from .infra.server_timing import ServerTimingMiddleware
 from .services.redis_pool import get_redis_client
 from .wiring.bootstrap import (
     clear_runtime_services,
@@ -278,6 +279,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Added last, so it is the outermost layer and its time covers everything.
+app.add_middleware(ServerTimingMiddleware)
 
 _READINESS_TABLES = ("scans", "scan_results", "stock_universe")
 
