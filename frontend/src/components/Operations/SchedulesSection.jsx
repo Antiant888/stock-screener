@@ -26,6 +26,9 @@ import PlayArrowIcon from '@mui/icons-material/PlayArrow';
 import { getScheduledTasks, triggerTask } from '../../api/tasks';
 
 const ACTIVE_STATUSES = new Set(['queued', 'running']);
+// A run still queued after this has likely lost its message or has no worker
+// on its queue; it would otherwise block Run until it reads as lost (~25h).
+const STALE_QUEUED_MS = 10 * 60 * 1000;
 
 const STATUS_DISPLAY = {
   completed: { color: 'success', label: 'Completed' },
@@ -38,8 +41,13 @@ const STATUS_DISPLAY = {
   lost: { color: 'warning', label: 'Unknown' },
 };
 
+function ageMs(dateString) {
+  return Date.now() - new Date(dateString).getTime();
+}
+
 function formatRelativeTime(dateString) {
-  const diffMin = Math.floor((Date.now() - new Date(dateString)) / 60000);
+  const diffMin = Math.floor(ageMs(dateString) / 60000);
+  if (Number.isNaN(diffMin)) return '—';
   if (diffMin >= 1440) return `${Math.floor(diffMin / 1440)}d ago`;
   if (diffMin >= 60) return `${Math.floor(diffMin / 60)}h ago`;
   if (diffMin >= 1) return `${diffMin}m ago`;
@@ -50,6 +58,13 @@ function formatDuration(seconds) {
   if (seconds < 60) return `${Math.round(seconds)}s`;
   if (seconds < 3600) return `${Math.round(seconds / 60)}m`;
   return `${(seconds / 3600).toFixed(1)}h`;
+}
+
+// Why Run is unavailable for this run, or null when it may run again.
+function runBlockedReason(run) {
+  if (run?.status === 'running') return 'Already running';
+  if (run?.status === 'queued' && !(ageMs(run.started_at) >= STALE_QUEUED_MS)) return 'Already queued';
+  return null;
 }
 
 function LastRunCell({ run }) {
@@ -87,16 +102,42 @@ function StatusCell({ run }) {
   );
 }
 
-export default function SchedulesSection() {
+function markQueued(data, taskName, taskId) {
+  if (!data?.tasks) return data;
+  return {
+    ...data,
+    tasks: data.tasks.map((task) => (task.name !== taskName ? task : {
+      ...task,
+      last_run: {
+        ...task.last_run,
+        task_id: taskId,
+        status: 'queued',
+        started_at: new Date().toISOString(),
+        completed_at: null,
+        duration_seconds: null,
+        triggered_by: 'manual',
+        error_message: null,
+      },
+    })),
+  };
+}
+
+/**
+ * @param {boolean} contentAboveReady - false while sections above this one
+ *   are still loading; the #schedules scroll repeats once when it turns true
+ *   so late content above does not push the section out of view.
+ */
+export default function SchedulesSection({ contentAboveReady = true }) {
   const queryClient = useQueryClient();
   const location = useLocation();
   const headingRef = useRef(null);
   const [error, setError] = useState(null);
+  const [pendingNames, setPendingNames] = useState(() => new Set());
 
   useEffect(() => {
     // React Router does not scroll to hash targets; the header gear links here.
     if (location.hash === '#schedules') headingRef.current?.scrollIntoView({ block: 'start' });
-  }, [location.hash, location.key]);
+  }, [location.hash, location.key, contentAboveReady]);
 
   const tasksQuery = useQuery({
     queryKey: ['scheduledTasks'],
@@ -106,16 +147,31 @@ export default function SchedulesSection() {
     ),
   });
 
+  const setPending = (taskName, isPending) => setPendingNames((current) => {
+    const next = new Set(current);
+    if (isPending) next.add(taskName);
+    else next.delete(taskName);
+    return next;
+  });
+
   const runMutation = useMutation({
     mutationFn: (taskName) => triggerTask(taskName),
-    onMutate: () => setError(null),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['scheduledTasks'] });
-      queryClient.invalidateQueries({ queryKey: ['operations', 'jobs'] });
+    onMutate: (taskName) => {
+      setError(null);
+      setPending(taskName, true);
+    },
+    onSuccess: (response, taskName) => {
+      // The server has committed a queued row; show it now so Run stays
+      // blocked until the refetch confirms it.
+      queryClient.setQueryData(['scheduledTasks'], (data) => markQueued(data, taskName, response?.task_id));
+      return Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['scheduledTasks'] }),
+        queryClient.invalidateQueries({ queryKey: ['operations', 'jobs'] }),
+      ]);
     },
     onError: (err) => setError(err?.response?.data?.detail || err?.message || 'Failed to trigger task'),
+    onSettled: (_data, _error, taskName) => setPending(taskName, false),
   });
-  const pendingName = runMutation.isPending ? runMutation.variables : null;
   const tasks = tasksQuery.data?.tasks ?? [];
 
   return (
@@ -129,6 +185,11 @@ export default function SchedulesSection() {
       {error && (
         <Alert severity="error" sx={{ mb: 1.5 }} onClose={() => setError(null)}>
           {error}
+        </Alert>
+      )}
+      {tasksQuery.isError && tasks.length > 0 && (
+        <Alert severity="warning" sx={{ mb: 1.5 }}>
+          Couldn&apos;t refresh scheduled jobs. Showing the last known state.
         </Alert>
       )}
       {tasksQuery.isLoading ? (
@@ -150,8 +211,8 @@ export default function SchedulesSection() {
           </TableHead>
           <TableBody>
             {tasks.map((task) => {
-              const active = ACTIVE_STATUSES.has(task.last_run?.status);
-              const pending = pendingName === task.name;
+              const blockedReason = runBlockedReason(task.last_run);
+              const pending = pendingNames.has(task.name);
               return (
                 <TableRow key={task.name} hover>
                   <TableCell>
@@ -164,14 +225,14 @@ export default function SchedulesSection() {
                   <TableCell><LastRunCell run={task.last_run} /></TableCell>
                   <TableCell><StatusCell run={task.last_run} /></TableCell>
                   <TableCell align="center">
-                    <Tooltip title={active ? 'Already queued or running' : 'Run this job now'}>
+                    <Tooltip title={blockedReason || 'Run this job now'}>
                       <span>
                         <IconButton
                           size="small"
                           color="primary"
                           aria-label={`Run ${task.display_name} now`}
                           onClick={() => runMutation.mutate(task.name)}
-                          disabled={active || pending}
+                          disabled={Boolean(blockedReason) || pending}
                         >
                           {pending ? <CircularProgress size={18} /> : <PlayArrowIcon />}
                         </IconButton>

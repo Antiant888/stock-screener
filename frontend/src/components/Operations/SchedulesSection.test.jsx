@@ -1,5 +1,6 @@
 import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
+import { QueryClient } from '@tanstack/react-query';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { renderWithProviders } from '../../test/renderWithProviders';
@@ -99,15 +100,95 @@ describe('SchedulesSection', () => {
     await waitFor(() => expect(getScheduledTasks.mock.calls.length).toBeGreaterThan(callsBefore));
   });
 
-  it.each(['queued', 'running'])('blocks a second run while the task is %s', async (status) => {
+  it('keeps a just-triggered row blocked until the refreshed list arrives', async () => {
+    getScheduledTasks.mockResolvedValueOnce(payload([
+      task('cleanup', 'Weekly Scan Cleanup', lastRun('completed')),
+    ]));
+    // The refetch after the trigger never returns.
+    getScheduledTasks.mockReturnValue(new Promise(() => {}));
+    triggerTask.mockResolvedValue({ task_id: 'new-run', status: 'queued' });
+
+    renderSection();
+    fireEvent.click(await screen.findByRole('button', { name: 'Run Weekly Scan Cleanup now' }));
+
+    expect(await within(rowFor('Weekly Scan Cleanup')).findByText('Queued')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Run Weekly Scan Cleanup now' })).toBeDisabled();
+  });
+
+  it('keeps every in-flight row blocked when several are triggered', async () => {
     getScheduledTasks.mockResolvedValue(payload([
-      task('refresh', 'Weekly Full Refresh', lastRun(status)),
+      task('cleanup', 'Weekly Scan Cleanup', lastRun('completed')),
+      task('refresh', 'Weekly Full Refresh', lastRun('completed')),
+    ]));
+    triggerTask.mockReturnValue(new Promise(() => {}));
+
+    renderSection();
+    fireEvent.click(await screen.findByRole('button', { name: 'Run Weekly Scan Cleanup now' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Run Weekly Full Refresh now' }));
+
+    await waitFor(() => expect(triggerTask).toHaveBeenCalledTimes(2));
+    expect(screen.getByRole('button', { name: 'Run Weekly Scan Cleanup now' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Run Weekly Full Refresh now' })).toBeDisabled();
+  });
+
+  it.each([
+    ['running', 60],
+    ['queued', 2],
+  ])('blocks a second run while the task is %s (%i min)', async (status, ageMinutes) => {
+    getScheduledTasks.mockResolvedValue(payload([
+      task('refresh', 'Weekly Full Refresh', lastRun(status, {
+        started_at: new Date(Date.now() - ageMinutes * 60 * 1000).toISOString(),
+      })),
     ]));
 
     renderSection();
 
     const button = await screen.findByRole('button', { name: 'Run Weekly Full Refresh now' });
     expect(button).toBeDisabled();
+  });
+
+  it('lets a run that has sat in the queue too long be started again', async () => {
+    // A lost broker message or an undeployed worker leaves a run queued until
+    // it reads as lost (~25h); the operator must not be locked out meanwhile.
+    getScheduledTasks.mockResolvedValue(payload([
+      task('refresh', 'Weekly Full Refresh', lastRun('queued', {
+        started_at: new Date(Date.now() - 30 * 60 * 1000).toISOString(),
+      })),
+    ]));
+
+    renderSection();
+
+    const button = await screen.findByRole('button', { name: 'Run Weekly Full Refresh now' });
+    expect(button).toBeEnabled();
+  });
+
+  it('warns when the list could not be refreshed but keeps the last data', async () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    queryClient.setQueryData(['scheduledTasks'], payload([
+      task('cleanup', 'Weekly Scan Cleanup', lastRun('completed')),
+    ]));
+    getScheduledTasks.mockRejectedValue(new Error('network down'));
+
+    renderWithProviders(
+      <MemoryRouter><SchedulesSection /></MemoryRouter>,
+      { queryClient },
+    );
+    await queryClient.refetchQueries({ queryKey: ['scheduledTasks'] });
+
+    expect(await screen.findByText(/Couldn't refresh scheduled jobs/)).toBeInTheDocument();
+    expect(screen.getByText('Weekly Scan Cleanup')).toBeInTheDocument();
+  });
+
+  it('shows a dash for an unreadable run time', async () => {
+    getScheduledTasks.mockResolvedValue(payload([
+      task('cleanup', 'Weekly Scan Cleanup', lastRun('completed', { started_at: 'not-a-date' })),
+    ]));
+
+    renderSection();
+    await screen.findByText('Weekly Scan Cleanup');
+
+    expect(within(rowFor('Weekly Scan Cleanup')).getByText('—')).toBeInTheDocument();
+    expect(screen.queryByText('Just now')).not.toBeInTheDocument();
   });
 
   it('shows why a run was refused', async () => {
@@ -140,6 +221,30 @@ describe('SchedulesSection', () => {
 
       expect(screen.getByRole('heading', { name: 'Scheduled jobs' })).toHaveAttribute('id', 'schedules');
       expect(scrollIntoView).toHaveBeenCalledTimes(1);
+    });
+
+    it('scrolls again once the content above it has loaded', () => {
+      const { rerender } = renderWithProviders(
+        <MemoryRouter initialEntries={['/operations#schedules']}>
+          <SchedulesSection contentAboveReady={false} />
+        </MemoryRouter>,
+      );
+      expect(scrollIntoView).toHaveBeenCalledTimes(1);
+
+      rerender(
+        <MemoryRouter initialEntries={['/operations#schedules']}>
+          <SchedulesSection contentAboveReady />
+        </MemoryRouter>,
+      );
+      expect(scrollIntoView).toHaveBeenCalledTimes(2);
+
+      // Later refetches do not yank the page back.
+      rerender(
+        <MemoryRouter initialEntries={['/operations#schedules']}>
+          <SchedulesSection contentAboveReady />
+        </MemoryRouter>,
+      );
+      expect(scrollIntoView).toHaveBeenCalledTimes(2);
     });
 
     it('stays put without the hash', () => {
