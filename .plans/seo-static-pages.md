@@ -44,7 +44,7 @@ The static demo is a hash-routed single-page app (SPA), so Google indexes one em
 - **Market hub:** exposure stance, with links to everything for that market.
 - **Discovery:** `sitemap.xml` with `lastmod` set to each market's `as_of_date`, submitted in Search Console, plus a README link to `/explore/`. The app itself is unchanged.
 - **Screen tables** show the preset's sort column, so the order can be explained.
-- **Safety:** every value goes through `html.escape`, and symbols are URL-quoted in paths.
+- **Safety:** every value goes through `html.escape`, and unusual symbol characters become `_XX` hex in paths (`BRK/B` → `BRK_2FB`).
 - **Mid-session behaviour:** it only reads the published end-of-day snapshot. There are no provider calls and no partial bars, and every page shows its `as_of_date`.
 
 ## Size and time

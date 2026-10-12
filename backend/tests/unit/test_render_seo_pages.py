@@ -2,6 +2,7 @@
 
 import importlib.util
 import json
+import shutil
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
@@ -132,6 +133,9 @@ def test_symbols_are_url_quoted_in_paths(dist):
     render(dist)
     assert (dist / "stocks/us/BRK_2FB/index.html").exists()
     assert "/stock-screener/stocks/us/BRK_2FB/" in page(dist, "stocks/us")
+    # Dot-only symbols must not resolve to "." or ".." path segments.
+    slug = load_generator().slug
+    assert slug(".") == "_2E" and slug("..") == "_2E." and slug("BHP.AX") == "BHP.AX"
 
 
 def test_screen_page_lists_matches_in_the_sites_order(dist):
@@ -177,3 +181,15 @@ def test_hub_and_stylesheet(dist):
     hub = page(dist, "explore")
     assert "/stock-screener/markets/us/" in hub and "/stock-screener/markets/au/" in hub
     assert (dist / "seo.css").exists()
+
+
+def test_flat_layout_without_data_generations(dist):
+    # STATIC_DATA_GENERATIONS=false rollback: no data_root, pages live at the static-data root.
+    data = dist / "static-data"
+    shutil.copytree(data / "g/1", data, dirs_exist_ok=True)
+    manifest = json.loads((data / "manifest.json").read_text())
+    del manifest["data_root"]
+    (data / "manifest.json").write_text(json.dumps(manifest))
+    shutil.rmtree(data / "g")
+    render(dist)
+    assert (dist / "stocks/us/AAA/index.html").exists()

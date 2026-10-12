@@ -55,7 +55,8 @@ def esc(value: Any) -> str:
 
 def slug(symbol: str) -> str:
     """Path-safe and unambiguous on any server: unusual characters become _XX hex."""
-    return re.sub(r"[^A-Za-z0-9.\-]", lambda m: f"_{ord(m.group()):02X}", symbol)
+    safe = re.sub(r"[^A-Za-z0-9.\-]", lambda m: f"_{ord(m.group()):02X}", symbol)
+    return "_2E" + safe[1:] if safe.startswith(".") else safe  # never "." or ".."
 
 
 def num(value: Any, digits: int = 1, suffix: str = "") -> str:
@@ -72,7 +73,9 @@ def short(value: Any) -> str:
 
 
 def signed(value: Any, suffix: str = "%") -> str:
-    return "–" if not isinstance(value, (int, float)) or isinstance(value, bool) else f"{value:+.1f}{suffix}"
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return "–"
+    return f"{value:+d}{suffix}" if isinstance(value, int) else f"{value:+.1f}{suffix}"
 
 
 def money(value: Any) -> str:
@@ -273,8 +276,8 @@ def render_market(site: Site, code: str, entry: dict[str, Any], data: dict[str, 
         current = breadth["payload"]["current"]
         recent = sorted(breadth["payload"].get("history_90d", []), key=lambda d: d["date"], reverse=True)[:10]
         latest = [("Stocks up 4%+ today", current.get("stocks_up_4pct")), ("Stocks down 4%+ today", current.get("stocks_down_4pct")),
-                  ("5-day ratio", current.get("ratio_5day")), ("10-day ratio", current.get("ratio_10day")),
-                  ("T2108 (% above 40-day MA)", current.get("t2108_pct")),
+                  ("5-day ratio", num(current.get("ratio_5day"), 2)), ("10-day ratio", num(current.get("ratio_10day"), 2)),
+                  ("T2108 (% above 40-day MA)", num(current.get("t2108_pct"), 1)),
                   ("New 52-week highs", current.get("new_high_52week_count")), ("New 52-week lows", current.get("new_low_52week_count"))]
         rows_html = "".join(f"<tr><td>{esc(d['date'])}</td><td class=n>{esc(d.get('stocks_up_4pct'))}</td>"
                             f"<td class=n>{esc(d.get('stocks_down_4pct'))}</td></tr>" for d in recent)
@@ -306,7 +309,7 @@ def main(argv: list[str] | None = None) -> int:
 
     data_dir = args.dist / "static-data"
     manifest = json.loads((data_dir / "manifest.json").read_text())
-    data_root = data_dir / manifest["data_root"]
+    data_root = data_dir / (manifest.get("data_root") or "")  # absent when STATIC_DATA_GENERATIONS=false
     site = Site(args.dist, args.site_url)
     unavailable = set(manifest.get("unavailable_markets") or [])
 
@@ -331,6 +334,8 @@ def main(argv: list[str] | None = None) -> int:
     (args.dist / "sitemap.xml").write_text(
         f'<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">{urls}</urlset>\n',
         encoding="utf-8")
+    if len(site.sitemap) > 50_000:  # ponytail: one sitemap; split into a sitemap index when this fires
+        print(f"::warning::sitemap.xml has {len(site.sitemap)} URLs; search engines read only the first 50,000")
     print(f"Rendered {len(site.sitemap)} pages for {len(markets)} markets")
     return 0
 

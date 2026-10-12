@@ -154,6 +154,7 @@ jobs:
         run: cd frontend && npm run build
 
       - name: Render search pages
+        continue-on-error: true
         run: >-
           python3 scripts/render_seo_pages.py --dist frontend/dist
           --site-url https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/
