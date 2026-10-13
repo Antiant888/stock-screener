@@ -670,7 +670,11 @@ export default function OperationsPage() {
     mutationFn: ({ market, token }) => releasePipelineChain(market, token),
     onSuccess: (payload) => setJobActionError(payload.status === 'accepted' ? null : payload.message),
     onError: (err) => setJobActionError(err?.response?.data?.detail || err.message),
-    onSettled: () => queryClient.invalidateQueries({ queryKey: ['operations', 'jobs'] }),
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: ['operations', 'jobs'] });
+      // A released claim re-enables that pipeline's Run (its run_blocker).
+      queryClient.invalidateQueries({ queryKey: ['scheduledTasks'] });
+    },
   });
   const [confirmChain, setConfirmChain] = useState(null);
   const [confirmJob, setConfirmJob] = useState(null);
@@ -866,7 +870,9 @@ export default function OperationsPage() {
 
       {features.tasks && <SchedulesSection />}
 
-      <Typography variant="h6" sx={{ mt: 3, mb: 1 }}>
+      {/* Anchor for "See its claim in Lease status" (Scheduled jobs); the
+          heading renders even while the jobs data loads or fails. */}
+      <Typography id="lease-status" variant="h6" sx={{ mt: 3, mb: 1 }}>
         Lease status
       </Typography>
       <JobsData query={jobsQuery}>

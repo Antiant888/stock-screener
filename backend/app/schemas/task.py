@@ -38,6 +38,10 @@ class ScheduledTaskResponse(BaseModel):
     schedule_description: str = Field(..., description="Human-readable schedule")
     is_enabled: bool = Field(..., description="Whether scheduling is enabled")
     last_run: Optional[LastRunInfo] = Field(None, description="Last execution details")
+    run_blocker: Optional[Dict[str, Any]] = Field(
+        None,
+        description="Why a manual Run would only skip right now (reason, message, active_since)",
+    )
 
 
 class TaskListResponse(BaseModel):

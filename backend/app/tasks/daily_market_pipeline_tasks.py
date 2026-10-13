@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from datetime import date, datetime
 from typing import Any
 from uuid import uuid4
@@ -408,6 +409,63 @@ def _pipeline_chain_holder(claims: Any, market: str) -> dict | None:
         logger.warning("Could not read the %s pipeline chain holder", market, exc_info=True)
         return {}
 
+
+_PREFLIGHT_CALENDAR_TTL_SECONDS = 300
+_preflight_calendar_cache: list = []  # [(built_at_monotonic, calendar)]
+
+
+def _preflight_calendar():
+    """A shared calendar for pre-flight checks: the Scheduled jobs list polls
+    every 5-30s and asks once per market, and each MarketCalendarService()
+    re-reads every market's coverage manifests."""
+    now = time.monotonic()
+    if not _preflight_calendar_cache or now - _preflight_calendar_cache[0][0] > _PREFLIGHT_CALENDAR_TTL_SECONDS:
+        _preflight_calendar_cache[:] = [(now, MarketCalendarService())]
+    return _preflight_calendar_cache[0][1]
+
+
+def pipeline_run_blockers(markets) -> dict[str, dict | None]:
+    """{MARKET: why a manual Run would only skip right now, or None}.
+
+    The two cheap dispatcher checks an operator can act on, run before
+    anything is queued. All markets share one calendar and one MGET for their
+    chain claims, so a hung Redis costs the polled list one socket timeout,
+    not one per market. A check that cannot be read never blocks: the task
+    still runs every check itself (Beat calls it directly anyway).
+    """
+    codes = [_normalize_pipeline_market(market) for market in markets]
+    try:
+        starts = _pipeline_chain_claims().get_pipeline_chain_starts(codes)
+    except Exception:
+        logger.debug("Pre-flight claim check failed for %s", codes, exc_info=True)
+        starts = {}
+    blockers: dict[str, dict | None] = {}
+    for code in codes:
+        blockers[code] = None
+        try:
+            calendar = _preflight_calendar()
+            today = calendar.market_now(code).date()
+            if not calendar.is_trading_day(code, today):
+                blockers[code] = {
+                    "reason": "not_trading_day",
+                    "message": f"Not a trading day in {code} ({today.isoformat()})",
+                    "as_of_date": today.isoformat(),
+                }
+                continue
+        except Exception:
+            logger.debug("Pre-flight calendar check failed for %s", code, exc_info=True)
+        if starts.get(code) is not None:
+            blockers[code] = {
+                "reason": "market_pipeline_already_active",
+                "message": f"The {code} pipeline is already in progress",
+                "active_since": starts[code] or None,
+            }
+    return blockers
+
+
+def pipeline_run_blocker(market: str) -> dict | None:
+    """The pre-flight answer for one market (see pipeline_run_blockers)."""
+    return pipeline_run_blockers([market])[_normalize_pipeline_market(market)]
 
 def _market_pipeline_active(market: str) -> dict | None:
     try:

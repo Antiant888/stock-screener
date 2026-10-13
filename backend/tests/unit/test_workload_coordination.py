@@ -292,3 +292,19 @@ def test_pipeline_chain_holders_cover_every_market():
 
     assert set(holders) == {m.upper() for m in SUPPORTED_MARKETS}
     assert all(holder is None for holder in holders.values())
+
+
+def test_pipeline_chain_starts_read_every_market_in_one_mget():
+    coordination, mock_redis, _ = _make_coordination()
+    mock_redis.mget.return_value = [
+        b"daily_market_pipeline:tok-1:2026-10-16T20:30:00+00:00",
+        None,
+        b"garbled",
+    ]
+
+    starts = coordination.get_pipeline_chain_starts(["US", "hk", "JP"])
+
+    mock_redis.mget.assert_called_once_with(["pipeline_chain:us", "pipeline_chain:hk", "pipeline_chain:jp"])
+    mock_redis.get.assert_not_called()
+    # Held but unparseable still reads as held ("").
+    assert starts == {"US": "2026-10-16T20:30:00+00:00", "HK": None, "JP": ""}

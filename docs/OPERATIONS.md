@@ -179,27 +179,80 @@ Click the chip to open `/operations`.
 ![Operations — per-market activity cards and the job console with cancel controls](screenshots/operations.png)
 *Operations — per-market activity (states, messages, timestamps) above the filterable job console*
 
-The Operations page includes:
+| Section | Shows |
+|---|---|
+| Market activity | Each market's lifecycle, stage, message, progress, and last update |
+| Telemetry alerts | Warning and critical alerts, with Acknowledge |
+| Market health | Freshness lag, benchmark age, universe drift, completeness |
+| Job console | Jobs across Celery queues by state; filter by state, queue, market, or task |
+| Lease status | External-fetch and per-market workload leases, and each market's pipeline chain claim |
+| Queues / Workers | Queue depth and worker status |
 
-- **Market activity** — per-market lifecycle, stage, message, task name, progress, and updated time.
-- **Telemetry alerts** — warning/critical alerts with acknowledge controls.
-- **Market health summaries** — freshness lag, benchmark age, universe drift, and completeness distribution.
-- **Job console** — queued, waiting, reserved, running, stale, stuck, failed, and cancelled jobs across Celery queues.
-- **Lease view** — current external-fetch and market-workload ownership, and each market's daily pipeline chain claim with a Release action. The release is owner-checked (it frees only the claim shown) and recorded with the other job actions. Release a claim only when that market's pipeline stages are gone from the job console; otherwise the next Run starts a second pipeline.
-- **Safe cancellation controls** — revoke, scan cancel, force refresh cancel, force market-lock release, or queue removal when the backend marks an action as supported. Each action asks for confirmation and says what it does: **Cancel** removes the job from the queue so it never runs; **Revoke** makes the worker that already picked it up drop it; **Cancel scan** marks the scan cancelled and the worker stops at its next checkpoint; **Force cancel** and **Force release** release locks while the worker may still be running, so use them only when it is dead. If the job moved on before the click landed (for example, a queued job started running), the cancel is refused with "Job moved to …, refresh and retry" and nothing is changed. After an accepted cancel, the row reads **Cancel requested** until the job leaves the console.
+If the jobs request fails, the job console, Lease status, Queues and Workers say so. If a refresh fails after a success, they keep the last data and show when it was fetched.
 
-Use the filters (state, queue, market, task text) to narrow the job console before cancelling anything.
+### Cancelling a job
+
+Every action asks for confirmation first:
+
+| Action | Effect |
+|---|---|
+| **Cancel** | Removes a queued job; it never runs |
+| **Revoke** | A worker that already took the job drops it |
+| **Cancel scan** | Marks the scan cancelled; the worker stops at its next checkpoint |
+| **Force cancel** / **Force release** | Releases locks while the worker may still be running. Use only when the worker is dead. |
+
+- If the job changed state after the page loaded, the cancel is refused ("Job moved to …, refresh and retry") and nothing changes.
+- After an accepted cancel, the row reads **Cancel requested** until the job leaves the console.
+- Cancelling a queued Daily Market Pipeline stage ends the chain and releases its claim.
+
+### Releasing a pipeline chain claim
+
+Lease status → Pipeline Chain Claims lists each market's claim. **Release** it only when that market's pipeline stages are gone from the job console, for example after a stage was revoked once a worker had taken it, which leaves the claim held. Otherwise the next Run starts a second pipeline. Release frees only the claim shown, and is recorded with the other job actions.
 
 ## Scheduled Jobs
-
-When the tasks feature is enabled, **Operations** has a **Scheduled jobs** section right after the job console. Open Operations from the runtime activity chip in the header.
 
 ![Operations — the job console followed by Scheduled jobs, with schedules, last run, status, and run-now actions](screenshots/scheduled-tasks.png)
 *Operations — job console, then Scheduled jobs with schedule, last run, status, and run-now*
 
-Each job shows its schedule, last run time and duration, and status. Jobs that Beat runs once per market (the Daily Market Pipeline, Weekly Universe Refresh, Weekly Full Refresh and Weekly Fundamental Refresh) have one row per market, so one market's failure stays visible after another market's later success. **Weekly Cache & Telemetry Cleanup** runs Sunday 6:00 AM ET and removes telemetry events past retention and the cached prices of delisted symbols (symbols the universe holds or once held, per its status history, with no active row now, in every market that still has active rows), which per-market refreshes skip. Symbols the universe never held, such as SPY or COT instruments, keep their cache. A Redis error fails the run instead of reading as nothing cleaned. **Weekly Full Refresh (all markets)** is manual only; it re-fetches every market and runs the same cleanups. Until its first run after this change it may show a per-market run recorded before the split. Runs recorded under the old shared Weekly Fundamental Refresh row are not shown, and neither is an all-markets fundamentals refresh started from the scan page's cache panel, which is not a scheduled run. Status comes from the server's run history, which the worker writes, so Beat runs show up as well as manual ones. A failed run shows its error message. This includes a task that catches its own error and returns it, which Celery still reports as a success. **Skipped** means the task ran but did nothing, and shows the reason it returned: for example, the Daily Market Pipeline on a non-trading day, or while that market's pipeline chain is still running. **Handed off** means the task only queued other tasks: the Daily Market Pipeline queues its stage chain and returns within seconds. The chain is price refresh, Market RS, group rankings and the daily snapshot, then (US only) Options Analytics, then breadth and exposure on markets that support breadth. Follow the stages in Market activity and the job console. The dispatch claims the market's chain until its last stage finishes or any stage fails, so running the pipeline again, or a Beat run, while the chain is in progress reads **Skipped** (market pipeline already active) instead of starting a second chain. The claim expires 20 hours after dispatch even if nothing releases it. That covers normal waits behind the single data-fetch worker, but not an unbounded backlog: if a chain is still queued or running after 20 hours (for example, many markets' price refreshes each running close to their 4-hour limit on that one worker), another dispatch can start a second chain. Cancelling a queued stage from the job console ends the chain and releases its claim. A stage revoked after a worker took it fires no failure callback, so its claim stays (a re-run reads Skipped) until it expires or you release it under Lease status → Pipeline Chain Claims. A claim from a scheduled run expires before that market's next scheduled run 24 hours later. A claim from a manual run less than 20 hours before the next scheduled run can make that scheduled run skip too. **Unknown** means no outcome was recorded within about 25 hours (Celery's 24-hour hard time limit plus a margin); it is not counted as a failure. If the run started and its worker died, Run is available again. A manual run that was never picked up (a scheduled run gets its history row only when a worker starts it) keeps Run unavailable while its message is still in the broker, in a queue or held by a stopped worker: it runs once a worker takes it, or cancel it in the job console. Run becomes available once no message is waiting. Run also stays unavailable if the broker cannot be read, or if its queues are too long to search within 2 seconds.
+Shown below the job console when the tasks feature is enabled (one card per job on phones). Status comes from the server's run history, so Beat runs appear as well as manual ones. Jobs that Beat runs per market (Daily Market Pipeline, Weekly Universe, Full and Fundamental Refresh) have one row per market.
 
-**Run now** queues the job. The job console shows it once a worker starts it, and also while it waits if its queue is one the console reads (the general `celery` queue and the data-fetch, market-job, and user-scan queues). Social Signals refreshes wait on `social_ingestion`, which the console does not read. Run is unavailable while the job's run is queued or running, so a second click cannot start that run twice. After a pipeline is handed off, Run is available, but the dispatch skips while the chain is in progress. A run queued for more than 10 minutes is marked **Not picked up** (for example, no worker on its queue, or a lost broker message). Its message may still be in the broker, so queueing another would run the job twice once a worker comes up. Cancel it in the job console instead: that removes the message, revokes the task, and marks the run cancelled, which enables Run again. A queued Social Signals refresh is not listed in the console. Start the social worker to let it run. On phones, the section shows one card per job. Deployments without task support do not show the section.
+### Status
+
+| Status | Meaning |
+|---|---|
+| **Completed** | Finished |
+| **Failed** | Shows the error, including from a task that caught its own error and returned it |
+| **Skipped** | Ran but did nothing; shows why (e.g. not a trading day, pipeline already in progress) |
+| **Handed off** | Only queued other tasks. The Daily Market Pipeline hands off its stage chain; follow it in Market activity and the job console. |
+| **Queued** / **Running** | In progress |
+| **Not picked up** | Queued for over 10 minutes: no worker on its queue, or a lost message |
+| **Unknown** | No outcome within about 25 hours (Celery's 24-hour hard limit plus a margin). Not counted as a failure. |
+
+### When Run is unavailable
+
+Run is disabled, with the reason on the row, when:
+
+- **The run is queued or running.**
+- **Not picked up.** The message may still run once a worker comes up, so a second Run could run the job twice. Cancel it in the job console. A Social Signals refresh waits on `social_ingestion`, which the console doesn't read: start the social worker instead.
+- **Unknown, and the run never started**, while its message is still in the broker (queued, or held by a stopped worker), or when the broker can't be searched within 2 seconds. An Unknown run that started and then lost its worker can be run again.
+- **Daily Market Pipeline only:** it's not a trading day in that market, or the market's pipeline is in progress. The row links to the claim in Lease status. The server refuses such a Run with 409 before queueing. If those two checks can't be read, the Run is queued anyway and the task's own checks decide, so it can still end up Skipped.
+
+### Daily Market Pipeline chain
+
+Stages: price refresh → Market RS → group rankings → daily snapshot → Options Analytics (US only) → breadth and exposure (markets with breadth).
+
+- The dispatch holds a per-market claim until the last stage finishes or a stage fails. While it is held, a manual Run is refused with 409 and nothing is queued, and a Beat run reads Skipped. A manual Run can still read Skipped if the pre-flight could not read the claim, or the claim was taken between the pre-flight and the dispatch.
+- The claim expires 20 hours after dispatch. That covers normal waits behind the single data-fetch worker, but a chain still queued or running after 20 hours can be overlapped (#605).
+- A manual run's claim taken less than 20 hours before the market's next scheduled run can make that run skip.
+
+### Weekly maintenance
+
+- **Weekly Cache & Telemetry Cleanup** (Sunday 6:00 AM ET) deletes telemetry past retention and the cached prices of delisted symbols.
+  - Symbols the universe never held, such as SPY or COT instruments, keep their cache.
+  - A market with no active universe rows is skipped.
+  - A Redis error fails the run.
+- **Weekly Full Refresh (all markets)** is manual only. It re-fetches every market and runs the same cleanup.
+- The cache panel's all-markets fundamentals refresh is not a scheduled job and isn't listed.
 
 ## Options Command Center Operations
 

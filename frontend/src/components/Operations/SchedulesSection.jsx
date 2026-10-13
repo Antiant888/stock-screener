@@ -13,6 +13,7 @@ import {
   Chip,
   CircularProgress,
   IconButton,
+  Link,
   Table,
   TableBody,
   TableCell,
@@ -104,6 +105,21 @@ function lostQueuedReason(task) {
     : 'Not picked up, and its message is still waiting. It runs once a worker takes it, or cancel it in the job console to run it again.';
 }
 
+const PIPELINE_ACTIVE = 'market_pipeline_already_active';
+
+// The server's pre-flight answer (run_blocker): why a Run would only read
+// Skipped right now, e.g. not a trading day or the market's pipeline is mid-chain.
+function preflightReason(task) {
+  const blocker = task.run_blocker;
+  if (!blocker) return null;
+  if (blocker.reason === PIPELINE_ACTIVE) {
+    return blocker.active_since
+      ? `Pipeline in progress since ${new Date(blocker.active_since).toLocaleString()}`
+      : 'Pipeline in progress';
+  }
+  return blocker.message || humanizeReason(blocker.reason);
+}
+
 // Why Run is unavailable for this job, or null when it may run again.
 function runBlockedReason(task) {
   const run = task.last_run;
@@ -111,7 +127,25 @@ function runBlockedReason(task) {
   if (isStaleQueued(run)) return `Still queued. ${stuckRecovery(task.name)}`;
   if (run?.status === 'queued') return 'Already queued';
   if (lostButMaybeQueued(run)) return lostQueuedReason(task);
-  return null;
+  return preflightReason(task);
+}
+
+// Shown whatever the last run was (or with none): the pre-flight reason,
+// and for a running pipeline where to see or release its claim.
+function PreflightNote({ task }) {
+  const reason = preflightReason(task);
+  if (!reason) return null;
+  return (
+    <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.5, maxWidth: 320 }}>
+      {reason}.
+      {task.run_blocker.reason === PIPELINE_ACTIVE && (
+        <>
+          {' '}
+          <Link href="#lease-status">See its claim in Lease status</Link>.
+        </>
+      )}
+    </Typography>
+  );
 }
 
 function LastRun({ run }) {
@@ -161,8 +195,8 @@ function statusNote(task) {
   }
   if (run?.status === 'skipped' && run.detail) return [humanizeReason(run.detail), 'text.secondary'];
   if (run?.status === 'dispatched') {
-    // A second Run while the chain holds its claim reads Skipped
-    // ('market_pipeline_already_active'), so no duplicate warning is needed.
+    // While the chain holds its claim, the pre-flight disables Run and says so
+    // (PreflightNote), so no duplicate warning is needed here.
     return ['Stages queued. Follow them in Market activity and the job console.', 'text.secondary'];
   }
   return [null, null];
@@ -185,11 +219,17 @@ function StatusNote({ task }) {
 }
 
 function Status({ task }) {
-  if (!task.last_run) return <Typography variant="body2" color="text.secondary">—</Typography>;
   return (
     <Box>
-      <StatusChip run={task.last_run} />
-      <StatusNote task={task} />
+      {task.last_run ? (
+        <>
+          <StatusChip run={task.last_run} />
+          <StatusNote task={task} />
+        </>
+      ) : (
+        <Typography variant="body2" color="text.secondary">—</Typography>
+      )}
+      <PreflightNote task={task} />
     </Box>
   );
 }
@@ -267,6 +307,7 @@ function JobCards({ tasks, pendingNames, onRun }) {
             <LastRun run={task.last_run} />
           </Box>
           <StatusNote task={task} />
+          <PreflightNote task={task} />
           <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.5 }}>
             {task.schedule_description}
           </Typography>
