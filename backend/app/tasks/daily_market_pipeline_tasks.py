@@ -415,7 +415,9 @@ def _broker_verdict(task_ids: list[str], in_broker: dict[str, bool | None]) -> s
     return "missing"
 
 
-def _apply_chain_verdict(claims: Any, market: str, token: str, verdict: str) -> str:
+def _apply_chain_verdict(
+    claims: Any, market: str, token: str, verdict: str, heartbeat: str
+) -> str:
     from app.tasks.workload_coordination import PIPELINE_CHAIN_MISSING_RELEASE_SECONDS
 
     if verdict in ("alive", "unknown"):
@@ -428,13 +430,19 @@ def _apply_chain_verdict(claims: Any, market: str, token: str, verdict: str) -> 
         if not renewed:
             return "lost"
         return "renewed" if verdict == "alive" else "renewed_unknown"
-    if (
-        verdict == "missing"
-        and claims.pipeline_chain_missing_seconds(token) < PIPELINE_CHAIN_MISSING_RELEASE_SECONDS
-    ):
-        # Unconfirmed: renew so a claim near its TTL (after a stretch of
-        # failed checks) lasts until the confirming check releases it.
-        return "missing" if claims.renew_pipeline_chain(token, market=market) else "lost"
+    if verdict == "missing":
+        seconds, since = claims.pipeline_chain_missing(token)
+        if since is None or seconds < PIPELINE_CHAIN_MISSING_RELEASE_SECONDS:
+            # Unconfirmed: renew so a claim near its TTL (after a stretch of
+            # failed checks) lasts until the confirming check releases it.
+            return "missing" if claims.renew_pipeline_chain(token, market=market) else "lost"
+        # Only while the marker read above is still there (a heartbeat that
+        # saw the chain alive since then cleared it) and this heartbeat still
+        # holds the heartbeat lock (#627).
+        outcome = claims.release_missing_pipeline_chain(
+            token, market=market, missing_since=since, heartbeat=heartbeat
+        )
+        return "released_missing" if outcome == "released" else outcome
     # Owner-checked: a newer chain that took the claim meanwhile keeps it.
     released = claims.release_pipeline_chain(token, market=market)
     return f"released_{verdict}" if released else "lost"
@@ -462,10 +470,24 @@ def renew_daily_market_pipeline_claims() -> dict:
     lost, keeps its STARTED/PROGRESS/RETRY state until its result expires
     (24h), so such a chain keeps its claim that long; the Operations console
     can release it (#612).
+
+    Heartbeats never overlap: one reads a chain's states seconds before it
+    acts on them, so another acting on an older read could free a claim the
+    first just saw alive (#627). A beat that finds another running skips.
     """
+    claims = _pipeline_chain_claims()
+    heartbeat = uuid4().hex
+    if not claims.acquire_pipeline_chain_heartbeat(heartbeat):
+        return {"status": "skipped", "reason": "heartbeat_running", "claims": {}}
+    try:
+        return {"status": "ok", "claims": _renew_pipeline_chain_claims(claims, heartbeat)}
+    finally:
+        claims.release_pipeline_chain_heartbeat(heartbeat)
+
+
+def _renew_pipeline_chain_claims(claims: Any, heartbeat: str) -> dict[str, str]:
     from app.services.task_registry_service import still_in_broker
 
-    claims = _pipeline_chain_claims()
     outcomes: dict[str, str] = {}
     checks: dict[str, tuple[str, list[str], str | None]] = {}
     for market, holder in claims.get_pipeline_chain_holders().items():
@@ -497,13 +519,13 @@ def renew_daily_market_pipeline_claims() -> dict:
         # None: the search ran out of budget or the broker was unreadable.
         verdict = verdict or _broker_verdict(task_ids, in_broker) or "unknown"
         try:
-            outcomes[market] = _apply_chain_verdict(claims, market, token, verdict)
+            outcomes[market] = _apply_chain_verdict(claims, market, token, verdict, heartbeat)
         except Exception:
             logger.warning(
                 "Could not update the %s pipeline chain claim; it is kept", market, exc_info=True
             )
             outcomes[market] = "error"
-    return {"status": "ok", "claims": outcomes}
+    return outcomes
 
 
 def _chain_task_ids(workflow: Any) -> list[str]:

@@ -321,7 +321,7 @@ def test_pipeline_chain_missing_clock_starts_once_and_clears():
     mock_redis.get.return_value = b"1000.0"
 
     with patch("app.tasks.workload_coordination.time.time", return_value=1240.0):
-        assert coordination.pipeline_chain_missing_seconds("token-1") == 240.0
+        assert coordination.pipeline_chain_missing("token-1") == (240.0, "1000.0")
 
     # SET NX EX in one command: the first miss starts the clock, later ones
     # keep it, and the key can never be left without a TTL.
@@ -338,6 +338,102 @@ def test_pipeline_chain_release_is_owner_checked():
 
     assert coordination.release_pipeline_chain("token-1", market="US") is True
     mock_release_script.assert_called_once_with(keys=["pipeline_chain:us"], args=[":token-1:"])
+
+
+def test_pipeline_chain_missing_reads_no_marker_as_a_first_miss():
+    # Cleared between the SET NX and the GET by a heartbeat that saw it alive.
+    coordination, mock_redis, _ = _make_coordination()
+    mock_redis.get.return_value = None
+
+    assert coordination.pipeline_chain_missing("token-1") == (0.0, None)
+
+
+@pytest.mark.parametrize("script_result, outcome", [(1, "released"), (2, "kept"), (0, "lost")])
+def test_missing_pipeline_chain_release_checks_the_marker_read(script_result, outcome):
+    coordination, _, mock_script = _make_coordination()
+    mock_script.return_value = script_result
+
+    assert (
+        coordination.release_missing_pipeline_chain(
+            "token-1", market="US", missing_since="1000.0", heartbeat="hb-1"
+        )
+        == outcome
+    )
+    mock_script.assert_called_once_with(
+        keys=["pipeline_chain:us", "pipeline_chain_misses:token-1", "pipeline_chain_heartbeat"],
+        args=[":token-1:", "1000.0", ":hb-1:"],
+    )
+
+
+def test_missing_pipeline_chain_release_lua_against_real_redis():
+    # #627 acceptance: run the Lua on a real Redis. CI has none, so it skips there.
+    import redis as redis_lib
+
+    from app.tasks.workload_coordination import (
+        _RELEASE_MISSING_PIPELINE_CHAIN_LUA,
+        WorkloadCoordination,
+    )
+
+    client = redis_lib.Redis(port=6379, db=15, socket_connect_timeout=1, socket_timeout=1)
+    try:
+        client.ping()
+    except (redis_lib.exceptions.ConnectionError, redis_lib.exceptions.TimeoutError):
+        pytest.skip("no local Redis")
+    coordination = object.__new__(WorkloadCoordination)
+    coordination.redis = client
+    coordination._release_missing_chain_script = client.register_script(
+        _RELEASE_MISSING_PIPELINE_CHAIN_LUA
+    )
+    claim, marker = "pipeline_chain:us", "pipeline_chain_misses:tok-627"
+    lock = "pipeline_chain_heartbeat"
+
+    def release(since):
+        return coordination.release_missing_pipeline_chain(
+            "tok-627", market="US", missing_since=since, heartbeat="hb-1"
+        )
+
+    try:
+        client.set(claim, "daily_market_pipeline:tok-627:2026-10-13T00:00:00+00:00")
+        client.set(marker, "1000.0")
+        # The heartbeat lock expired, then went to the next heartbeat: kept.
+        assert release("1000.0") == "kept"
+        client.set(lock, "heartbeat:hb-2:")
+        assert release("1000.0") == "kept"
+        client.set(lock, "heartbeat:hb-1:")
+        # Replaced, then cleared: kept, untouched.
+        assert release("999.0") == "kept"
+        client.delete(marker)
+        assert release("1000.0") == "kept"
+        assert client.exists(claim)
+        # Another token's claim: lost.
+        client.set(marker, "1000.0")
+        client.set(claim, "daily_market_pipeline:newer:2026-10-13T00:00:00+00:00")
+        assert release("1000.0") == "lost"
+        assert client.exists(claim)
+        # The marker read, still there: released.
+        client.set(claim, "daily_market_pipeline:tok-627:2026-10-13T00:00:00+00:00")
+        assert release("1000.0") == "released"
+        assert not client.exists(claim)
+    finally:
+        client.delete(claim, marker, lock)
+        client.close()
+
+
+def test_pipeline_chain_heartbeat_lock_is_set_nx_and_owner_checked():
+    from app.tasks.workload_coordination import PIPELINE_CHAIN_HEARTBEAT_LOCK_SECONDS
+
+    coordination, mock_redis, mock_release_script = _make_coordination()
+    mock_redis.set.return_value = None
+
+    assert coordination.acquire_pipeline_chain_heartbeat("hb-1") is False
+    mock_redis.set.assert_called_once_with(
+        "pipeline_chain_heartbeat", "heartbeat:hb-1:", nx=True,
+        ex=PIPELINE_CHAIN_HEARTBEAT_LOCK_SECONDS,
+    )
+    coordination.release_pipeline_chain_heartbeat("hb-1")
+    mock_release_script.assert_called_once_with(
+        keys=["pipeline_chain_heartbeat"], args=[":hb-1:"]
+    )
 
 
 def test_pipeline_chain_holder_reads_token_and_start():
