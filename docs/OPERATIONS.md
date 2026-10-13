@@ -1,6 +1,6 @@
 # Operations Guide
 
-This guide covers live runtime operations for the server-backed app: starting and stopping the stack, first-run bootstrap, resetting to a clean bootstrap, enabled-market workers, runtime activity, job controls, telemetry, scheduled tasks, and common recovery paths.
+Running the server-backed app: the stack and its market workers, first-run bootstrap and reset, the data source mode, the Operations page and scheduled jobs, Options analytics, the balanced Market RS rollout, static-site publishing, market calendars, and common recovery paths.
 
 ## Runtime Model
 
@@ -71,7 +71,7 @@ Bootstrap stages:
 1. **Universe refresh** — seeds the market symbol list. US uses S&P 500 / Russell / NDX via `refresh_stock_universe`; HK / IN / JP / KR / TW / CN / CA / DE / SG / MY / AU use official exchange feeds via `refresh_official_market_universe`.
 2. **Benchmark + price refresh** — imports the GitHub daily price bundle first, accepts recent stale bundles during bootstrap, then live-fetches missing/current-session gaps (`7d` top-up for stale symbols, `2y` for no-history symbols). Under `live_only` this stage skips the bundle and fetches live — see [Market Data Source Mode](#market-data-source-mode).
 3. **Fundamentals refresh** — loads quarterly and annual financials.
-4. **Market RS publication** — on a pristine installation, backfills the canonical balanced-horizon percentile RS history, validates a staged static export, and atomically activates the Market and Feature pointers. A database with any durable market, breadth, exposure, scan, Feature, Group, or Market RS data keeps the balanced calculation in shadow mode until an operator activates it.
+4. **Market RS publication** — on a pristine installation, backfills balanced-horizon RS, validates a staged static export, and activates it atomically. Any other database stays in shadow mode until an operator activates it ([Balanced Market RS Rollout](#balanced-market-rs-rollout)).
 5. **Breadth calculation** — computes StockBee-style advance/decline data with gap-fill.
 6. **Market exposure** — derives the market-regime exposure state from the refreshed breadth data.
 7. **Group rankings** — averages canonical constituent RS values for each group, using the active formula for that market.
@@ -83,45 +83,28 @@ Selecting many enabled markets multiplies this work. On smaller hosts, start wit
 
 ## Market Data Source Mode
 
-`MARKET_DATA_SOURCE_MODE` controls **where market data is sourced from**. It is a Pydantic setting read once at process startup by every app and worker container (from `.env` / `.env.docker`); there is no runtime toggle.
+`MARKET_DATA_SOURCE_MODE` sets where market data comes from. Every app and worker container reads it once at startup; there is no runtime toggle. Valid values are `github_first` (the default) and `live_only` (not `live`).
 
-| Value | Behavior |
-|-------|----------|
-| `github_first` *(default)* | Pull prebuilt data from the project's GitHub release bundles first, then live-fetch only what's missing or stale. |
-| `live_only` | Skip the GitHub bundles; fetch live from yfinance / Finviz — **except IBD classification, which has no live source and simply stops refreshing** (see below). |
+`github_first` tries the project's GitHub release bundles first, during bootstrap and on the weekly schedule. `live_only` skips them and fetches from live providers (yfinance / Finviz):
 
-The valid values are `github_first` and `live_only` (not `live`).
+| Data | `github_first` | `live_only` |
+|------|----------------|-------------|
+| Daily prices | Per-market 2-year OHLCV bundle (release `daily-price-data`), imported when its manifest is fresh (within ~4 days) and the checksum matches; live top-ups then fill stale and no-history symbols | Live |
+| Weekly universe | GitHub weekly-reference bundle: no-op when current, live sources when missing or stale | Live |
+| Weekly fundamentals | GitHub weekly-reference bundle, then the live provider | Live |
+| Weekly IBD classification | GitHub `ibd-classification-data` bundle (Sunday, after the weekly classifier publishes). No-op when already `up_to_date`; a GitHub miss **fails the sync and raises an alert**, keeping the prior classifications | **No-op: classifications stop updating.** There is no live source, and non-US markets without a curated CSV get IBD coverage only from this bundle |
 
-**What `github_first` pulls from GitHub** — published release bundles are tried before live providers, both during bootstrap and on the weekly schedule:
+For prices, universe and fundamentals, a GitHub miss (missing or stale manifest, checksum mismatch, network error) silently falls back to live, so `github_first` is safe to leave on. It is faster and hits provider rate limits less, because history downloads as one bundle instead of symbol by symbol. It is also why some Celery jobs still reach GitHub after bootstrap; that is expected ([issue #266](https://github.com/xang1234/stock-screener/issues/266)).
 
-- **Daily prices** — a per-market 2-year OHLCV bundle (release tag `daily-price-data`). Imported when the manifest is fresh (within ~4 days) and the checksum matches, then live top-ups fill stale / no-history symbols.
-- **Weekly universe** — `refresh_stock_universe` / `refresh_official_market_universe` check the GitHub weekly-reference bundle first; if current it no-ops, if missing/stale it falls back to live universe sources.
-- **Weekly fundamentals** — `refresh_all_fundamentals` tries the GitHub weekly-reference bundle before the live provider path.
-- **Weekly IBD classification** — syncs the GitHub `ibd-classification-data` bundle (Sunday, after the weekly classifier publishes). **GitHub-only: there is no live provider for IBD classification**, and it is how non-US markets without a curated CSV get IBD coverage.
-
-For prices, universe, and fundamentals, any GitHub miss (missing/stale manifest, checksum mismatch, network error) silently falls back to live, so `github_first` is safe to leave on; its benefit is speed and fewer provider rate-limit hits (the heavy history downloads as one bundle instead of symbol-by-symbol). This is also why, under `github_first`, some Celery jobs still reach GitHub *after* bootstrap — expected behavior, see [issue #266](https://github.com/xang1234/stock-screener/issues/266).
-
-`live_only` routes prices, universe, and fundamentals through live providers. **IBD classification is the exception**: it has no live source, so under `live_only` its weekly sync is a clean no-op and classifications simply stop updating — mainly affecting non-US markets, whose IBD coverage comes entirely from the GitHub bundle. Under `github_first`, the IBD sync no-ops only when the bundle is already `up_to_date`; a genuine GitHub miss (missing/stale manifest, checksum mismatch, network error) instead **fails the IBD sync and raises an alert** (unlike prices/universe/fundamentals, which quietly fall back to live), leaving the prior classifications in place until the next successful run.
-
-**Changing it on a running app.** The value is baked into the containers at startup, so a running stack must be **stopped** for the change to take effect — recreating alone is not enough:
+**Changing it on a running app.** Set it in the env file you pass with `--env-file`: `.env` for the base stack, `.env.docker` for the prod overlay (the README / INSTALL_DOCKER prod commands already pass `--env-file .env.docker`). Compose interpolates it from there into the shared `x-app-env` entry, which outranks the prod overlay's own `env_file`, so setting it only in `.env.docker` without `--env-file` has no effect. Then stop and start the stack; recreating the containers alone is not enough:
 
 ```bash
-# 1. Put it in the env file you pass via --env-file — Compose interpolates the
-#    x-app-env entry from there: .env for the base stack, .env.docker for the
-#    prod overlay (the README / INSTALL_DOCKER prod commands already pass
-#    --env-file .env.docker). Note: that environment: entry outranks the prod
-#    overlay's own env_file, so setting it ONLY in .env.docker without passing
-#    --env-file will not take effect.
-#      MARKET_DATA_SOURCE_MODE=live_only      # or github_first
-
-# 2. Stop the stack — running containers will not pick up the change
+# MARKET_DATA_SOURCE_MODE=live_only (or github_first) in the --env-file file, then:
 ENABLED_MARKETS=US,HK,JP,TW,KR scripts/docker-compose-enabled-markets.sh down
-
-# 3. Start again with the new value
 ENABLED_MARKETS=US,HK,JP,TW,KR scripts/docker-compose-enabled-markets.sh up -d
 ```
 
-No cache flush is needed — the setting changes the *fetch strategy*, not data already stored. Switching to `live_only` keeps existing data and refreshes prices, universe, and fundamentals live going forward (IBD classification will not refresh); switching back to `github_first` resumes bundle syncing on the next refresh.
+No cache flush is needed: the mode changes how data is fetched, not data already stored. Switching to `live_only` keeps existing data (IBD classifications stop refreshing); switching back to `github_first` resumes bundle syncing on the next refresh.
 
 ## Reset to a Clean Bootstrap
 
@@ -203,19 +186,37 @@ Each job shows its schedule, last run time and duration, and status. Jobs that B
 
 ## Options Command Center Operations
 
-Options analytics are US-only and opt in with `OPTIONS_ANALYTICS_ENABLED=true`; the default is `false`. Disabled deployments do not schedule Yahoo option-chain work and do not advertise Options navigation. The job follows a successfully published daily US Feature snapshot on the existing `data_fetch_us` queue, so the normal US data-fetch worker must be running. It does not add another worker or queue family and cannot make the already-published equity pipeline fail.
+Options analytics are US-only and off by default; enable them with `OPTIONS_ANALYTICS_ENABLED=true`. When disabled, no Yahoo option-chain work is scheduled and Options navigation is hidden.
 
-The bounded cohort is the independently ranked top 40 scan Candidates plus top 40 Leaders after requiring daily USD volume strictly above $100 million. Overlap keeps both source ranks. Up to 20 recently dropped symbols remain in collection for five US sessions, while only current symbols appear in the Command Center. A normal full 100-symbol cohort uses one `^IRX` history request plus one expiration-list and one selected-chain request per symbol (201 Yahoo operations). With the three-attempt per-symbol retry budget, the hard ceiling is 601 operations. Fetch concurrency is capped at two and uses the shared yfinance limiter.
+**Scheduling.** The job runs after a successfully published daily US Feature snapshot, on the existing `data_fetch_us` queue, so the normal US data-fetch worker must be running. It adds no worker or queue family, and cannot fail the already-published equity pipeline.
 
-In Operations, look for **Daily US Options Analytics** and the **Options Analytics** runtime stage. Its final message reports expected, completed, core-valid, failed, retried, and coverage counts. A manual canary can be started from Scheduled jobs on Operations or the live Command Center Refresh action. Start with a source Feature run whose current cohort contains no more than three symbols; inspect the selected monthly expiration (14–45 DTE), observation timestamp, request/retry counts, coverage, unavailable reasons, and the recorded `^IRX` risk-free/dividend assumptions before testing the full cohort.
+**Cohort and request budget.**
 
-Publication is atomic. At least 90% of current symbols must have core-valid chains; otherwise the attempted run is retained for diagnostics but the published pointer does not move. Readers continue to receive the prior published run. A static build similarly keeps fresh equity output and may copy the last compatible options bundle with `stale_relative_to_equity` shown in its manifest, command-center payload, and symbol payloads.
+- The cohort is the top 40 scan Candidates plus the top 40 Leaders, ranked independently, after requiring daily USD volume strictly above $100 million. A symbol in both keeps both source ranks.
+- Up to 20 recently dropped symbols stay in collection for five US sessions; only current symbols appear in the Command Center.
+- A full 100-symbol cohort costs 201 Yahoo operations: one `^IRX` history request, plus one expiration-list and one selected-chain request per symbol. With three attempts per symbol, the hard ceiling is 601. Fetch concurrency is capped at two and uses the shared yfinance limiter.
 
-Aggregate published observations are retained for roughly 252 US sessions. Strike detail is retained for the latest 30 published runs. The Pages workflow transfers aggregate history through the versioned `options-history-us-v1.json.gz` release asset, so a ticker that drops out and later returns keeps its compatible lifetime history; missing sessions remain gaps and counters do not reset. Raw contracts and strike points are not included in that portable history asset.
+**Monitoring and canary.** In Operations, watch **Daily US Options Analytics** and the **Options Analytics** runtime stage; its final message reports expected, completed, core-valid, failed, retried and coverage counts. Start a manual canary from Scheduled jobs or the Command Center's Refresh action, first with a source Feature run whose current cohort has at most three symbols. Before trying the full cohort, check:
 
-To roll back, set `OPTIONS_ANALYTICS_ENABLED=false` and recreate the API/workers. This stops collection and removes live navigation without deleting stored runs or history. Static navigation disappears when the root manifest no longer advertises `pages.options`; an already-published static bundle remains an auditable artifact.
+- the selected monthly expiration (14–45 DTE) and observation timestamp;
+- request and retry counts, coverage, and unavailable reasons;
+- the recorded `^IRX` risk-free and dividend assumptions.
 
-Yahoo is an unofficial, best-effort source. Chains may omit Greeks, open interest, volume, quotes, or expirations and can be delayed or throttled. The UI shows explicit unavailable reasons rather than fabricating replacements. Net GEX, gamma flip, call wall, and put wall are labeled **Estimated** because they are model outputs, not observed dealer positions. Activity metrics are descriptive and must not be interpreted as premium inflow, buying/selling, or a directional signal.
+**Publication.** Publication is atomic and needs core-valid chains for at least 90% of current symbols. Otherwise the run is kept for diagnostics, the published pointer doesn't move, and readers keep the prior run. A static build likewise keeps fresh equity output, and may copy the last compatible options bundle, marked `stale_relative_to_equity` in its manifest, command-center payload and symbol payloads.
+
+**Retention.**
+
+- Aggregate published observations are kept for about 252 US sessions; strike detail for the latest 30 published runs.
+- The Pages workflow carries aggregate history in the versioned `options-history-us-v1.json.gz` release asset. A ticker that drops out and later returns keeps its compatible lifetime history; missing sessions stay gaps and counters don't reset.
+- Raw contracts and strike points are not in that asset.
+
+**Rollback.** Set `OPTIONS_ANALYTICS_ENABLED=false` and recreate the API and workers. Collection stops and live navigation disappears; stored runs and history are kept. Static navigation disappears once the root manifest no longer advertises `pages.options`; an already-published static bundle stays as an auditable artifact.
+
+**Data caveats.** Yahoo is an unofficial, best-effort source:
+
+- Chains may omit Greeks, open interest, volume, quotes or expirations, and can be delayed or throttled. The UI shows explicit unavailable reasons rather than invented values.
+- Net GEX, gamma flip, call wall and put wall are labeled **Estimated**: they are model outputs, not observed dealer positions.
+- Activity metrics are descriptive. Don't read them as premium inflow, buying or selling, or a directional signal.
 
 ## Balanced Market RS Rollout
 
@@ -223,13 +224,19 @@ Yahoo is an unofficial, best-effort source. Chains may omit Greeks, open interes
 
 ### Fresh database activation
 
-Runtime bootstrap classifies a pristine installation once, before dispatch, and records that decision in the bootstrap manifest. Formula-pointer and application-setting provisioning are allowed; any universe, price, fundamental, breadth, exposure, scan, Feature run, Group rank, or Market RS run makes the database non-pristine. The only exception is startup Group-history reconciliation that first records a valid `runtime.bootstrap.pre_bootstrap_seed_import` marker while the database is still pristine; if that startup task imports raw seed rows before the user starts bootstrap, the first dispatch may still use fresh activation as long as no bootstrap output rows exist. A failed reconciliation dispatch clears any marker it just created. The fresh marker survives an interrupted initial bootstrap, then is consumed after every enabled Market has activated balanced RS. A later repair bootstrap or explicit rollback therefore cannot silently re-activate balanced RS.
+Bootstrap decides once, before dispatch, whether the database is **pristine**, and records the decision in the bootstrap manifest.
 
-Each bootstrap dispatch owns a persisted generation for 24 hours, renewed while its market workflows are published. Duplicate starts are rejected by that generation rather than by the display-only bootstrap preference. If the API process dies before dispatch completes or callbacks are lost, the expired generation can be reclaimed by starting bootstrap again; no database edit is required. Lease expiry alone does not invalidate a callback: the still-current generation may finish until a replacement claims ownership, while callbacks from a superseded generation are ignored.
+- **Pristine** means only formula pointers and application settings exist. Any universe, price, fundamental, breadth, exposure, scan, Feature run, Group rank or Market RS row makes the database non-pristine.
+- **One exception:** startup Group-history reconciliation may import raw seed rows before bootstrap starts, provided it first records a valid `runtime.bootstrap.pre_bootstrap_seed_import` marker while the database is still pristine. The first dispatch can then still use fresh activation, as long as no bootstrap output rows exist. A failed reconciliation dispatch clears the marker it created.
+- **The fresh marker** survives an interrupted initial bootstrap, and is consumed once every enabled Market has activated balanced RS. A later repair bootstrap or explicit rollback therefore can't silently re-activate balanced RS.
+- **Duplicate starts:** each bootstrap dispatch owns a persisted generation for 24 hours, renewed while its market workflows are published, and duplicate starts are rejected by that generation (not by the display-only bootstrap preference). If the API dies mid-dispatch or callbacks are lost, start bootstrap again once the generation has expired; no database edit is needed. Lease expiry alone doesn't invalidate callbacks: the still-current generation may finish until a replacement claims ownership, and callbacks from a superseded generation are ignored.
 
-A pristine installation runs balanced Market RS backfill and guarded activation as a required stage for every enabled Market. Activation materializes trading sessions from 187 calendar days before the latest completed session through that latest session. This covers the 6M Group-rank lookup plus tolerance, exceeds the 12-week RRG minimum, and includes the current daily Feature snapshot used by the latest scan. It does not calculate every historical session in the database. Backfill, balanced Feature publication, staged static parity validation, and the two-pointer transaction must all succeed. The primary Market is not marked ready unless its formula pointer is `balanced-horizon-percentile-v2`. A failure leaves both active pointers unchanged and marks that bootstrap chain failed; correct the reported input or coverage problem and resume bootstrap.
+On a pristine installation, balanced Market RS backfill and guarded activation is a required stage for every enabled Market:
 
-Group history runs after activation, so its 1W/1M/3M/6M rank changes, movers, and RRG snapshots use the same balanced formula identity. The bootstrap may use the current active universe for historical dates when point-in-time membership is unavailable; this avoids an empty 12-week window but carries the documented survivor-bias tradeoff.
+- **Window:** it materializes sessions from 187 calendar days before the latest completed session through that session. That covers the 6M Group-rank lookup plus tolerance, exceeds the 12-week RRG minimum, and includes the current daily Feature snapshot used by the latest scan. It does not calculate every historical session.
+- **Requirements:** backfill, balanced Feature publication, staged static parity validation and the two-pointer transaction must all succeed. The primary Market isn't marked ready unless its formula pointer is `balanced-horizon-percentile-v2`.
+- **Failure:** both active pointers stay unchanged and that bootstrap chain fails. Correct the reported input or coverage problem and resume bootstrap.
+- **Group history** runs after activation, so 1W/1M/3M/6M rank changes, movers and RRG snapshots use the balanced formula. Where point-in-time membership is unavailable, bootstrap may use the current active universe for past dates; that avoids an empty 12-week window, at the cost of survivor bias.
 
 After bootstrap reports ready, verify the pointer and populated Group components:
 
@@ -247,11 +254,11 @@ WHERE market = 'US'
 GROUP BY rs_formula_version;
 ```
 
-Non-pristine databases are never auto-activated, including databases that contain only inactive or historical rows and no pre-bootstrap startup seed marker. Use the explicit shadow backfill and activation procedure below. This preserves existing data and pointers until every guard passes.
+A non-pristine database is never auto-activated, even one holding only inactive or historical rows and no startup seed marker. Use the shadow backfill and activation procedure below; it keeps existing data and pointers until every guard passes.
 
 ### Existing database rollout
 
-### 1. Record the rollback state
+#### 1. Record the rollback state
 
 Before activation, record both active pointers. Substitute the target Market in both predicates:
 
@@ -268,7 +275,7 @@ WHERE p.key = 'latest_published_market:US';
 
 The saved Feature run must remain present with status `published`; activation does not delete it.
 
-### 2. Run the resumable shadow backfill
+#### 2. Run the resumable shadow backfill
 
 Run from `backend` with its virtual environment active. `--start-date` is optional when resuming a repaired range:
 
@@ -280,7 +287,7 @@ python -m app.scripts.backfill_market_rs \
 
 This leaves the active pointers unchanged. Inspect the JSON report: `formula_version` must be `balanced-horizon-percentile-v2`, `failed_count` and `validation_errors` must be empty/zero, every required trading date must be completed, and the latest run must reach `through_date`. A failed date is isolated for repair and the command exits nonzero.
 
-### 3. Validate and activate atomically
+#### 3. Validate and activate atomically
 
 Choose an absolute, empty directory that is not `STATIC_EXPORT_OUTPUT_DIR` and is not served by nginx or another web server. The activation command refuses a relative, non-empty, or configured serving directory.
 
@@ -292,7 +299,14 @@ python -m app.scripts.backfill_market_rs \
   --activate
 ```
 
-The command calculates and validates the bounded 187-day activation window, builds a balanced Feature snapshot for `through-date`, stages `static-site-v3`, and checks stock/Group coverage, 1–99 ranges, contiguous deterministic Group ranks, exact formula/run/universe metadata on every Scan shard and row, live/static stock and Group parity, and formula-isolated RRG state. `--start-date` is shadow-backfill-only and is rejected with `--activate`. Approval records a fingerprint of the root manifest plus the complete staged Market tree, so any file change invalidates activation. Any failed gate exits nonzero without changing either active pointer. A successful validation updates the Market formula pointer and `latest_published_market:<MARKET>` Feature pointer in one database transaction, then invalidates Group caches. The US-only live Group bootstrap snapshot is a best-effort cache publication after activation; failures are logged and the request path can rebuild it without reverting the durable pointers.
+The command:
+
+- calculates and validates the 187-day activation window, and builds a balanced Feature snapshot for `through-date`;
+- stages `static-site-v3` and checks stock and Group coverage, 1–99 ranges, contiguous deterministic Group ranks, exact formula/run/universe metadata on every Scan shard and row, live/static stock and Group parity, and formula-isolated RRG state;
+- records a fingerprint of the root manifest plus the complete staged Market tree, so any file change invalidates approval;
+- on success, updates the Market formula pointer and the `latest_published_market:<MARKET>` Feature pointer in one database transaction, then invalidates Group caches.
+
+Any failed gate exits nonzero without changing either pointer. `--start-date` is for shadow backfill only and is rejected with `--activate`. For US, the live Group bootstrap snapshot is republished best-effort after activation; a failure is logged, and the request path can rebuild it without reverting the pointers.
 
 After success, verify the JSON has `activated: true`, the expected formula/run IDs, and no validation errors. In the live app, refresh Groups and a Scan and confirm:
 
@@ -302,7 +316,7 @@ After success, verify the JSON has `activated: true`, the expected formula/run I
 - the Group page shows 1M RS and 3M RS columns; and
 - RRG either uses balanced history or explicitly reports insufficient balanced history.
 
-### 4. Promote static artifacts
+#### 4. Promote static artifacts
 
 Do not copy an unvalidated staging directory into the serving directory. After the code and Market activation are on the default branch, run the Static Site export workflow. Each Market it exports wakes the **Static Site Publish** workflow (`static-site-publish.yml`), which selects the newest valid artifact per Market and keeps the artifact-validation, combine, frontend-build and Pages deployment gates in force:
 
@@ -313,7 +327,7 @@ gh workflow run static-site.yml -f market_group=us
 
 Confirm the export run publishes `static-site-v3` artifacts and updates the Market's `static-rrg-history-v4` release asset where applicable, then confirm the following Static Site Publish run deploys Pages successfully. A publish can be re-run at any time without re-exporting: `gh workflow run static-site-publish.yml`.
 
-### 5. Roll back one Market
+#### 5. Roll back one Market
 
 Rollback is explicit and preserves all balanced and legacy history. Do not roll back while the initial bootstrap or another activation command is running. Once a fresh bootstrap has completed, its fresh-install marker has already been consumed, so a later bootstrap will not undo this rollback.
 
@@ -370,7 +384,10 @@ gh workflow run static-site.yml \
   -f 'rs_formula_overrides={"US":"legacy-linear-v1"}'
 ```
 
-The JSON map is per Market; omitted Markets remain on `balanced-horizon-percentile-v2`, allowing an isolated rollback without changing other current or fallback artifacts. The rollback artifact's wake-up publishes it: Static Site Publish treats stored artifacts as last-good inputs and always selects each Market's newest valid artifact, so the legacy-formula export becomes the published one. The publisher deliberately has no formula input, because a publish-time override would be undone by the next wake-up; the export run is the only place to choose a formula. Verify live/static metadata says `legacy-linear-v1` for the restored Market. Retain balanced rows for diagnosis; rollback changes pointers, not history. A later return to balanced static output must use a newly validated live activation and omit that Market from `rs_formula_overrides`.
+- **Per Market:** Markets omitted from the JSON map stay on `balanced-horizon-percentile-v2`, so one Market rolls back without changing other current or fallback artifacts.
+- **Publishing:** the rollback export's wake-up publishes it. Static Site Publish always selects each Market's newest valid artifact, so the legacy-formula export becomes the published one. The publisher deliberately has no formula input, since the next wake-up would undo a publish-time override; choose the formula in the export run.
+- **Verify** that live and static metadata say `legacy-linear-v1` for the restored Market. Keep the balanced rows for diagnosis: rollback changes pointers, not history.
+- **Returning to balanced** static output needs a newly validated live activation, with that Market omitted from `rs_formula_overrides`.
 
 ## Static Price-Stage Checkpoints
 
