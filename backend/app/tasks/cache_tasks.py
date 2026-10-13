@@ -500,10 +500,29 @@ def _universe_rows(db) -> list[tuple[str, bool]]:
 _PRICE_KEY_SUFFIXES = ("recent", "last_update", "fetch_meta")
 
 
-def _cleanup_orphaned_price_cache(universe_rows: list[tuple[str, bool]]) -> int:
+def _former_universe_symbols(db) -> set[str]:
+    """Symbols with universe lifecycle history.
+
+    A snapshot import replaces a market's rows (it deletes them and inserts
+    only active ones), so a delisted symbol can vanish from stock_universe
+    instead of turning inactive. Its status events survive: they have no
+    foreign key to the universe row.
+    """
+    from ..models.stock_universe import StockUniverseStatusEvent
+
+    return {
+        str(symbol).strip().upper()
+        for (symbol,) in db.query(StockUniverseStatusEvent.symbol).distinct()
+    }
+
+
+def _cleanup_orphaned_price_cache(
+    universe_rows: list[tuple[str, bool]], former_symbols: set[str] = frozenset()
+) -> int:
     """Delete Redis price keys of delisted symbols; returns symbols cleaned.
 
-    An orphan is a symbol the universe knows with no active row. Symbols it
+    An orphan is a symbol the universe holds, or once held (former_symbols),
+    with no active row now. Symbols it
     never held (SPY, COT instruments, futures) are cached on purpose and kept,
     which also makes an empty or broken universe delete nothing. Keys are
     matched by name, ``price:<MARKET>:<SYMBOL>:<suffix>`` or the legacy
@@ -512,7 +531,7 @@ def _cleanup_orphaned_price_cache(universe_rows: list[tuple[str, bool]]) -> int:
     """
     from ..services.redis_pool import get_redis_client
 
-    known = {symbol for symbol, _ in universe_rows}
+    known = {symbol for symbol, _ in universe_rows} | set(former_symbols)
     orphaned = known - {symbol for symbol, is_active in universe_rows if is_active}
     if not orphaned:
         return 0
@@ -547,7 +566,7 @@ def weekly_global_maintenance(self):
     telemetry_deleted = get_telemetry().cleanup_old_events()
     db = SessionLocal()
     try:
-        orphans = _cleanup_orphaned_price_cache(_universe_rows(db))
+        orphans = _cleanup_orphaned_price_cache(_universe_rows(db), _former_universe_symbols(db))
     finally:
         db.close()
     logger.info(

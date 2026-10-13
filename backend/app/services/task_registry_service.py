@@ -176,6 +176,8 @@ SCHEDULED_TASKS = {
             'and telemetry events past retention'
         ),
         'schedule_description': 'Sunday 6:00 AM ET',
+        # A shared Beat entry: installed even when cache warming is off.
+        'always_enabled': True,
     },
 
     # ===== MONTHLY =====
@@ -562,6 +564,9 @@ class TaskRegistryService:
                     # Older/partial databases cannot run Social Signals, but
                     # must still expose the rest of the task registry.
                     is_enabled = False
+            elif task_info.get('always_enabled'):
+                # Scheduled by Beat regardless of cache warming.
+                is_enabled = True
             else:
                 is_enabled = bool(getattr(
                     settings, task_info.get('enabled_setting', 'cache_warmup_enabled')

@@ -28,9 +28,17 @@ class _Redis:
         self.keys -= set(keys)
 
 
+class _Rows(list):
+    """A query result: iterated as (symbol, is_active); distinct() is the
+    status-event history (empty here)."""
+
+    def distinct(self):
+        return []
+
+
 def _db(rows):
     db = MagicMock()
-    db.query.return_value = rows  # iterated as (symbol, is_active)
+    db.query.return_value = _Rows(rows)
     return db
 
 
@@ -61,6 +69,24 @@ def test_removes_every_markets_keys_for_a_delisted_symbol_and_keeps_the_rest():
         "price:US:SPY:recent", "price:US:^VIX:recent",
         "fundamentals:US:0700.HK",
     }
+
+
+def test_a_symbol_dropped_by_a_snapshot_import_is_still_cleaned():
+    # The snapshot import deletes a market's rows and inserts only active ones,
+    # so a delisted symbol has no row at all; its status events remain.
+    redis = _Redis({"price:HK:9999.HK:recent", "price:US:SPY:recent"})
+    with patch("app.services.redis_pool.get_redis_client", return_value=redis):
+        cleaned = cache_tasks._cleanup_orphaned_price_cache([("AAPL", True)], {"9999.HK"})
+
+    assert cleaned == 1
+    assert {k.decode() for k in redis.keys} == {"price:US:SPY:recent"}
+
+
+def test_former_symbols_come_from_universe_status_events():
+    db = MagicMock()
+    db.query.return_value.distinct.return_value = [("9999.hk",), ("OLDCO",)]
+
+    assert cache_tasks._former_universe_symbols(db) == {"9999.HK", "OLDCO"}
 
 
 def test_a_symbol_active_in_any_row_is_kept():
@@ -121,3 +147,13 @@ def test_beat_runs_it_weekly_whatever_markets_are_enabled(enabled_markets):
 def test_runs_show_under_their_own_scheduled_job():
     assert SCHEDULED_TASKS["weekly-global-maintenance"]["task_function"] == TASK
     assert _registry_entry_for(TASK, {}) == "weekly-global-maintenance"
+
+
+def test_reads_enabled_even_when_cache_warming_is_off(db_session):
+    from app.services.task_registry_service import TaskRegistryService
+
+    with patch("app.services.task_registry_service.settings.cache_warmup_enabled", False):
+        tasks = {t["name"]: t for t in TaskRegistryService().get_all_scheduled_tasks(db_session)}
+
+    assert tasks["weekly-global-maintenance"]["is_enabled"] is True
+    assert tasks["monthly-price-data-cleanup"]["is_enabled"] is False
