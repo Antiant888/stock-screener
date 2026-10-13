@@ -33,13 +33,14 @@ _SYMBOL_BASE = re.compile(r"[.\-]")
 
 
 def _alias_phrases():
-    """Latin company aliases ("Foxconn", "Hon Hai"), as space-joined casefolded words."""
+    """Latin company aliases ("Foxconn", "Hon Hai") as space-joined casefolded words,
+    each with the canonical listing it names."""
     from app.services.cjk_alias_data import ASIA_ALIAS_CORPUS
-    return frozenset(
-        " ".join(_WORD.findall(alias.casefold()))
-        for entry in ASIA_ALIAS_CORPUS.values() for alias in entry["aliases"]
+    return {
+        " ".join(_WORD.findall(alias.casefold())): canonical
+        for canonical, entry in ASIA_ALIAS_CORPUS.items() for alias in entry["aliases"]
         if alias.isascii() and _WORD.search(alias)
-    )
+    }
 
 
 _ALIAS_PHRASES = _alias_phrases()
@@ -247,7 +248,7 @@ class ProcessSocialBacklog:
             daily_limit_usd=daily_limit_usd,
             budget_timezone=budget_timezone,
         )
-        self._universe_hints = None  # (active symbols, first name words), read once
+        self._universe_hints = None  # (active symbols, first name words, active aliases), read once
 
     def enqueue(self, content_item_id, post: SocialPostRecord, *, selected_model,
                 now, prompt_version=VERSION, schema_version=VERSION, run_id=None):
@@ -317,8 +318,11 @@ class ProcessSocialBacklog:
                 first = SocialTickerResolver._issuer_key(name).split()[:1]
                 if first and len(first[0]) >= 4:
                     names.add(first[0])
-            self._universe_hints = (symbols, names)
-        symbols, names = self._universe_hints
+            # An alias of an inactive listing can't yield a usable claim (#619).
+            aliases = frozenset(phrase for phrase, canonical in _ALIAS_PHRASES.items()
+                                if canonical in symbols)
+            self._universe_hints = (symbols, names, aliases)
+        symbols, names, aliases = self._universe_hints
         # ponytail: first-word name match lets generic names ("General", "First") through;
         # it errs toward an LLM call. CJK text has no word breaks, so it always passes.
         # Exact case: lowercase "it", "on", "now" are tickers too, and would pass every post.
@@ -331,7 +335,7 @@ class ProcessSocialBacklog:
             return True
         # Aliases that aren't a universe name's first word ("Foxconn", "Hon Hai").
         joined = f" {' '.join(words)} "
-        return any(f" {alias} " in joined for alias in _ALIAS_PHRASES)
+        return any(f" {alias} " in joined for alias in aliases)
 
     def _claim(self, now, limit, admin_work_ids, eligible_work_ids=()):
         claimed, outside, terminal = [], 0, 0
