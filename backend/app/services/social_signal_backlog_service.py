@@ -29,6 +29,20 @@ NO_SIGNAL_GATE = "no_signal_gate"
 _WORD = re.compile(r"\w+")
 _SYMBOL = re.compile(r"[A-Za-z0-9]+(?:[.\-][A-Za-z]{1,3}\b)?")  # MU, BRK.B, 0700.HK, 3008.TWO
 _CJK = re.compile(r"[぀-ヿ㐀-鿿가-힯]")
+_SYMBOL_BASE = re.compile(r"[.\-]")
+
+
+def _alias_phrases():
+    """Latin company aliases ("Foxconn", "Hon Hai"), as space-joined casefolded words."""
+    from app.services.cjk_alias_data import ASIA_ALIAS_CORPUS
+    return frozenset(
+        " ".join(_WORD.findall(alias.casefold()))
+        for entry in ASIA_ALIAS_CORPUS.values() for alias in entry["aliases"]
+        if alias.isascii() and _WORD.search(alias)
+    )
+
+
+_ALIAS_PHRASES = _alias_phrases()
 
 
 def _utc(value):
@@ -307,11 +321,17 @@ class ProcessSocialBacklog:
         symbols, names = self._universe_hints
         # ponytail: first-word name match lets generic names ("General", "First") through;
         # it errs toward an LLM call. CJK text has no word breaks, so it always passes.
-        # Aliases that are not a name's first word ("Foxconn") are skipped; add
-        # resolve_alias here if those turn up in skipped posts.
         # Exact case: lowercase "it", "on", "now" are tickers too, and would pass every post.
-        return (any(word in symbols for word in _SYMBOL.findall(text))
-                or any(word in names for word in _WORD.findall(text.casefold())))
+        # A suffix that isn't a listing ("MU.It" with no space) falls back to its base.
+        if any(token in symbols or _SYMBOL_BASE.split(token)[0] in symbols
+               for token in _SYMBOL.findall(text)):
+            return True
+        words = _WORD.findall(text.casefold())
+        if any(word in names for word in words):
+            return True
+        # Aliases that aren't a universe name's first word ("Foxconn", "Hon Hai").
+        joined = f" {' '.join(words)} "
+        return any(f" {alias} " in joined for alias in _ALIAS_PHRASES)
 
     def _claim(self, now, limit, admin_work_ids, eligible_work_ids=()):
         claimed, outside, terminal = [], 0, 0
