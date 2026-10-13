@@ -153,11 +153,11 @@ SCHEDULED_TASKS = {
 
     # ===== WEEKLY, PER MARKET (cache: Sunday; fundamentals: Saturday) =====
     **_weekly_refresh_task_definitions(),
-    # The unscoped run is the only one that removes orphaned price-cache keys
-    # and expired telemetry events (weekly_full_refresh does both only when
-    # market is None); Beat runs per market, so this is its manual trigger.
-    # Per-market runs match their own entries first in _registry_entry_for,
-    # so only market=None runs land here.
+    # Manual all-markets refresh. It also runs the orphaned-cache and telemetry
+    # cleanups (weekly_full_refresh does both only when market is None), which
+    # weekly-global-maintenance now runs on schedule (#615). Per-market runs
+    # match their own entries first in _registry_entry_for, so only
+    # market=None runs land here.
     'weekly-full-refresh': {
         'task_function': 'app.tasks.cache_tasks.weekly_full_refresh',
         'display_name': 'Weekly Full Refresh (all markets)',
@@ -166,6 +166,16 @@ SCHEDULED_TASKS = {
             'expired telemetry events, which per-market runs skip'
         ),
         'schedule_description': 'Manual only',
+    },
+
+    'weekly-global-maintenance': {
+        'task_function': 'app.tasks.cache_tasks.weekly_global_maintenance',
+        'display_name': 'Weekly Cache & Telemetry Cleanup',
+        'description': (
+            'Removes cached prices of delisted symbols in every market '
+            'and telemetry events past retention'
+        ),
+        'schedule_description': 'Sunday 6:00 AM ET',
     },
 
     # ===== MONTHLY =====
