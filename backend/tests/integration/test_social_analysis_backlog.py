@@ -691,6 +691,9 @@ def test_no_signal_posts_finish_without_an_llm_call(backlog, value):
     replace(post(1), text="Look at MU here"),
     replace(post(1), text="Tencent 0700.HK looks heavy"),
     replace(post(1), text="F cuts EV spending"),
+    replace(post(1), text="MU.It is breaking out"),
+    replace(post(1), text="Foxconn guides AI server revenue higher"),
+    replace(post(1), text="hon hai capacity is sold out"),
     replace(post(1), text="3008.TWO rallies"),
     replace(post(1), text="雷军说小米汽车订单很多"),
     replace(post(1), text="this chart", attachments=(SocialAttachmentRef("image", "https://pbs.twimg.com/a.jpg"),)),
@@ -704,6 +707,7 @@ def test_posts_with_a_ticker_name_or_attachment_still_reach_the_llm(backlog, val
         db.add(StockUniverse(symbol="MU", name="Micron Technology Inc", market="US", exchange="NASDAQ", is_active=True))
         db.add(StockUniverse(symbol="0700.HK", name="TENCENT", market="HK", exchange="HKEX", is_active=True))
         db.add(StockUniverse(symbol="F", name="Ford Motor Co", market="US", exchange="NYSE", is_active=True))
+        db.add(StockUniverse(symbol="2317.TW", name="HON HAI PRECISION", market="TW", exchange="TWSE", is_active=True))
         db.add(StockUniverse(symbol="3008.TWO", name="LARGAN", market="TW", exchange="TPEX", is_active=True))
     configure_budget(backlog)
     llm = FakeLLM()
@@ -740,3 +744,20 @@ def test_a_no_signal_skip_yields_new_work_once_the_universe_lists_the_ticker(bac
     quiet = replace(post(2), text="good morning")
     first = enqueue(backlog, worker, quiet)
     assert worker.enqueue(2, quiet, selected_model="synthetic/requested", now=NOW) == first
+
+
+def test_alias_of_a_listing_outside_the_active_universe_does_not_reach_the_llm(backlog):
+    """An alias can only yield a usable claim when its listing is active; otherwise the
+    resolver rejects it and the call just spends the shared budget."""
+    from app.infra.db.models.social_analysis import SocialExtractionWork
+
+    configure_budget(backlog)
+    llm = FakeLLM()
+    worker = processor(backlog, llm)
+    work_id = enqueue(backlog, worker, replace(post(1), text="Foxconn guides AI server revenue higher"))
+
+    asyncio.run(worker.execute(NOW, 1))
+
+    assert llm.calls == 0
+    with backlog() as db:
+        assert db.get(SocialExtractionWork, work_id).error_code == "skipped:no_signal"
