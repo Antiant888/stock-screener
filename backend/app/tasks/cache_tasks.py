@@ -531,8 +531,14 @@ def _cleanup_orphaned_price_cache(
     """
     from ..services.redis_pool import get_redis_client
 
+    active = {symbol for symbol, is_active in universe_rows if is_active}
+    if not active:
+        # An empty or unreadable universe says nothing about delistings; with
+        # history alone, every symbol ever held would read as orphaned.
+        logger.warning("Orphan cleanup skipped: the universe has no active symbols")
+        return 0
     known = {symbol for symbol, _ in universe_rows} | set(former_symbols)
-    orphaned = known - {symbol for symbol, is_active in universe_rows if is_active}
+    orphaned = known - active
     if not orphaned:
         return 0
     redis_client = get_redis_client()

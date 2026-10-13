@@ -82,6 +82,16 @@ def test_a_symbol_dropped_by_a_snapshot_import_is_still_cleaned():
     assert {k.decode() for k in redis.keys} == {"price:US:SPY:recent"}
 
 
+def test_an_empty_universe_with_history_deletes_nothing():
+    # A broken or emptied universe must not turn every once-held symbol into an orphan.
+    redis = _Redis({"price:US:AAPL:recent", "price:HK:0700.HK:recent"})
+    with patch("app.services.redis_pool.get_redis_client", return_value=redis):
+        assert cache_tasks._cleanup_orphaned_price_cache([], {"AAPL", "0700.HK"}) == 0
+        assert cache_tasks._cleanup_orphaned_price_cache([("AAPL", False)], {"0700.HK"}) == 0
+
+    assert {k.decode() for k in redis.keys} == {"price:US:AAPL:recent", "price:HK:0700.HK:recent"}
+
+
 def test_former_symbols_come_from_universe_status_events():
     db = MagicMock()
     db.query.return_value.distinct.return_value = [("9999.hk",), ("OLDCO",)]
@@ -106,15 +116,15 @@ def test_an_empty_universe_deletes_nothing():
 
 def test_redis_errors_fail_the_run_instead_of_reading_as_zero_cleaned():
     with pytest.raises(ConnectionError):
-        _clean([("OLDCO", False)], {"price:OLDCO:recent"}, error=ConnectionError("redis down"))
+        _clean([("AAPL", True), ("OLDCO", False)], {"price:OLDCO:recent"}, error=ConnectionError("redis down"))
     with patch("app.services.redis_pool.get_redis_client", return_value=None), pytest.raises(RuntimeError):
-        cache_tasks._cleanup_orphaned_price_cache([("OLDCO", False)], set())
+        cache_tasks._cleanup_orphaned_price_cache([("AAPL", True), ("OLDCO", False)], set())
 
 
 def test_the_task_runs_telemetry_retention_even_if_the_cache_step_fails():
     telemetry = MagicMock()
     telemetry.cleanup_old_events.return_value = 7
-    with patch.object(cache_tasks, "SessionLocal", return_value=_db([("OLDCO", False)])), patch(
+    with patch.object(cache_tasks, "SessionLocal", return_value=_db([("AAPL", True), ("OLDCO", False)])), patch(
         "app.services.telemetry.get_telemetry", return_value=telemetry
     ), patch("app.services.redis_pool.get_redis_client", return_value=_Redis(set(), error=ConnectionError("x"))):
         with pytest.raises(ConnectionError):
@@ -126,7 +136,7 @@ def test_the_task_runs_telemetry_retention_even_if_the_cache_step_fails():
 def test_the_task_reports_both_counts():
     telemetry = MagicMock()
     telemetry.cleanup_old_events.return_value = 7
-    with patch.object(cache_tasks, "SessionLocal", return_value=_db([("OLDCO", False)])), patch(
+    with patch.object(cache_tasks, "SessionLocal", return_value=_db([("AAPL", True), ("OLDCO", False)])), patch(
         "app.services.telemetry.get_telemetry", return_value=telemetry
     ), patch("app.services.redis_pool.get_redis_client", return_value=_Redis({"price:US:OLDCO:recent"})):
         result = cache_tasks.weekly_global_maintenance.run()
