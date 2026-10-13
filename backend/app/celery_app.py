@@ -480,6 +480,8 @@ celery_app.conf.result_expires = 86400  # Results expire after 24 hours
 
 def _build_cache_warmup_beat_schedule(enabled_markets: list[str]) -> dict:
     """Build cache warmup Beat entries for the explicitly enabled markets."""
+    from .tasks.workload_coordination import PIPELINE_CHAIN_HEARTBEAT_SECONDS
+
     beat_schedule: dict = {}
 
     for _market in enabled_markets:
@@ -785,6 +787,14 @@ def _build_cache_warmup_beat_schedule(enabled_markets: list[str]) -> dict:
             'task': 'app.tasks.task_history_tasks.reconcile_task_runs',
             'schedule': 300.0,
             'options': {'queue': 'celery', 'expires': 290},
+        },
+
+        # Keeps each market's daily pipeline chain claim while the chain is
+        # alive and frees it once the chain is dead (#605).
+        'pipeline-chain-claim-heartbeat': {
+            'task': 'app.tasks.daily_market_pipeline_tasks.renew_daily_market_pipeline_claims',
+            'schedule': float(PIPELINE_CHAIN_HEARTBEAT_SECONDS),
+            'options': {'queue': 'celery', 'expires': PIPELINE_CHAIN_HEARTBEAT_SECONDS - 10},
         },
 
         # Weekly telemetry governance audit (bead asia.10.4).

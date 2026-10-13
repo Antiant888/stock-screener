@@ -6,8 +6,9 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from datetime import datetime, timezone
 from functools import wraps
+import json
 import logging
-from typing import Any, Dict, Iterator, Optional, Tuple
+from typing import Any, Dict, Iterator, Optional, Sequence, Tuple
 
 from celery.exceptions import Retry
 
@@ -32,16 +33,19 @@ from .workload_fence import LeaseLost, workload_fence
 EXTERNAL_FETCH_GLOBAL_KEY = "external_fetch_global"
 MARKET_WORKLOAD_PREFIX = "market_workload"
 PIPELINE_CHAIN_PREFIX = "pipeline_chain"
+PIPELINE_CHAIN_TASKS_PREFIX = "pipeline_chain_tasks"
+PIPELINE_CHAIN_MISSES_PREFIX = "pipeline_chain_misses"
 # Held from dispatch until the daily pipeline chain's last stage or first
-# failure. Fixed from dispatch and never renewed: one concurrency-1 worker
-# serves every market's data-fetch queue (start_celery.sh), so a stage can
-# wait many hours before it starts and nothing could renew the claim in
-# time. 20h covers normal waits, and a claim no release frees (a stage
-# revoked from the console fires no errback) still expires before the
-# market's next scheduled run, 24h after this one. It does not cover an
-# unbounded backlog (a chain still queued after 20h can be overlapped); a
-# liveness-based claim would (#605).
-PIPELINE_CHAIN_TTL_SECONDS = 20 * 3600
+# failure. renew_daily_market_pipeline_claims renews it while any stage of
+# the chain is still queued, reserved or running, and releases it once the
+# chain is dead (#605), so a chain queued behind a long data-fetch backlog
+# keeps it and a revoked one loses it. This TTL is only the safety net for a
+# heartbeat outage: such a claim never locks the market for longer.
+PIPELINE_CHAIN_TTL_SECONDS = 48 * 3600
+PIPELINE_CHAIN_HEARTBEAT_SECONDS = 300
+# Consecutive heartbeats that must find no trace of a chain before its claim
+# is released: one can fall between a stage finishing and the next publishing.
+PIPELINE_CHAIN_MISSES_TO_RELEASE = 2
 COORDINATION_WAIT_MAX_RETRIES = 10_000
 logger = logging.getLogger(__name__)
 _SERIALIZED_MARKET_WORKLOAD_DISABLED: ContextVar[bool] = ContextVar(
@@ -56,6 +60,25 @@ if val and string.find(val, ARGV[1], 1, true) then
 end
 return 0
 """
+
+
+# Claim the chain and record its task ids in one step, so the heartbeat never
+# sees a claim without them.
+_CLAIM_PIPELINE_CHAIN_LUA = """
+if redis.call('set', KEYS[1], ARGV[1], 'NX', 'EX', ARGV[3]) then
+    redis.call('set', KEYS[2], ARGV[2], 'EX', ARGV[3])
+    return 1
+end
+return 0
+"""
+
+
+def _pipeline_chain_tasks_key(token: str) -> str:
+    return f"{PIPELINE_CHAIN_TASKS_PREFIX}:{token}"
+
+
+def _pipeline_chain_misses_key(token: str) -> str:
+    return f"{PIPELINE_CHAIN_MISSES_PREFIX}:{token}"
 
 
 def _market_workload_key(market: Optional[str]) -> str:
@@ -105,6 +128,7 @@ class WorkloadCoordination:
         )
         self._release_script = self.redis.register_script(_RELEASE_LUA)
         self._renew_script = self.redis.register_script(RENEW_LEASE_LUA)
+        self._claim_chain_script = self.redis.register_script(_CLAIM_PIPELINE_CHAIN_LUA)
 
     def _acquire(self, key: str, task_name: str, task_id: str) -> Tuple[bool, bool]:
         if task_id != "unknown":
@@ -174,16 +198,50 @@ class WorkloadCoordination:
     def get_market_workload_holder(self, market: Optional[str]) -> Optional[Dict[str, Any]]:
         return self._holder(_market_workload_key(market))
 
-    def claim_pipeline_chain(self, token: str, *, market: Optional[str]) -> bool:
+    def claim_pipeline_chain(
+        self, token: str, *, market: Optional[str], task_ids: Sequence[str]
+    ) -> bool:
         """Claim the market's daily pipeline chain; False if one already holds it.
 
         The per-stage market workload lease is free between stages, so it
         cannot stop a second chain; this lease spans the whole chain.
+        ``task_ids`` are the chain's stages in order, which the heartbeat
+        reads to tell whether the chain is still alive.
         """
         value = f"daily_market_pipeline:{token}:{datetime.now(timezone.utc).isoformat()}"
         return bool(
-            self.redis.set(_pipeline_chain_key(market), value, nx=True, ex=PIPELINE_CHAIN_TTL_SECONDS)
+            self._claim_chain_script(
+                keys=[_pipeline_chain_key(market), _pipeline_chain_tasks_key(token)],
+                args=[value, json.dumps(list(task_ids)), PIPELINE_CHAIN_TTL_SECONDS],
+            )
         )
+
+    def renew_pipeline_chain(self, token: str, *, market: Optional[str]) -> bool:
+        """Restart the claim's TTL, only if this token still holds it."""
+        renewed = bool(
+            self._renew_script(
+                keys=[_pipeline_chain_key(market)],
+                args=[f":{token}:", PIPELINE_CHAIN_TTL_SECONDS],
+            )
+        )
+        if renewed:
+            self.redis.expire(_pipeline_chain_tasks_key(token), PIPELINE_CHAIN_TTL_SECONDS)
+        return renewed
+
+    def get_pipeline_chain_task_ids(self, token: str) -> Optional[list[str]]:
+        """The chain's stage ids in order; None for a claim taken before #605."""
+        raw = self.redis.get(_pipeline_chain_tasks_key(token))
+        return None if raw is None else json.loads(raw)
+
+    def count_pipeline_chain_miss(self, token: str) -> int:
+        """Count one more consecutive heartbeat that found no trace of the chain."""
+        key = _pipeline_chain_misses_key(token)
+        misses = self.redis.incr(key)
+        self.redis.expire(key, PIPELINE_CHAIN_TTL_SECONDS)
+        return int(misses)
+
+    def clear_pipeline_chain_misses(self, token: str) -> None:
+        self.redis.delete(_pipeline_chain_misses_key(token))
 
     def release_pipeline_chain(self, token: str, *, market: Optional[str]) -> bool:
         """Release only if this token still holds it (never a newer chain's)."""

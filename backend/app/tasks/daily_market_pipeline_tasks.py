@@ -377,7 +377,140 @@ def release_daily_market_pipeline_claim(*, market: str, token: str) -> dict:
     return {"status": "ok", "market": market, "stage": "release", "released": released}
 
 
-def _claim_pipeline_chain(market: str, token: str) -> tuple[Any, bool | None]:
+# Backend states that end a chain, and states of a stage a worker holds.
+_CHAIN_DEAD_STATES = frozenset({"FAILURE", "REVOKED"})
+_CHAIN_RUNNING_STATES = frozenset({"RECEIVED", "STARTED", "RETRY"})
+
+
+def _message_task_id(payload: Any) -> str | None:
+    headers = payload.get("headers") if isinstance(payload, dict) else None
+    return headers.get("id") if isinstance(headers, dict) else None
+
+
+def _live_message_ids() -> set[str]:
+    """Task ids of every message still in a broker queue or delivered to a
+    worker and not yet acked.
+
+    Delivered messages sit in kombu's ``unacked`` hash: that covers stages a
+    busy solo worker holds, which worker inspect cannot report.
+    """
+    import json
+
+    import redis
+
+    from app.config import settings
+    from app.services.operations_job_service import OperationsJobService
+
+    broker = redis.from_url(settings.celery_broker_url)
+    payloads = [
+        json.loads(raw)
+        for queue_name in OperationsJobService.broker_queue_names()
+        for raw in broker.lrange(queue_name, 0, -1)
+    ]
+    payloads += [json.loads(raw)[0] for raw in broker.hvals("unacked")]
+    return {task_id for payload in payloads if (task_id := _message_task_id(payload))}
+
+
+def _chain_liveness(task_ids: list[str], states: dict[str, str], live_message_ids) -> str:
+    """``dead``, ``alive``, ``done`` or ``missing`` for a chain's stages.
+
+    A chain publishes one stage at a time, so at most one stage is in flight;
+    later stages read PENDING until then. Results expire (24h), so an old
+    stage's SUCCESS can read PENDING too, which is why every stage id is
+    matched against the live messages, not only the first unfinished one.
+    ``live_message_ids`` is called only when the states do not decide.
+    """
+    chain_states = [states.get(task_id, "PENDING") for task_id in task_ids]
+    if any(state in _CHAIN_DEAD_STATES for state in chain_states):
+        return "dead"
+    if any(state in _CHAIN_RUNNING_STATES for state in chain_states):
+        return "alive"
+    if chain_states[-1] == "SUCCESS":
+        return "done"
+    if live_message_ids() & set(task_ids):
+        return "alive"
+    return "missing"
+
+
+def _heartbeat_pipeline_chain(claims: Any, market: str, token: str, live_message_ids) -> str:
+    from app.tasks.workload_coordination import PIPELINE_CHAIN_MISSES_TO_RELEASE
+
+    task_ids = claims.get_pipeline_chain_task_ids(token)
+    if not task_ids:
+        # Claimed before #605 recorded stage ids: its fixed expiry frees it.
+        return "untracked"
+    states = {task_id: celery_app.AsyncResult(task_id).state for task_id in task_ids}
+    liveness = _chain_liveness(task_ids, states, live_message_ids)
+    if liveness == "alive":
+        claims.clear_pipeline_chain_misses(token)
+        return "renewed" if claims.renew_pipeline_chain(token, market=market) else "lost"
+    if (
+        liveness == "missing"
+        and claims.count_pipeline_chain_miss(token) < PIPELINE_CHAIN_MISSES_TO_RELEASE
+    ):
+        return "missing"
+    # Owner-checked: a newer chain that took the claim meanwhile keeps it.
+    released = claims.release_pipeline_chain(token, market=market)
+    return f"released_{liveness}" if released else "lost"
+
+
+@celery_app.task(
+    name="app.tasks.daily_market_pipeline_tasks.renew_daily_market_pipeline_claims",
+    queue="celery",
+)
+def renew_daily_market_pipeline_claims() -> dict:
+    """Keep each market's pipeline-chain claim while its chain is alive (#605).
+
+    Renews the claim while a stage is queued, delivered or running, and
+    releases it once a stage failed or was revoked (a revoked stage fires no
+    errback), the chain finished, or two heartbeats in a row found no trace
+    of it. A market whose check raises keeps its claim until the next beat
+    or PIPELINE_CHAIN_TTL_SECONDS.
+
+    A stage killed with its worker (OOM, SIGKILL) reads STARTED until its
+    result expires (24h), so such a chain keeps its claim that long; the
+    Operations console can release it (#612).
+    """
+    claims = _pipeline_chain_claims()
+    live: set[str] | None = None
+
+    def live_message_ids() -> set[str]:
+        nonlocal live
+        if live is None:
+            live = _live_message_ids()
+        return live
+
+    outcomes: dict[str, str] = {}
+    for market, holder in claims.get_pipeline_chain_holders().items():
+        token = (holder or {}).get("task_id")
+        if not token:
+            continue
+        try:
+            outcomes[market] = _heartbeat_pipeline_chain(claims, market, token, live_message_ids)
+        except Exception:
+            logger.warning(
+                "Could not check the %s pipeline chain claim; it is kept", market, exc_info=True
+            )
+            outcomes[market] = "error"
+    return {"status": "ok", "claims": outcomes}
+
+
+def _chain_task_ids(workflow: Any) -> list[str]:
+    """Freeze ``workflow`` and return its stages' task ids, first to last.
+
+    Publishing the same chain object keeps these ids.
+    """
+    node = workflow.freeze()
+    task_ids: list[str] = []
+    while node is not None:
+        task_ids.append(node.id)
+        node = node.parent
+    return task_ids[::-1]
+
+
+def _claim_pipeline_chain(
+    market: str, token: str, task_ids: list[str]
+) -> tuple[Any, bool | None]:
     """(claims, True) when claimed, (claims, False) when another chain holds
     the claim, (claims or None, None) when the claim store is unavailable.
 
@@ -387,7 +520,7 @@ def _claim_pipeline_chain(market: str, token: str) -> tuple[Any, bool | None]:
     claims = None
     try:
         claims = _pipeline_chain_claims()
-        return claims, claims.claim_pipeline_chain(token, market=market)
+        return claims, claims.claim_pipeline_chain(token, market=market, task_ids=task_ids)
     except Exception:
         logger.warning(
             "Could not claim the %s pipeline chain; dispatching without duplicate protection",
@@ -492,13 +625,17 @@ def queue_daily_market_pipeline(self, market: str) -> dict:
     release = release_daily_market_pipeline_claim.si(market=market_code, token=token).set(
         queue=market_jobs_queue_for_market(market_code)
     )
-    claims, claimed = _claim_pipeline_chain(market_code, token)
+    # Frozen before claiming, so the claim records the ids it will publish
+    # with; the heartbeat reads them to tell whether the chain is alive.
+    tracked = chain(*signatures, release)
+    task_ids = _chain_task_ids(tracked)
+    claims, claimed = _claim_pipeline_chain(market_code, token, task_ids)
     chain_holder = None
     if claimed is False:
         chain_holder = _pipeline_chain_holder(claims, market_code)
         if chain_holder is None:
             # Freed between SET NX and GET: nothing is running, so try once more.
-            claims, claimed = _claim_pipeline_chain(market_code, token)
+            claims, claimed = _claim_pipeline_chain(market_code, token, task_ids)
             if claimed is False:
                 chain_holder = _pipeline_chain_holder(claims, market_code) or {}
     if claimed is False:
@@ -512,12 +649,12 @@ def queue_daily_market_pipeline(self, market: str) -> dict:
             "timestamp": datetime.now().isoformat(),
         }
     publish_options: dict = {}
+    workflow = tracked if claimed else chain(*signatures)
     if claimed:
-        signatures = [*signatures, release]
         publish_options["link_error"] = release
 
     try:
-        task = chain(*signatures).apply_async(**publish_options)
+        task = workflow.apply_async(**publish_options)
     except Exception:
         if claimed:
             try:

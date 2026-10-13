@@ -310,8 +310,8 @@ class OperationsJobService:
         return {
             "external_fetch_global": coordination.get_external_fetch_holder(),
             "market_workload": coordination.get_market_workload_holders(),
-            # Daily pipeline chain claims (#598): held from dispatch until the
-            # chain's last stage or first failure; a revoked stage leaves one.
+            # Daily pipeline chain claims (#598): held from dispatch while the
+            # chain is alive (#605); a stage killed with its worker leaves one.
             "pipeline_chain": {
                 market: holder
                 for market, holder in coordination.get_pipeline_chain_holders().items()
