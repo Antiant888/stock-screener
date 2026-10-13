@@ -49,7 +49,7 @@ from app.database import SessionLocal
 from app.infra.db.models.feature_store import (
     FeatureRun,
     StockFeatureDaily,
-    table_details,
+    derived_details_columns,
 )
 from app.scanners.base_screener import DataRequirements, StockData
 from app.scanners.setup_engine_scanner import attach_setup_engine
@@ -394,7 +394,7 @@ def run_backfill(args: argparse.Namespace) -> None:
                     ).update(
                         {
                             "details_json": merged_details,
-                            "table_details_json": table_details(merged_details),
+                            **derived_details_columns(merged_details),
                         },
                         synchronize_session=False,
                     )

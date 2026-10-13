@@ -12,6 +12,8 @@ Tables:
     stock_feature_daily       — Per-symbol screening scores
     feature_run_pointers      — Atomic publish pointers (e.g. 'latest_published')
 """
+import math
+
 from sqlalchemy import (
     Boolean, Column, Integer, Float, Text, Date, DateTime, JSON,
     ForeignKey, Index, event, false, inspect,
@@ -116,11 +118,33 @@ class StockFeatureDaily(Base):
     # details_json minus the setup payload (~6 kB vs ~64 kB a row): what JSON
     # filters, sorts and table pages read. _store_table_details derives it on
     # unit-of-work flushes; Core statements and ORM bulk operations skip mapper
-    # events, so they must set it via table_details().
+    # events, so they must set it via derived_details_columns().
     # NULL on rows written before 20261011_0064; such runs read details_json.
     table_details_json = deferred(
         Column(JSON().with_variant(JSONB(), "postgresql"), nullable=True)
     )
+    # Typed copies of the hottest sort/filter fields (HOT_NUMERIC_FIELDS,
+    # HOT_TEXT_FIELDS), written with table_details_json by the same writers.
+    # NULL on rows written before 20261013_0066; hot_fields_stored marks rows
+    # that carry them, since NULL is also a legitimate value for each field.
+    hot_fields_stored = Column(Boolean, nullable=True)
+    rs_rating = Column(Float, nullable=True)
+    rs_rating_1m = Column(Float, nullable=True)
+    rs_rating_3m = Column(Float, nullable=True)
+    rs_rating_12m = Column(Float, nullable=True)
+    minervini_score = Column(Float, nullable=True)
+    canslim_score = Column(Float, nullable=True)
+    adr_percent = Column(Float, nullable=True)
+    eps_growth_qq = Column(Float, nullable=True)
+    sales_growth_qq = Column(Float, nullable=True)
+    beta = Column(Float, nullable=True)
+    perf_week = Column(Float, nullable=True)
+    perf_month = Column(Float, nullable=True)
+    perf_3m = Column(Float, nullable=True)
+    perf_6m = Column(Float, nullable=True)
+    avg_dollar_volume = Column(Float, nullable=True)
+    ibd_industry_group = Column(Text, nullable=True)
+    gics_sector = Column(Text, nullable=True)
 
     # Relationships
     run = relationship("FeatureRun", back_populates="features")
@@ -151,11 +175,63 @@ def table_details(details):
     }
 
 
+# Hot details keys stored as typed columns of the same name.
+HOT_NUMERIC_FIELDS = (
+    "rs_rating",
+    "rs_rating_1m",
+    "rs_rating_3m",
+    "rs_rating_12m",
+    "minervini_score",
+    "canslim_score",
+    "adr_percent",
+    "eps_growth_qq",
+    "sales_growth_qq",
+    "beta",
+    "perf_week",
+    "perf_month",
+    "perf_3m",
+    "perf_6m",
+    "avg_dollar_volume",
+)
+HOT_TEXT_FIELDS = ("ibd_industry_group", "gics_sector")
+
+
+def _hot_number(value):
+    """``value`` as PostgreSQL's ``CAST(details ->> key AS FLOAT)`` reads it,
+    with NULL where that cast would fail the whole query or overflow."""
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        return None
+    try:
+        number = float(value)
+    except (ValueError, OverflowError):
+        return None
+    # float() turns an out-of-range string ("1e400") into inf where the cast
+    # fails; only the digit-free NaN/Infinity literals are non-finite there.
+    if not math.isfinite(number) and any(char.isdigit() for char in str(value)):
+        return None
+    return number
+
+
+def derived_details_columns(details) -> dict:
+    """Every column derived from ``details_json``; writers set all of them."""
+    source = details if isinstance(details, dict) else {}
+    return {
+        "table_details_json": table_details(details),
+        "hot_fields_stored": True,
+        **{field: _hot_number(source.get(field)) for field in HOT_NUMERIC_FIELDS},
+        **{
+            field: value if isinstance(value := source.get(field), str) else None
+            for field in HOT_TEXT_FIELDS
+        },
+    }
+
+
 @event.listens_for(StockFeatureDaily, "before_insert")
 @event.listens_for(StockFeatureDaily, "before_update")
 def _store_table_details(_mapper, _connection, target) -> None:
     if inspect(target).attrs.details_json.history.has_changes():
-        target.table_details_json = table_details(target.details_json)
+        for column, value in derived_details_columns(target.details_json).items():
+            setattr(target, column, value)
         # Without a setup payload the copy is the details object itself, so
         # an in-place edit leaves no history on it; always write it.
         flag_modified(target, "table_details_json")

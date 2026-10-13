@@ -33,10 +33,11 @@ from app.infra.db.models.feature_store import (
     FeatureRunPointer,
     FeatureRunUniverseSymbol,
     StockFeatureDaily,
-    table_details,
+    derived_details_columns,
 )
 from app.infra.db.portability import dialect_name, is_postgres, json_text
 from app.infra.query.feature_store_query import (
+    DetailsLevel,
     apply_filter_expression,
     apply_filters,
     apply_sort_all,
@@ -249,7 +250,10 @@ def _upsert_stmt(session: Session, values: list[dict[str, Any]]):
             "rs_line_blue_dot_recent": stmt.excluded.rs_line_blue_dot_recent,
             "rs_line_new_high_date": stmt.excluded.rs_line_new_high_date,
             "details_json": stmt.excluded.details_json,
-            "table_details_json": stmt.excluded.table_details_json,
+            **{
+                column: stmt.excluded[column]
+                for column in derived_details_columns(None)
+            },
         },
     )
 
@@ -270,7 +274,7 @@ def _snapshot_row_values(run_id: int, row: FeatureRowWrite) -> dict[str, Any]:
         "rs_line_blue_dot_recent": coerce_bool_or_false(details.get("rs_line_blue_dot_recent")),
         "rs_line_new_high_date": details.get("rs_line_new_high_date"),
         "details_json": details,
-        "table_details_json": table_details(details),
+        **derived_details_columns(details),
     }
 
 
@@ -413,33 +417,49 @@ class SqlFeatureStoreRepository(FeatureStoreRepository):
 
     # -- Private helpers ---------------------------------------------------
 
-    def _require_run(self, run_id: int) -> bool:
-        """Raise unless the run exists; return whether reads may use
-        ``table_details_json``, i.e. every row of the run carries it.
+    def _require_run(self, run_id: int) -> DetailsLevel:
+        """Raise unless the run exists; return what every row of it carries.
 
-        Rows written before 20261011_0064 have none, and a filter over the
-        stored copy would silently miss them, so such runs keep reading
-        ``details_json``. The probe checks NULL flags only, not the blobs, and
-        rides on the run lookup so it costs no extra round trip.
+        Rows written before 20261011_0064 have no ``table_details_json`` and
+        rows before 20261013_0066 no hot typed columns. A filter over either
+        would silently miss such rows, so a run reads them only when every row
+        carries them. The probes check NULL flags only, not the blobs, and ride
+        on the run lookup so they cost no extra round trip.
         """
-        missing = exists().where(
-            StockFeatureDaily.run_id == run_id,
-            StockFeatureDaily.table_details_json.is_(None),
-            StockFeatureDaily.details_json.isnot(None),
-        )
+
+        def missing(column):
+            return exists().where(
+                StockFeatureDaily.run_id == run_id,
+                column.is_(None),
+                StockFeatureDaily.details_json.isnot(None),
+            )
+
         found = (
-            self._session.query(FeatureRun.id, ~missing)
+            self._session.query(
+                FeatureRun.id,
+                ~missing(StockFeatureDaily.table_details_json),
+                ~missing(StockFeatureDaily.hot_fields_stored),
+            )
             .filter(FeatureRun.id == run_id)
             .first()
         )
         if found is None:
             raise EntityNotFoundError("FeatureRun", run_id)
-        return bool(found[1])
+        _id, table_ready, typed_ready = found
+        if not table_ready:
+            return DetailsLevel.LEGACY
+        return DetailsLevel.TYPED if typed_ready else DetailsLevel.TABLE
 
-    def _details_column(self, run_id: int):
-        if self._require_run(run_id):
-            return StockFeatureDaily.table_details_json
-        return StockFeatureDaily.details_json
+    def _details_field(self, level: DetailsLevel, field: str):
+        """``field`` of each row's details, from the cheapest source at ``level``."""
+        if level == DetailsLevel.TYPED:
+            return getattr(StockFeatureDaily, field)
+        column = (
+            StockFeatureDaily.table_details_json
+            if level == DetailsLevel.TABLE
+            else StockFeatureDaily.details_json
+        )
+        return json_text(column, (field,), bind_or_session=self._session)
 
     def _query_features(
         self,
@@ -527,7 +547,12 @@ class SqlFeatureStoreRepository(FeatureStoreRepository):
         Bridge method for dual-source queries — matches the return type
         of ``ScanResultRepository.get_filter_options()``.
         """
-        details = self._details_column(run_id)
+        level = self._require_run(run_id)
+        details = (
+            StockFeatureDaily.details_json
+            if level == DetailsLevel.LEGACY
+            else StockFeatureDaily.table_details_json
+        )
 
         # Ratings from indexed integer column (fast)
         rating_rows = (
@@ -571,12 +596,7 @@ class SqlFeatureStoreRepository(FeatureStoreRepository):
 
         # Industries and sectors from JSON
         industry_col = cast(
-            json_text(
-                details,
-                ("ibd_industry_group",),
-                bind_or_session=self._session,
-            ),
-            Text,
+            self._details_field(level, "ibd_industry_group"), Text
         )
         industry_rows = (
             self._session.query(industry_col)
@@ -590,14 +610,7 @@ class SqlFeatureStoreRepository(FeatureStoreRepository):
         )
         industries = tuple(sorted(r[0] for r in industry_rows))
 
-        sector_col = cast(
-            json_text(
-                details,
-                ("gics_sector",),
-                bind_or_session=self._session,
-            ),
-            Text,
-        )
+        sector_col = cast(self._details_field(level, "gics_sector"), Text)
         sector_rows = (
             self._session.query(sector_col)
             .filter(
@@ -661,10 +674,8 @@ class SqlFeatureStoreRepository(FeatureStoreRepository):
         Bridge method for dual-source queries — matches the return type
         of ``ScanResultRepository.get_peers_by_industry()``.
         """
-        industry_col = json_text(
-            self._details_column(run_id),
-            ("ibd_industry_group",),
-            bind_or_session=self._session,
+        industry_col = self._details_field(
+            self._require_run(run_id), "ibd_industry_group"
         )
         rows = (
             _feature_results_query(self._session, run_id)
@@ -690,10 +701,8 @@ class SqlFeatureStoreRepository(FeatureStoreRepository):
         Bridge method for dual-source queries — matches the return type
         of ``ScanResultRepository.get_peers_by_sector()``.
         """
-        sector_col = json_text(
-            self._details_column(run_id),
-            ("gics_sector",),
-            bind_or_session=self._session,
+        sector_col = self._details_field(
+            self._require_run(run_id), "gics_sector"
         )
         rows = (
             _feature_results_query(self._session, run_id)

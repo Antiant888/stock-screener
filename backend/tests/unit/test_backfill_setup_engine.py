@@ -422,3 +422,8 @@ class TestRunBackfillForceOverwrite:
             "schema_version": "v1",
             "setup_score": 75.0,
         }
+        # ...and the hot typed columns, with the marker readiness checks.
+        from app.infra.db.models.feature_store import derived_details_columns
+
+        assert set(derived_details_columns(None)) <= set(values)
+        assert values["hot_fields_stored"] is True
