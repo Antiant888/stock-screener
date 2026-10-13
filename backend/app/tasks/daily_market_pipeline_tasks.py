@@ -409,6 +409,39 @@ def _pipeline_chain_holder(claims: Any, market: str) -> dict | None:
         return {}
 
 
+def pipeline_run_blocker(market: str) -> dict | None:
+    """Why a manual Run would only skip right now, else None.
+
+    The two cheap dispatcher checks an operator can act on, run before
+    anything is queued. A check that cannot be read never blocks: the task
+    still runs every check itself (Beat calls it directly anyway).
+    """
+    market_code = _normalize_pipeline_market(market)
+    try:
+        calendar = MarketCalendarService()
+        today = calendar.market_now(market_code).date()
+        if not calendar.is_trading_day(market_code, today):
+            return {
+                "reason": "not_trading_day",
+                "message": f"Not a trading day in {market_code} ({today.isoformat()})",
+                "as_of_date": today.isoformat(),
+            }
+    except Exception:
+        logger.debug("Pre-flight calendar check failed for %s", market_code, exc_info=True)
+    try:
+        holder = _pipeline_chain_claims().get_pipeline_chain_holder(market_code)
+    except Exception:
+        logger.debug("Pre-flight claim check failed for %s", market_code, exc_info=True)
+        holder = None
+    if holder:
+        return {
+            "reason": "market_pipeline_already_active",
+            "message": f"The {market_code} pipeline is already in progress",
+            "active_since": holder.get("started_at"),
+        }
+    return None
+
+
 def _market_pipeline_active(market: str) -> dict | None:
     try:
         from app.wiring.bootstrap import get_workload_coordination

@@ -18,7 +18,7 @@ from ..celery_app import celery_app
 from ..database import SessionLocal
 from ..models.task_execution import TaskExecutionHistory
 from ..config import settings
-from .errors import TaskCooldownError
+from .errors import TaskCooldownError, TaskRunBlockedError
 from ..tasks.market_queues import (
     SHARED_DATA_FETCH_QUEUE,
     SUPPORTED_MARKETS,
@@ -113,6 +113,8 @@ def _daily_market_pipeline_task_definitions() -> Dict[str, Dict]:
             "manual_dispatch_kwargs": {"market": market},
             "manual_dispatch_headers": {"origin": "manual"},
             "manual_dispatch_options": {"queue": market_jobs_queue_for_market(market)},
+            # Pre-flight: why a Run would only skip, checked before queueing.
+            "run_blocker": "app.tasks.daily_market_pipeline_tasks.pipeline_run_blocker",
         }
     return entries
 
@@ -341,6 +343,22 @@ def _still_in_broker(task_ids: List[Optional[str]]) -> Dict[str, Optional[bool]]
     return answers
 
 
+def _run_blocker(task_info: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """The entry's pre-flight answer: why a manual Run would only skip, or
+    None. Never raises; a failed check must not stop a Run (the task
+    re-checks)."""
+    path = task_info.get('run_blocker')
+    if not path:
+        return None
+    try:
+        module_path, func_name = path.rsplit('.', 1)
+        check = getattr(__import__(module_path, fromlist=[func_name]), func_name)
+        return check(**(task_info.get('manual_dispatch_kwargs') or {}))
+    except Exception:
+        logger.warning("Pre-flight check %s failed", path, exc_info=True)
+        return None
+
+
 def _result_summary(result: Any, task_id: str) -> Optional[Dict[str, Any]]:
     """A task's dict result as JSON, or None (PostgreSQL JSON rejects NaN).
 
@@ -531,7 +549,7 @@ class TaskRegistryService:
 
         return self._task_imports[task_name]
 
-    def get_all_scheduled_tasks(self, db: Session) -> List[Dict]:
+    def get_all_scheduled_tasks(self, db: Session, *, include_run_blockers: bool = False) -> List[Dict]:
         """
         Get all scheduled tasks with their metadata and last run info.
 
@@ -580,6 +598,9 @@ class TaskRegistryService:
                 'is_enabled': is_enabled,
                 'last_run': None,
             }
+            if include_run_blockers:
+                # Opt-in: live checks (calendar, Redis) only the Run UI needs.
+                task_data['run_blocker'] = _run_blocker(task_info)
 
             if last_run:
                 status = last_run.status
@@ -686,6 +707,10 @@ class TaskRegistryService:
             raise ValueError(f"Unknown task: {task_name}")
 
         task_info = SCHEDULED_TASKS[task_name]
+        blocker = _run_blocker(task_info)
+        if blocker:
+            # Refuse before queueing: the run would only read Skipped.
+            raise TaskRunBlockedError(blocker)
         logger.info(f"Manually triggering task: {task_name}")
 
         cooldown_owner = None

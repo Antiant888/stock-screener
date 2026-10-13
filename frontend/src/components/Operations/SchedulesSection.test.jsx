@@ -238,6 +238,50 @@ describe('SchedulesSection', () => {
     expect(screen.getByRole('button', { name: 'Run Refresh Social Signals now' })).toBeDisabled();
   });
 
+  describe('pre-flight: Run is refused before queueing when it would only skip', () => {
+    it('disables Run while the market pipeline is in progress and links to its claim', async () => {
+      const since = '2026-10-13T20:30:00+00:00';
+      getScheduledTasks.mockResolvedValue(payload([{
+        ...task('daily-market-pipeline-us', 'Daily Market Pipeline (US)', lastRun('dispatched')),
+        run_blocker: { reason: 'market_pipeline_already_active', message: 'busy', active_since: since },
+      }]));
+
+      renderSection();
+
+      expect(await screen.findByRole('button', { name: 'Run Daily Market Pipeline (US) now' })).toBeDisabled();
+      const row = rowFor('Daily Market Pipeline (US)');
+      expect(within(row).getByText(new RegExp(`Pipeline in progress since ${new Date(since).toLocaleString()}`)))
+        .toBeInTheDocument();
+      expect(within(row).getByRole('link', { name: 'See its claim in Lease status' }))
+        .toHaveAttribute('href', '#pipeline-chain-claims');
+    });
+
+    it('says why on a non-trading day, even before the job has ever run', async () => {
+      getScheduledTasks.mockResolvedValue(payload([{
+        ...task('daily-market-pipeline-hk', 'Daily Market Pipeline (HK)', null),
+        run_blocker: { reason: 'not_trading_day', message: 'Not a trading day in HK (2026-10-17)' },
+      }]));
+
+      renderSection();
+
+      expect(await screen.findByRole('button', { name: 'Run Daily Market Pipeline (HK) now' })).toBeDisabled();
+      const row = rowFor('Daily Market Pipeline (HK)');
+      expect(within(row).getByText(/Not a trading day in HK \(2026-10-17\)/)).toBeInTheDocument();
+      expect(within(row).queryByRole('link')).not.toBeInTheDocument();
+    });
+
+    it('leaves Run enabled when there is no blocker', async () => {
+      getScheduledTasks.mockResolvedValue(payload([{
+        ...task('daily-market-pipeline-us', 'Daily Market Pipeline (US)', lastRun('completed')),
+        run_blocker: null,
+      }]));
+
+      renderSection();
+
+      expect(await screen.findByRole('button', { name: 'Run Daily Market Pipeline (US) now' })).toBeEnabled();
+    });
+  });
+
   describe('a run with no outcome past the cutoff (Unknown)', () => {
     const lost = (extra) => lastRun('lost', { started_at: new Date(Date.now() - 26 * 3600 * 1000).toISOString(), ...extra });
 

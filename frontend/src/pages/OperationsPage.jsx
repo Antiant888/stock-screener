@@ -357,7 +357,7 @@ function LeaseSummary({ leases, onReleaseChain, releasingToken }) {
           </Stack>
         </CardContent>
       </Card>
-      <Card variant="outlined" sx={{ minWidth: 260, flex: '1 1 320px' }}>
+      <Card id="pipeline-chain-claims" variant="outlined" sx={{ minWidth: 260, flex: '1 1 320px' }}>
         <CardContent>
           <Typography variant="subtitle2" sx={{ mb: 1 }}>
             Pipeline Chain Claims

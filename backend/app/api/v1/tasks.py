@@ -15,7 +15,7 @@ from ...schemas.task import (
     TriggerTaskResponse,
     TaskStatusResponse,
 )
-from ...services.task_registry_service import SCHEDULED_TASKS, TaskCooldownError
+from ...services.task_registry_service import SCHEDULED_TASKS, TaskCooldownError, TaskRunBlockedError
 from ...wiring.bootstrap import get_task_registry_service
 from .config import require_admin
 
@@ -35,7 +35,7 @@ def get_scheduled_tasks(db: Session = Depends(get_db)):
     - Last execution status and timing
     """
     service = get_task_registry_service()
-    tasks = service.get_all_scheduled_tasks(db)
+    tasks = service.get_all_scheduled_tasks(db, include_run_blockers=True)
 
     return TaskListResponse(
         tasks=[ScheduledTaskResponse(**t) for t in tasks],
@@ -75,6 +75,9 @@ def trigger_task(
         service = get_task_registry_service()
         result = service.trigger_task(task_name, db)
         return TriggerTaskResponse(**result)
+    except TaskRunBlockedError as e:
+        # The run would only read Skipped; say why instead of queueing it.
+        raise HTTPException(status_code=409, detail=str(e))
     except TaskCooldownError as e:
         raise HTTPException(
             status_code=429,
