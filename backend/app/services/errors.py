@@ -62,6 +62,16 @@ class CacheRefreshError(ServiceError):
     error_code = "cache_refresh_failed"
 
 
+class TaskRunBlockedError(ServiceError):
+    """Raised when a manual Run would only skip (pre-flight check)."""
+
+    error_code = "task_run_blocked"
+
+    def __init__(self, blocker: dict) -> None:
+        super().__init__(blocker.get("message") or self.error_code)
+        self.blocker = blocker
+
+
 class TaskCooldownError(ServiceError):
     """Raised when a manually triggered task is still inside its cooldown."""
 

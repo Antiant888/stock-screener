@@ -258,6 +258,21 @@ class WorkloadCoordination:
     def get_pipeline_chain_holder(self, market: Optional[str]) -> Optional[Dict[str, Any]]:
         return self._holder(_pipeline_chain_key(market))
 
+    def get_pipeline_chain_starts(self, markets) -> dict[str, Optional[str]]:
+        """{MARKET: started_at, or None when free} in one MGET round trip, so
+        a hung Redis costs one socket timeout, not one per market."""
+        codes = [normalize_market(m) for m in markets]
+        values = self.redis.mget([_pipeline_chain_key(c) for c in codes]) if codes else []
+        starts: dict[str, Optional[str]] = {}
+        for code, value in zip(codes, values):
+            if value is None:
+                starts[code] = None
+                continue
+            parts = value.decode().split(":", 2)
+            # "daily_market_pipeline:<token>:<iso>"; held even if unparseable.
+            starts[code] = parts[2] if len(parts) == 3 else ""
+        return starts
+
     def get_pipeline_chain_holders(self) -> dict[str, Optional[Dict[str, Any]]]:
         return {
             normalize_market(market): self.get_pipeline_chain_holder(market)
