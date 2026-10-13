@@ -135,6 +135,13 @@ await step('rrg', async () => {
 
 // 6b. Options Command Center (US only; the nav hides it for other markets)
 await step('options-command-center', async () => {
+  // Options are US-only. Switch to US when the selector offers a choice; a
+  // single-market stack has no selector, and a non-US one fails below.
+  await goto('/', 3000);
+  const selector = page.getByRole('combobox', { name: 'Market selector' });
+  if (await selector.count() && !/\bUS\b/.test(await selector.textContent())) {
+    await pickMarket('United States');
+  }
   await goto('/options', 6000);
   // The route redirects to / when options are unavailable; don't save that as Options.
   await page.getByRole('heading', { name: 'Options Command Center', level: 1 }).waitFor({ timeout: 5000 });
