@@ -224,6 +224,77 @@ def test_intent_and_outcome_rows_never_collide_on_one_clock_tick(db):
     assert sorted(outcomes) == ["accepted", "requested"]
 
 
+def _outcomes(db) -> list[str]:
+    return [
+        json.loads(row.value)["outcome"]
+        for row in db.query(AppSetting)
+        .filter(AppSetting.category == OPERATIONS_JOB_ACTION_CATEGORY)
+        .order_by(AppSetting.id)
+    ]
+
+
+def test_an_action_that_raises_is_recorded_as_an_error_and_still_raises(db):
+    # A queue removal can drop the message and then fail to revoke: the log
+    # must say the action broke, not leave a bare request.
+    service = OperationsJobService()
+
+    def act():
+        raise ConnectionError("broker went away mid-action")
+
+    with pytest.raises(ConnectionError):
+        service._audited(db, task_id="task-1", strategy="revoke", act=act)
+
+    assert _outcomes(db) == ["requested", "error"]
+    row = json.loads(db.query(AppSetting).order_by(AppSetting.id.desc()).first().value)
+    assert "broker went away mid-action" in row["message"]
+
+
+def test_scan_cancel_commits_its_intent_before_cancelling(db):
+    events = _Events()
+    service = _service(
+        events,
+        _record("scan_cancel", task_name="app.tasks.scan_tasks.run_bulk_scan",
+                kwargs={"scan_id": "scan-1"}, state="running"),
+    )
+
+    def cancel(_db, scan_id):
+        events.log.append(f"cancel:{scan_id}")
+        return "accepted", "cancelled"
+
+    service._cancel_scan = cancel
+    result = service.cancel_job(db, "task-1")
+
+    assert result["status"] == "accepted"
+    assert events.log == ["audit:requested", "cancel:scan-1", "audit:accepted"]
+
+
+def test_a_real_failed_intent_commit_leaves_the_session_usable(db):
+    # The rollback after a failed intent must leave the request's session
+    # working: nothing acts, and the next action records normally.
+    service = OperationsJobService()
+    real_record = service._record_cancel_action
+    fail = {"next": True}
+
+    def flaky(session, **kwargs):
+        if fail.pop("next", False):
+            session.add(AppSetting(key="dup", value="{}", category="x"))
+            session.add(AppSetting(key="dup", value="{}", category="x"))
+            session.commit()  # IntegrityError, like a real failed commit
+        return real_record(session, **kwargs)
+
+    service._record_cancel_action = flaky
+    acted = []
+
+    first = service._audited(db, task_id="task-1", strategy="revoke",
+                             act=lambda: acted.append(1) or ("accepted", "m"))
+    second = service._audited(db, task_id="task-1", strategy="revoke",
+                              act=lambda: acted.append(2) or ("accepted", "m"))
+
+    assert (first["status"], second["status"]) == ("blocked", "accepted")
+    assert acted == [2]
+    assert _outcomes(db) == ["requested", "accepted"]
+
+
 def test_an_intent_row_alone_does_not_read_cancel_requested(db):
     service = OperationsJobService()
     service._record_cancel_action(

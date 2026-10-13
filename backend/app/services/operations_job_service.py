@@ -999,8 +999,9 @@ class OperationsJobService:
 
         The ``requested`` row is committed before ``act`` changes Redis, the
         broker or a scan; if it cannot be, nothing is done. The outcome row
-        follows; if that write fails, the action's real result is still
-        returned, since the intent row already shows the attempt.
+        follows (``error`` if ``act`` raised, which is then re-raised); if
+        that write fails, the action's real result is still returned, since
+        the intent row already shows the attempt.
         """
         try:
             self._record_cancel_action(
@@ -1019,18 +1020,30 @@ class OperationsJobService:
             )
             return {"status": "blocked", "cancel_strategy": strategy, "message": message}
 
-        status, message = act()
+        try:
+            status, message = act()
+        except Exception as exc:
+            # It may have changed state before failing (a queue removal that
+            # then cannot revoke), so record that it broke, then re-raise.
+            self._record_outcome(db, task_id, strategy, "error", f"{type(exc).__name__}: {exc}")
+            raise
+        self._record_outcome(db, task_id, strategy, status, message)
+        return {"status": status, "cancel_strategy": strategy, "message": message}
+
+    def _record_outcome(
+        self, db: Session, task_id: str, strategy: str, outcome: str, message: str
+    ) -> None:
+        """Best effort: the request row already shows the attempt."""
         try:
             self._record_cancel_action(
-                db, task_id=task_id, strategy=strategy, outcome=status, message=message,
+                db, task_id=task_id, strategy=strategy, outcome=outcome, message=message,
             )
         except Exception:
             db.rollback()
             logger.warning(
                 "Could not record the outcome (%s) of %s for %s; its request row stands",
-                status, strategy, task_id, exc_info=True,
+                outcome, strategy, task_id, exc_info=True,
             )
-        return {"status": status, "cancel_strategy": strategy, "message": message}
 
     def _cancel_scan(self, db: Session, scan_id: str) -> tuple[str, str]:
         from app.infra.db.uow import SqlUnitOfWork
