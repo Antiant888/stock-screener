@@ -18,7 +18,6 @@ Start the official/public worker with:
 ```bash
 docker compose \
   -f docker-compose.yml \
-  -f docker-compose.social.yml \
   --profile social up -d celery-social
 ```
 
@@ -110,7 +109,6 @@ Start the locally built image:
 SOCIAL_WORKER_IMAGE=stock-screener-social-xui:dev \
 docker compose \
   -f docker-compose.yml \
-  -f docker-compose.social.yml \
   -f docker-compose.social-xui.yml \
   --profile social up -d celery-social
 ```
@@ -143,13 +141,11 @@ Set `SOCIAL_WORKER_IMAGE` to an immutable private image digest or release tag, t
 ```bash
 docker compose \
   -f docker-compose.yml \
-  -f docker-compose.social.yml \
   -f docker-compose.social-xui.yml \
   --profile social pull celery-social
 
 docker compose \
   -f docker-compose.yml \
-  -f docker-compose.social.yml \
   -f docker-compose.social-xui.yml \
   --profile social up -d --no-build celery-social
 ```
@@ -175,7 +171,6 @@ To stop collection immediately, set the provider to `disabled` in Operations. Fo
 ```bash
 docker compose \
   -f docker-compose.yml \
-  -f docker-compose.social.yml \
   -f docker-compose.social-xui.yml \
   --profile social stop celery-social
 ```

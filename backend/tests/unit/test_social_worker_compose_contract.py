@@ -11,7 +11,6 @@ import yaml
 ROOT = Path(__file__).resolve().parents[3]
 DOCKERFILE = ROOT / "backend" / "Dockerfile"
 BASE_COMPOSE = ROOT / "docker-compose.yml"
-SOCIAL_COMPOSE = ROOT / "docker-compose.social.yml"
 XUI_COMPOSE = ROOT / "docker-compose.social-xui.yml"
 
 
@@ -28,9 +27,7 @@ def _environment_map(service: dict) -> dict[str, str]:
 
 def test_public_social_worker_is_opt_in_fail_closed_and_queue_is_isolated():
     base = _yaml(BASE_COMPOSE)
-    overlay = _yaml(SOCIAL_COMPOSE)
-    base_worker = base["services"]["celery-social"]
-    worker = {**base_worker, **overlay["services"]["celery-social"]}
+    worker = base_worker = base["services"]["celery-social"]
 
     assert worker["profiles"] == ["social"]
     assert str(worker["user"]) not in {"root", "0", "0:0"}

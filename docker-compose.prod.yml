@@ -13,6 +13,53 @@
 #
 # =============================================================================
 
+# Shared worker settings. Each worker sets WORKER_NODE_NAME to the name its base
+# command passes to -n, so one health check pings every worker's own node.
+x-worker-logging: &worker-logging
+  driver: json-file
+  options:
+    max-size: "20m"
+    max-file: "3"
+
+x-worker-healthcheck: &worker-healthcheck
+  test: ["CMD-SHELL", "celery -A app.celery_app inspect ping -d $$WORKER_NODE_NAME@$$HOSTNAME"]
+  interval: 60s
+  timeout: 30s
+  retries: 3
+  start_period: 30s
+
+x-worker-prod: &worker-prod
+  env_file:
+    - .env.docker
+  deploy:
+    resources:
+      limits:
+        cpus: '0.5'
+        memory: 512M
+      reservations:
+        memory: 128M
+  healthcheck: *worker-healthcheck
+  logging: *worker-logging
+
+# Daily pipeline stages (Market RS, group ranks, snapshot, breadth) are
+# CPU-bound and single-threaded here: a 0.5 cap ran them at half speed. Markets
+# run at different hours, so these caps rarely contend. One core keeps the
+# snapshot in-process (utils/parallelism.py floors the quota); raise cpus past
+# 1 only with memory headroom for each extra compute process.
+x-market-jobs-prod: &market-jobs-prod
+  <<: *worker-prod
+  deploy:
+    resources:
+      limits:
+        cpus: '1'
+        # US breadth (~10.5k symbols) peaked at 502 MiB in 512M: ~220 MiB is
+        # the idle prefork parent, which solo would drop but solo does not
+        # enforce soft/hard time limits, the backstop for renewed leases.
+        # Markets without a measurement get the US (largest universe) figure.
+        memory: 768M
+      reservations:
+        memory: 128M
+
 services:
   postgres:
     deploy:
@@ -62,8 +109,8 @@ services:
         max-file: "5"
 
   celery-general:
-    env_file:
-      - .env.docker
+    <<: *worker-prod
+    environment: {WORKER_NODE_NAME: general}
     deploy:
       resources:
         limits:
@@ -71,12 +118,6 @@ services:
           memory: 1G
         reservations:
           memory: 256M
-    healthcheck:
-      test: ["CMD-SHELL", "celery -A app.celery_app inspect ping -d general@$$HOSTNAME"]
-      interval: 60s
-      timeout: 30s
-      retries: 3
-      start_period: 30s
     logging:
       driver: json-file
       options:
@@ -84,30 +125,21 @@ services:
         max-file: "5"
 
   celery-datafetch:
-    env_file:
-      - .env.docker
+    <<: *worker-prod
+    environment: {WORKER_NODE_NAME: datafetch-global}
     deploy:
       resources:
         limits:
-          cpus: '0.5'
+          # Serializes every market's price refresh; batch normalization and
+          # DB writes are CPU work between provider calls.
+          cpus: '1'
           memory: 512M
         reservations:
           memory: 128M
-    healthcheck:
-      test: ["CMD-SHELL", "celery -A app.celery_app inspect ping -d datafetch-global@$$HOSTNAME"]
-      interval: 60s
-      timeout: 30s
-      retries: 3
-      start_period: 30s
-    logging:
-      driver: json-file
-      options:
-        max-size: "20m"
-        max-file: "3"
 
   celery-social:
-    env_file:
-      - .env.docker
+    <<: *worker-prod
+    environment: {WORKER_NODE_NAME: social}
     deploy:
       resources:
         limits:
@@ -115,218 +147,106 @@ services:
           memory: 1G
         reservations:
           memory: 256M
-    healthcheck:
-      test: ["CMD-SHELL", "celery -A app.celery_app inspect ping -d social@$$HOSTNAME"]
-      interval: 60s
-      timeout: 30s
-      retries: 3
-      start_period: 30s
-    logging:
-      driver: json-file
-      options:
-        max-size: "20m"
-        max-file: "3"
 
   celery-marketjobs-us:
-    env_file:
-      - .env.docker
-    deploy:
-      resources:
-        limits:
-          cpus: '0.5'
-          # US breadth (~10.5k symbols) peaked at 502 MiB in 512M: ~220 MiB is
-          # the idle prefork parent, which solo would drop but solo does not
-          # enforce soft/hard time limits, the backstop for renewed leases.
-          memory: 768M
-        reservations:
-          memory: 128M
-    healthcheck:
-      test: ["CMD-SHELL", "celery -A app.celery_app inspect ping -d marketjobs-us@$$HOSTNAME"]
-      interval: 60s
-      timeout: 30s
-      retries: 3
-      start_period: 30s
-    logging:
-      driver: json-file
-      options:
-        max-size: "20m"
-        max-file: "3"
+    <<: *market-jobs-prod
+    environment: {WORKER_NODE_NAME: marketjobs-us}
 
   celery-marketjobs-hk:
-    env_file:
-      - .env.docker
-    deploy:
-      resources:
-        limits:
-          cpus: '0.5'
-          memory: 512M
-        reservations:
-          memory: 128M
-    healthcheck:
-      test: ["CMD-SHELL", "celery -A app.celery_app inspect ping -d marketjobs-hk@$$HOSTNAME"]
-      interval: 60s
-      timeout: 30s
-      retries: 3
-      start_period: 30s
-    logging:
-      driver: json-file
-      options:
-        max-size: "20m"
-        max-file: "3"
+    <<: *market-jobs-prod
+    environment: {WORKER_NODE_NAME: marketjobs-hk}
+
+  celery-marketjobs-in:
+    <<: *market-jobs-prod
+    environment: {WORKER_NODE_NAME: marketjobs-in}
 
   celery-marketjobs-jp:
-    env_file:
-      - .env.docker
-    deploy:
-      resources:
-        limits:
-          cpus: '0.5'
-          memory: 512M
-        reservations:
-          memory: 128M
-    healthcheck:
-      test: ["CMD-SHELL", "celery -A app.celery_app inspect ping -d marketjobs-jp@$$HOSTNAME"]
-      interval: 60s
-      timeout: 30s
-      retries: 3
-      start_period: 30s
-    logging:
-      driver: json-file
-      options:
-        max-size: "20m"
-        max-file: "3"
+    <<: *market-jobs-prod
+    environment: {WORKER_NODE_NAME: marketjobs-jp}
+
+  celery-marketjobs-kr:
+    <<: *market-jobs-prod
+    environment: {WORKER_NODE_NAME: marketjobs-kr}
 
   celery-marketjobs-tw:
-    env_file:
-      - .env.docker
-    deploy:
-      resources:
-        limits:
-          cpus: '0.5'
-          memory: 512M
-        reservations:
-          memory: 128M
-    healthcheck:
-      test: ["CMD-SHELL", "celery -A app.celery_app inspect ping -d marketjobs-tw@$$HOSTNAME"]
-      interval: 60s
-      timeout: 30s
-      retries: 3
-      start_period: 30s
-    logging:
-      driver: json-file
-      options:
-        max-size: "20m"
-        max-file: "3"
+    <<: *market-jobs-prod
+    environment: {WORKER_NODE_NAME: marketjobs-tw}
+
+  celery-marketjobs-cn:
+    <<: *market-jobs-prod
+    environment: {WORKER_NODE_NAME: marketjobs-cn}
+
+  celery-marketjobs-sg:
+    <<: *market-jobs-prod
+    environment: {WORKER_NODE_NAME: marketjobs-sg}
+
+  celery-marketjobs-ca:
+    <<: *market-jobs-prod
+    environment: {WORKER_NODE_NAME: marketjobs-ca}
+
+  celery-marketjobs-de:
+    <<: *market-jobs-prod
+    environment: {WORKER_NODE_NAME: marketjobs-de}
+
+  celery-marketjobs-au:
+    <<: *market-jobs-prod
+    environment: {WORKER_NODE_NAME: marketjobs-au}
+
+  celery-marketjobs-my:
+    <<: *market-jobs-prod
+    environment: {WORKER_NODE_NAME: marketjobs-my}
 
   celery-userscans:
-    env_file:
-      - .env.docker
-    deploy:
-      resources:
-        limits:
-          cpus: '0.5'
-          memory: 512M
-        reservations:
-          memory: 128M
-    healthcheck:
-      test: ["CMD-SHELL", "celery -A app.celery_app inspect ping -d userscans-shared@$$HOSTNAME"]
-      interval: 60s
-      timeout: 30s
-      retries: 3
-      start_period: 30s
-    logging:
-      driver: json-file
-      options:
-        max-size: "20m"
-        max-file: "3"
+    <<: *worker-prod
+    environment: {WORKER_NODE_NAME: userscans-shared}
 
   celery-userscans-us:
-    env_file:
-      - .env.docker
-    deploy:
-      resources:
-        limits:
-          cpus: '0.5'
-          memory: 512M
-        reservations:
-          memory: 128M
-    healthcheck:
-      test: ["CMD-SHELL", "celery -A app.celery_app inspect ping -d userscans-us@$$HOSTNAME"]
-      interval: 60s
-      timeout: 30s
-      retries: 3
-      start_period: 30s
-    logging:
-      driver: json-file
-      options:
-        max-size: "20m"
-        max-file: "3"
+    <<: *worker-prod
+    environment: {WORKER_NODE_NAME: userscans-us}
 
   celery-userscans-hk:
-    env_file:
-      - .env.docker
-    deploy:
-      resources:
-        limits:
-          cpus: '0.5'
-          memory: 512M
-        reservations:
-          memory: 128M
-    healthcheck:
-      test: ["CMD-SHELL", "celery -A app.celery_app inspect ping -d userscans-hk@$$HOSTNAME"]
-      interval: 60s
-      timeout: 30s
-      retries: 3
-      start_period: 30s
-    logging:
-      driver: json-file
-      options:
-        max-size: "20m"
-        max-file: "3"
+    <<: *worker-prod
+    environment: {WORKER_NODE_NAME: userscans-hk}
+
+  celery-userscans-in:
+    <<: *worker-prod
+    environment: {WORKER_NODE_NAME: userscans-in}
 
   celery-userscans-jp:
-    env_file:
-      - .env.docker
-    deploy:
-      resources:
-        limits:
-          cpus: '0.5'
-          memory: 512M
-        reservations:
-          memory: 128M
-    healthcheck:
-      test: ["CMD-SHELL", "celery -A app.celery_app inspect ping -d userscans-jp@$$HOSTNAME"]
-      interval: 60s
-      timeout: 30s
-      retries: 3
-      start_period: 30s
-    logging:
-      driver: json-file
-      options:
-        max-size: "20m"
-        max-file: "3"
+    <<: *worker-prod
+    environment: {WORKER_NODE_NAME: userscans-jp}
+
+  celery-userscans-kr:
+    <<: *worker-prod
+    environment: {WORKER_NODE_NAME: userscans-kr}
 
   celery-userscans-tw:
-    env_file:
-      - .env.docker
-    deploy:
-      resources:
-        limits:
-          cpus: '0.5'
-          memory: 512M
-        reservations:
-          memory: 128M
-    healthcheck:
-      test: ["CMD-SHELL", "celery -A app.celery_app inspect ping -d userscans-tw@$$HOSTNAME"]
-      interval: 60s
-      timeout: 30s
-      retries: 3
-      start_period: 30s
-    logging:
-      driver: json-file
-      options:
-        max-size: "20m"
-        max-file: "3"
+    <<: *worker-prod
+    environment: {WORKER_NODE_NAME: userscans-tw}
+
+  celery-userscans-cn:
+    <<: *worker-prod
+    environment: {WORKER_NODE_NAME: userscans-cn}
+
+  celery-userscans-sg:
+    <<: *worker-prod
+    environment: {WORKER_NODE_NAME: userscans-sg}
+
+  celery-userscans-ca:
+    <<: *worker-prod
+    environment: {WORKER_NODE_NAME: userscans-ca}
+
+  celery-userscans-de:
+    <<: *worker-prod
+    environment: {WORKER_NODE_NAME: userscans-de}
+
+  celery-userscans-au:
+    <<: *worker-prod
+    environment: {WORKER_NODE_NAME: userscans-au}
+
+  celery-userscans-my:
+    <<: *worker-prod
+    environment: {WORKER_NODE_NAME: userscans-my}
 
   celery-beat:
     env_file:
