@@ -12,7 +12,7 @@ import pytest_asyncio
 import app.tasks.daily_market_pipeline_tasks as pipeline
 from app.database import get_db
 from app.main import app
-from app.services.task_registry_service import TaskRegistryService, TaskRunBlockedError, _run_blocker
+from app.services.task_registry_service import TaskRegistryService, TaskRunBlockedError, _run_blockers
 
 
 class _Calendar:
@@ -29,13 +29,14 @@ class _Calendar:
 
 
 class _Claims:
-    def __init__(self, holder=None, error=None):
-        self.holder, self.error = holder, error
+    def __init__(self, starts=None, error=None):
+        self.starts, self.error, self.calls = starts or {}, error, []
 
-    def get_pipeline_chain_holder(self, _market):
+    def get_pipeline_chain_starts(self, markets):
+        self.calls.append(list(markets))
         if self.error:
             raise self.error
-        return self.holder
+        return {m: self.starts.get(m) for m in markets}
 
 
 def _blocker(monkeypatch, *, calendar=None, claims=None):
@@ -58,9 +59,7 @@ def test_a_non_trading_day_blocks_with_the_date(monkeypatch):
 
 
 def test_a_held_chain_claim_blocks_with_when_it_started(monkeypatch):
-    holder = {"task_id": "a" * 32, "started_at": "2026-10-16T20:30:00+00:00"}
-
-    blocker = _blocker(monkeypatch, claims=_Claims(holder=holder))
+    blocker = _blocker(monkeypatch, claims=_Claims(starts={"US": "2026-10-16T20:30:00+00:00"}))
 
     assert blocker["reason"] == "market_pipeline_already_active"
     assert blocker["active_since"] == "2026-10-16T20:30:00+00:00"
@@ -90,16 +89,38 @@ def test_the_polled_list_reuses_one_calendar_across_markets(monkeypatch):
     assert len(built) == 1
 
 
+def test_every_market_shares_one_claim_read(monkeypatch):
+    # One MGET for all markets: a hung Redis costs one socket timeout, not
+    # one per market, on a list the UI polls.
+    claims = _Claims(starts={"HK": "2026-10-16T08:00:00+00:00"})
+    monkeypatch.setattr(pipeline, "_preflight_calendar_cache", [])
+    monkeypatch.setattr(pipeline, "MarketCalendarService", lambda: _Calendar())
+    monkeypatch.setattr(pipeline, "_pipeline_chain_claims", lambda: claims)
+
+    blockers = pipeline.pipeline_run_blockers(["US", "HK", "JP"])
+
+    assert claims.calls == [["US", "HK", "JP"]]
+    assert blockers["HK"]["reason"] == "market_pipeline_already_active"
+    assert blockers["US"] is None and blockers["JP"] is None
+
+
+def test_a_held_claim_with_an_unreadable_start_still_blocks(monkeypatch):
+    blocker = _blocker(monkeypatch, claims=_Claims(starts={"US": ""}))
+
+    assert blocker["reason"] == "market_pipeline_already_active"
+    assert blocker["active_since"] is None
+
+
 def test_registry_entries_without_a_pre_flight_are_never_blocked():
-    assert _run_blocker({"task_function": "x"}) is None
+    assert _run_blockers({"x": {"task_function": "x"}}) == {}
 
 
 def test_a_raising_pre_flight_never_blocks():
-    with patch.object(pipeline, "pipeline_run_blocker", side_effect=RuntimeError("boom")):
-        assert _run_blocker({
-            "run_blocker": "app.tasks.daily_market_pipeline_tasks.pipeline_run_blocker",
+    with patch.object(pipeline, "pipeline_run_blockers", side_effect=RuntimeError("boom")):
+        assert _run_blockers({"daily-market-pipeline-us": {
+            "run_blockers": "app.tasks.daily_market_pipeline_tasks.pipeline_run_blockers",
             "manual_dispatch_kwargs": {"market": "US"},
-        }) is None
+        }}) == {"daily-market-pipeline-us": None}
 
 
 def test_a_blocked_trigger_queues_nothing_and_writes_no_run_row():
@@ -109,7 +130,7 @@ def test_a_blocked_trigger_queues_nothing_and_writes_no_run_row():
     task = MagicMock()
     service._task_imports["daily-market-pipeline-us"] = task
 
-    with patch.object(pipeline, "pipeline_run_blocker", return_value=blocker), pytest.raises(
+    with patch.object(pipeline, "pipeline_run_blockers", return_value={"US": blocker}), pytest.raises(
         TaskRunBlockedError, match="Not a trading day in US"
     ):
         service.trigger_task("daily-market-pipeline-us", db)
@@ -119,10 +140,14 @@ def test_a_blocked_trigger_queues_nothing_and_writes_no_run_row():
 
 
 def test_the_task_list_carries_each_pipelines_blocker(db_session):
-    def blocker_for(market):
-        return {"reason": "market_pipeline_already_active", "message": "busy"} if market == "HK" else None
+    calls = []
 
-    with patch.object(pipeline, "pipeline_run_blocker", side_effect=blocker_for):
+    def blockers_for(markets):
+        calls.append(markets)
+        return {m: {"reason": "market_pipeline_already_active", "message": "busy"} if m == "HK" else None
+                for m in markets}
+
+    with patch.object(pipeline, "pipeline_run_blockers", side_effect=blockers_for):
         tasks = {
             t["name"]: t
             for t in TaskRegistryService().get_all_scheduled_tasks(db_session, include_run_blockers=True)
@@ -134,6 +159,8 @@ def test_the_task_list_carries_each_pipelines_blocker(db_session):
     assert tasks["monthly-price-data-cleanup"]["run_blocker"] is None
     # Other callers (the MCP copilot) don't pay for live checks or see the key.
     assert all("run_blocker" not in t for t in plain)
+    # Every pipeline in one batched pre-flight call.
+    assert len(calls) == 1 and "US" in calls[0] and "HK" in calls[0]
 
 
 @pytest_asyncio.fixture
@@ -151,7 +178,7 @@ async def test_the_run_endpoint_answers_409_with_the_reason(client, monkeypatch)
     app.dependency_overrides[get_db] = lambda: MagicMock()
     blocker = {"reason": "market_pipeline_already_active", "message": "The US pipeline is already in progress"}
     try:
-        with patch.object(pipeline, "pipeline_run_blocker", return_value=blocker):
+        with patch.object(pipeline, "pipeline_run_blockers", return_value={"US": blocker}):
             response = await client.post("/api/v1/tasks/daily-market-pipeline-us/run")
     finally:
         app.dependency_overrides.pop(get_db, None)

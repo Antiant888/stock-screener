@@ -114,7 +114,7 @@ def _daily_market_pipeline_task_definitions() -> Dict[str, Dict]:
             "manual_dispatch_headers": {"origin": "manual"},
             "manual_dispatch_options": {"queue": market_jobs_queue_for_market(market)},
             # Pre-flight: why a Run would only skip, checked before queueing.
-            "run_blocker": "app.tasks.daily_market_pipeline_tasks.pipeline_run_blocker",
+            "run_blockers": "app.tasks.daily_market_pipeline_tasks.pipeline_run_blockers",
         }
     return entries
 
@@ -343,20 +343,31 @@ def _still_in_broker(task_ids: List[Optional[str]]) -> Dict[str, Optional[bool]]
     return answers
 
 
-def _run_blocker(task_info: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """The entry's pre-flight answer: why a manual Run would only skip, or
-    None. Never raises; a failed check must not stop a Run (the task
-    re-checks)."""
-    path = task_info.get('run_blocker')
-    if not path:
-        return None
-    try:
-        module_path, func_name = path.rsplit('.', 1)
-        check = getattr(__import__(module_path, fromlist=[func_name]), func_name)
-        return check(**(task_info.get('manual_dispatch_kwargs') or {}))
-    except Exception:
-        logger.warning("Pre-flight check %s failed", path, exc_info=True)
-        return None
+def _run_blockers(entries: Dict[str, Dict[str, Any]]) -> Dict[str, Optional[Dict[str, Any]]]:
+    """{entry name: why a manual Run would only skip, or None}.
+
+    Entries with a ``run_blockers`` hook (a function taking a list of markets)
+    are checked in one call per hook, so the polled list does one bounded
+    round of reads. Never raises; a failed check must not stop a Run (the
+    task re-checks).
+    """
+    by_hook: Dict[str, List[tuple]] = {}
+    for name, info in entries.items():
+        if info.get('run_blockers'):
+            market = str((info.get('manual_dispatch_kwargs') or {}).get('market', '')).upper()
+            by_hook.setdefault(info['run_blockers'], []).append((name, market))
+    answers: Dict[str, Optional[Dict[str, Any]]] = {}
+    for path, items in by_hook.items():
+        try:
+            module_path, func_name = path.rsplit('.', 1)
+            check = getattr(__import__(module_path, fromlist=[func_name]), func_name)
+            by_market = check([market for _, market in items])
+        except Exception:
+            logger.warning("Pre-flight check %s failed", path, exc_info=True)
+            by_market = {}
+        for name, market in items:
+            answers[name] = by_market.get(market)
+    return answers
 
 
 def _result_summary(result: Any, task_id: str) -> Optional[Dict[str, Any]]:
@@ -560,6 +571,9 @@ class TaskRegistryService:
             List of task dictionaries with schedule and last run details
         """
         result = []
+        # Opt-in: live checks (calendar, Redis) only the Run UI needs, in one
+        # bounded batch for all entries.
+        blockers = _run_blockers(SCHEDULED_TASKS) if include_run_blockers else {}
 
         for task_name, task_info in SCHEDULED_TASKS.items():
             history_task_names = task_info.get('history_task_names', [task_name])
@@ -599,8 +613,7 @@ class TaskRegistryService:
                 'last_run': None,
             }
             if include_run_blockers:
-                # Opt-in: live checks (calendar, Redis) only the Run UI needs.
-                task_data['run_blocker'] = _run_blocker(task_info)
+                task_data['run_blocker'] = blockers.get(task_name)
 
             if last_run:
                 status = last_run.status
@@ -707,7 +720,7 @@ class TaskRegistryService:
             raise ValueError(f"Unknown task: {task_name}")
 
         task_info = SCHEDULED_TASKS[task_name]
-        blocker = _run_blocker(task_info)
+        blocker = _run_blockers({task_name: task_info}).get(task_name)
         if blocker:
             # Refuse before queueing: the run would only read Skipped.
             raise TaskRunBlockedError(blocker)
