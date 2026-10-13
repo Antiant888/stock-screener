@@ -58,8 +58,11 @@ class OperationsJobsResponse(BaseModel):
 
 
 class OperationsReleaseChainRequest(BaseModel):
-    # The claim token the operator saw; another chain's claim is never freed.
-    token: str
+    # The claim token the operator saw (uuid4().hex at dispatch). Exact
+    # format, because the release script matches ":<token>:" as a substring
+    # of "daily_market_pipeline:<token>:<timestamp>": a short token such as
+    # "34" would match the timestamp and free a claim it does not own.
+    token: str = Field(pattern=r"^[0-9a-f]{32}$")
 
 
 class OperationsCancelJobRequest(BaseModel):

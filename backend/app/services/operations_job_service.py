@@ -956,7 +956,12 @@ class OperationsJobService:
     def _release_removed_chain(self, record: _JobRecord) -> None:
         """A chain has one live message at a time, so removing a queued stage
         ends the chain; its errback never fires, so free the claim here.
-        Owner-checked: a newer chain's claim is left alone."""
+        Owner-checked: a newer chain's claim is left alone.
+
+        A queued copy cannot coexist with the same stage running: acks_late is
+        off, so a worker acks before running and kombu only restores
+        prefetched messages that never started.
+        """
         market, token = record.chain_claim
         try:
             get_workload_coordination().release_pipeline_chain(token, market=market)

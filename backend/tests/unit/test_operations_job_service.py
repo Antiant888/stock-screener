@@ -932,6 +932,39 @@ def test_removing_a_queued_pipeline_stage_releases_its_chain_claim():
     coordination.release_pipeline_chain.assert_called_once_with("tok-1", market="US")
 
 
+def test_chain_claim_is_read_from_a_real_celery_stage_message():
+    """Guards the embed format against Celery itself, not a hand-built body:
+    the first stage of a chain with link_error carries the release in errbacks."""
+    from celery import chain
+    from kombu.serialization import dumps
+
+    from app.celery_app import celery_app
+    from app.tasks.daily_market_pipeline_tasks import release_daily_market_pipeline_claim
+
+    release = release_daily_market_pipeline_claim.si(market="US", token="a" * 32)
+    pipeline = chain(
+        celery_app.signature("app.tasks.cache_tasks.smart_refresh_cache", kwargs={"market": "US"}),
+        celery_app.signature("app.tasks.group_rank_tasks.calculate_daily_group_rankings", kwargs={"market": "US"}),
+        release,
+    )
+    steps, _ = pipeline.prepare_steps((), {}, pipeline.tasks, link_error=release)
+    first = steps[-1]
+    message = celery_app.amqp.as_task_v2(
+        "stage-1", first.task, kwargs=first.kwargs,
+        errbacks=first.options.get("link_error"), chain=list(reversed(steps[:-1])),
+    )
+    _, _, body = dumps(message.body, "json")
+    raw = json.dumps({
+        "body": base64.b64encode(body.encode() if isinstance(body, str) else body).decode(),
+        "headers": message.headers,
+        "properties": {"body_encoding": "base64"},
+    }).encode()
+
+    record = OperationsJobService()._parse_queue_message(raw, "data_fetch_us")
+
+    assert record.chain_claim == ("US", "a" * 32)
+
+
 def test_removing_the_queued_release_stage_itself_releases_the_claim():
     raw = _stage_message("stage-1", RELEASE, kwargs={"market": "HK", "token": "tok-9"})
 

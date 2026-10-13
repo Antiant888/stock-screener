@@ -123,15 +123,21 @@ async def test_release_pipeline_chain_endpoint_passes_the_token_and_rejects_unkn
         },
     )
     app.dependency_overrides[get_db] = lambda: _FakeDb()
+    token = "0123456789abcdef0123456789abcdef"
+    url = "/api/v1/operations/pipeline-chains/{}/release"
     try:
-        ok = await client.post("/api/v1/operations/pipeline-chains/us/release", json={"token": "tok-1"})
-        unknown = await client.post("/api/v1/operations/pipeline-chains/zz/release", json={"token": "tok-1"})
+        ok = await client.post(url.format("us"), json={"token": token})
+        unknown = await client.post(url.format("zz"), json={"token": token})
+        shared = await client.post(url.format("shared"), json={"token": token})
+        # The release script matches ":<token>:" as a substring of
+        # "daily_market_pipeline:<token>:<timestamp>"; "34" would hit the time.
+        short = await client.post(url.format("us"), json={"token": "34"})
     finally:
         app.dependency_overrides.pop(get_db, None)
 
     assert ok.status_code == 200
-    assert seen == [("US", "tok-1")]
-    assert unknown.status_code == 422
+    assert seen == [("US", token)]
+    assert (unknown.status_code, shared.status_code, short.status_code) == (422, 422, 422)
 
 
 @pytest.mark.asyncio

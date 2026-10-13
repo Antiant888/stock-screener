@@ -13,7 +13,7 @@ from ...schemas.operations import (
     OperationsJobsResponse,
     OperationsReleaseChainRequest,
 )
-from ...tasks.market_queues import normalize_market
+from ...tasks.market_queues import SHARED_SENTINEL, normalize_market
 from ...services.cot_operations_service import CotOperationsService
 from ...services.operations_job_service import OperationsJobService
 from ...services.social_signal_operations_service import SocialSignalOperationsService
@@ -56,7 +56,10 @@ def release_pipeline_chain(
     try:
         market = normalize_market(market)
     except ValueError:
-        raise HTTPException(status_code=422, detail=f"Unknown market: {market}")
+        market = None
+    # The pipeline only runs per market; SHARED never holds a chain claim.
+    if market is None or market == SHARED_SENTINEL:
+        raise HTTPException(status_code=422, detail="Unknown market")
     return OperationsCancelJobResponse(**_service.release_pipeline_chain(db, market, body.token))
 
 

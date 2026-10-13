@@ -382,7 +382,7 @@ function LeaseSummary({ leases, onReleaseChain, releasingToken }) {
                     variant="outlined"
                     color="error"
                     onClick={() => onReleaseChain({ market, token: claim.task_id })}
-                    disabled={releasingToken === claim.task_id}
+                    disabled={!claim.task_id || releasingToken === claim.task_id}
                     aria-label={`Release ${market} pipeline chain claim`}
                   >
                     {releasingToken === claim.task_id ? 'Working…' : 'Release'}
