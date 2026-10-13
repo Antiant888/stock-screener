@@ -256,6 +256,7 @@ class _ChainClaims:
         self.renewed: list[tuple[str, str]] = []
         self.released: list[tuple[str, str]] = []
         self.fail_claim = fail_claim
+        self.heartbeat_holder: str | None = None
 
     def claim_pipeline_chain(self, token, *, market, task_ids):
         if self.fail_claim:
@@ -279,6 +280,16 @@ class _ChainClaims:
         self.renewed.append((market, token))
         holder = self.holders.get(market)
         return bool(holder and holder["task_id"] == token)
+
+    def acquire_pipeline_chain_heartbeat(self, token):
+        if self.heartbeat_holder is not None:
+            return False
+        self.heartbeat_holder = token
+        return True
+
+    def release_pipeline_chain_heartbeat(self, token):
+        if self.heartbeat_holder == token:
+            self.heartbeat_holder = None
 
     def pipeline_chain_missing(self, token):
         since = self.missing_since.setdefault(token, self.clock)
@@ -693,6 +704,36 @@ def test_a_stale_missing_release_keeps_a_chain_seen_alive_meanwhile(monkeypatch)
     monkeypatch.setattr(claims, "pipeline_chain_missing", read_then_marker_replaced)
     assert module.renew_daily_market_pipeline_claims.run()["claims"] == {"US": "kept"}
     assert claims.holders["US"]["task_id"] == token
+
+
+def test_heartbeats_never_overlap(monkeypatch):
+    # #627: a heartbeat reads a chain's states seconds before it acts on them,
+    # so a second one acting on an older read could free a claim the first
+    # just saw alive. A heartbeat that finds another running skips the beat.
+    module, claims, token, _ = _dispatched_chain(monkeypatch, states={1: "REVOKED"})
+    claims.heartbeat_holder = "other-heartbeat"
+
+    assert module.renew_daily_market_pipeline_claims.run() == {
+        "status": "skipped", "reason": "heartbeat_running", "claims": {}
+    }
+    assert claims.holders["US"]["task_id"] == token
+    assert claims.released == [] and claims.renewed == []
+
+    claims.heartbeat_holder = None
+    assert module.renew_daily_market_pipeline_claims.run()["claims"] == {"US": "released_dead"}
+    assert claims.heartbeat_holder is None  # released after the beat
+
+
+def test_a_heartbeat_that_raises_still_frees_the_heartbeat_lock(monkeypatch):
+    module, claims, _token, _ = _dispatched_chain(monkeypatch, states={})
+
+    def holders_down():
+        raise ConnectionError("redis down")
+
+    monkeypatch.setattr(claims, "get_pipeline_chain_holders", holders_down)
+    with pytest.raises(ConnectionError):
+        module.renew_daily_market_pipeline_claims.run()
+    assert claims.heartbeat_holder is None
 
 
 def test_a_live_heartbeat_resets_the_missing_clock(monkeypatch):

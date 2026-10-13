@@ -467,10 +467,24 @@ def renew_daily_market_pipeline_claims() -> dict:
     lost, keeps its STARTED/PROGRESS/RETRY state until its result expires
     (24h), so such a chain keeps its claim that long; the Operations console
     can release it (#612).
+
+    Heartbeats never overlap: one reads a chain's states seconds before it
+    acts on them, so another acting on an older read could free a claim the
+    first just saw alive (#627). A beat that finds another running skips.
     """
+    claims = _pipeline_chain_claims()
+    heartbeat = uuid4().hex
+    if not claims.acquire_pipeline_chain_heartbeat(heartbeat):
+        return {"status": "skipped", "reason": "heartbeat_running", "claims": {}}
+    try:
+        return {"status": "ok", "claims": _renew_pipeline_chain_claims(claims)}
+    finally:
+        claims.release_pipeline_chain_heartbeat(heartbeat)
+
+
+def _renew_pipeline_chain_claims(claims: Any) -> dict[str, str]:
     from app.services.task_registry_service import still_in_broker
 
-    claims = _pipeline_chain_claims()
     outcomes: dict[str, str] = {}
     checks: dict[str, tuple[str, list[str], str | None]] = {}
     for market, holder in claims.get_pipeline_chain_holders().items():
@@ -508,7 +522,7 @@ def renew_daily_market_pipeline_claims() -> dict:
                 "Could not update the %s pipeline chain claim; it is kept", market, exc_info=True
             )
             outcomes[market] = "error"
-    return {"status": "ok", "claims": outcomes}
+    return outcomes
 
 
 def _chain_task_ids(workflow: Any) -> list[str]:

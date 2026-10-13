@@ -36,6 +36,7 @@ MARKET_WORKLOAD_PREFIX = "market_workload"
 PIPELINE_CHAIN_PREFIX = "pipeline_chain"
 PIPELINE_CHAIN_TASKS_PREFIX = "pipeline_chain_tasks"
 PIPELINE_CHAIN_MISSES_PREFIX = "pipeline_chain_misses"
+PIPELINE_CHAIN_HEARTBEAT_KEY = "pipeline_chain_heartbeat"
 # Held from dispatch until the daily pipeline chain's last stage or first
 # failure. renew_daily_market_pipeline_claims renews it while any stage of
 # the chain is still queued, reserved or running, and releases it once the
@@ -49,6 +50,9 @@ PIPELINE_CHAIN_HEARTBEAT_SECONDS = 300
 # state, so it takes two; half an interval apart, so two heartbeats that
 # overlap (a slow one and the next) cannot both count one such gap.
 PIPELINE_CHAIN_MISSING_RELEASE_SECONDS = PIPELINE_CHAIN_HEARTBEAT_SECONDS / 2
+# Keeps heartbeats from overlapping (#627). Only a heartbeat killed while
+# holding it outlives it, delaying the next beats by at most this long.
+PIPELINE_CHAIN_HEARTBEAT_LOCK_SECONDS = 6 * PIPELINE_CHAIN_HEARTBEAT_SECONDS
 COORDINATION_WAIT_MAX_RETRIES = 10_000
 logger = logging.getLogger(__name__)
 _SERIALIZED_MARKET_WORKLOAD_DISABLED: ContextVar[bool] = ContextVar(
@@ -257,6 +261,18 @@ class WorkloadCoordination:
         """The chain's stage ids in order; None for a claim taken before #605."""
         raw = self.redis.get(_pipeline_chain_tasks_key(token))
         return None if raw is None else json.loads(raw)
+
+    def acquire_pipeline_chain_heartbeat(self, token: str) -> bool:
+        """False while another heartbeat runs."""
+        return bool(
+            self.redis.set(
+                PIPELINE_CHAIN_HEARTBEAT_KEY, f"heartbeat:{token}:", nx=True,
+                ex=PIPELINE_CHAIN_HEARTBEAT_LOCK_SECONDS,
+            )
+        )
+
+    def release_pipeline_chain_heartbeat(self, token: str) -> bool:
+        return self._release(PIPELINE_CHAIN_HEARTBEAT_KEY, token)
 
     def pipeline_chain_missing(self, token: str) -> Tuple[float, Optional[str]]:
         """(seconds since heartbeats started finding no trace of the chain,

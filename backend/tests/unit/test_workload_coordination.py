@@ -374,10 +374,10 @@ def test_missing_pipeline_chain_release_lua_against_real_redis():
         WorkloadCoordination,
     )
 
-    client = redis_lib.Redis(port=6379, db=15, socket_connect_timeout=1)
+    client = redis_lib.Redis(port=6379, db=15, socket_connect_timeout=1, socket_timeout=1)
     try:
         client.ping()
-    except redis_lib.exceptions.ConnectionError:
+    except (redis_lib.exceptions.ConnectionError, redis_lib.exceptions.TimeoutError):
         pytest.skip("no local Redis")
     coordination = object.__new__(WorkloadCoordination)
     coordination.redis = client
@@ -411,6 +411,23 @@ def test_missing_pipeline_chain_release_lua_against_real_redis():
     finally:
         client.delete(claim, marker)
         client.close()
+
+
+def test_pipeline_chain_heartbeat_lock_is_set_nx_and_owner_checked():
+    from app.tasks.workload_coordination import PIPELINE_CHAIN_HEARTBEAT_LOCK_SECONDS
+
+    coordination, mock_redis, mock_release_script = _make_coordination()
+    mock_redis.set.return_value = None
+
+    assert coordination.acquire_pipeline_chain_heartbeat("hb-1") is False
+    mock_redis.set.assert_called_once_with(
+        "pipeline_chain_heartbeat", "heartbeat:hb-1:", nx=True,
+        ex=PIPELINE_CHAIN_HEARTBEAT_LOCK_SECONDS,
+    )
+    coordination.release_pipeline_chain_heartbeat("hb-1")
+    mock_release_script.assert_called_once_with(
+        keys=["pipeline_chain_heartbeat"], args=[":hb-1:"]
+    )
 
 
 def test_pipeline_chain_holder_reads_token_and_start():
