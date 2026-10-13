@@ -471,6 +471,33 @@ function WorkerStatusTable({ workers }) {
   );
 }
 
+// One rule for every section built from the jobs request. With no data, a
+// failed request says so: empty fallbacks would read as "nothing holds the
+// lease". After a success, a failed refetch keeps the last data (a blip should
+// not hide lease state) and says it may be stale.
+function JobsData({ query, children }) {
+  if (!query.data) {
+    return query.isError ? (
+      <Typography variant="body2" color="error">
+        Failed to load Operations job inventory.
+      </Typography>
+    ) : (
+      <CircularProgress size={20} />
+    );
+  }
+  return (
+    <>
+      {query.isError && (
+        <Typography variant="caption" color="warning.main" sx={{ display: 'block', mb: 1 }}>
+          Couldn&apos;t refresh. Showing the last known status from{' '}
+          {new Date(query.dataUpdatedAt).toLocaleTimeString()}.
+        </Typography>
+      )}
+      {children}
+    </>
+  );
+}
+
 function JobsTable({ jobs, onCancel, cancellingTaskId, cancelInFlight }) {
   if (!jobs.length) {
     return (
@@ -802,20 +829,14 @@ export default function OperationsPage() {
           sx={{ minWidth: 240 }}
         />
       </Stack>
-      {jobsQuery.isLoading ? (
-        <CircularProgress size={20} />
-      ) : jobsQuery.isError ? (
-        <Typography variant="body2" color="error">
-          Failed to load Operations job inventory.
-        </Typography>
-      ) : (
+      <JobsData query={jobsQuery}>
         <JobsTable
           jobs={filteredJobs}
           onCancel={setConfirmJob}
           cancellingTaskId={cancelMutation.variables?.taskId}
           cancelInFlight={cancelMutation.isPending}
         />
-      )}
+      </JobsData>
       <Dialog open={Boolean(confirmAction)} onClose={() => setConfirmJob(null)}>
         <DialogTitle>{confirmAction?.label}</DialogTitle>
         <DialogContent>
@@ -847,15 +868,13 @@ export default function OperationsPage() {
       <Typography variant="h6" sx={{ mt: 3, mb: 1 }}>
         Lease status
       </Typography>
-      {jobsQuery.isLoading ? (
-        <CircularProgress size={20} />
-      ) : (
+      <JobsData query={jobsQuery}>
         <LeaseSummary
           leases={leases}
           onReleaseChain={setConfirmChain}
           releasingToken={releaseChainMutation.isPending ? releaseChainMutation.variables?.token : null}
         />
-      )}
+      </JobsData>
       <Dialog open={Boolean(confirmChain)} onClose={() => setConfirmChain(null)}>
         <DialogTitle>Release {confirmChain?.market} pipeline chain claim</DialogTitle>
         <DialogContent>
@@ -885,13 +904,17 @@ export default function OperationsPage() {
           <Typography variant="h6" sx={{ mb: 1 }}>
             Queues
           </Typography>
-          {jobsQuery.isLoading ? <CircularProgress size={20} /> : <QueueSummaryTable queues={queues} />}
+          <JobsData query={jobsQuery}>
+            <QueueSummaryTable queues={queues} />
+          </JobsData>
         </Box>
         <Box sx={{ flex: 1 }}>
           <Typography variant="h6" sx={{ mb: 1 }}>
             Workers
           </Typography>
-          {jobsQuery.isLoading ? <CircularProgress size={20} /> : <WorkerStatusTable workers={workers} />}
+          <JobsData query={jobsQuery}>
+            <WorkerStatusTable workers={workers} />
+          </JobsData>
         </Box>
       </Stack>
 
