@@ -8,7 +8,8 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import json
 import logging
-from typing import Any, Iterable, Optional
+from uuid import uuid4
+from typing import Any, Callable, Iterable, Optional
 
 try:
     import redis  # type: ignore
@@ -814,8 +815,11 @@ class OperationsJobService:
         return records
 
     def _cancel_requests(self, db: Session) -> dict[str, dict[str, Any]]:
-        """Latest accepted cancel per task, so a row reads "cancel requested"
-        until the job actually leaves the inventory."""
+        """Latest cancel per task that was accepted, or whose outcome was never
+        recorded (#613: the action may well have happened, so its button must
+        not invite a repeat). A row reads "cancel requested" until the job
+        actually leaves the inventory. Rows written before #613 carry no
+        action id and count only when accepted."""
         # ponytail: reads the last day of audit rows; a job still listed after
         # a day loses the marker. Index by task id if the rows pile up.
         since = _utcnow() - timedelta(days=1)
@@ -825,13 +829,28 @@ class OperationsJobService:
             .filter(AppSetting.created_at >= since)
             .all()
         )
-        requests: dict[str, dict[str, Any]] = {}
+        actions = []
         for row in rows:
             try:
                 action = json.loads(row.value)
             except (json.JSONDecodeError, TypeError):
                 continue
-            if not isinstance(action, dict) or action.get("outcome") != "accepted":
+            if isinstance(action, dict):
+                actions.append(action)
+        recorded = {
+            action.get("action_id")
+            for action in actions
+            if action.get("action_id") and action.get("outcome") != "requested"
+        }
+        requests: dict[str, dict[str, Any]] = {}
+        for action in actions:
+            outcome = action.get("outcome")
+            unrecorded = (
+                outcome == "requested"
+                and action.get("action_id")
+                and action["action_id"] not in recorded
+            )
+            if outcome != "accepted" and not unrecorded:
                 continue
             # A force action finishes on the spot; a leftover stale row after it
             # should keep its button rather than read "requested" for a day.
@@ -886,13 +905,16 @@ class OperationsJobService:
         strategy: str,
         outcome: str,
         message: str,
+        action_id: str,
     ) -> None:
-        timestamp = _utcnow().strftime("%Y%m%d%H%M%S%f")
         row = AppSetting(
-            key=f"operations.job_action.{task_id}.{timestamp}",
+            # Unique per row: a timestamp is not, on a coarse clock (Windows
+            # ticks ~15 ms) or for two clicks at once.
+            key=f"operations.job_action.{uuid4().hex}",
             value=json.dumps(
                 {
                     "task_id": task_id,
+                    "action_id": action_id,
                     "strategy": strategy,
                     "outcome": outcome,
                     "message": message,
@@ -976,16 +998,77 @@ class OperationsJobService:
 
     def release_pipeline_chain(self, db: Session, market: str, token: str) -> dict[str, Any]:
         """Operator release of a market's chain claim, only if ``token`` still
-        holds it. For a claim left by a stage revoked from a worker."""
-        released = get_workload_coordination().release_pipeline_chain(token, market=market)
-        if released:
-            status, message = "accepted", f"Released the {market} pipeline chain claim {token}."
-        else:
-            status, message = "blocked", f"The {market} pipeline chain claim {token} is no longer held."
-        self._record_cancel_action(
-            db, task_id=token, strategy="release_pipeline_chain", outcome=status, message=message,
-        )
-        return {"status": status, "cancel_strategy": "release_pipeline_chain", "message": message}
+        holds it. For a claim left by a stage killed with its worker."""
+
+        def release() -> tuple[str, str]:
+            if get_workload_coordination().release_pipeline_chain(token, market=market):
+                return "accepted", f"Released the {market} pipeline chain claim {token}."
+            return "blocked", f"The {market} pipeline chain claim {token} is no longer held."
+
+        return self._audited(db, task_id=token, strategy="release_pipeline_chain", act=release)
+
+    def _audited(
+        self,
+        db: Session,
+        *,
+        task_id: str,
+        strategy: str,
+        act: Callable[[], tuple[str, str]],
+    ) -> dict[str, Any]:
+        """Run a job action with its audit trail written intent-first (#613).
+
+        The ``requested`` row is committed before ``act`` changes Redis, the
+        broker or a scan; if it cannot be, nothing is done. The outcome row
+        follows (``error`` if ``act`` raised, which is then re-raised); if
+        that write fails, the action's real result is still returned, since
+        the intent row already shows the attempt.
+        """
+        action_id = uuid4().hex
+        try:
+            self._record_cancel_action(
+                db, task_id=task_id, strategy=strategy, outcome="requested",
+                message=f"Operator requested {strategy} for {task_id}.",
+                action_id=action_id,
+            )
+        except Exception:
+            db.rollback()
+            logger.warning(
+                "Could not record the %s request for %s; not acting", strategy, task_id,
+                exc_info=True,
+            )
+            message = (
+                f"Could not record this action in the audit log, so nothing was done "
+                f"to {task_id}. Retry shortly."
+            )
+            return {"status": "blocked", "cancel_strategy": strategy, "message": message}
+
+        try:
+            status, message = act()
+        except Exception as exc:
+            # It may have changed state before failing (a queue removal that
+            # then cannot revoke), so record that it broke, then re-raise.
+            self._record_outcome(
+                db, task_id, strategy, action_id, "error", f"{type(exc).__name__}: {exc}"
+            )
+            raise
+        self._record_outcome(db, task_id, strategy, action_id, status, message)
+        return {"status": status, "cancel_strategy": strategy, "message": message}
+
+    def _record_outcome(
+        self, db: Session, task_id: str, strategy: str, action_id: str, outcome: str, message: str
+    ) -> None:
+        """Best effort: the request row already shows the attempt."""
+        try:
+            self._record_cancel_action(
+                db, task_id=task_id, strategy=strategy, outcome=outcome, message=message,
+                action_id=action_id,
+            )
+        except Exception:
+            db.rollback()
+            logger.warning(
+                "Could not record the outcome (%s) of %s for %s; its request row stands",
+                outcome, strategy, task_id, exc_info=True,
+            )
 
     def _cancel_scan(self, db: Session, scan_id: str) -> tuple[str, str]:
         from app.infra.db.uow import SqlUnitOfWork
@@ -1023,6 +1106,18 @@ class OperationsJobService:
             message = f"Job moved to {record.state}, so this action no longer applies. Refresh and retry."
             return {"status": "conflict", "cancel_strategy": strategy, "message": message}
 
+        return self._audited(
+            db,
+            task_id=task_id,
+            strategy=strategy,
+            act=lambda: self._perform_job_action(db, record, task_id, strategy),
+        )
+
+    def _perform_job_action(
+        self, db: Session, record: _JobRecord, task_id: str, strategy: str
+    ) -> tuple[str, str]:
+        """Carry out ``strategy`` for ``task_id``: (status, message). Writes no
+        audit rows; ``_audited`` records the intent before and the outcome after."""
         if strategy == "revoke_and_remove_from_queue":
             removed, queue_name = self._remove_queued_task(task_id=task_id)
             if removed:
@@ -1030,17 +1125,14 @@ class OperationsJobService:
                 # close its run-history row; close it here.
                 record_task_run(task_id, record.task_name, record.kwargs, "cancelled")
                 message = f"Removed task {task_id} from queue {queue_name} and revoked it."
-                self._record_cancel_action(db, task_id=task_id, strategy=strategy, outcome="accepted", message=message)
-                return {"status": "accepted", "cancel_strategy": strategy, "message": message}
+                return "accepted", message
             message = f"Task {task_id} is no longer queued."
-            self._record_cancel_action(db, task_id=task_id, strategy=strategy, outcome="blocked", message=message)
-            return {"status": "blocked", "cancel_strategy": strategy, "message": message}
+            return "blocked", message
 
         if strategy == "revoke":
             celery_app.control.revoke(task_id, terminate=False)
             message = f"Revoked reserved task {task_id}."
-            self._record_cancel_action(db, task_id=task_id, strategy=strategy, outcome="accepted", message=message)
-            return {"status": "accepted", "cancel_strategy": strategy, "message": message}
+            return "accepted", message
 
         if strategy == "scan_cancel":
             scan_id = _extract_scan_id(record.task_name, record.args or [], record.kwargs or {})
@@ -1050,24 +1142,20 @@ class OperationsJobService:
                 scan_id = db.query(Scan.scan_id).filter(Scan.task_id == task_id).scalar()
             if not scan_id:
                 message = f"Could not resolve scan id for task {task_id}."
-                self._record_cancel_action(db, task_id=task_id, strategy=strategy, outcome="blocked", message=message)
-                return {"status": "blocked", "cancel_strategy": strategy, "message": message}
+                return "blocked", message
             status, message = self._cancel_scan(db, scan_id)
-            self._record_cancel_action(db, task_id=task_id, strategy=strategy, outcome=status, message=message)
-            return {"status": status, "cancel_strategy": strategy, "message": message}
+            return status, message
 
         if strategy == "force_cancel_refresh":
             lock = get_data_fetch_lock()
             current = lock.get_any_current_task()
             if not current or current.get("task_id") != task_id:
                 message = f"Task {task_id} is not the current external fetch holder."
-                self._record_cancel_action(db, task_id=task_id, strategy=strategy, outcome="blocked", message=message)
-                return {"status": "blocked", "cancel_strategy": strategy, "message": message}
+                return "blocked", message
             heartbeat_lag = _age_seconds_from(current.get("last_heartbeat"))
             if heartbeat_lag is not None and heartbeat_lag < HEARTBEAT_STUCK_AFTER_SECONDS:
                 message = f"Task {task_id} is still progressing; force cancel is blocked."
-                self._record_cancel_action(db, task_id=task_id, strategy=strategy, outcome="blocked", message=message)
-                return {"status": "blocked", "cancel_strategy": strategy, "message": message}
+                return "blocked", message
             lock_key = current.get("lock_key", "")
             suffix = lock_key.rsplit(":", 1)[-1] if ":" in lock_key else ""
             market = None if suffix in {"", "shared"} else suffix
@@ -1079,24 +1167,19 @@ class OperationsJobService:
 
             get_price_cache().clear_warmup_heartbeat(market=market)
             message = f"Force-cancelled stale external fetch task {task_id}."
-            self._record_cancel_action(db, task_id=task_id, strategy=strategy, outcome="accepted", message=message)
-            return {"status": "accepted", "cancel_strategy": strategy, "message": message}
+            return "accepted", message
 
         if strategy == "force_release_market_lease":
             if not record.market:
                 message = f"Task {task_id} does not have a market-scoped lease to release."
-                self._record_cancel_action(db, task_id=task_id, strategy=strategy, outcome="blocked", message=message)
-                return {"status": "blocked", "cancel_strategy": strategy, "message": message}
+                return "blocked", message
             coordination = get_workload_coordination()
             released = coordination.release_market_workload(task_id, market=record.market)
             if not released:
                 message = f"Market workload lease for task {task_id} is no longer held."
-                self._record_cancel_action(db, task_id=task_id, strategy=strategy, outcome="blocked", message=message)
-                return {"status": "blocked", "cancel_strategy": strategy, "message": message}
+                return "blocked", message
             message = f"Released stale market workload lease for task {task_id} ({record.market})."
-            self._record_cancel_action(db, task_id=task_id, strategy=strategy, outcome="accepted", message=message)
-            return {"status": "accepted", "cancel_strategy": strategy, "message": message}
+            return "accepted", message
 
         message = f"Task {task_id} cannot be cancelled safely while in state '{record.state}'."
-        self._record_cancel_action(db, task_id=task_id, strategy=strategy, outcome="unsupported", message=message)
-        return {"status": "unsupported", "cancel_strategy": strategy, "message": message}
+        return "unsupported", message
