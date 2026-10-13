@@ -27,7 +27,11 @@ from app.domain.common.query import (
     SortSpec,
 )
 from app.domain.scanning.filter_expression_model import FilterExpression, QuerySpec
-from app.infra.db.models.feature_store import FeatureRun, StockFeatureDaily
+from app.infra.db.models.feature_store import (
+    FeatureRun,
+    StockFeatureDaily,
+    derived_details_columns,
+)
 from app.infra.db.repositories.feature_store_repo import SqlFeatureStoreRepository
 from app.infra.query.feature_store_query import _FIELD_BINDINGS
 
@@ -36,16 +40,28 @@ pytestmark = pytest.mark.skipif(
 )
 
 AS_OF = date(2026, 2, 17)
-TABLE_DETAILS_MIGRATION = (
-    Path(__file__).parents[2]
-    / "alembic"
-    / "versions"
-    / "20261011_0064_feature_table_details.py"
-)
+MIGRATIONS = Path(__file__).parents[2] / "alembic" / "versions"
+TABLE_DETAILS_MIGRATION = MIGRATIONS / "20261011_0064_feature_table_details.py"
+HOT_COLUMNS_MIGRATION = MIGRATIONS / "20261013_0066_feature_hot_typed_columns.py"
+
+
+def _forget_hot_fields(db_session) -> None:
+    """Make the run look like one written before 20261013_0066."""
+    db_session.execute(
+        update(StockFeatureDaily).values(
+            {
+                column: null()
+                for column in derived_details_columns(None)
+                if column != "table_details_json"
+            }
+        )
+    )
+    db_session.flush()
 
 
 def _forget_table_details(db_session) -> None:
     """Make the run look like one written before 20261011_0064."""
+    _forget_hot_fields(db_session)
     db_session.execute(update(StockFeatureDaily).values(table_details_json=null()))
     db_session.flush()
 
@@ -122,9 +138,11 @@ def _sort_subtree_outputs(plan: dict) -> list[str]:
     return [output for sort in sorts for node in _subtree(sort) for output in node.get("Output", ())]
 
 
-@pytest.mark.parametrize("run_state", ["table_details", "legacy"])
+@pytest.mark.parametrize("run_state", ["typed", "table_details", "legacy"])
 def test_table_page_sorts_the_run_before_reading_details(db_session, run_state):
     run = _seed_run(db_session)
+    if run_state == "table_details":
+        _forget_hot_fields(db_session)
     if run_state == "legacy":
         _forget_table_details(db_session)
     repo = SqlFeatureStoreRepository(db_session)
@@ -167,13 +185,15 @@ def test_table_page_sorts_the_run_before_reading_details(db_session, run_state):
 # ── 20261011_0064: the indexes serve filters over the stored copy ─────────
 
 
-def _load_table_details_migration():
-    spec = importlib.util.spec_from_file_location(
-        "_table_details_migration", TABLE_DETAILS_MIGRATION
-    )
+def _load_migration(path: Path):
+    spec = importlib.util.spec_from_file_location(f"_migration_{path.stem}", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def _load_table_details_migration():
+    return _load_migration(TABLE_DETAILS_MIGRATION)
 
 
 @pytest.fixture
@@ -185,7 +205,18 @@ def table_details_migration(db_session):
     migration._drop_indexes()
 
 
-def _seed_indexable_run(db_session, numeric_fields, *, rows: int = 200) -> FeatureRun:
+@pytest.fixture
+def hot_columns_migration(db_session):
+    migration = _load_migration(HOT_COLUMNS_MIGRATION)
+    migration.op = Operations(MigrationContext.configure(db_session.connection()))
+    migration._create_indexes()
+    yield migration
+    migration._drop_indexes()
+
+
+def _seed_indexable_run(
+    db_session, numeric_fields, *, rows: int = 200, typed: bool = True
+) -> FeatureRun:
     run = FeatureRun(as_of_date=AS_OF, run_type="daily_snapshot", status="published")
     db_session.add(run)
     db_session.flush()
@@ -200,16 +231,21 @@ def _seed_indexable_run(db_session, numeric_fields, *, rows: int = 200) -> Featu
                     **{field: float(i) for field in numeric_fields},
                     "correction_survivor": i % 50 == 0,
                     "ibd_industry_group": f"G{i % 40:02d}",
+                    "gics_sector": f"S{i % 40:02d}",
                     "setup_engine": {"explain": {"summary": "x"}, "candidates": []},
                 },
             )
         )
     db_session.flush()
+    if not typed:
+        _forget_hot_fields(db_session)
     db_session.connection().exec_driver_sql("ANALYZE stock_feature_daily")
     return run
 
 
-def _index_serves(db_session, captured, index_name: str, key: str) -> bool:
+def _index_serves(
+    db_session, captured, index_name: str, key: str, *, needle: str | None = None
+) -> bool:
     """Whether a statement filtering on *key* searches *index_name* by it.
 
     Only the index condition counts: a plan can also reach the same index for
@@ -218,11 +254,12 @@ def _index_serves(db_session, captured, index_name: str, key: str) -> bool:
     """
     # A 200-row table rarely earns an index scan while a seq scan is allowed.
     db_session.connection().exec_driver_sql("SET LOCAL enable_seqscan = off")
+    needle = needle or f"'{key}'"
     for statement, parameters in captured:
-        if f"->> '{key}'" not in statement:
+        if f"->> '{key}'" not in statement and needle == f"'{key}'":
             continue
         for node in _subtree(_plan(db_session, statement, parameters)):
-            if node.get("Index Name") == index_name and f"'{key}'" in node.get(
+            if node.get("Index Name") == index_name and needle in node.get(
                 "Index Cond", ""
             ):
                 return True
@@ -282,7 +319,8 @@ def test_table_details_indexes_serve_the_filters_the_repository_emits(
     db_session, table_details_migration
 ):
     migration = table_details_migration
-    run = _seed_indexable_run(db_session, migration._NUMERIC_FIELDS)
+    # A run written between 0064 and 0066 reads the copy for every field.
+    run = _seed_indexable_run(db_session, migration._NUMERIC_FIELDS, typed=False)
     repo = SqlFeatureStoreRepository(db_session)
 
     def symbols_matching(condition):
@@ -315,5 +353,87 @@ def test_table_details_indexes_serve_the_filters_the_repository_emits(
     for index_name, (key, run_query) in queries.items():
         _result, captured = _capture_statements(run_query)
         if not _index_serves(db_session, captured, index_name, key):
+            unused.append(index_name)
+    assert unused == [], f"PostgreSQL cannot use {unused} for the repository's SQL"
+
+
+# ── 20261013_0066: the indexes serve filters on the hot typed columns ────
+
+
+def test_hot_column_indexes_leave_out_rows_without_them(db_session):
+    """Every run published before 0066 has NULL hot columns."""
+    migration = _load_migration(HOT_COLUMNS_MIGRATION)
+    run = FeatureRun(as_of_date=AS_OF, run_type="daily_snapshot", status="published")
+    db_session.add(run)
+    db_session.flush()
+    db_session.execute(
+        insert(StockFeatureDaily),
+        [
+            {
+                "run_id": run.id,
+                "symbol": f"L{i:03d}",
+                "as_of_date": AS_OF,
+                "details_json": {"rs_rating": i, "ibd_industry_group": "G01"},
+            }
+            for i in range(30)
+        ],
+    )
+
+    migration.op = Operations(MigrationContext.configure(db_session.connection()))
+    migration._create_indexes()
+    try:
+        indexed = dict(
+            db_session.connection().exec_driver_sql(
+                "SELECT relname, reltuples FROM pg_class WHERE relname = ANY(%(names)s)",
+                {"names": list(migration._INDEXES)},
+            ).fetchall()
+        )
+    finally:
+        migration._drop_indexes()
+
+    assert set(indexed) == set(migration._INDEXES)
+    assert {name: count for name, count in indexed.items() if count} == {}
+
+
+def test_hot_column_indexes_serve_the_filters_the_repository_emits(
+    db_session, hot_columns_migration
+):
+    migration = hot_columns_migration
+    numeric = [c for c in migration._INDEXED_COLUMNS if c in migration._NUMERIC_COLUMNS]
+    run = _seed_indexable_run(db_session, numeric)
+    repo = SqlFeatureStoreRepository(db_session)
+
+    def symbols_matching(condition):
+        return lambda: repo.query_run_symbols(
+            run.id,
+            FilterExpression(required_conditions=(condition,)),
+            SortSpec(field="composite_score", order=SortOrder.DESC),
+            PageSpec(page=1, per_page=50),
+        )
+
+    queries = {
+        f"ix_sfd_hot_{column}": (
+            column,
+            symbols_matching(RangeFilter(_public_name(column), min_value=195)),
+        )
+        for column in numeric
+    }
+    queries["ix_sfd_hot_ibd_industry_group"] = (
+        "ibd_industry_group",
+        lambda: repo.get_peers_by_industry_for_run(run.id, "G07"),
+    )
+    queries["ix_sfd_hot_gics_sector"] = (
+        "gics_sector",
+        lambda: repo.get_peers_by_sector_for_run(run.id, "S07"),
+    )
+    assert set(queries) == set(migration._INDEXES), "every index needs a query here"
+
+    unused = []
+    for index_name, (column, run_query) in queries.items():
+        _result, captured = _capture_statements(run_query)
+        assert not any("details_json ->>" in statement for statement, _ in captured)
+        if not _index_serves(
+            db_session, captured, index_name, column, needle=f"{column} "
+        ):
             unused.append(index_name)
     assert unused == [], f"PostgreSQL cannot use {unused} for the repository's SQL"

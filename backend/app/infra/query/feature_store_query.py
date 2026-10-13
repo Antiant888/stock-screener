@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from enum import IntEnum
 
 from sqlalchemy.orm import Query
 
@@ -15,9 +16,14 @@ from app.domain.scanning.filter_expression_model import (
     FilterExpression,
     filter_spec_to_expression,
 )
-from app.infra.db.models.feature_store import StockFeatureDaily
+from app.infra.db.models.feature_store import (
+    HOT_NUMERIC_FIELDS,
+    HOT_TEXT_FIELDS,
+    StockFeatureDaily,
+)
 from app.infra.db.portability import lean_count
 from app.infra.query.sql_filter_compiler import (
+    SqlFieldBinding,
     SqlFilterFieldResolver,
     apply_sql_sort,
     column_bindings,
@@ -166,22 +172,53 @@ _FILTER_FIELD_RESOLVER = SqlFilterFieldResolver(
     company_name_column=StockUniverse.name,
     range_predicates={"listing_aware_volume": listing_aware_volume_predicate},
 )
-# The same fields read from the setup-payload-free copy; callers pass
-# ``table_details=True`` only when every row of the run carries it.
+
+
+class DetailsLevel(IntEnum):
+    """What every row of a run carries, so what its reads may use.
+
+    Levels nest: a row with the hot columns also has the table copy. FALSE and
+    TRUE stay valid ``table_details`` arguments for LEGACY and TABLE.
+    """
+
+    LEGACY = 0  # details_json only (rows before 20261011_0064)
+    TABLE = 1  # + table_details_json
+    TYPED = 2  # + the hot typed columns (20261013_0066)
+
+
+# The same fields read from the setup-payload-free copy.
 _TABLE_DETAILS_RESOLVER = replace(
     _FILTER_FIELD_RESOLVER, json_column=StockFeatureDaily.table_details_json
 )
+# ...with the hot fields read from their typed columns instead of the copy.
+_TYPED_RESOLVER = replace(
+    _TABLE_DETAILS_RESOLVER,
+    bindings={
+        **_FIELD_BINDINGS,
+        **{
+            field: SqlFieldBinding(
+                column=getattr(StockFeatureDaily, binding.json_path[0]),
+                nulls_last=True,
+            )
+            for field, binding in _FIELD_BINDINGS.items()
+            if binding.json_path is not None
+            and len(binding.json_path) == 1
+            and binding.json_path[0] in (*HOT_NUMERIC_FIELDS, *HOT_TEXT_FIELDS)
+        },
+    },
+)
+_RESOLVERS = (_FILTER_FIELD_RESOLVER, _TABLE_DETAILS_RESOLVER, _TYPED_RESOLVER)
 
 
-def _resolver(table_details: bool) -> SqlFilterFieldResolver:
-    return _TABLE_DETAILS_RESOLVER if table_details else _FILTER_FIELD_RESOLVER
+def _resolver(table_details: DetailsLevel | bool) -> SqlFilterFieldResolver:
+    return _RESOLVERS[int(table_details)]
 
 
 # ── Public API ──────────────────────────────────────────────────────────
 
 
 def apply_filters(
-    query: Query, filters: FilterSpec, *, table_details: bool = False
+    query: Query, filters: FilterSpec, *, table_details: DetailsLevel | bool = False
 ) -> Query:
     """Backward-compatible adapter for existing flat-filter callers."""
 
@@ -191,7 +228,7 @@ def apply_filters(
 
 
 def apply_filter_expression(
-    query: Query, expression: FilterExpression, *, table_details: bool = False
+    query: Query, expression: FilterExpression, *, table_details: DetailsLevel | bool = False
 ) -> Query:
     return query.filter(
         compile_filter_expression(query, expression, table_details=table_details)
@@ -199,7 +236,7 @@ def apply_filter_expression(
 
 
 def compile_filter_expression(
-    query: Query, expression: FilterExpression, *, table_details: bool = False
+    query: Query, expression: FilterExpression, *, table_details: DetailsLevel | bool = False
 ):
     return compile_sql_expression(query, expression, _resolver(table_details))
 
@@ -217,7 +254,7 @@ def apply_sort_and_paginate(
     sort: SortSpec,
     page: PageSpec,
     *,
-    table_details: bool = False,
+    table_details: DetailsLevel | bool = False,
 ) -> tuple[list, int]:
     """Apply sort + pagination.  Returns (rows, total_count)."""
     total = lean_count(query)
@@ -230,7 +267,7 @@ def apply_sort_and_paginate(
 
 
 def apply_sort_all(
-    query: Query, sort: SortSpec, *, table_details: bool = False
+    query: Query, sort: SortSpec, *, table_details: DetailsLevel | bool = False
 ) -> list:
     """Apply sort and return ALL matching rows (no pagination).
 

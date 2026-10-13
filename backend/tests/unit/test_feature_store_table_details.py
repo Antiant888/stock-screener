@@ -4,13 +4,16 @@
 (~64 kB per row on a live US run), and every JSON filter or sort over a run used
 to decompress and parse it per row. ``table_details_json`` holds the same
 document without that payload. Rows written before it existed have none, so a
-run falls back to ``details_json`` unless every row carries it -- both kinds of
-run must answer every query identically.
+run falls back to ``details_json`` unless every row carries it. The hottest
+fields also live in typed columns (20261013_0066), read only when every row
+carries those -- all three kinds of run must answer every query identically.
 """
 
 from __future__ import annotations
 
+import importlib.util
 from datetime import date
+from pathlib import Path
 
 import pytest
 from sqlalchemy import create_engine, event, null, select, update
@@ -28,7 +31,13 @@ from app.domain.common.query import (
 )
 from app.domain.feature_store.models import FeatureRowWrite
 from app.domain.scanning.filter_expression_model import FilterExpression, QuerySpec
-from app.infra.db.models.feature_store import FeatureRun, StockFeatureDaily
+from app.infra.db.models.feature_store import (
+    HOT_NUMERIC_FIELDS,
+    HOT_TEXT_FIELDS,
+    FeatureRun,
+    StockFeatureDaily,
+    derived_details_columns,
+)
 from app.infra.db.repositories.feature_store_repo import SqlFeatureStoreRepository
 
 AS_OF = date(2026, 2, 17)
@@ -37,21 +46,24 @@ SETUP_PAYLOAD = {
     "candidates": [{"pattern": "vcp", "score": 0.9}],
 }
 
-# symbol -> (composite_score, rs_rating, adr_percent, ibd_industry_group, gics_sector)
+# symbol -> (composite_score, rs_rating, adr_percent, ibd_industry_group, gics_sector, beta)
 ROWS = {
-    "AAPL": (92.5, 95.0, 2.5, "Comp-Peripherals", "Technology"),
-    "MSFT": (78.0, 80.0, 1.8, "Comp-Software", "Technology"),
-    "GOOGL": (55.0, 60.0, 3.1, "Comp-Software", "Communication Services"),
-    "XOM": (40.0, 85.0, 4.2, "Oil-Integrated", "Energy"),
+    "AAPL": (92.5, 95.0, 2.5, "Comp-Peripherals", "Technology", 1.2),
+    "MSFT": (78.0, 80.0, 1.8, "Comp-Software", "Technology", 0.9),
+    "GOOGL": (55.0, 60.0, 3.1, "Comp-Software", "Communication Services", None),
+    "XOM": (40.0, 85.0, 4.2, "Oil-Integrated", "Energy", None),
 }
 
 TABLE_DETAILS_SQL = "stock_feature_daily.table_details_json ->>"
 DETAILS_SQL = "stock_feature_daily.details_json ->>"
+HOT_FIELD_JSON_SQL = tuple(
+    f"->> '{field}'" for field in (*HOT_NUMERIC_FIELDS, *HOT_TEXT_FIELDS)
+)
 
 
 def _details(symbol: str) -> dict:
-    _score, rs, adr, group, sector = ROWS[symbol]
-    return {
+    _score, rs, adr, group, sector, beta = ROWS[symbol]
+    details = {
         "rating": "Buy",
         "rs_rating": rs,
         "adr_percent": adr,
@@ -59,6 +71,9 @@ def _details(symbol: str) -> dict:
         "gics_sector": sector,
         "setup_engine": {"setup_score": rs / 10, **SETUP_PAYLOAD},
     }
+    if beta is not None:
+        details["beta"] = beta
+    return details
 
 
 @pytest.fixture
@@ -69,9 +84,10 @@ def session():
         yield sess
 
 
-@pytest.fixture(params=["table_details", "legacy"])
+@pytest.fixture(params=["typed", "table_details", "legacy"])
 def run_id(request, session):
-    """A seeded run; ``legacy`` clears one row's table details like a pre-0064 row."""
+    """A seeded run; ``table_details`` clears one row's hot columns like a
+    pre-0066 row, ``legacy`` its table details too like a pre-0064 row."""
     session.add(FeatureRun(id=1, as_of_date=AS_OF, run_type="daily_snapshot", status="published"))
     for symbol, (score, *_rest) in ROWS.items():
         session.add(
@@ -86,9 +102,18 @@ def run_id(request, session):
             )
         )
     session.flush()
+    # SQL NULL, as ADD COLUMN leaves existing rows; a Python None here would
+    # store the JSON literal null instead.
+    if request.param in ("table_details", "legacy"):
+        session.execute(
+            update(StockFeatureDaily)
+            .where(StockFeatureDaily.symbol == "XOM")
+            .values(
+                {column: null() for column in derived_details_columns(None)}
+                | {"table_details_json": StockFeatureDaily.table_details_json}
+            )
+        )
     if request.param == "legacy":
-        # SQL NULL, as ADD COLUMN leaves existing rows; a Python None here
-        # would store the JSON literal null instead.
         session.execute(
             update(StockFeatureDaily)
             .where(StockFeatureDaily.symbol == "XOM")
@@ -115,7 +140,10 @@ def sql(session):
 
 def _assert_reads_expected_column(session, statements: list[str]) -> None:
     text = "\n".join(statements)
-    if session.info["run_state"] == "table_details":
+    if session.info["run_state"] == "typed":
+        assert DETAILS_SQL not in text, text
+        assert not [sql for sql in HOT_FIELD_JSON_SQL if sql in text], text
+    elif session.info["run_state"] == "table_details":
         assert TABLE_DETAILS_SQL in text and DETAILS_SQL not in text, text
     else:
         assert DETAILS_SQL in text and TABLE_DETAILS_SQL not in text, text
@@ -326,3 +354,118 @@ def test_filter_options(session, run_id, sql):
     assert options.ibd_industries == ("Comp-Peripherals", "Comp-Software", "Oil-Integrated")
     assert options.gics_sectors == ("Communication Services", "Energy", "Technology")
     _assert_reads_expected_column(session, sql)
+
+
+# ── Hot typed columns (20261013_0066) ───────────────────────────────────
+
+
+def _hot_columns(session) -> dict:
+    row = session.execute(select(StockFeatureDaily)).scalar_one()
+    return {
+        column: getattr(row, column)
+        for column in derived_details_columns(None)
+        if column != "table_details_json"
+    }
+
+
+def test_inserting_a_row_stores_its_hot_fields(session):
+    session.add(
+        StockFeatureDaily(
+            run_id=1,
+            symbol="AAPL",
+            as_of_date=AS_OF,
+            details_json={
+                "rs_rating": 91,
+                "beta": "1.25",
+                "adr_percent": "n/a",
+                "perf_week": True,
+                "ibd_industry_group": "Comp-Peripherals",
+                "gics_sector": 7,
+            },
+        )
+    )
+    session.flush()
+
+    stored = _hot_columns(session)
+    assert stored.pop("hot_fields_stored") is True
+    assert {k: v for k, v in stored.items() if v is not None} == {
+        "rs_rating": 91.0,
+        # CAST(details ->> 'beta' AS FLOAT) reads a numeric string too.
+        "beta": 1.25,
+        "ibd_industry_group": "Comp-Peripherals",
+    }
+
+
+def test_replacing_details_refreshes_the_hot_fields(session):
+    """Group enrichment rewrites ``details_json`` on published rows."""
+    row = StockFeatureDaily(
+        run_id=1,
+        symbol="AAPL",
+        as_of_date=AS_OF,
+        details_json={"rs_rating": 50, "ibd_industry_group": None},
+    )
+    session.add(row)
+    session.flush()
+
+    row.details_json = {"rs_rating": 60, "ibd_industry_group": "Comp-Peripherals"}
+    session.flush()
+    session.expire_all()
+
+    stored = _hot_columns(session)
+    assert (stored["rs_rating"], stored["ibd_industry_group"]) == (60.0, "Comp-Peripherals")
+
+
+def test_upserting_a_snapshot_stores_and_refreshes_the_hot_fields(session):
+    session.add(FeatureRun(id=1, as_of_date=AS_OF, run_type="daily_snapshot", status="running"))
+    session.flush()
+    repo = SqlFeatureStoreRepository(session)
+
+    def write(details):
+        repo.upsert_snapshot_rows(
+            1,
+            [
+                FeatureRowWrite(
+                    symbol="AAPL",
+                    as_of_date=AS_OF,
+                    composite_score=90.0,
+                    overall_rating=5,
+                    passes_count=3,
+                    details=details,
+                )
+            ],
+        )
+
+    write({"rs_rating": 91, "gics_sector": "Technology"})
+    write({"rs_rating": 42, "beta": 1.1})
+    session.expire_all()
+
+    stored = _hot_columns(session)
+    assert stored["hot_fields_stored"] is True
+    assert (stored["rs_rating"], stored["beta"], stored["gics_sector"]) == (42.0, 1.1, None)
+
+
+def test_sorting_on_a_hot_field_keeps_missing_values_last(session, run_id):
+    """JSON-path sorts put NULLs last in either order; the typed column must too."""
+    repo = SqlFeatureStoreRepository(session)
+    for order, expected in (
+        (SortOrder.ASC, ("MSFT", "AAPL", "GOOGL", "XOM")),
+        (SortOrder.DESC, ("AAPL", "MSFT", "GOOGL", "XOM")),
+    ):
+        symbols, _total = repo.query_run_symbols(
+            run_id, FilterExpression(), SortSpec(field="beta", order=order)
+        )
+        assert symbols == expected, order
+
+
+def test_migration_adds_exactly_the_model_hot_columns():
+    path = (
+        Path(__file__).parents[2]
+        / "alembic/versions/20261013_0066_feature_hot_typed_columns.py"
+    )
+    spec = importlib.util.spec_from_file_location("_hot_columns_migration", path)
+    migration = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(migration)
+
+    assert migration._NUMERIC_COLUMNS == HOT_NUMERIC_FIELDS
+    assert migration._TEXT_COLUMNS == HOT_TEXT_FIELDS
+    assert set(migration._INDEXED_COLUMNS) <= {*HOT_NUMERIC_FIELDS, *HOT_TEXT_FIELDS}

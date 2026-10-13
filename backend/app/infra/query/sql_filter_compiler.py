@@ -42,6 +42,8 @@ class SqlFieldBinding:
     column: Any = None
     json_path: tuple[str, ...] | None = None
     numeric_sort: bool = False
+    # Sort NULLs last as JSON-path bindings do; for columns promoted from JSON.
+    nulls_last: bool = False
 
     def __post_init__(self) -> None:
         if (self.column is None) == (self.json_path is None):
@@ -259,7 +261,11 @@ def apply_sql_sort(
 
     order_fn = asc if sort.order == SortOrder.ASC else desc
     ordered = order_fn(value)
-    if binding.json_path is not None or sort.field == "composite_score":
+    if (
+        binding.json_path is not None
+        or binding.nulls_last
+        or sort.field == "composite_score"
+    ):
         ordered = ordered.nullslast()
     if sort.field == "symbol":
         return query.order_by(ordered)
