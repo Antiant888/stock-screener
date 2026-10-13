@@ -251,7 +251,8 @@ class _ChainClaims:
     def __init__(self, *, fail_claim: bool = False):
         self.holders: dict[str, dict] = {}
         self.task_ids: dict[str, list[str]] = {}
-        self.misses: dict[str, int] = {}
+        self.missing_since: dict[str, float] = {}
+        self.clock = 0.0
         self.renewed: list[tuple[str, str]] = []
         self.released: list[tuple[str, str]] = []
         self.fail_claim = fail_claim
@@ -279,12 +280,11 @@ class _ChainClaims:
         holder = self.holders.get(market)
         return bool(holder and holder["task_id"] == token)
 
-    def count_pipeline_chain_miss(self, token):
-        self.misses[token] = self.misses.get(token, 0) + 1
-        return self.misses[token]
+    def pipeline_chain_missing_seconds(self, token):
+        return self.clock - self.missing_since.setdefault(token, self.clock)
 
-    def clear_pipeline_chain_misses(self, token):
-        self.misses.pop(token, None)
+    def clear_pipeline_chain_missing(self, token):
+        self.missing_since.pop(token, None)
 
     def release_pipeline_chain(self, token, *, market):
         self.released.append((market, token))
@@ -585,7 +585,9 @@ def test_a_chain_queued_behind_a_backlog_keeps_its_claim(monkeypatch):
 
 
 def test_a_running_or_retrying_stage_keeps_the_claim_without_reading_the_broker(monkeypatch):
-    for state in ("STARTED", "RETRY"):
+    # PROGRESS: a running price refresh reports progress through update_state,
+    # and its acked message is in no queue, so only its state shows it runs.
+    for state in ("STARTED", "RETRY", "PROGRESS"):
         module, claims, _token, live_calls = _dispatched_chain(
             monkeypatch, states={0: "SUCCESS", 1: state}
         )
@@ -614,28 +616,62 @@ def test_a_failed_stage_or_a_finished_chain_frees_the_claim(monkeypatch):
     assert module.renew_daily_market_pipeline_claims.run()["claims"] == {"US": "released_done"}
 
 
-def test_a_chain_with_no_trace_is_freed_on_the_second_miss_only(monkeypatch):
-    # One heartbeat can fall between a stage finishing and the next publishing.
+def test_a_chain_with_no_trace_is_freed_on_the_next_heartbeat_only(monkeypatch):
+    # One check can fall between a worker taking a stage and storing its state.
+    from app.tasks.workload_coordination import PIPELINE_CHAIN_HEARTBEAT_SECONDS
+
     module, claims, token, _ = _dispatched_chain(monkeypatch, states={0: "SUCCESS"})
 
     assert module.renew_daily_market_pipeline_claims.run()["claims"] == {"US": "missing"}
     assert claims.holders["US"]["task_id"] == token
 
+    claims.clock += PIPELINE_CHAIN_HEARTBEAT_SECONDS
     assert module.renew_daily_market_pipeline_claims.run()["claims"] == {"US": "released_missing"}
     assert claims.holders == {}
 
 
-def test_a_live_heartbeat_resets_the_miss_count(monkeypatch):
+def test_overlapping_heartbeats_cannot_both_count_one_gap(monkeypatch):
+    # A slow heartbeat and the next one, both landing in the same handoff gap.
+    module, claims, token, _ = _dispatched_chain(monkeypatch, states={0: "SUCCESS"})
+
+    assert module.renew_daily_market_pipeline_claims.run()["claims"] == {"US": "missing"}
+    claims.clock += 5
+    assert module.renew_daily_market_pipeline_claims.run()["claims"] == {"US": "missing"}
+    assert claims.holders["US"]["task_id"] == token
+
+
+def test_a_live_heartbeat_resets_the_missing_clock(monkeypatch):
+    from app.tasks.workload_coordination import PIPELINE_CHAIN_HEARTBEAT_SECONDS
+
     module, claims, token, _ = _dispatched_chain(monkeypatch, states={})
     live = set()
     monkeypatch.setattr(module, "_live_message_ids", lambda: live)
 
     assert module.renew_daily_market_pipeline_claims.run()["claims"] == {"US": "missing"}
+    claims.clock += PIPELINE_CHAIN_HEARTBEAT_SECONDS
     live.add(claims.task_ids[token][1])
     assert module.renew_daily_market_pipeline_claims.run()["claims"] == {"US": "renewed"}
+    claims.clock += PIPELINE_CHAIN_HEARTBEAT_SECONDS
     live.clear()
     assert module.renew_daily_market_pipeline_claims.run()["claims"] == {"US": "missing"}
     assert claims.holders["US"]["task_id"] == token
+
+
+def test_an_unreadable_broker_keeps_every_claim(monkeypatch, caplog):
+    from app.tasks.workload_coordination import PIPELINE_CHAIN_HEARTBEAT_SECONDS
+
+    module, claims, token, _ = _dispatched_chain(monkeypatch, states={})
+
+    def broker_down():
+        raise TimeoutError("broker read timed out")
+
+    monkeypatch.setattr(module, "_live_message_ids", broker_down)
+
+    for _beat in range(3):
+        assert module.renew_daily_market_pipeline_claims.run()["claims"] == {"US": "error"}
+        claims.clock += PIPELINE_CHAIN_HEARTBEAT_SECONDS
+    assert claims.holders["US"]["task_id"] == token
+    assert "Could not check the US pipeline chain claim" in caplog.text
 
 
 def test_a_failing_heartbeat_keeps_the_claim(monkeypatch, caplog):
@@ -684,16 +720,33 @@ def test_live_message_ids_cover_queued_and_delivered_messages(monkeypatch):
         return {"headers": {"id": task_id, "task": "x"}, "body": "e30="}
 
     class _Broker:
+        closed = False
+
         def lrange(self, queue_name, _start, _end):
-            return [json.dumps(message("queued-1")).encode()] if queue_name == "data_fetch_us" else []
+            if queue_name != "data_fetch_us":
+                return []
+            return [b"not json", json.dumps(message("queued-1")).encode()]
 
         def hvals(self, key):
             assert key == "unacked"
-            return [json.dumps([message("delivered-1"), "", "data_fetch_us"]).encode()]
+            return [b"[]", json.dumps([message("delivered-1"), "", "data_fetch_us"]).encode()]
 
-    monkeypatch.setattr("redis.from_url", lambda _url: _Broker())
+        def close(self):
+            _Broker.closed = True
 
+    options = {}
+
+    def from_url(_url, **kwargs):
+        options.update(kwargs)
+        return _Broker()
+
+    monkeypatch.setattr("redis.from_url", from_url)
+
+    # A malformed entry is skipped, not allowed to fail every market's check.
     assert module._live_message_ids() == {"queued-1", "delivered-1"}
+    # Bounded, so a hung broker cannot hold the heartbeat until its time limit.
+    assert options["socket_timeout"] and options["socket_connect_timeout"]
+    assert _Broker.closed
 
 
 @pytest.mark.allow_real_celery_dispatch

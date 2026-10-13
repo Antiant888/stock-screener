@@ -303,20 +303,33 @@ def test_pipeline_chain_renewal_leaves_a_newer_claim_alone():
     mock_redis.expire.assert_not_called()
 
 
-def test_pipeline_chain_stage_ids_and_misses():
+def test_pipeline_chain_stage_ids():
     coordination, mock_redis, _ = _make_coordination()
     mock_redis.get.return_value = b'["stage-1", "stage-2"]'
-    mock_redis.incr.return_value = 2
 
     assert coordination.get_pipeline_chain_task_ids("token-1") == ["stage-1", "stage-2"]
     mock_redis.get.assert_called_with("pipeline_chain_tasks:token-1")
-    assert coordination.count_pipeline_chain_miss("token-1") == 2
-    mock_redis.incr.assert_called_once_with("pipeline_chain_misses:token-1")
-    coordination.clear_pipeline_chain_misses("token-1")
-    mock_redis.delete.assert_called_once_with("pipeline_chain_misses:token-1")
 
     mock_redis.get.return_value = None
     assert coordination.get_pipeline_chain_task_ids("token-0") is None
+
+
+def test_pipeline_chain_missing_clock_starts_once_and_clears():
+    from app.tasks.workload_coordination import PIPELINE_CHAIN_TTL_SECONDS
+
+    coordination, mock_redis, _ = _make_coordination()
+    mock_redis.get.return_value = b"1000.0"
+
+    with patch("app.tasks.workload_coordination.time.time", return_value=1240.0):
+        assert coordination.pipeline_chain_missing_seconds("token-1") == 240.0
+
+    # SET NX EX in one command: the first miss starts the clock, later ones
+    # keep it, and the key can never be left without a TTL.
+    mock_redis.set.assert_called_once_with(
+        "pipeline_chain_misses:token-1", "1240.0", nx=True, ex=PIPELINE_CHAIN_TTL_SECONDS
+    )
+    coordination.clear_pipeline_chain_missing("token-1")
+    mock_redis.delete.assert_called_once_with("pipeline_chain_misses:token-1")
 
 
 def test_pipeline_chain_release_is_owner_checked():

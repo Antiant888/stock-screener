@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from functools import wraps
 import json
 import logging
+import time
 from typing import Any, Dict, Iterator, Optional, Sequence, Tuple
 
 from celery.exceptions import Retry
@@ -43,9 +44,11 @@ PIPELINE_CHAIN_MISSES_PREFIX = "pipeline_chain_misses"
 # heartbeat outage: such a claim never locks the market for longer.
 PIPELINE_CHAIN_TTL_SECONDS = 48 * 3600
 PIPELINE_CHAIN_HEARTBEAT_SECONDS = 300
-# Consecutive heartbeats that must find no trace of a chain before its claim
-# is released: one can fall between a stage finishing and the next publishing.
-PIPELINE_CHAIN_MISSES_TO_RELEASE = 2
+# How long heartbeats must find no trace of a chain before its claim is
+# released. One check can fall between a worker taking a stage and storing its
+# state, so it takes two; half an interval apart, so two heartbeats that
+# overlap (a slow one and the next) cannot both count one such gap.
+PIPELINE_CHAIN_MISSING_RELEASE_SECONDS = PIPELINE_CHAIN_HEARTBEAT_SECONDS / 2
 COORDINATION_WAIT_MAX_RETRIES = 10_000
 logger = logging.getLogger(__name__)
 _SERIALIZED_MARKET_WORKLOAD_DISABLED: ContextVar[bool] = ContextVar(
@@ -73,6 +76,9 @@ return 0
 """
 
 
+# Keyed by token, not market, and left to expire after release: a heartbeat
+# that read an old holder still finds that chain's ids, and its owner-checked
+# renew or release then leaves the newer claim alone.
 def _pipeline_chain_tasks_key(token: str) -> str:
     return f"{PIPELINE_CHAIN_TASKS_PREFIX}:{token}"
 
@@ -233,14 +239,16 @@ class WorkloadCoordination:
         raw = self.redis.get(_pipeline_chain_tasks_key(token))
         return None if raw is None else json.loads(raw)
 
-    def count_pipeline_chain_miss(self, token: str) -> int:
-        """Count one more consecutive heartbeat that found no trace of the chain."""
+    def pipeline_chain_missing_seconds(self, token: str) -> float:
+        """Seconds since heartbeats started finding no trace of the chain;
+        0 when this check is the first."""
         key = _pipeline_chain_misses_key(token)
-        misses = self.redis.incr(key)
-        self.redis.expire(key, PIPELINE_CHAIN_TTL_SECONDS)
-        return int(misses)
+        now = time.time()
+        self.redis.set(key, repr(now), nx=True, ex=PIPELINE_CHAIN_TTL_SECONDS)
+        since = self.redis.get(key)
+        return max(now - float(since), 0.0) if since is not None else 0.0
 
-    def clear_pipeline_chain_misses(self, token: str) -> None:
+    def clear_pipeline_chain_missing(self, token: str) -> None:
         self.redis.delete(_pipeline_chain_misses_key(token))
 
     def release_pipeline_chain(self, token: str, *, market: Optional[str]) -> bool:

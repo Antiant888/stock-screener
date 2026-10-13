@@ -377,9 +377,11 @@ def release_daily_market_pipeline_claim(*, market: str, token: str) -> dict:
     return {"status": "ok", "market": market, "stage": "release", "released": released}
 
 
-# Backend states that end a chain, and states of a stage a worker holds.
+# Backend states that end a chain. Every state other than these, PENDING and
+# SUCCESS means a worker holds the stage: STARTED, RETRY, and custom ones such
+# as the PROGRESS a running price refresh reports through update_state.
 _CHAIN_DEAD_STATES = frozenset({"FAILURE", "REVOKED"})
-_CHAIN_RUNNING_STATES = frozenset({"RECEIVED", "STARTED", "RETRY"})
+_CHAIN_IDLE_STATES = frozenset({"PENDING", "SUCCESS"})
 
 
 def _message_task_id(payload: Any) -> str | None:
@@ -401,13 +403,35 @@ def _live_message_ids() -> set[str]:
     from app.config import settings
     from app.services.operations_job_service import OperationsJobService
 
-    broker = redis.from_url(settings.celery_broker_url)
-    payloads = [
-        json.loads(raw)
-        for queue_name in OperationsJobService.broker_queue_names()
-        for raw in broker.lrange(queue_name, 0, -1)
-    ]
-    payloads += [json.loads(raw)[0] for raw in broker.hvals("unacked")]
+    from app.tasks.lease_renewal import (
+        LEASE_REDIS_CONNECT_TIMEOUT_SECONDS,
+        LEASE_REDIS_SOCKET_TIMEOUT_SECONDS,
+    )
+
+    def parsed(raw: bytes) -> Any:
+        try:
+            return json.loads(raw)
+        except ValueError:
+            return None
+
+    broker = redis.from_url(
+        settings.celery_broker_url,
+        socket_connect_timeout=LEASE_REDIS_CONNECT_TIMEOUT_SECONDS,
+        socket_timeout=LEASE_REDIS_SOCKET_TIMEOUT_SECONDS,
+    )
+    try:
+        payloads = [
+            parsed(raw)
+            for queue_name in OperationsJobService.broker_queue_names()
+            for raw in broker.lrange(queue_name, 0, -1)
+        ]
+        payloads += [
+            delivered[0]
+            for raw in broker.hvals("unacked")
+            if isinstance(delivered := parsed(raw), list) and delivered
+        ]
+    finally:
+        broker.close()
     return {task_id for payload in payloads if (task_id := _message_task_id(payload))}
 
 
@@ -423,7 +447,7 @@ def _chain_liveness(task_ids: list[str], states: dict[str, str], live_message_id
     chain_states = [states.get(task_id, "PENDING") for task_id in task_ids]
     if any(state in _CHAIN_DEAD_STATES for state in chain_states):
         return "dead"
-    if any(state in _CHAIN_RUNNING_STATES for state in chain_states):
+    if any(state not in _CHAIN_IDLE_STATES for state in chain_states):
         return "alive"
     if chain_states[-1] == "SUCCESS":
         return "done"
@@ -433,7 +457,7 @@ def _chain_liveness(task_ids: list[str], states: dict[str, str], live_message_id
 
 
 def _heartbeat_pipeline_chain(claims: Any, market: str, token: str, live_message_ids) -> str:
-    from app.tasks.workload_coordination import PIPELINE_CHAIN_MISSES_TO_RELEASE
+    from app.tasks.workload_coordination import PIPELINE_CHAIN_MISSING_RELEASE_SECONDS
 
     task_ids = claims.get_pipeline_chain_task_ids(token)
     if not task_ids:
@@ -442,11 +466,11 @@ def _heartbeat_pipeline_chain(claims: Any, market: str, token: str, live_message
     states = {task_id: celery_app.AsyncResult(task_id).state for task_id in task_ids}
     liveness = _chain_liveness(task_ids, states, live_message_ids)
     if liveness == "alive":
-        claims.clear_pipeline_chain_misses(token)
+        claims.clear_pipeline_chain_missing(token)
         return "renewed" if claims.renew_pipeline_chain(token, market=market) else "lost"
     if (
         liveness == "missing"
-        and claims.count_pipeline_chain_miss(token) < PIPELINE_CHAIN_MISSES_TO_RELEASE
+        and claims.pipeline_chain_missing_seconds(token) < PIPELINE_CHAIN_MISSING_RELEASE_SECONDS
     ):
         return "missing"
     # Owner-checked: a newer chain that took the claim meanwhile keeps it.
@@ -463,13 +487,14 @@ def renew_daily_market_pipeline_claims() -> dict:
 
     Renews the claim while a stage is queued, delivered or running, and
     releases it once a stage failed or was revoked (a revoked stage fires no
-    errback), the chain finished, or two heartbeats in a row found no trace
-    of it. A market whose check raises keeps its claim until the next beat
-    or PIPELINE_CHAIN_TTL_SECONDS.
+    errback), the chain finished, or heartbeats found no trace of it for
+    PIPELINE_CHAIN_MISSING_RELEASE_SECONDS. A market whose check raises keeps
+    its claim until the next beat or PIPELINE_CHAIN_TTL_SECONDS.
 
-    A stage killed with its worker (OOM, SIGKILL) reads STARTED until its
-    result expires (24h), so such a chain keeps its claim that long; the
-    Operations console can release it (#612).
+    A stage killed with its worker (OOM, SIGKILL), or whose retry message was
+    lost, keeps its STARTED/PROGRESS/RETRY state until its result expires
+    (24h), so such a chain keeps its claim that long; the Operations console
+    can release it (#612).
     """
     claims = _pipeline_chain_claims()
     live: set[str] | None = None
