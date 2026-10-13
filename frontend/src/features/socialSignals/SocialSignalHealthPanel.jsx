@@ -206,7 +206,7 @@ export default function SocialSignalHealthPanel() {
         </Typography>
         {(analysis.data || []).map((work) => <Stack key={work.work_id} direction="row" gap={1} alignItems="center">
           <Typography variant="body2">
-            Work {work.work_id} · {work.error_code === 'skipped:no_signal' ? 'skipped, no ticker or company' : work.state}
+            Work {work.work_id} · {work.error_code === 'skipped:no_signal' ? 'skipped: repost, or no ticker or company' : work.state}
           </Typography>
           {['waiting_budget', 'failed_retryable', 'failed_terminal', 'outside_window'].includes(work.state) ? (
             <Button size="small" aria-label={`Retry work ${work.work_id}`}
@@ -281,7 +281,7 @@ function HealthSummary({ health }) {
     <Typography variant="caption" color="text.secondary">
       Reset {budget.next_reset_at ? new Date(budget.next_reset_at).toLocaleString() : '—'} · {budget.timezone || 'Asia/Singapore'} · pricing {budget.pricing_status || 'not configured'}{budget.pricing_version ? ` (${budget.pricing_version})` : ''}{budget.blocked_models?.length ? ` · blocked models: ${budget.blocked_models.join(', ')}` : ''}
     </Typography>
-    <Typography variant="body2">Backlog: {health.backlog?.waiting ?? 0} waiting · {health.backlog?.failed ?? 0} failed · {health.backlog?.outside_window ?? 0} outside window · {health.backlog?.no_signal ?? 0} skipped (no ticker or company)</Typography>
+    <Typography variant="body2">Backlog: {health.backlog?.waiting ?? 0} waiting · {health.backlog?.failed ?? 0} failed · {health.backlog?.outside_window ?? 0} outside window · {health.backlog?.no_signal ?? 0} skipped (repost, or no ticker or company)</Typography>
     <Typography variant="body2">Last successful collection {health.last_collection_at ? new Date(health.last_collection_at).toLocaleString() : '—'}</Typography>
     {reauth ? <Alert severity="error" sx={{ mt: 1 }}>
       {health.provider === 'xui'

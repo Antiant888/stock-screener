@@ -74,8 +74,8 @@ describe('SocialSignalHealthPanel', () => {
     expect(screen.getByText(/1\/2 source coverage/)).toBeInTheDocument();
     expect(screen.getByText(/US\$2 per day/)).toBeInTheDocument();
     expect(screen.getByText(/US\$1 remaining/)).toBeInTheDocument();
-    expect(screen.getByText(/9 skipped \(no ticker or company\)/)).toBeInTheDocument();
-    expect(screen.getByText('Work 5 · skipped, no ticker or company')).toBeInTheDocument();
+    expect(screen.getByText(/9 skipped \(repost, or no ticker or company\)/)).toBeInTheDocument();
+    expect(screen.getByText('Work 5 · skipped: repost, or no ticker or company')).toBeInTheDocument();
     expect(screen.getByText(/Reauthenticate the private worker/)).toBeInTheDocument();
     expect(screen.getByText(/1 company links need administrator verification/)).toBeInTheDocument();
     expect(screen.getByText(/at most five posts/)).toBeInTheDocument();
