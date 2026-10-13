@@ -45,6 +45,8 @@ class OperationsWorkerStatus(BaseModel):
 class OperationsLeaseSnapshot(BaseModel):
     external_fetch_global: dict[str, Any] | None = None
     market_workload: dict[str, dict[str, Any] | None] = Field(default_factory=dict)
+    # Held daily pipeline chain claims by market (task_id is the claim token).
+    pipeline_chain: dict[str, dict[str, Any]] = Field(default_factory=dict)
 
 
 class OperationsJobsResponse(BaseModel):
@@ -53,6 +55,14 @@ class OperationsJobsResponse(BaseModel):
     workers: list[OperationsWorkerStatus] = Field(default_factory=list)
     leases: OperationsLeaseSnapshot = Field(default_factory=OperationsLeaseSnapshot)
     generated_at: str
+
+
+class OperationsReleaseChainRequest(BaseModel):
+    # The claim token the operator saw (uuid4().hex at dispatch). Exact
+    # format, because the release script matches ":<token>:" as a substring
+    # of "daily_market_pipeline:<token>:<timestamp>": a short token such as
+    # "34" would match the timestamp and free a claim it does not own.
+    token: str = Field(pattern=r"^[0-9a-f]{32}$")
 
 
 class OperationsCancelJobRequest(BaseModel):

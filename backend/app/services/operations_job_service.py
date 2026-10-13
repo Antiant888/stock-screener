@@ -51,6 +51,7 @@ HEARTBEAT_STUCK_AFTER_SECONDS = 30 * 60
 LEASE_STUCK_TTL_SECONDS = 10 * 60
 
 SCAN_TASK_NAME = "app.tasks.scan_tasks.run_bulk_scan"
+RELEASE_PIPELINE_CLAIM_TASK = "app.tasks.daily_market_pipeline_tasks.release_daily_market_pipeline_claim"
 
 
 @dataclass
@@ -74,6 +75,8 @@ class _JobRecord:
     kwargs: dict[str, Any] | None = None
     source: str | None = None
     cancel_requested: dict[str, Any] | None = None
+    # (market, token) of the daily pipeline chain this queued stage belongs to.
+    chain_claim: tuple[str, str] | None = None
 
     def to_api(self) -> dict[str, Any]:
         return {
@@ -193,6 +196,30 @@ def _extract_scan_id(task_name: str, args: list[Any], kwargs: dict[str, Any]) ->
     return None
 
 
+def _pipeline_chain_claim(
+    task_name: str, kwargs: dict[str, Any], embed: Any
+) -> tuple[str, str] | None:
+    """The (market, token) claim a queued pipeline stage belongs to.
+
+    Dispatch links the claim's release as every stage's errback and as the
+    chain's last stage, so a stage message carries it in its embed; the
+    release stage carries it in its own kwargs.
+    """
+    candidates: list[Any] = []
+    if task_name == RELEASE_PIPELINE_CLAIM_TASK:
+        candidates.append({"task": task_name, "kwargs": kwargs})
+    if isinstance(embed, dict):
+        candidates += list(embed.get("errbacks") or []) + list(embed.get("chain") or [])
+    for signature in candidates:
+        if not isinstance(signature, dict) or signature.get("task") != RELEASE_PIPELINE_CLAIM_TASK:
+            continue
+        claim_kwargs = signature.get("kwargs") or {}
+        market, token = claim_kwargs.get("market"), claim_kwargs.get("token")
+        if isinstance(market, str) and isinstance(token, str):
+            return market, token
+    return None
+
+
 def _cancel_strategy_for(record: _JobRecord) -> str:
     if record.wait_reason == "scheduled_eta":
         # A worker holds the message until its ETA; it is not in the broker list.
@@ -283,6 +310,13 @@ class OperationsJobService:
         return {
             "external_fetch_global": coordination.get_external_fetch_holder(),
             "market_workload": coordination.get_market_workload_holders(),
+            # Daily pipeline chain claims (#598): held from dispatch until the
+            # chain's last stage or first failure; a revoked stage leaves one.
+            "pipeline_chain": {
+                market: holder
+                for market, holder in coordination.get_pipeline_chain_holders().items()
+                if holder
+            },
         }
 
     def _runtime_activity_records(self, db: Session) -> list[dict[str, Any]]:
@@ -318,6 +352,7 @@ class OperationsJobService:
 
         args: list[Any] = []
         kwargs: dict[str, Any] = {}
+        chain_claim: tuple[str, str] | None = None
         body = payload.get("body")
         if body:
             try:
@@ -331,6 +366,8 @@ class OperationsJobService:
                 if isinstance(body_payload, list) and len(body_payload) >= 2:
                     args = _coerce_args(body_payload[0])
                     kwargs = _coerce_kwargs(body_payload[1])
+                    embed = body_payload[2] if len(body_payload) >= 3 else {}
+                    chain_claim = _pipeline_chain_claim(task_name, kwargs, embed)
             except Exception:
                 logger.debug("Failed to decode Celery body for %s", task_name, exc_info=True)
 
@@ -350,6 +387,7 @@ class OperationsJobService:
             args=args,
             kwargs=kwargs,
             source="broker",
+            chain_claim=chain_claim,
         )
 
     def _queued_jobs(self, lease_snapshot: dict[str, Any]) -> list[_JobRecord]:
@@ -909,9 +947,45 @@ class OperationsJobService:
                 record = self._parse_queue_message(raw, queue_name)
                 if record and record.task_id == task_id:
                     removed = broker.lrem(queue_name, 1, raw)
+                    # Release before revoking: once removed, the stage can never
+                    # run its errback, so a revoke error must not skip this.
+                    if removed and record.chain_claim:
+                        self._release_removed_chain(record)
                     celery_app.control.revoke(task_id, terminate=False)
                     return bool(removed), queue_name
         return False, None
+
+    def _release_removed_chain(self, record: _JobRecord) -> None:
+        """A chain has one live message at a time, so removing a queued stage
+        ends the chain; its errback never fires, so free the claim here.
+        Owner-checked: a newer chain's claim is left alone.
+
+        A queued copy cannot coexist with the same stage running: acks_late is
+        off, so a worker acks before running and kombu only restores
+        prefetched messages that never started.
+        """
+        market, token = record.chain_claim
+        try:
+            get_workload_coordination().release_pipeline_chain(token, market=market)
+        except Exception:
+            # The stage is already removed; the claim then expires on its own.
+            logger.warning(
+                "Could not release the %s pipeline chain claim after removing %s",
+                market, record.task_id, exc_info=True,
+            )
+
+    def release_pipeline_chain(self, db: Session, market: str, token: str) -> dict[str, Any]:
+        """Operator release of a market's chain claim, only if ``token`` still
+        holds it. For a claim left by a stage revoked from a worker."""
+        released = get_workload_coordination().release_pipeline_chain(token, market=market)
+        if released:
+            status, message = "accepted", f"Released the {market} pipeline chain claim {token}."
+        else:
+            status, message = "blocked", f"The {market} pipeline chain claim {token} is no longer held."
+        self._record_cancel_action(
+            db, task_id=token, strategy="release_pipeline_chain", outcome=status, message=message,
+        )
+        return {"status": status, "cancel_strategy": "release_pipeline_chain", "message": message}
 
     def _cancel_scan(self, db: Session, scan_id: str) -> tuple[str, str]:
         from app.infra.db.uow import SqlUnitOfWork

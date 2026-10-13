@@ -8,6 +8,7 @@ const fetchAlerts = vi.fn();
 const acknowledgeAlert = vi.fn();
 const fetchOperationsJobs = vi.fn();
 const cancelOperationsJob = vi.fn();
+const releasePipelineChain = vi.fn();
 const useRuntimeActivity = vi.fn();
 const getBootstrapStatus = vi.fn();
 const runtimeState = vi.hoisted(() => ({ features: { themes: true } }));
@@ -24,6 +25,7 @@ vi.mock('../api/telemetry', () => ({
 vi.mock('../api/operations', () => ({
   fetchOperationsJobs: (...args) => fetchOperationsJobs(...args),
   cancelOperationsJob: (...args) => cancelOperationsJob(...args),
+  releasePipelineChain: (...args) => releasePipelineChain(...args),
 }));
 
 vi.mock('../api/appRuntime', () => ({
@@ -242,6 +244,53 @@ describe('OperationsPage', () => {
 
     await waitFor(() => {
       expect(cancelOperationsJob).toHaveBeenCalledWith('task-fetch-hk', 'revoke_and_remove_from_queue');
+    });
+  });
+
+  describe('pipeline chain claims', () => {
+    const withClaim = {
+      ...OPERATIONS_PAYLOAD,
+      leases: {
+        ...OPERATIONS_PAYLOAD.leases,
+        pipeline_chain: {
+          HK: { task_id: 'tok-hk', task_name: 'daily_market_pipeline', started_at: '2026-10-13T08:30:00Z', ttl_seconds: 7200 },
+        },
+      },
+    };
+
+    it('says when no pipeline holds a claim', async () => {
+      renderWithProviders(<OperationsPage />);
+
+      expect(await screen.findByText('No pipeline chain claims are held.')).toBeInTheDocument();
+    });
+
+    it('releases a claim only after confirming, with the token it showed', async () => {
+      fetchOperationsJobs.mockResolvedValue(withClaim);
+      releasePipelineChain.mockResolvedValue({ status: 'accepted', cancel_strategy: 'release_pipeline_chain', message: 'ok' });
+      renderWithProviders(<OperationsPage />);
+
+      expect(await screen.findByText('Claim: tok-hk')).toBeInTheDocument();
+      fireEvent.click(screen.getByRole('button', { name: 'Release HK pipeline chain claim' }));
+      const dialog = await screen.findByRole('dialog');
+      expect(within(dialog).getByText(/otherwise the next Run starts a second pipeline/)).toBeInTheDocument();
+      expect(releasePipelineChain).not.toHaveBeenCalled();
+
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Release' }));
+
+      await waitFor(() => expect(releasePipelineChain).toHaveBeenCalledWith('HK', 'tok-hk'));
+    });
+
+    it('says why when the claim was already gone', async () => {
+      fetchOperationsJobs.mockResolvedValue(withClaim);
+      releasePipelineChain.mockResolvedValue({
+        status: 'blocked', cancel_strategy: 'release_pipeline_chain', message: 'The HK pipeline chain claim tok-hk is no longer held.',
+      });
+      renderWithProviders(<OperationsPage />);
+
+      fireEvent.click(await screen.findByRole('button', { name: 'Release HK pipeline chain claim' }));
+      fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Release' }));
+
+      expect(await screen.findByText(/is no longer held/)).toBeInTheDocument();
     });
   });
 

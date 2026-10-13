@@ -35,7 +35,7 @@ import {
   Typography,
 } from '@mui/material';
 import { fetchAlerts, acknowledgeAlert } from '../api/telemetry';
-import { cancelOperationsJob, fetchOperationsJobs } from '../api/operations';
+import { cancelOperationsJob, fetchOperationsJobs, releasePipelineChain } from '../api/operations';
 import { getBootstrapStatus } from '../api/appRuntime';
 import { useRuntimeActivity } from '../hooks/useRuntimeActivity';
 import { useRuntime } from '../contexts/RuntimeContext';
@@ -309,9 +309,10 @@ function AlertsTable({ alerts, onAcknowledge }) {
   );
 }
 
-function LeaseSummary({ leases }) {
+function LeaseSummary({ leases, onReleaseChain, releasingToken }) {
   const externalHolder = leases?.external_fetch_global;
   const marketHolders = leases?.market_workload || {};
+  const chainClaims = Object.entries(leases?.pipeline_chain || {});
 
   return (
     <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap>
@@ -354,6 +355,46 @@ function LeaseSummary({ leases }) {
               </Box>
             ))}
           </Stack>
+        </CardContent>
+      </Card>
+      <Card variant="outlined" sx={{ minWidth: 260, flex: '1 1 320px' }}>
+        <CardContent>
+          <Typography variant="subtitle2" sx={{ mb: 1 }}>
+            Pipeline Chain Claims
+          </Typography>
+          {chainClaims.length ? (
+            <Stack spacing={1}>
+              {chainClaims.map(([market, claim]) => (
+                <Stack key={market} direction="row" spacing={1} alignItems="center" justifyContent="space-between">
+                  <Box>
+                    <Typography variant="body2">
+                      <strong>{market}:</strong> daily pipeline
+                    </Typography>
+                    <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+                      Since {formatTimestamp(claim.started_at)} · expires in {formatLagSeconds(claim.ttl_seconds)}
+                    </Typography>
+                    <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+                      Claim: {claim.task_id}
+                    </Typography>
+                  </Box>
+                  <Button
+                    size="small"
+                    variant="outlined"
+                    color="error"
+                    onClick={() => onReleaseChain({ market, token: claim.task_id })}
+                    disabled={!claim.task_id || releasingToken === claim.task_id}
+                    aria-label={`Release ${market} pipeline chain claim`}
+                  >
+                    {releasingToken === claim.task_id ? 'Working…' : 'Release'}
+                  </Button>
+                </Stack>
+              ))}
+            </Stack>
+          ) : (
+            <Typography variant="body2" color="text.secondary">
+              No pipeline chain claims are held.
+            </Typography>
+          )}
         </CardContent>
       </Card>
     </Stack>
@@ -597,6 +638,13 @@ export default function OperationsPage() {
       queryClient.invalidateQueries({ queryKey: ['runtimeActivity'] });
     },
   });
+  const releaseChainMutation = useMutation({
+    mutationFn: ({ market, token }) => releasePipelineChain(market, token),
+    onSuccess: (payload) => setJobActionError(payload.status === 'accepted' ? null : payload.message),
+    onError: (err) => setJobActionError(err?.response?.data?.detail || err.message),
+    onSettled: () => queryClient.invalidateQueries({ queryKey: ['operations', 'jobs'] }),
+  });
+  const [confirmChain, setConfirmChain] = useState(null);
   const [confirmJob, setConfirmJob] = useState(null);
   const confirmAction = confirmJob ? CANCEL_ACTIONS[confirmJob.cancel_strategy] : null;
 
@@ -802,8 +850,35 @@ export default function OperationsPage() {
       {jobsQuery.isLoading ? (
         <CircularProgress size={20} />
       ) : (
-        <LeaseSummary leases={leases} />
+        <LeaseSummary
+          leases={leases}
+          onReleaseChain={setConfirmChain}
+          releasingToken={releaseChainMutation.isPending ? releaseChainMutation.variables?.token : null}
+        />
       )}
+      <Dialog open={Boolean(confirmChain)} onClose={() => setConfirmChain(null)}>
+        <DialogTitle>Release {confirmChain?.market} pipeline chain claim</DialogTitle>
+        <DialogContent>
+          <DialogContentText>
+            The claim stops a second daily pipeline from starting while one is in progress. Release it only
+            if that market&apos;s pipeline stages are gone from the job console (for example, a stage was
+            revoked); otherwise the next Run starts a second pipeline alongside the first.
+          </DialogContentText>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setConfirmChain(null)}>Back</Button>
+          <Button
+            variant="contained"
+            color="error"
+            onClick={() => {
+              releaseChainMutation.mutate(confirmChain);
+              setConfirmChain(null);
+            }}
+          >
+            Release
+          </Button>
+        </DialogActions>
+      </Dialog>
 
       <Stack direction={{ xs: 'column', lg: 'row' }} spacing={2} sx={{ mt: 3 }}>
         <Box sx={{ flex: 1 }}>
