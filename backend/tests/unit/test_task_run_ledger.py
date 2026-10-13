@@ -438,7 +438,7 @@ def test_task_list_is_read_only_and_never_waits_on_the_result_backend(db_session
     _start("app.tasks.cache_tasks.weekly_full_refresh", task_id, {"market": "US"})
 
     with patch("app.services.task_registry_service.AsyncResult") as async_result:
-        assert _last_run(db_session, "weekly-full-refresh")["status"] == "running"
+        assert _last_run(db_session, "weekly-full-refresh-us")["status"] == "running"
     async_result.assert_not_called()
 
 
@@ -809,3 +809,53 @@ def test_operations_queue_removal_marks_the_run_cancelled(db_session):
 
     [row] = _rows(db_session, task_id)
     assert row.status == "cancelled"
+
+
+@pytest.mark.parametrize("function, entry", [
+    ("app.tasks.cache_tasks.weekly_full_refresh", "weekly-full-refresh"),
+    ("app.tasks.fundamentals_tasks.refresh_all_fundamentals", "weekly-fundamental-refresh"),
+])
+def test_a_later_success_in_one_market_does_not_hide_a_failure_in_another(db_session, function, entry):
+    # #591: Beat fans these out per market; one shared entry showed whichever
+    # market started last, so a later HK success hid a failed US run.
+    us, hk = str(uuid4()), str(uuid4())
+    _start(function, us, {"market": "US"})
+    _finish(function, us, {"market": "US"}, state="FAILURE", retval=RuntimeError("provider down"))
+    _start(function, hk, {"market": "HK"})
+    _finish(function, hk, {"market": "HK"}, state="SUCCESS", retval={"status": "ok"})
+
+    assert _last_run(db_session, f"{entry}-us")["status"] == "failed"
+    assert _last_run(db_session, f"{entry}-hk")["status"] == "completed"
+
+
+def test_every_weekly_beat_entry_has_a_matching_registry_entry():
+    from app.celery_app import _build_cache_warmup_beat_schedule
+    from app.services.task_registry_service import SCHEDULED_TASKS
+    from app.tasks.market_queues import SUPPORTED_MARKETS
+
+    beat = _build_cache_warmup_beat_schedule(list(SUPPORTED_MARKETS))
+    weekly = {name: e for name, e in beat.items() if name.startswith(("weekly-full-refresh-", "weekly-fundamental-refresh-"))}
+
+    assert len(weekly) == 2 * len(SUPPORTED_MARKETS)
+    for name, beat_entry in weekly.items():
+        registry = SCHEDULED_TASKS[name]
+        assert registry["task_function"] == beat_entry["task"]
+        assert registry["manual_dispatch_kwargs"] == beat_entry["kwargs"]
+        assert registry["manual_dispatch_options"]["queue"] == beat_entry["options"]["queue"]
+    # No shared entry left to collect every market's runs.
+    assert "weekly-full-refresh" not in SCHEDULED_TASKS
+    assert "weekly-fundamental-refresh" not in SCHEDULED_TASKS
+
+
+def test_weekly_schedule_text_matches_the_beat_settings():
+    from app.services.task_registry_service import SCHEDULED_TASKS
+
+    with patch("app.services.task_registry_service.settings") as s:
+        s.fundamental_refresh_day, s.fundamental_refresh_hour = 6, 8
+        s.cache_weekly_day, s.cache_weekly_hour = 0, 14
+        from app.services.task_registry_service import _weekly_refresh_task_definitions
+        entries = _weekly_refresh_task_definitions()
+
+    assert entries["weekly-fundamental-refresh-us"]["schedule_description"] == "Saturday 8:00 AM ET (US)"
+    assert entries["weekly-full-refresh-hk"]["schedule_description"] == "Sunday 2:00 PM ET (HK)"
+    assert SCHEDULED_TASKS["weekly-full-refresh-us"]["display_name"] == "Weekly Full Refresh (US)"
