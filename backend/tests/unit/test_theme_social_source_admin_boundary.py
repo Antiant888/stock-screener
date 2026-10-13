@@ -157,7 +157,8 @@ async def test_live_theme_detail_unions_legacy_and_accepted_social_membership(
     db_session.add_all([
         theme,
         StockUniverse(symbol="AAA", market="US", exchange="NASDAQ", is_active=True),
-        StockUniverse(symbol="BBB", market="US", exchange="NASDAQ", is_active=True),
+        # A system acceptance rests on a company identity; a named single listing derives one.
+        StockUniverse(symbol="BBB", market="US", exchange="NASDAQ", name="Bbb Systems Inc", is_active=True),
     ])
     db_session.flush()
     db_session.add(ThemeConstituent(

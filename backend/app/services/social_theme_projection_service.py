@@ -6,7 +6,7 @@ calls, commits, Social pointer changes, or legacy attention writes occur here.
 """
 
 import json
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 
@@ -313,6 +313,18 @@ class SocialThemeProjectionService:
         return sha256(json.dumps(rows, sort_keys=True, default=str).encode()).hexdigest()
 
     @staticmethod
+    def _identity_lost(association, resolution):
+        """A system acceptance whose company identity is gone or has changed (#597).
+
+        The acceptance rested on evidence counted for the old company; an ineligible
+        listing has none, and a new identity must earn its own. An inactive listing
+        (unresolved) already leaves membership and keeps its acceptance.
+        """
+        return (association.state == "accepted" and association.decision_owner == "system"
+                and association.origin == "social" and resolution.status == "resolved"
+                and (not resolution.company_count_eligible or association.company_key != resolution.company_id))
+
+    @staticmethod
     def _automatic_accepts(state, owner, resolution, qualifying):
         return (owner == "system" and state == "proposed" and resolution.company_count_eligible
             and len({row[4] for row in qualifying if row[3] == resolution.company_id}) >= 2)
@@ -348,8 +360,22 @@ class SocialThemeProjectionService:
             for key, theme in sorted(themes.items()):
                 members = {(m.market, m.canonical_symbol): m for m in self.effective_live_membership(theme.id)} if theme else {}
                 associations = self.db.scalars(select(SocialThemeAssociation).where(SocialThemeAssociation.theme_cluster_id == theme.id)).all() if theme else []
-                candidates = {(a.market, a.canonical_symbol): (resolver.resolve(a.canonical_symbol, a.market),
-                    "proposed" if a.origin == "legacy" else a.state, a.decision_owner) for a in associations}
+                candidates = {}
+                for a in associations:
+                    r = resolver.resolve(a.canonical_symbol, a.market)
+                    state = "proposed" if a.origin == "legacy" else a.state
+                    pair = (a.market, a.canonical_symbol)
+                    if key in proposed and self._identity_lost(a, r):
+                        # Apply assesses only the themes the run touches: it re-proposes this
+                        # row, then the automatic rule may accept it again under the new identity.
+                        state = "proposed"
+                        if pair in members:
+                            origins = set(members[pair].origins) - {"social"}
+                            if origins:
+                                members[pair] = replace(members[pair], origins=tuple(sorted(origins)))
+                            else:
+                                del members[pair]
+                    candidates[pair] = (r, state, a.decision_owner)
                 for r in proposed.get(key, ()):
                     if r.status == "resolved":
                         candidates.setdefault((r.market, r.symbol), (r, "proposed", "system"))
@@ -825,15 +851,14 @@ class SocialThemeProjectionService:
         associations = self.db.scalars(select(SocialThemeAssociation).where(SocialThemeAssociation.theme_cluster_id == theme_id)).all()
         for association in associations:
             resolution = resolver.resolve(association.canonical_symbol, association.market)
+            identity_lost = self._identity_lost(association, resolution)
             if association.company_key != resolution.company_id:
                 association.company_key = resolution.company_id
                 association.version += 1
-            if (association.state == "accepted" and association.decision_owner == "system"
-                    and association.origin == "social" and resolution.status == "resolved"
-                    and not resolution.company_count_eligible):
-                # The system accepted it on a company identity that is gone (a second
-                # listing appeared, or an attestation was removed). Admin decisions stand.
-                # An inactive listing already leaves membership and keeps its acceptance.
+            if identity_lost:
+                # The system accepted it on a company identity that is gone or changed (a
+                # second listing appeared, an attestation was removed). Admin decisions
+                # stand; the automatic rule below re-accepts on the new identity's evidence.
                 self._decision(association, "proposed", "company_identity_lost", "system",
                                projection.prepared_at, projection.run_id)
                 association.accepted_at = None

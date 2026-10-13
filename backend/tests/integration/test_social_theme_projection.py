@@ -1352,3 +1352,46 @@ def test_inactive_listing_keeps_its_acceptance_for_when_it_returns(social_fixtur
     f.apply(f.prepare([f.save(("BBB",), age=1)]))
 
     assert f.associations()[0].state == "accepted"
+
+
+def test_system_acceptance_is_reassessed_when_identity_changes_but_stays_eligible(social_fixture):
+    """Two authors pooled under attested company "a" accepted AAA; once AAA derives its own
+    identity it has one author, so it is re-proposed, and baskets still match (#597)."""
+    from app.services.social_theme_market_service import LiveAcceptedBasketReader
+    f = social_fixture
+    f.db.query(StockUniverse).filter_by(symbol="AAA").update({"name": "Aaa Cooling Inc"})
+    f.db.commit()
+    f.apply(f.prepare([f.save(("AAA", "BBB", "CCC"), age=3, author="one"),
+                       f.save(("0005.HK", "BBB", "CCC"), age=2, author="two")]))
+    assert {a.canonical_symbol: a.state for a in f.associations()}["AAA"] == "accepted"
+    _drop_attestation(f, "AAA")
+    projection = f.prepare([f.save(("BBB",), age=1)])
+    application = f.service.prepare_application(projection, theme_keys=("cooling",))
+    expected = application.read("cooling", "US")
+
+    f.service.apply_live(projection, projection.registry_version, prepared=application)
+
+    assert {a.canonical_symbol: a.state for a in f.associations()}["AAA"] == "proposed"
+    assert LiveAcceptedBasketReader(f.db).read("cooling", "US") == expected
+    assert {m.canonical_symbol for m in expected.membership} == {"BBB", "CCC"}
+
+
+def test_changed_identity_with_its_own_evidence_stays_accepted(social_fixture):
+    """Re-assessed under the new identity, two authors of its own keep the acceptance."""
+    from app.services.social_theme_market_service import LiveAcceptedBasketReader
+    f = social_fixture
+    f.db.query(StockUniverse).filter_by(symbol="AAA").update({"name": "Aaa Cooling Inc"})
+    f.db.commit()
+    for age, author in ((3, "one"), (2, "two")):
+        f.apply(f.prepare([f.save(("AAA", "BBB", "CCC"), age=age, author=author)]))
+    _drop_attestation(f, "AAA")
+    projection = f.prepare([f.save(("BBB",), age=1)])
+    application = f.service.prepare_application(projection, theme_keys=("cooling",))
+    expected = application.read("cooling", "US")
+
+    f.service.apply_live(projection, projection.registry_version, prepared=application)
+
+    aaa = f.associations()[0]
+    assert (aaa.canonical_symbol, aaa.state, aaa.company_key) == ("AAA", "accepted", f"security:{f.db.query(StockUniverse).filter_by(symbol='AAA').one().id}")
+    assert LiveAcceptedBasketReader(f.db).read("cooling", "US") == expected
+    assert "AAA" in {m.canonical_symbol for m in expected.membership}
