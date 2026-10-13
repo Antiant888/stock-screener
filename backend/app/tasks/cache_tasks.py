@@ -487,13 +487,15 @@ def daily_cache_warmup(self, market: str | None = None):
     return smart_refresh_cache(self, mode="full", market=market)
 
 
-def _universe_rows(db) -> list[tuple[str, bool]]:
-    """(SYMBOL, is_active) for every universe row in every market."""
+def _universe_rows(db) -> list[tuple[str, bool, str]]:
+    """(SYMBOL, is_active, MARKET) for every universe row in every market."""
     from ..models.stock_universe import StockUniverse
 
     return [
-        (str(symbol).strip().upper(), bool(is_active))
-        for symbol, is_active in db.query(StockUniverse.symbol, StockUniverse.is_active)
+        (str(symbol).strip().upper(), bool(is_active), str(market or "US").strip().upper())
+        for symbol, is_active, market in db.query(
+            StockUniverse.symbol, StockUniverse.is_active, StockUniverse.market
+        )
     ]
 
 
@@ -517,7 +519,7 @@ def _former_universe_symbols(db) -> set[str]:
 
 
 def _cleanup_orphaned_price_cache(
-    universe_rows: list[tuple[str, bool]], former_symbols: set[str]
+    universe_rows: list[tuple[str, bool, str]], former_symbols: set[str]
 ) -> int:
     """Delete Redis price keys of delisted symbols; returns symbols cleaned.
 
@@ -531,13 +533,15 @@ def _cleanup_orphaned_price_cache(
     """
     from ..services.redis_pool import get_redis_client
 
-    active = {symbol for symbol, is_active in universe_rows if is_active}
-    if not active:
-        # An empty or unreadable universe says nothing about delistings; with
-        # history alone, every symbol ever held would read as orphaned.
+    active = {symbol for symbol, is_active, _ in universe_rows if is_active}
+    # A market with no active rows (empty, unreadable, or mid-replacement)
+    # says nothing about its delistings; with history alone, every symbol it
+    # ever held would read as orphaned. Its keys are left alone.
+    active_markets = {market for _, is_active, market in universe_rows if is_active}
+    if not active_markets:
         logger.warning("Orphan cleanup skipped: the universe has no active symbols")
         return 0
-    known = {symbol for symbol, _ in universe_rows} | set(former_symbols)
+    known = {symbol for symbol, _, _ in universe_rows} | set(former_symbols)
     orphaned = known - active
     if not orphaned:
         return 0
@@ -549,8 +553,9 @@ def _cleanup_orphaned_price_cache(
         parts = (key.decode() if isinstance(key, bytes) else key).split(":")
         if parts[-1] not in _PRICE_KEY_SUFFIXES or len(parts) not in (3, 4):
             continue
-        symbol = parts[2] if len(parts) == 4 else parts[1]
-        if symbol in orphaned:
+        # Legacy unscoped keys are US keys (the cache policy's default market).
+        market, symbol = (parts[1], parts[2]) if len(parts) == 4 else ("US", parts[1])
+        if symbol in orphaned and market in active_markets:
             doomed.append(key)
             cleaned.add(symbol)
     for start in range(0, len(doomed), 500):
@@ -648,7 +653,7 @@ def weekly_full_refresh(self, market: str | None = None):
         if market is None:
             logger.info("\n[1/4] Cleaning up orphaned cache entries...", extra=_log_extra)
             universe_rows = _universe_rows(db)
-            active_symbols = {symbol for symbol, is_active in universe_rows if is_active}
+            active_symbols = {symbol for symbol, is_active, _ in universe_rows if is_active}
             orphan_count = _cleanup_orphaned_price_cache(universe_rows, _former_universe_symbols(db))
             logger.info("✓ Cleaned up %d orphaned cache entries", orphan_count, extra=_log_extra)
         else:

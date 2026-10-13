@@ -28,9 +28,14 @@ class _Redis:
         self.keys -= set(keys)
 
 
+def _u(rows):
+    """Universe rows as (SYMBOL, is_active, MARKET); market from the suffix."""
+    return [(s.upper(), a, "HK" if s.upper().endswith(".HK") else "US") for s, a in rows]
+
+
 class _Rows(list):
-    """A query result: iterated as (symbol, is_active); distinct() is the
-    status-event history (empty here)."""
+    """A query result: iterated as (symbol, is_active, market); distinct() is
+    the status-event history (empty here)."""
 
     def distinct(self):
         return []
@@ -38,19 +43,19 @@ class _Rows(list):
 
 def _db(rows):
     db = MagicMock()
-    db.query.return_value = _Rows(rows)
+    db.query.return_value = _Rows(_u(rows))
     return db
 
 
 def _clean(rows, keys, **redis_kwargs):
     redis = _Redis(keys, **redis_kwargs)
     with patch("app.services.redis_pool.get_redis_client", return_value=redis):
-        cleaned = cache_tasks._cleanup_orphaned_price_cache([(s.upper(), a) for s, a in rows], set())
+        cleaned = cache_tasks._cleanup_orphaned_price_cache(_u(rows), set())
     return cleaned, {k.decode() for k in redis.keys}
 
 
 def test_removes_every_markets_keys_for_a_delisted_symbol_and_keeps_the_rest():
-    rows = [("AAPL", True), ("0700.HK", False), ("OLDCO", False)]
+    rows = [("AAPL", True), ("0005.HK", True), ("0700.HK", False), ("OLDCO", False)]
     keys = {
         # Delisted HK symbol: the old cleanup only ever deleted price:US:... keys.
         "price:HK:0700.HK:recent", "price:HK:0700.HK:last_update", "price:HK:0700.HK:fetch_meta",
@@ -76,7 +81,7 @@ def test_a_symbol_dropped_by_a_snapshot_import_is_still_cleaned():
     # so a delisted symbol has no row at all; its status events remain.
     redis = _Redis({"price:HK:9999.HK:recent", "price:US:SPY:recent"})
     with patch("app.services.redis_pool.get_redis_client", return_value=redis):
-        cleaned = cache_tasks._cleanup_orphaned_price_cache([("AAPL", True)], {"9999.HK"})
+        cleaned = cache_tasks._cleanup_orphaned_price_cache(_u([("AAPL", True), ("0005.HK", True)]), {"9999.HK"})
 
     assert cleaned == 1
     assert {k.decode() for k in redis.keys} == {"price:US:SPY:recent"}
@@ -87,9 +92,20 @@ def test_an_empty_universe_with_history_deletes_nothing():
     redis = _Redis({"price:US:AAPL:recent", "price:HK:0700.HK:recent"})
     with patch("app.services.redis_pool.get_redis_client", return_value=redis):
         assert cache_tasks._cleanup_orphaned_price_cache([], {"AAPL", "0700.HK"}) == 0
-        assert cache_tasks._cleanup_orphaned_price_cache([("AAPL", False)], {"0700.HK"}) == 0
+        assert cache_tasks._cleanup_orphaned_price_cache(_u([("AAPL", False)]), {"0700.HK"}) == 0
 
     assert {k.decode() for k in redis.keys} == {"price:US:AAPL:recent", "price:HK:0700.HK:recent"}
+
+
+def test_a_market_with_no_active_rows_keeps_its_cache():
+    # One market's snapshot replacement can leave it empty while others stay
+    # active; its once-held symbols must not all read as orphaned.
+    redis = _Redis({"price:HK:0700.HK:recent", "price:US:OLDCO:recent"})
+    with patch("app.services.redis_pool.get_redis_client", return_value=redis):
+        cleaned = cache_tasks._cleanup_orphaned_price_cache(_u([("AAPL", True)]), {"0700.HK", "OLDCO"})
+
+    assert cleaned == 1  # OLDCO, in the still-active US market
+    assert {k.decode() for k in redis.keys} == {"price:HK:0700.HK:recent"}
 
 
 def test_former_symbols_come_from_universe_status_events():
@@ -118,7 +134,7 @@ def test_redis_errors_fail_the_run_instead_of_reading_as_zero_cleaned():
     with pytest.raises(ConnectionError):
         _clean([("AAPL", True), ("OLDCO", False)], {"price:OLDCO:recent"}, error=ConnectionError("redis down"))
     with patch("app.services.redis_pool.get_redis_client", return_value=None), pytest.raises(RuntimeError):
-        cache_tasks._cleanup_orphaned_price_cache([("AAPL", True), ("OLDCO", False)], set())
+        cache_tasks._cleanup_orphaned_price_cache(_u([("AAPL", True), ("OLDCO", False)]), set())
 
 
 def test_the_task_runs_telemetry_retention_even_if_the_cache_step_fails():

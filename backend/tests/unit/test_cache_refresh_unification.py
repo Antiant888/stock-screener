@@ -996,7 +996,7 @@ def test_weekly_full_refresh_reraises_nested_soft_time_limit(monkeypatch):
 
     fake_db = MagicMock()
     first_query = MagicMock()
-    first_query.__iter__.side_effect = lambda: iter([("AAPL", True)])  # universe (symbol, is_active)
+    first_query.__iter__.side_effect = lambda: iter([("AAPL", True, "US")])  # universe (symbol, is_active, market)
     second_query = MagicMock()
     second_query.filter.return_value.order_by.return_value.all.return_value = [SimpleNamespace(symbol="AAPL")]
     history_query = MagicMock()  # universe status events (former symbols)
@@ -1037,7 +1037,7 @@ def test_weekly_full_refresh_counts_a_failed_batch_store_as_failures_only(monkey
 
     rows = [SimpleNamespace(symbol="AAPL"), SimpleNamespace(symbol="MSFT")]
     first_query = MagicMock()
-    first_query.__iter__.side_effect = lambda: iter([(r.symbol, True) for r in rows])  # universe (symbol, is_active)
+    first_query.__iter__.side_effect = lambda: iter([(r.symbol, True, "US") for r in rows])  # universe (symbol, is_active, market)
     second_query = MagicMock()
     second_query.filter.return_value.order_by.return_value.all.return_value = rows
     fake_db = MagicMock()
