@@ -252,7 +252,7 @@ describe('SchedulesSection', () => {
       const row = rowFor('Weekly Full Refresh');
       expect(within(row).getByText('Unknown')).toBeInTheDocument();
       expect(within(row).getByText(
-        'Never started, and its message is still queued. Cancel it in the job console to run it again.',
+        'Not picked up, and its message is still waiting. It runs once a worker takes it, or cancel it in the job console to run it again.',
       )).toBeInTheDocument();
     });
 
@@ -276,7 +276,7 @@ describe('SchedulesSection', () => {
       renderSection();
 
       expect(await screen.findByRole('button', { name: 'Run Weekly Full Refresh now' })).toBeEnabled();
-      expect(within(rowFor('Weekly Full Refresh')).getByText(/its message is gone/)).toBeInTheDocument();
+      expect(within(rowFor('Weekly Full Refresh')).getByText(/no message is waiting/)).toBeInTheDocument();
     });
 
     it('allows a re-run when it started and the worker died', async () => {

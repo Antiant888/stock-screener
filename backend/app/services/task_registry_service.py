@@ -157,29 +157,69 @@ RUN_LOST_AFTER = timedelta(seconds=celery_app.conf.task_time_limit) + timedelta(
 _TRACKED_ORIGINS = frozenset({'manual', 'scheduled'})
 
 
+_BROKER_TIMEOUT_SECONDS = 2
+_BROKER_CHECK_TTL_SECONDS = 60
+_broker_checks: Dict[str, tuple] = {}
+
+
+def _message_task_id(raw: bytes) -> Optional[str]:
+    """The task id in a queued message, or in an ``unacked`` entry (a JSON
+    ``[message, exchange, routing_key]``). Not parent_id/root_id: a child's
+    message must not count as its parent's."""
+    try:
+        payload = json.loads(raw)
+    except (ValueError, TypeError):
+        return None
+    if isinstance(payload, list) and payload:
+        payload = payload[0]
+    if not isinstance(payload, dict):
+        return None
+    return (payload.get('headers') or {}).get('id')
+
+
 def _still_in_broker(task_id: Optional[str]) -> Optional[bool]:
     """Whether a never-started run's message is still in the broker: in a
-    queue list, or prefetched by a worker that died (kombu's ``unacked`` hash,
-    restored to its queue after the visibility timeout). None if unreadable.
+    queue list, or prefetched by a worker that stopped (kombu's ``unacked``
+    hash; a live worker restores it to its queue). None if unreadable.
+
+    Cached briefly: the Schedules list is polled, and a lost run can stay a
+    job's last run until its next scheduled run.
     """
     if not task_id:
         return False
+    now = datetime.now(timezone.utc).timestamp()
+    cached = _broker_checks.get(task_id)
+    if cached and now - cached[0] < _BROKER_CHECK_TTL_SECONDS:
+        return cached[1]
     # Lazy: operations_job_service imports this module.
+    import redis
+
     from .operations_job_service import OperationsJobService
 
-    needle = task_id.encode()
+    found: Optional[bool] = False
+    broker = None
     try:
-        ops = OperationsJobService()
-        broker = ops._broker()
-        for queue_name in [*ops.broker_queue_names(), 'social_ingestion']:
-            if any(needle in raw for raw in broker.lrange(queue_name, 0, -1)):
-                return True
-        # ponytail: substring match on the task id (a UUID) instead of
-        # decoding each message; ids do not collide with other content.
-        return any(needle in raw for raw in broker.hvals('unacked'))
+        broker = redis.from_url(
+            settings.celery_broker_url,
+            socket_timeout=_BROKER_TIMEOUT_SECONDS,
+            socket_connect_timeout=_BROKER_TIMEOUT_SECONDS,
+        )
+        for queue_name in [*OperationsJobService.broker_queue_names(), 'social_ingestion']:
+            if any(_message_task_id(raw) == task_id for raw in broker.lrange(queue_name, 0, -1)):
+                found = True
+                break
+        else:
+            found = any(_message_task_id(raw) == task_id for raw in broker.hvals('unacked'))
     except Exception:
+        # Any broker failure means "unknown"; Run stays blocked (it would
+        # fail to publish to the same broker anyway).
         logger.warning("Could not read the broker for run %s", task_id, exc_info=True)
-        return None
+        found = None
+    finally:
+        if broker is not None:
+            broker.close()
+    _broker_checks[task_id] = (now, found)
+    return found
 
 
 def _result_summary(result: Any, task_id: str) -> Optional[Dict[str, Any]]:

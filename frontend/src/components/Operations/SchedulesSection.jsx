@@ -93,10 +93,15 @@ function lostButMaybeQueued(run) {
   return run?.status === 'lost' && run.lost_from === 'queued' && run.still_queued !== false;
 }
 
+// The message may sit in a queue (the console can cancel it) or be held by a
+// stopped worker (it runs once a worker restores it), so name both ways out.
 function lostQueuedReason(task) {
-  return task.last_run.still_queued === true
-    ? `Never started, and its message is still queued. ${stuckRecovery(task.name)}`
-    : 'Never started. Could not check whether it is still queued; try again shortly.';
+  if (task.last_run.still_queued !== true) {
+    return 'Not picked up. Could not check whether it is still queued; try again shortly.';
+  }
+  return NOT_IN_JOB_CONSOLE.has(task.name)
+    ? 'Not picked up, and its message is still waiting. Start the social worker to let it run.'
+    : 'Not picked up, and its message is still waiting. It runs once a worker takes it, or cancel it in the job console to run it again.';
 }
 
 // Why Run is unavailable for this job, or null when it may run again.
@@ -148,7 +153,8 @@ function statusNote(task) {
   }
   if (lostButMaybeQueued(run)) return [lostQueuedReason(task), 'warning.main'];
   if (run?.status === 'lost' && run.lost_from === 'queued') {
-    return ['Never started, and its message is gone. Run it again.', 'text.secondary'];
+    // Usually never started; a worker whose start write failed also lands here.
+    return ['No outcome recorded, and no message is waiting. Run it again.', 'text.secondary'];
   }
   if (run?.status === 'lost' && run.lost_from === 'running') {
     return ['Started, but no result was recorded (the worker may have stopped). Run it again.', 'text.secondary'];

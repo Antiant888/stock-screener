@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+import json
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 from uuid import uuid4
@@ -520,33 +521,65 @@ class _Broker:
         assert name == "unacked"
         return self.unacked
 
+    def close(self):
+        pass
+
+
+def _message(task_id, **headers):
+    return json.dumps({"headers": {"id": task_id, **headers}, "body": "e30="}).encode()
+
 
 def _lost_run_with_broker(db_session, broker, *, status="queued", message_for=None):
     task_id = _open_cleanup_run(db_session, age=timedelta(hours=26), status=status)
     if message_for:
-        message_for(broker, f'{{"headers": {{"id": "{task_id}"}}}}'.encode())
-    with patch(
-        "app.services.operations_job_service.OperationsJobService._broker", return_value=broker
-    ) as read_broker:
+        message_for(broker, task_id)
+    with patch("redis.from_url", return_value=broker) as read_broker:
         run = _last_run(db_session, "monthly-price-data-cleanup")
     return run, read_broker
 
 
+def _in_queue(broker, task_id):
+    broker.queues.setdefault("celery", []).append(_message(task_id))
+
+
 def test_lost_run_that_never_started_and_is_still_queued_reports_it(db_session):
-    broker = _Broker()
-    run, _ = _lost_run_with_broker(
-        db_session, broker, message_for=lambda b, raw: b.queues.setdefault("celery", []).append(raw)
-    )
+    run, read_broker = _lost_run_with_broker(db_session, _Broker(), message_for=_in_queue)
 
     assert (run["status"], run["lost_from"], run["still_queued"]) == ("lost", "queued", True)
+    # A hung broker must not hang the polled endpoint.
+    assert read_broker.call_args.kwargs["socket_timeout"] == 2
+    assert read_broker.call_args.kwargs["socket_connect_timeout"] == 2
 
 
 def test_lost_run_prefetched_by_a_dead_worker_counts_as_still_queued(db_session):
-    # kombu restores an unacked message to its queue after the visibility timeout.
-    broker = _Broker()
-    run, _ = _lost_run_with_broker(db_session, broker, message_for=lambda b, raw: b.unacked.append(raw))
+    # An unacked entry is [message, exchange, routing_key]; a live worker restores it.
+    def _unacked(broker, task_id):
+        broker.unacked.append(json.dumps([json.loads(_message(task_id)), "", "celery"]).encode())
+
+    run, _ = _lost_run_with_broker(db_session, _Broker(), message_for=_unacked)
 
     assert run["still_queued"] is True
+
+
+def test_a_child_message_does_not_count_as_its_parent_still_queued(db_session):
+    def _child(broker, task_id):
+        broker.queues["celery"] = [_message(str(uuid4()), parent_id=task_id, root_id=task_id)]
+
+    run, _ = _lost_run_with_broker(db_session, _Broker(), message_for=_child)
+
+    assert run["still_queued"] is False
+
+
+def test_broker_check_is_cached_between_polls(db_session):
+    task_id = _open_cleanup_run(db_session, age=timedelta(hours=26), status="queued")
+    broker = _Broker()
+    _in_queue(broker, task_id)
+
+    with patch("redis.from_url", return_value=broker) as read_broker:
+        _last_run(db_session, "monthly-price-data-cleanup")
+        _last_run(db_session, "monthly-price-data-cleanup")
+
+    read_broker.assert_called_once()
 
 
 def test_lost_run_that_never_started_and_whose_message_is_gone_can_rerun(db_session):
