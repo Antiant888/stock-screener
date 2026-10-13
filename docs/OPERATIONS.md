@@ -241,7 +241,7 @@ Run is disabled, with the reason on the row, when:
 
 Stages: price refresh → Market RS → group rankings → daily snapshot → Options Analytics (US only) → breadth and exposure (markets with breadth).
 
-- The dispatch holds a per-market claim until the last stage finishes or a stage fails. Any other dispatch, manual or Beat, reads Skipped.
+- The dispatch holds a per-market claim until the last stage finishes or a stage fails. While it is held, a manual Run is refused with 409 and nothing is queued, and a Beat run reads Skipped. A manual Run can still read Skipped if the pre-flight could not read the claim, or the claim was taken between the pre-flight and the dispatch.
 - The claim expires 20 hours after dispatch. That covers normal waits behind the single data-fetch worker, but a chain still queued or running after 20 hours can be overlapped (#605).
 - A manual run's claim taken less than 20 hours before the market's next scheduled run can make that run skip.
 
