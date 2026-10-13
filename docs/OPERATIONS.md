@@ -190,7 +190,7 @@ Every action asks for confirmation first:
 
 ### Releasing a pipeline chain claim
 
-Lease status → Pipeline Chain Claims lists each market's claim. **Release** it only when that market's pipeline stages are gone from the job console, for example after a stage was revoked once a worker had taken it, which leaves the claim held. Otherwise the next Run starts a second pipeline. Release frees only the claim shown, and is recorded with the other job actions.
+Lease status → Pipeline Chain Claims lists each market's claim. **Release** it only when that market's pipeline stages are gone from the job console, for example after a worker was killed mid-stage, which leaves the claim held for up to 24 hours. Otherwise the next Run starts a second pipeline. Release frees only the claim shown, and is recorded with the other job actions.
 
 ## Scheduled Jobs
 
@@ -225,8 +225,10 @@ Run is disabled, with the reason on the row, when:
 Stages: price refresh → Market RS → group rankings → daily snapshot → Options Analytics (US only) → breadth and exposure (markets with breadth).
 
 - The dispatch holds a per-market claim until the last stage finishes or a stage fails. While it is held, a manual Run is refused with 409 and nothing is queued, and a Beat run reads Skipped. A manual Run can still read Skipped if the pre-flight could not read the claim, or the claim was taken between the pre-flight and the dispatch.
-- The claim expires 20 hours after dispatch. That covers normal waits behind the single data-fetch worker, but a chain still queued or running after 20 hours can be overlapped (#605).
-- A manual run's claim taken less than 20 hours before the market's next scheduled run can make that run skip.
+- Every 5 minutes a heartbeat checks each claimed chain (#605). It keeps the claim while a stage is queued, held by a worker, running or waiting to retry, so a chain waiting hours behind the single data-fetch worker keeps it.
+- The heartbeat releases the claim once a stage fails or is revoked, the chain finishes, or two checks at least 2.5 minutes apart find no trace of the chain (for example, a queued stage was purged). The next Run then dispatches.
+- A stage that was waiting to retry, or running when its worker was killed (out of memory, a forced restart), keeps that state until its result expires 24 hours later, so its claim stays that long unless you release it.
+- If the heartbeat stops running, a claim expires 48 hours after its last renewal, and a chain still going after that can be overlapped.
 
 ### Weekly maintenance
 

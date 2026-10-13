@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -243,23 +244,92 @@ def test_serialized_data_fetch_retries_when_external_fetch_lease_is_busy(
 def test_pipeline_chain_claim_is_an_atomic_market_scoped_lease():
     from app.tasks.workload_coordination import PIPELINE_CHAIN_TTL_SECONDS
 
-    coordination, mock_redis, _ = _make_coordination()
-    mock_redis.set.return_value = True
+    coordination, _, mock_script = _make_coordination()
+    mock_script.return_value = 1
 
-    assert coordination.claim_pipeline_chain("token-1", market="US") is True
+    assert coordination.claim_pipeline_chain(
+        "token-1", market="US", task_ids=["stage-1", "stage-2"]
+    ) is True
 
-    args, kwargs = mock_redis.set.call_args
-    assert args[0] == "pipeline_chain:us"
-    assert args[1].startswith("daily_market_pipeline:token-1:")
-    # NX: two dispatches at once (Beat and a manual Run) cannot both win.
-    assert kwargs == {"nx": True, "ex": PIPELINE_CHAIN_TTL_SECONDS}
+    # One script: SET NX on the claim (Beat and a manual Run cannot both win)
+    # and, only if that won, the chain's stage ids under the token.
+    kwargs = mock_script.call_args.kwargs
+    assert kwargs["keys"] == ["pipeline_chain:us", "pipeline_chain_tasks:token-1"]
+    value, task_ids, ttl = kwargs["args"]
+    assert value.startswith("daily_market_pipeline:token-1:")
+    assert json.loads(task_ids) == ["stage-1", "stage-2"]
+    assert ttl == PIPELINE_CHAIN_TTL_SECONDS
 
 
 def test_pipeline_chain_claim_reports_an_existing_holder():
-    coordination, mock_redis, _ = _make_coordination()
-    mock_redis.set.return_value = None
+    coordination, _, mock_script = _make_coordination()
+    mock_script.return_value = 0
 
-    assert coordination.claim_pipeline_chain("token-2", market="US") is False
+    assert coordination.claim_pipeline_chain("token-2", market="US", task_ids=["s"]) is False
+
+
+def test_pipeline_chain_claim_is_a_heartbeat_safety_net_not_a_daily_deadline():
+    # The heartbeat renews a live chain and frees a dead one (#605); the TTL
+    # only bounds a claim the heartbeat stopped looking after.
+    from app.tasks.workload_coordination import (
+        PIPELINE_CHAIN_HEARTBEAT_SECONDS,
+        PIPELINE_CHAIN_TTL_SECONDS,
+    )
+
+    assert 48 * 3600 <= PIPELINE_CHAIN_TTL_SECONDS <= 72 * 3600
+    assert PIPELINE_CHAIN_HEARTBEAT_SECONDS * 10 < PIPELINE_CHAIN_TTL_SECONDS
+
+
+def test_pipeline_chain_renewal_is_owner_checked_and_keeps_the_stage_ids():
+    from app.tasks.workload_coordination import PIPELINE_CHAIN_TTL_SECONDS
+
+    coordination, mock_redis, mock_script = _make_coordination()
+    mock_script.return_value = 1
+
+    assert coordination.renew_pipeline_chain("token-1", market="US") is True
+    mock_script.assert_called_once_with(
+        keys=["pipeline_chain:us"], args=[":token-1:", PIPELINE_CHAIN_TTL_SECONDS]
+    )
+    mock_redis.expire.assert_called_once_with(
+        "pipeline_chain_tasks:token-1", PIPELINE_CHAIN_TTL_SECONDS
+    )
+
+
+def test_pipeline_chain_renewal_leaves_a_newer_claim_alone():
+    coordination, mock_redis, mock_script = _make_coordination()
+    mock_script.return_value = 0
+
+    assert coordination.renew_pipeline_chain("token-1", market="US") is False
+    mock_redis.expire.assert_not_called()
+
+
+def test_pipeline_chain_stage_ids():
+    coordination, mock_redis, _ = _make_coordination()
+    mock_redis.get.return_value = b'["stage-1", "stage-2"]'
+
+    assert coordination.get_pipeline_chain_task_ids("token-1") == ["stage-1", "stage-2"]
+    mock_redis.get.assert_called_with("pipeline_chain_tasks:token-1")
+
+    mock_redis.get.return_value = None
+    assert coordination.get_pipeline_chain_task_ids("token-0") is None
+
+
+def test_pipeline_chain_missing_clock_starts_once_and_clears():
+    from app.tasks.workload_coordination import PIPELINE_CHAIN_TTL_SECONDS
+
+    coordination, mock_redis, _ = _make_coordination()
+    mock_redis.get.return_value = b"1000.0"
+
+    with patch("app.tasks.workload_coordination.time.time", return_value=1240.0):
+        assert coordination.pipeline_chain_missing_seconds("token-1") == 240.0
+
+    # SET NX EX in one command: the first miss starts the clock, later ones
+    # keep it, and the key can never be left without a TTL.
+    mock_redis.set.assert_called_once_with(
+        "pipeline_chain_misses:token-1", "1240.0", nx=True, ex=PIPELINE_CHAIN_TTL_SECONDS
+    )
+    coordination.clear_pipeline_chain_missing("token-1")
+    mock_redis.delete.assert_called_once_with("pipeline_chain_misses:token-1")
 
 
 def test_pipeline_chain_release_is_owner_checked():

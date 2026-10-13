@@ -250,19 +250,41 @@ class _ChainClaims:
 
     def __init__(self, *, fail_claim: bool = False):
         self.holders: dict[str, dict] = {}
+        self.task_ids: dict[str, list[str]] = {}
+        self.missing_since: dict[str, float] = {}
+        self.clock = 0.0
+        self.renewed: list[tuple[str, str]] = []
         self.released: list[tuple[str, str]] = []
         self.fail_claim = fail_claim
 
-    def claim_pipeline_chain(self, token, *, market):
+    def claim_pipeline_chain(self, token, *, market, task_ids):
         if self.fail_claim:
             raise ConnectionError("redis down")
         if market in self.holders:
             return False
         self.holders[market] = {"task_id": token, "started_at": "2026-03-16T20:30:00+00:00"}
+        self.task_ids[token] = list(task_ids)
         return True
 
     def get_pipeline_chain_holder(self, market):
         return self.holders.get(market)
+
+    def get_pipeline_chain_holders(self):
+        return dict(self.holders)
+
+    def get_pipeline_chain_task_ids(self, token):
+        return self.task_ids.get(token)
+
+    def renew_pipeline_chain(self, token, *, market):
+        self.renewed.append((market, token))
+        holder = self.holders.get(market)
+        return bool(holder and holder["task_id"] == token)
+
+    def pipeline_chain_missing_seconds(self, token):
+        return self.clock - self.missing_since.setdefault(token, self.clock)
+
+    def clear_pipeline_chain_missing(self, token):
+        self.missing_since.pop(token, None)
 
     def release_pipeline_chain(self, token, *, market):
         self.released.append((market, token))
@@ -287,6 +309,12 @@ def _ready_to_dispatch(monkeypatch, module, claims, published):
     class _FakeChain:
         def __init__(self, signatures):
             self.signatures = signatures
+
+        def freeze(self):
+            node = None
+            for index, _signature in enumerate(self.signatures):
+                node = SimpleNamespace(id=f"stage-{index}", parent=node)
+            return node
 
         def apply_async(self, **options):
             published.append((self.signatures, options))
@@ -324,6 +352,8 @@ def test_dispatch_holds_the_chain_until_its_last_stage_or_first_failure(monkeypa
     assert release.immutable
     # ...and by the same task as every stage's error callback.
     assert options["link_error"] is release
+    # The claim records the ids the chain is published with, release included.
+    assert claims.task_ids[token] == ["stage-0", "stage-1", "stage-2", "stage-3"]
 
 
 def test_second_dispatch_between_stages_is_refused(monkeypatch):
@@ -357,9 +387,9 @@ def test_claim_freed_between_claim_and_holder_lookup_is_retried(monkeypatch):
     attempts = []
     real_claim = claims.claim_pipeline_chain
 
-    def flaky_claim(token, *, market):
+    def flaky_claim(token, *, market, task_ids):
         attempts.append(token)
-        return False if len(attempts) == 1 else real_claim(token, market=market)
+        return False if len(attempts) == 1 else real_claim(token, market=market, task_ids=task_ids)
 
     monkeypatch.setattr(claims, "claim_pipeline_chain", flaky_claim)
 
@@ -432,6 +462,9 @@ def test_a_failed_publish_releases_the_claim(monkeypatch):
     _ready_to_dispatch(monkeypatch, module, claims, published)
 
     class _BrokenChain:
+        def freeze(self):
+            return SimpleNamespace(id="stage-0", parent=None)
+
         def apply_async(self, **_options):
             raise ConnectionError("broker unavailable")
 
@@ -450,6 +483,9 @@ def test_a_failed_release_after_a_failed_publish_keeps_the_publish_error(monkeyp
     _ready_to_dispatch(monkeypatch, module, claims, published)
 
     class _BrokenChain:
+        def freeze(self):
+            return SimpleNamespace(id="stage-0", parent=None)
+
         def apply_async(self, **_options):
             raise ConnectionError("broker unavailable")
 
@@ -506,22 +542,254 @@ def test_release_task_takes_no_positional_args():
     assert all(param.kind is inspect.Parameter.KEYWORD_ONLY for param in params)
 
 
-def test_chain_claim_outlasts_queue_waits_but_not_the_next_daily_run():
-    # One concurrency-1 worker serves every market's data-fetch queue
-    # (start_celery.sh), so a stage can wait many hours before it starts and
-    # no stage could renew the claim in time; the claim must cover that. A
-    # missed release (a stage revoked from the console fires no errback) must
-    # still expire before the market's next scheduled run, 24h after this one.
-    from app.tasks.workload_coordination import PIPELINE_CHAIN_TTL_SECONDS
-
-    assert 16 * 3600 <= PIPELINE_CHAIN_TTL_SECONDS <= 22 * 3600
+# ── Heartbeat (#605): keep the claim while the chain lives ───────────────
 
 
-def test_the_claim_is_not_renewed_past_its_fixed_expiry():
-    # Renewing after each stage could push the expiry past the next daily run.
-    from app.tasks.workload_coordination import WorkloadCoordination
+def _dispatched_chain(monkeypatch, states, live_ids=()):
+    """Dispatch a US chain, then report ``states`` for its stage ids (by
+    index; unlisted stages read PENDING) and ``live_ids`` as found in the
+    broker. Returns the set the broker search reads, to change between beats,
+    and the list of searches made."""
+    from app.tasks import daily_market_pipeline_tasks as module
 
-    assert not hasattr(WorkloadCoordination, "renew_pipeline_chain")
+    claims, published = _ChainClaims(), []
+    _ready_to_dispatch(monkeypatch, module, claims, published)
+    assert module.queue_daily_market_pipeline.run("US")["status"] == "queued"
+    token = claims.holders["US"]["task_id"]
+    stage_ids = claims.task_ids[token]
+    by_id = {stage_ids[index]: state for index, state in states.items()}
+    monkeypatch.setattr(
+        module.celery_app,
+        "AsyncResult",
+        lambda task_id: SimpleNamespace(state=by_id.get(task_id, "PENDING")),
+    )
+    live = {stage_ids[index] for index in live_ids}
+    searches = []
+
+    def still_in_broker(task_ids, *, cache=True):
+        searches.append((list(task_ids), cache))
+        return {task_id: task_id in live for task_id in task_ids}
+
+    monkeypatch.setattr(
+        "app.services.task_registry_service.still_in_broker", still_in_broker
+    )
+    return module, claims, token, (live, searches)
+
+
+def test_a_chain_queued_behind_a_backlog_keeps_its_claim(monkeypatch):
+    # Prices finished long ago (its result expired, so it reads PENDING) and
+    # the next stage still waits in the data-fetch queue: the chain is alive.
+    module, claims, token, _ = _dispatched_chain(monkeypatch, states={}, live_ids=(1,))
+
+    for _beat in range(30):  # 2.5 hours of heartbeats
+        assert module.renew_daily_market_pipeline_claims.run()["claims"] == {"US": "renewed"}
+
+    assert claims.holders["US"]["task_id"] == token
+    assert claims.released == []
+    assert module.queue_daily_market_pipeline.run("US")["reason"] == "market_pipeline_already_active"
+
+
+def test_a_running_or_retrying_stage_keeps_the_claim_without_reading_the_broker(monkeypatch):
+    # PROGRESS: a running price refresh reports progress through update_state,
+    # and its acked message is in no queue, so only its state shows it runs.
+    for state in ("STARTED", "RETRY", "PROGRESS"):
+        module, claims, _token, (_live, searches) = _dispatched_chain(
+            monkeypatch, states={0: "SUCCESS", 1: state}
+        )
+
+        assert module.renew_daily_market_pipeline_claims.run()["claims"] == {"US": "renewed"}
+        assert searches == []
+
+
+def test_a_revoked_stage_frees_the_claim_within_one_heartbeat(monkeypatch):
+    module, claims, token, _ = _dispatched_chain(
+        monkeypatch, states={0: "SUCCESS", 1: "REVOKED"}, live_ids=(1,)
+    )
+
+    assert module.renew_daily_market_pipeline_claims.run()["claims"] == {"US": "released_dead"}
+    assert claims.released == [("US", token)]
+    assert module.queue_daily_market_pipeline.run("US")["status"] == "queued"
+
+
+def test_a_failed_stage_or_a_finished_chain_frees_the_claim(monkeypatch):
+    module, claims, _token, _ = _dispatched_chain(monkeypatch, states={0: "FAILURE"})
+    assert module.renew_daily_market_pipeline_claims.run()["claims"] == {"US": "released_dead"}
+
+    module, claims, _token, _ = _dispatched_chain(
+        monkeypatch, states={0: "SUCCESS", 1: "SUCCESS", 2: "SUCCESS", 3: "SUCCESS"}
+    )
+    assert module.renew_daily_market_pipeline_claims.run()["claims"] == {"US": "released_done"}
+
+
+def test_a_chain_with_no_trace_is_freed_on_the_next_heartbeat_only(monkeypatch):
+    # One check can fall between a worker taking a stage and storing its state.
+    from app.tasks.workload_coordination import PIPELINE_CHAIN_HEARTBEAT_SECONDS
+
+    module, claims, token, _ = _dispatched_chain(monkeypatch, states={0: "SUCCESS"})
+
+    assert module.renew_daily_market_pipeline_claims.run()["claims"] == {"US": "missing"}
+    assert claims.holders["US"]["task_id"] == token
+    # Renewed while unconfirmed, so a claim near its TTL (after a stretch of
+    # failed checks) survives until the confirming check.
+    assert claims.renewed == [("US", token)]
+
+    claims.clock += PIPELINE_CHAIN_HEARTBEAT_SECONDS
+    assert module.renew_daily_market_pipeline_claims.run()["claims"] == {"US": "released_missing"}
+    assert claims.holders == {}
+
+
+def test_overlapping_heartbeats_cannot_both_count_one_gap(monkeypatch):
+    # A slow heartbeat and the next one, both landing in the same handoff gap.
+    module, claims, token, _ = _dispatched_chain(monkeypatch, states={0: "SUCCESS"})
+
+    assert module.renew_daily_market_pipeline_claims.run()["claims"] == {"US": "missing"}
+    claims.clock += 5
+    assert module.renew_daily_market_pipeline_claims.run()["claims"] == {"US": "missing"}
+    assert claims.holders["US"]["task_id"] == token
+
+
+def test_a_live_heartbeat_resets_the_missing_clock(monkeypatch):
+    from app.tasks.workload_coordination import PIPELINE_CHAIN_HEARTBEAT_SECONDS
+
+    module, claims, token, (live, _searches) = _dispatched_chain(monkeypatch, states={})
+
+    assert module.renew_daily_market_pipeline_claims.run()["claims"] == {"US": "missing"}
+    claims.clock += PIPELINE_CHAIN_HEARTBEAT_SECONDS
+    live.add(claims.task_ids[token][1])
+    assert module.renew_daily_market_pipeline_claims.run()["claims"] == {"US": "renewed"}
+    claims.clock += PIPELINE_CHAIN_HEARTBEAT_SECONDS
+    live.clear()
+    assert module.renew_daily_market_pipeline_claims.run()["claims"] == {"US": "missing"}
+    assert claims.holders["US"]["task_id"] == token
+
+
+def test_a_broker_search_out_of_budget_renews_the_claim(monkeypatch):
+    # still_in_broker answers None when the broker is unreadable or the
+    # backlog is too big to search in its budget. A stage buried that deep is
+    # likely still queued, so renew: only renewing keeps a backlog longer than
+    # the 48h TTL from letting a second chain start. A conclusive search once
+    # the backlog drains frees a dead chain's claim.
+    from app.tasks.workload_coordination import PIPELINE_CHAIN_HEARTBEAT_SECONDS
+
+    from app.services import task_registry_service as registry
+
+    module, claims, token, _ = _dispatched_chain(monkeypatch, states={})
+    real_search = registry.still_in_broker  # the fake that finds nothing
+    inconclusive = {"on": False}
+
+    def search(task_ids, *, cache=True):
+        if inconclusive["on"]:
+            return {task_id: None for task_id in task_ids}
+        return real_search(task_ids, cache=cache)
+
+    monkeypatch.setattr("app.services.task_registry_service.still_in_broker", search)
+
+    # One miss starts the missing clock...
+    assert module.renew_daily_market_pipeline_claims.run()["claims"] == {"US": "missing"}
+    inconclusive["on"] = True
+    for _beat in range(3):
+        claims.clock += PIPELINE_CHAIN_HEARTBEAT_SECONDS
+        assert module.renew_daily_market_pipeline_claims.run()["claims"] == {"US": "renewed_unknown"}
+    # The unconfirmed miss renews too, then each inconclusive beat.
+    assert claims.renewed == [("US", token)] * 4
+    # ...which an inconclusive search clears, since it proved nothing gone.
+    assert claims.missing_since == {}
+    assert claims.holders["US"]["task_id"] == token
+
+
+def test_undecided_chains_share_one_fresh_broker_search(monkeypatch):
+    module, claims, token, (_live, searches) = _dispatched_chain(monkeypatch, states={})
+    claims.holders["HK"] = {"task_id": "hk-token", "started_at": "x"}
+    claims.task_ids["hk-token"] = ["hk-0", "hk-1"]
+
+    module.renew_daily_market_pipeline_claims.run()
+
+    # One bounded search for every undecided chain, never from the cache: a
+    # cached "not found" from before a stage was published would read a live
+    # chain as missing.
+    [(searched, cache)] = searches
+    assert sorted(searched) == sorted([*claims.task_ids[token], "hk-0", "hk-1"])
+    assert cache is False
+
+
+def test_a_failing_heartbeat_keeps_the_claim(monkeypatch, caplog):
+    module, claims, token, _ = _dispatched_chain(monkeypatch, states={})
+
+    def backend_down(_task_id):
+        raise ConnectionError("result backend down")
+
+    monkeypatch.setattr(module.celery_app, "AsyncResult", backend_down)
+
+    assert module.renew_daily_market_pipeline_claims.run()["claims"] == {"US": "error"}
+    assert claims.holders["US"]["task_id"] == token
+    assert claims.released == []
+    assert "Could not check the US pipeline chain claim" in caplog.text
+
+
+def test_a_claim_taken_before_stage_ids_were_recorded_is_left_to_expire(monkeypatch):
+    from app.tasks import daily_market_pipeline_tasks as module
+
+    claims = _ChainClaims()
+    claims.holders["US"] = {"task_id": "pre-605", "started_at": "x"}
+    monkeypatch.setattr(module, "_pipeline_chain_claims", lambda: claims)
+
+    assert module.renew_daily_market_pipeline_claims.run()["claims"] == {"US": "untracked"}
+    assert claims.holders["US"]["task_id"] == "pre-605"
+
+
+def test_the_heartbeat_never_renews_or_frees_a_newer_chains_claim(monkeypatch):
+    # The claim changed hands after the holder was read.
+    module, claims, token, _ = _dispatched_chain(monkeypatch, states={1: "REVOKED"})
+    claims.holders["US"] = {"task_id": "newer", "started_at": "y"}
+    monkeypatch.setattr(
+        claims, "get_pipeline_chain_holders", lambda: {"US": {"task_id": token}}
+    )
+
+    assert module.renew_daily_market_pipeline_claims.run()["claims"] == {"US": "lost"}
+    assert claims.holders["US"]["task_id"] == "newer"
+
+
+@pytest.mark.allow_real_celery_dispatch
+def test_real_celery_chain_publishes_with_the_recorded_ids(monkeypatch):
+    # Celery's own chain preparation and message building, with the network
+    # seams stubbed: the broker producer is in memory, the result backend's
+    # subscribe is a no-op, and send_task_message is captured. CI has no
+    # Redis, so a test reaching either service fails there.
+    from contextlib import nullcontext
+
+    from celery import chain
+    from kombu import Connection
+
+    from app.tasks import daily_market_pipeline_tasks as module
+
+    memory = Connection("memory://")
+    monkeypatch.setattr(
+        module.celery_app, "producer_or_acquire", lambda _producer=None: nullcontext(memory.Producer())
+    )
+    monkeypatch.setattr(module.celery_app.backend, "on_task_call", lambda *_args, **_kwargs: None)
+
+    release = module.release_daily_market_pipeline_claim.si(market="US", token="tok")
+    workflow = chain(
+        module.guard_price_refresh.s(market="US"),
+        module.guard_group_result.s(market="US"),
+        release,
+    )
+    task_ids = module._chain_task_ids(workflow)
+
+    published = []
+    monkeypatch.setattr(
+        module.celery_app.amqp,
+        "send_task_message",
+        lambda _producer, _name, message, *args, **kwargs: published.append(message),
+    )
+    workflow.apply_async(link_error=release)
+    memory.release()
+
+    [first] = published
+    _args, _kwargs, embed = first.body
+    later = [signature["options"]["task_id"] for signature in reversed(embed["chain"])]
+    assert [first.headers["id"], *later] == task_ids
+    assert len(set(task_ids)) == 3
 
 
 def test_guard_price_refresh_fails_lock_contention_skip_result():
