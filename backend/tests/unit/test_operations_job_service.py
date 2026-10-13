@@ -1022,7 +1022,10 @@ def test_operator_release_is_owner_checked_and_audited():
 
     assert (first["status"], second["status"]) == ("accepted", "blocked")
     coordination.return_value.release_pipeline_chain.assert_called_with("tok-1", market="US")
-    assert [c.kwargs["outcome"] for c in audit.call_args_list] == ["accepted", "blocked"]
+    # Each release is audited intent-first (#613).
+    assert [c.kwargs["outcome"] for c in audit.call_args_list] == [
+        "requested", "accepted", "requested", "blocked",
+    ]
     assert audit.call_args.kwargs["strategy"] == "release_pipeline_chain"
 
 
