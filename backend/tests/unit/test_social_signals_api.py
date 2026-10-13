@@ -1360,3 +1360,25 @@ async def test_association_decision_requires_live_mode_reason_and_current_versio
     assert (decision.before_state, decision.after_state, decision.reason) == (
         "proposed", "accepted", "reviewed filing"
     )
+
+
+def test_admin_analysis_names_no_signal_skips_instead_of_provider_error(db_session):
+    from datetime import datetime, timezone
+
+    from app.api.v1.social_signals import admin_analysis
+    from app.domain.social_signals.records import SKIPPED_NO_SIGNAL
+    from app.infra.db.models.social_analysis import SocialExtractionWork
+    from app.models.theme import ContentItem
+
+    now = datetime(2026, 9, 7, tzinfo=timezone.utc)
+    item = ContentItem(source_type="twitter", external_id="gated", content="coffee?")
+    db_session.add(item)
+    db_session.flush()
+    db_session.add(SocialExtractionWork(content_item_id=item.id, input_hash="h", prompt_version="v",
+        schema_version="v", selected_model="m", input_snapshot_json={}, state="succeeded",
+        error_code=SKIPPED_NO_SIGNAL, created_at=now, updated_at=now))
+    db_session.flush()
+
+    assert [row["error_code"] for row in admin_analysis(state=None, limit=10, db=db_session)] == [
+        SKIPPED_NO_SIGNAL
+    ]

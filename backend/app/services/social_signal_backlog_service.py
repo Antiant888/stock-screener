@@ -5,20 +5,30 @@ from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 import logging
+import re
 from time import monotonic
 from uuid import uuid4
 
 from sqlalchemy import func, select
 
-from app.domain.social_signals.records import BacklogResult, ExtractionResult, SocialPostRecord
+from app.domain.social_signals.records import (
+    SKIPPED_NO_SIGNAL, BacklogResult, ExtractionPostJudgment, ExtractionResult, SocialPostRecord,
+)
 from app.infra.db.models.social_analysis import SocialExtractionWork, SocialLLMAttempt, SocialLLMBudgetDay, SocialRunWork
 from app.infra.db.models.social_signals import SocialSignalRun, SocialSourceRegistry
+from app.models.stock_universe import StockUniverse
 from app.services.llm.llm_service import LLMPreDispatchError, LLMService
 from app.services.social_extraction_service import SocialExtractionError, SocialExtractionService, VERSION
 from app.services.social_llm_budget_service import SocialLLMBudgetService, social_analysis_transaction
+from app.services.social_ticker_resolver import SocialTickerResolver, cashtags
 
 
 logger = logging.getLogger(__name__)
+
+NO_SIGNAL_GATE = "no_signal_gate"
+_WORD = re.compile(r"\w+")
+_SYMBOL = re.compile(r"[A-Za-z0-9]+(?:[.\-][A-Za-z]{1,3}\b)?")  # MU, BRK.B, 0700.HK, 3008.TWO
+_CJK = re.compile(r"[぀-ヿ㐀-鿿가-힯]")
 
 
 def _utc(value):
@@ -223,6 +233,7 @@ class ProcessSocialBacklog:
             daily_limit_usd=daily_limit_usd,
             budget_timezone=budget_timezone,
         )
+        self._universe_hints = None  # (active symbols, first name words), read once
 
     def enqueue(self, content_item_id, post: SocialPostRecord, *, selected_model,
                 now, prompt_version=VERSION, schema_version=VERSION, run_id=None):
@@ -236,22 +247,71 @@ class ProcessSocialBacklog:
                 run = db.get(SocialSignalRun, run_id)
                 if run is None or run.status != "running":
                     raise ValueError("terminal_or_missing_social_run")
-            work = db.scalar(select(SocialExtractionWork).where(
-                SocialExtractionWork.content_item_id == content_item_id,
-                SocialExtractionWork.input_hash == input_hash,
-                SocialExtractionWork.prompt_version == prompt_version,
-                SocialExtractionWork.schema_version == schema_version,
-                SocialExtractionWork.selected_model == selected_model))
+            def saved(model):
+                return db.scalar(select(SocialExtractionWork).where(
+                    SocialExtractionWork.content_item_id == content_item_id,
+                    SocialExtractionWork.input_hash == input_hash,
+                    SocialExtractionWork.prompt_version == prompt_version,
+                    SocialExtractionWork.schema_version == schema_version,
+                    SocialExtractionWork.selected_model == model))
+            work = saved(selected_model)
+            if work is None:
+                # Gate skips carry their own model identity and are never rewritten: runs
+                # that saved one keep it, and a post that gains signal (the universe now
+                # lists what it names) gets separate LLM work.
+                skipped = saved(NO_SIGNAL_GATE)
+                if not self._has_signal(db, post):
+                    work = skipped
+                    if work is None:
+                        # Saved as an empty judgment, so readiness and replays treat it like any result.
+                        result = ExtractionResult(input_hash, NO_SIGNAL_GATE, NO_SIGNAL_GATE, prompt_version,
+                            schema_version, (), None, None, (ExtractionPostJudgment(post.provider_post_id, False, None),))
+                        work = SocialExtractionWork(content_item_id=content_item_id, input_hash=input_hash,
+                            prompt_version=prompt_version, schema_version=schema_version,
+                            selected_model=NO_SIGNAL_GATE, input_snapshot_json=snapshot,
+                            actual_provider=NO_SIGNAL_GATE, actual_model=NO_SIGNAL_GATE,
+                            result_json=asdict(result), error_code=SKIPPED_NO_SIGNAL,
+                            state="succeeded", created_at=now, updated_at=now)
             if work is None:
                 work = SocialExtractionWork(content_item_id=content_item_id, input_hash=input_hash,
                     prompt_version=prompt_version, schema_version=schema_version,
                     selected_model=selected_model, input_snapshot_json=snapshot,
                     state="pending", created_at=now, updated_at=now)
+            if work.id is None:
                 db.add(work)
                 db.flush()
             if run_id and db.get(SocialRunWork, (run_id, work.id)) is None:
                 db.add(SocialRunWork(run_id=run_id, work_id=work.id, input_hash=input_hash, included_at=now))
             return work.id
+
+    def _has_signal(self, db, post: SocialPostRecord) -> bool:
+        """Deterministic pre-LLM gate: a repost, or a post naming no listing or company, carries nothing to extract.
+
+        Scoring and theme projection both drop reposts, and every claim needs a
+        company token found verbatim in the source.
+        """
+        if post.is_repost:
+            return False
+        text = f"{post.text}\n{post.quoted_text or ''}"
+        if post.attachments or post.prepared_evidence or cashtags(text) or _CJK.search(text):
+            return True
+        if self._universe_hints is None:
+            symbols, names = set(), set()
+            for symbol, name in db.execute(select(StockUniverse.symbol, StockUniverse.name)
+                                           .where(StockUniverse.active_filter())):
+                symbols.add(symbol)
+                first = SocialTickerResolver._issuer_key(name).split()[:1]
+                if first and len(first[0]) >= 4:
+                    names.add(first[0])
+            self._universe_hints = (symbols, names)
+        symbols, names = self._universe_hints
+        # ponytail: first-word name match lets generic names ("General", "First") through;
+        # it errs toward an LLM call. CJK text has no word breaks, so it always passes.
+        # Aliases that are not a name's first word ("Foxconn") are skipped; add
+        # resolve_alias here if those turn up in skipped posts.
+        # Exact case: lowercase "it", "on", "now" are tickers too, and would pass every post.
+        return (any(word in symbols for word in _SYMBOL.findall(text))
+                or any(word in names for word in _WORD.findall(text.casefold())))
 
     def _claim(self, now, limit, admin_work_ids, eligible_work_ids=()):
         claimed, outside, terminal = [], 0, 0

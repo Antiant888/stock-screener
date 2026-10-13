@@ -150,3 +150,11 @@ def test_recorded_identity_policy_names_single_listing_derivation(db_session):
     from app.services.social_company_identity_service import SocialCompanyIdentityService
     assert SocialCompanyIdentityService(db_session).read().policy_version == (
         "admin-attested-company-v1+single-listing-v1")
+
+
+def test_cashtags_reject_money_amounts():
+    from app.services.social_ticker_resolver import cashtags
+    text = "$NVDA $MU. $BRK.B up; $10K $1M $50m $1.5B $2T $300. $0 $750 $10,000 and $3M? x$AAA"
+    assert cashtags(text) == ["$BRK.B", "$MU.", "$NVDA"]
+    assert cashtags("$6758.T 和 $2330.TW, 关注$0700.HK") == ["$0700.HK", "$2330.TW", "$6758.T"]
+    assert cashtags("$1.5bn, $10K-$20K, $3mm, $2tn") == []

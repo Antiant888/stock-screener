@@ -407,3 +407,35 @@ def test_social_health_aggregates_budget_buckets_overlapping_current_policy_day(
     assert Decimal(payload["budget"]["reserved_usd"]) == Decimal("0.25")
     assert Decimal(payload["budget"]["remaining_usd"]) == Decimal("1.00")
     assert payload["budget"]["next_reset_at"] == "2026-09-07T16:00:00+00:00"
+
+
+def test_social_signal_operations_counts_no_signal_skips_apart_from_models(db_session):
+    from datetime import datetime, timezone
+
+    from app.infra.db.models.social_analysis import SocialExtractionWork
+    from app.models.theme import ContentItem
+    from app.domain.social_signals.records import SKIPPED_NO_SIGNAL
+    from app.services.social_signal_backlog_service import NO_SIGNAL_GATE
+    from app.services.social_signal_operations_service import SocialSignalOperationsService
+    from app.services.social_source_admin_service import SocialSourceAdminService
+
+    SocialSourceAdminService(db_session).ensure_seed_sources()
+    now = datetime(2026, 9, 7, tzinfo=timezone.utc)
+    for number, (model, error) in enumerate(((NO_SIGNAL_GATE, SKIPPED_NO_SIGNAL), ("actual-model", None))):
+        item = ContentItem(source_type="twitter", external_id=f"gate-{number}", content="x")
+        db_session.add(item)
+        db_session.flush()
+        db_session.add(SocialExtractionWork(content_item_id=item.id, input_hash=f"h{number}",
+            prompt_version="v", schema_version="v", selected_model="synthetic/requested",
+            input_snapshot_json={}, state="succeeded", actual_model=model, error_code=error,
+            created_at=now, updated_at=now))
+    db_session.flush()
+
+    class Redis:
+        def ttl(self, key):
+            return -2
+
+    payload = SocialSignalOperationsService(redis_client=Redis()).snapshot(db_session)
+
+    assert payload["backlog"]["no_signal"] == 1
+    assert payload["model_labels"] == ["actual-model"]

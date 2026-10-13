@@ -10,7 +10,7 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 
-from sqlalchemy import select, update
+from sqlalchemy import select
 
 from app.domain.social_signals.records import (
     EffectiveThemeMembership,
@@ -26,7 +26,7 @@ from app.infra.db.models.social_analysis import (
     SocialThemeAssociation,
     SocialThemeDecision,
 )
-from app.infra.db.models.social_signals import SocialSignalRun, SocialSourceRegistry
+from app.infra.db.models.social_signals import SocialSignalRun, SocialSourceRegistry, _lock_registry
 from app.models.economic_taxonomy import (
     LegacyClaimAllocation,
     LegacyDestinationMapping,
@@ -73,14 +73,6 @@ class PreparedThemeApplication:
             if basket.theme_key == theme_key and basket.market == market:
                 return basket
         raise MeasurementUnavailable("theme_unavailable")
-
-
-def _lock_registry(db):
-    with db.no_autoflush:
-        if db.get_bind().dialect.name == "sqlite":
-            db.execute(update(SocialSourceRegistry).where(SocialSourceRegistry.id == 1).values(version=SocialSourceRegistry.version))
-        return db.scalar(select(SocialSourceRegistry).where(SocialSourceRegistry.id == 1)
-                         .with_for_update().execution_options(populate_existing=True))
 
 
 def guard_social_theme_merge(db, source_id, target_id):

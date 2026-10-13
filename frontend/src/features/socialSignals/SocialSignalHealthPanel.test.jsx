@@ -35,10 +35,11 @@ function seedMocks() {
     budget: { limit_usd: '2', spent_usd: '0.75', reserved_usd: '0.25',
       remaining_usd: '1', timezone: 'Asia/Singapore', next_reset_at: '2026-09-07T16:00:00Z',
       pricing_status: 'configured', pricing_version: '2026-09' },
-    backlog: { waiting: 4, failed: 1, outside_window: 2 },
+    backlog: { waiting: 4, failed: 1, outside_window: 2, no_signal: 9 },
   });
   api.getSocialAdminSources.mockResolvedValue(sources);
-  api.getSocialAnalysis.mockResolvedValue([{ work_id: 4, state: 'outside_window' }]);
+  api.getSocialAnalysis.mockResolvedValue([{ work_id: 4, state: 'outside_window' },
+    { work_id: 5, state: 'succeeded', error_code: 'skipped:no_signal' }]);
   api.getSocialAssociations.mockResolvedValue([{
     association_id: 12, theme_name: 'AI Infrastructure', market: 'US',
     canonical_symbol: 'NVDA', state: 'proposed', version: 2,
@@ -73,6 +74,8 @@ describe('SocialSignalHealthPanel', () => {
     expect(screen.getByText(/1\/2 source coverage/)).toBeInTheDocument();
     expect(screen.getByText(/US\$2 per day/)).toBeInTheDocument();
     expect(screen.getByText(/US\$1 remaining/)).toBeInTheDocument();
+    expect(screen.getByText(/9 skipped \(repost, or no ticker or company\)/)).toBeInTheDocument();
+    expect(screen.getByText('Work 5 · skipped: repost, or no ticker or company')).toBeInTheDocument();
     expect(screen.getByText(/Reauthenticate the private worker/)).toBeInTheDocument();
     expect(screen.getByText(/1 company links need administrator verification/)).toBeInTheDocument();
     expect(screen.getByText(/at most five posts/)).toBeInTheDocument();

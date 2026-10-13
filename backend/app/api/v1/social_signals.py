@@ -10,6 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.database import get_db
+from app.domain.social_signals.records import SKIPPED_NO_SIGNAL
 from app.schemas.social_signals import (
     EconomicSocialAssociationDecisionRequest, MarketCode, QueueView, RankMode,
     SocialAssociationDecisionRequest,
@@ -31,7 +32,7 @@ _SAFE_REASON_CODES = {
     "provider_lease_unavailable", "provider_network_error", "provider_timeout",
     "provider_unavailable",
     "rate_limited", "reauthentication_required", "social_runtime_changed",
-    "source_participation_failed",
+    "source_participation_failed", SKIPPED_NO_SIGNAL,
 }
 
 

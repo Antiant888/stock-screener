@@ -235,3 +235,36 @@ def test_disabled_source_cannot_commit_delayed_observation(store):
         db.get(SocialSourceConfiguration, 1).lifecycle_state = "disabled"
     with pytest.raises(ValueError, match="source.*enabled"):
         w.persist_observations(batch())
+
+
+def test_reobserved_post_replaces_stale_ticker_rows_and_skips_money(store):
+    """A row resolved before the universe loaded must not linger as 'unresolved'."""
+    from app.infra.db.models.social_signals import SocialPostTicker
+    from app.models.stock_universe import StockUniverse
+    w = writer(store)
+    first = batch()
+    money = replace(first, posts=(replace(first.posts[0], text="$AAA raised $10K, $1.5B, $680M and $300."),))
+    w.persist_observations(money)
+    with store.begin() as db:
+        db.add(StockUniverse(symbol="AAA", name="AAA Corp", market="US", exchange="NASDAQ", is_active=True))
+    w.clock = lambda: NOW + timedelta(hours=1)
+    w.persist_observations(replace(money, posts=(replace(money.posts[0], observed_at=NOW + timedelta(hours=1)),)))
+    with store() as db:
+        rows = db.query(SocialPostTicker).all()
+        assert [(row.candidate_key, row.resolution_state) for row in rows] == [("US:AAA", "resolved")]
+
+
+def test_scoring_reader_ignores_a_stale_unresolved_mapping(store):
+    """Posts that are never re-observed keep old rows; the reader resolves the text fresh."""
+    from app.infra.db.repositories.social_refresh_support import SocialScoringEvidenceReader
+    from app.models.stock_universe import StockUniverse
+    w = writer(store)
+    w.create_run("run", NOW)
+    first = batch()
+    w.persist_observations(replace(first, posts=(replace(first.posts[0], text="$AAA hit $50M"),)), run_id="run")
+    w.persist_observations(batch(2, post_id="200"), run_id="run")
+    with store.begin() as db:
+        db.add(StockUniverse(symbol="AAA", name="AAA Corp", market="US", exchange="NASDAQ", is_active=True))
+    w.select_current_inputs("run")
+    keys = {item.candidate_key for item in SocialScoringEvidenceReader(store).read("run", NOW)}
+    assert keys == {"US:AAA"}

@@ -16,6 +16,8 @@ SUPPORTED_MARKETS = frozenset({"US", "HK", "CN", "JP", "TW"})
 # Model hints about a post: what kind of post it is, and its overall stance.
 POST_KINDS = frozenset({"setup", "thesis", "news", "macro", "chatter"})
 POST_STANCES = frozenset({"bullish", "bearish", "neutral", "mixed"})
+# Work the deterministic pre-LLM gate finished with an empty judgment.
+SKIPPED_NO_SIGNAL = "skipped:no_signal"
 _MAX_CLOCK_SKEW = timedelta(minutes=5)
 _MAX_PREPARED_EVIDENCE = 10
 _MAX_PREPARED_EVIDENCE_CHARACTERS = 6_000

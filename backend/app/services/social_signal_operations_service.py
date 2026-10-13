@@ -15,6 +15,7 @@ from app.infra.db.models.social_analysis import (
 from app.infra.db.models.social_signals import (
     SocialSignalRun, SocialSourceConfiguration, SocialSourceRegistry,
 )
+from app.domain.social_signals.records import SKIPPED_NO_SIGNAL
 from app.models.app_settings import AppSetting
 from app.services.economic_theme_read_service import EconomicThemeReader
 from app.services.social_signal_runtime_gate import (
@@ -213,7 +214,8 @@ class SocialSignalOperationsService:
             "social_fresh": social_fresh,
             "formula_version": context.get("formula_version"),
             "extraction_versions": context.get("extraction_versions", []),
-            "model_labels": sorted({row.actual_model or row.selected_model for row in work}),
+            "model_labels": sorted({row.actual_model or row.selected_model for row in work
+                                    if row.error_code != SKIPPED_NO_SIGNAL}),
             "budget": {
                 "limit_usd": str(budget_limit), "timezone": budget_timezone,
                 "spent_usd": str(spent), "reserved_usd": str(reserved),
@@ -228,6 +230,7 @@ class SocialSignalOperationsService:
                 "failed": sum(row.state == "failed_terminal" for row in work),
                 "outside_window": sum(row.state == "outside_window" for row in work),
                 "skipped": sum(row.state == "outside_window" for row in work),
+                "no_signal": sum(row.error_code == SKIPPED_NO_SIGNAL for row in work),
                 "oldest_age_seconds": (now - oldest).total_seconds() if oldest else None,
             },
             "provider_lease_ttl_seconds": ttl(PROVIDER_LEASE_KEY),
