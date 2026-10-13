@@ -1,0 +1,185 @@
+"""#615: the market-independent cleanups run weekly without an operator."""
+
+from __future__ import annotations
+
+import fnmatch
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+from app.celery_app import _build_cache_warmup_beat_schedule
+from app.services.task_registry_service import SCHEDULED_TASKS, _registry_entry_for
+from app.tasks import cache_tasks
+
+TASK = "app.tasks.cache_tasks.weekly_global_maintenance"
+
+
+class _Redis:
+    def __init__(self, keys, error=None):
+        self.keys = {k.encode() for k in keys}
+        self.error = error
+
+    def scan_iter(self, match, count):
+        if self.error:
+            raise self.error
+        return [k for k in sorted(self.keys) if fnmatch.fnmatchcase(k.decode(), match)]
+
+    def delete(self, *keys):
+        self.keys -= set(keys)
+
+
+def _u(rows):
+    """Universe rows as (SYMBOL, is_active, MARKET); market from the suffix."""
+    return [(s.upper(), a, "HK" if s.upper().endswith(".HK") else "US") for s, a in rows]
+
+
+class _Rows(list):
+    """A query result: iterated as (symbol, is_active, market); distinct() is
+    the status-event history (empty here)."""
+
+    def distinct(self):
+        return []
+
+
+def _db(rows):
+    db = MagicMock()
+    db.query.return_value = _Rows(_u(rows))
+    return db
+
+
+def _clean(rows, keys, **redis_kwargs):
+    redis = _Redis(keys, **redis_kwargs)
+    with patch("app.services.redis_pool.get_redis_client", return_value=redis):
+        cleaned = cache_tasks._cleanup_orphaned_price_cache(_u(rows), set())
+    return cleaned, {k.decode() for k in redis.keys}
+
+
+def test_removes_every_markets_keys_for_a_delisted_symbol_and_keeps_the_rest():
+    rows = [("AAPL", True), ("0005.HK", True), ("0700.HK", False), ("OLDCO", False)]
+    keys = {
+        # Delisted HK symbol: the old cleanup only ever deleted price:US:... keys.
+        "price:HK:0700.HK:recent", "price:HK:0700.HK:last_update", "price:HK:0700.HK:fetch_meta",
+        "price:OLDCO:recent",  # legacy unscoped key
+        "price:US:AAPL:recent", "price:US:AAPL:last_update",  # active
+        # Never in the universe (benchmarks, COT instruments): cached on purpose.
+        "price:US:SPY:recent", "price:US:^VIX:recent",
+        "fundamentals:US:0700.HK",  # another namespace
+    }
+
+    cleaned, left = _clean(rows, keys)
+
+    assert cleaned == 2
+    assert left == {
+        "price:US:AAPL:recent", "price:US:AAPL:last_update",
+        "price:US:SPY:recent", "price:US:^VIX:recent",
+        "fundamentals:US:0700.HK",
+    }
+
+
+def test_a_symbol_dropped_by_a_snapshot_import_is_still_cleaned():
+    # The snapshot import deletes a market's rows and inserts only active ones,
+    # so a delisted symbol has no row at all; its status events remain.
+    redis = _Redis({"price:HK:9999.HK:recent", "price:US:SPY:recent"})
+    with patch("app.services.redis_pool.get_redis_client", return_value=redis):
+        cleaned = cache_tasks._cleanup_orphaned_price_cache(_u([("AAPL", True), ("0005.HK", True)]), {"9999.HK"})
+
+    assert cleaned == 1
+    assert {k.decode() for k in redis.keys} == {"price:US:SPY:recent"}
+
+
+def test_an_empty_universe_with_history_deletes_nothing():
+    # A broken or emptied universe must not turn every once-held symbol into an orphan.
+    redis = _Redis({"price:US:AAPL:recent", "price:HK:0700.HK:recent"})
+    with patch("app.services.redis_pool.get_redis_client", return_value=redis):
+        assert cache_tasks._cleanup_orphaned_price_cache([], {"AAPL", "0700.HK"}) == 0
+        assert cache_tasks._cleanup_orphaned_price_cache(_u([("AAPL", False)]), {"0700.HK"}) == 0
+
+    assert {k.decode() for k in redis.keys} == {"price:US:AAPL:recent", "price:HK:0700.HK:recent"}
+
+
+def test_a_market_with_no_active_rows_keeps_its_cache():
+    # One market's snapshot replacement can leave it empty while others stay
+    # active; its once-held symbols must not all read as orphaned.
+    redis = _Redis({"price:HK:0700.HK:recent", "price:US:OLDCO:recent"})
+    with patch("app.services.redis_pool.get_redis_client", return_value=redis):
+        cleaned = cache_tasks._cleanup_orphaned_price_cache(_u([("AAPL", True)]), {"0700.HK", "OLDCO"})
+
+    assert cleaned == 1  # OLDCO, in the still-active US market
+    assert {k.decode() for k in redis.keys} == {"price:HK:0700.HK:recent"}
+
+
+def test_former_symbols_come_from_universe_status_events():
+    db = MagicMock()
+    db.query.return_value.distinct.return_value = [("9999.hk",), ("OLDCO",)]
+
+    assert cache_tasks._former_universe_symbols(db) == {"9999.HK", "OLDCO"}
+
+
+def test_a_symbol_active_in_any_row_is_kept():
+    _, left = _clean([("DUAL", False), ("DUAL", True)], {"price:US:DUAL:recent"})
+
+    assert left == {"price:US:DUAL:recent"}
+
+
+def test_an_empty_universe_deletes_nothing():
+    # The old cleanup diffed against the active set, so an empty universe
+    # made the whole price cache look orphaned.
+    cleaned, left = _clean([], {"price:US:AAPL:recent", "price:HK:0700.HK:recent"})
+
+    assert cleaned == 0
+    assert left == {"price:US:AAPL:recent", "price:HK:0700.HK:recent"}
+
+
+def test_redis_errors_fail_the_run_instead_of_reading_as_zero_cleaned():
+    with pytest.raises(ConnectionError):
+        _clean([("AAPL", True), ("OLDCO", False)], {"price:OLDCO:recent"}, error=ConnectionError("redis down"))
+    with patch("app.services.redis_pool.get_redis_client", return_value=None), pytest.raises(RuntimeError):
+        cache_tasks._cleanup_orphaned_price_cache(_u([("AAPL", True), ("OLDCO", False)]), set())
+
+
+def test_the_task_runs_telemetry_retention_even_if_the_cache_step_fails():
+    telemetry = MagicMock()
+    telemetry.cleanup_old_events.return_value = 7
+    with patch.object(cache_tasks, "SessionLocal", return_value=_db([("AAPL", True), ("OLDCO", False)])), patch(
+        "app.services.telemetry.get_telemetry", return_value=telemetry
+    ), patch("app.services.redis_pool.get_redis_client", return_value=_Redis(set(), error=ConnectionError("x"))):
+        with pytest.raises(ConnectionError):
+            cache_tasks.weekly_global_maintenance.run()
+
+    telemetry.cleanup_old_events.assert_called_once_with()
+
+
+def test_the_task_reports_both_counts():
+    telemetry = MagicMock()
+    telemetry.cleanup_old_events.return_value = 7
+    with patch.object(cache_tasks, "SessionLocal", return_value=_db([("AAPL", True), ("OLDCO", False)])), patch(
+        "app.services.telemetry.get_telemetry", return_value=telemetry
+    ), patch("app.services.redis_pool.get_redis_client", return_value=_Redis({"price:US:OLDCO:recent"})):
+        result = cache_tasks.weekly_global_maintenance.run()
+
+    assert (result["orphans_cleaned"], result["telemetry_events_deleted"]) == (1, 7)
+
+
+@pytest.mark.parametrize("enabled_markets", [["US", "HK"], []])
+def test_beat_runs_it_weekly_whatever_markets_are_enabled(enabled_markets):
+    # A shared entry: needed even when no market's cache warming is enabled.
+    entry = _build_cache_warmup_beat_schedule(enabled_markets)["weekly-global-maintenance"]
+
+    assert entry["task"] == TASK
+    schedule = entry["schedule"]
+    assert (schedule.day_of_week, schedule.hour, schedule.minute) == ({0}, {6}, {0})
+
+
+def test_runs_show_under_their_own_scheduled_job():
+    assert SCHEDULED_TASKS["weekly-global-maintenance"]["task_function"] == TASK
+    assert _registry_entry_for(TASK, {}) == "weekly-global-maintenance"
+
+
+def test_reads_enabled_even_when_cache_warming_is_off(db_session):
+    from app.services.task_registry_service import TaskRegistryService
+
+    with patch("app.services.task_registry_service.settings.cache_warmup_enabled", False):
+        tasks = {t["name"]: t for t in TaskRegistryService().get_all_scheduled_tasks(db_session)}
+
+    assert tasks["weekly-global-maintenance"]["is_enabled"] is True
+    assert tasks["monthly-price-data-cleanup"]["is_enabled"] is False

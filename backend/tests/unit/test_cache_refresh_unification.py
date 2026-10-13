@@ -967,7 +967,6 @@ def test_weekly_full_refresh_reraises_soft_time_limit(monkeypatch):
 
     fake_price_cache = MagicMock()
     fake_cache_manager = MagicMock()
-    fake_cache_manager.cleanup_orphaned_cache_keys.return_value = 0
 
     monkeypatch.setattr(module, "SessionLocal", lambda: fake_db)
     monkeypatch.setattr(module, "CacheManager", lambda db: fake_cache_manager)
@@ -997,14 +996,15 @@ def test_weekly_full_refresh_reraises_nested_soft_time_limit(monkeypatch):
 
     fake_db = MagicMock()
     first_query = MagicMock()
-    first_query.filter.return_value.all.return_value = [SimpleNamespace(symbol="AAPL")]
+    first_query.__iter__.side_effect = lambda: iter([("AAPL", True, "US")])  # universe (symbol, is_active, market)
     second_query = MagicMock()
     second_query.filter.return_value.order_by.return_value.all.return_value = [SimpleNamespace(symbol="AAPL")]
-    fake_db.query.side_effect = [first_query, second_query]
+    history_query = MagicMock()  # universe status events (former symbols)
+    history_query.distinct.return_value = []
+    fake_db.query.side_effect = [first_query, history_query, second_query]
 
     fake_price_cache = MagicMock()
     fake_cache_manager = MagicMock()
-    fake_cache_manager.cleanup_orphaned_cache_keys.return_value = 0
 
     monkeypatch.setattr(module, "SessionLocal", lambda: fake_db)
     monkeypatch.setattr(module, "CacheManager", lambda db: fake_cache_manager)
@@ -1037,16 +1037,17 @@ def test_weekly_full_refresh_counts_a_failed_batch_store_as_failures_only(monkey
 
     rows = [SimpleNamespace(symbol="AAPL"), SimpleNamespace(symbol="MSFT")]
     first_query = MagicMock()
-    first_query.filter.return_value.all.return_value = rows
+    first_query.__iter__.side_effect = lambda: iter([(r.symbol, True, "US") for r in rows])  # universe (symbol, is_active, market)
     second_query = MagicMock()
     second_query.filter.return_value.order_by.return_value.all.return_value = rows
     fake_db = MagicMock()
-    fake_db.query.side_effect = [first_query, second_query]
+    history_query = MagicMock()  # universe status events (former symbols)
+    history_query.distinct.return_value = []
+    fake_db.query.side_effect = [first_query, history_query, second_query]
 
     fake_price_cache = MagicMock()
     fake_price_cache.store_batch_in_cache.side_effect = RuntimeError("commit failed")
     fake_cache_manager = MagicMock()
-    fake_cache_manager.cleanup_orphaned_cache_keys.return_value = 0
     tracked = []
 
     monkeypatch.setattr(module, "SessionLocal", lambda: fake_db)

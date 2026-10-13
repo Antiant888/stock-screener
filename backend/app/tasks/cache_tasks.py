@@ -487,6 +487,110 @@ def daily_cache_warmup(self, market: str | None = None):
     return smart_refresh_cache(self, mode="full", market=market)
 
 
+def _universe_rows(db) -> list[tuple[str, bool, str]]:
+    """(SYMBOL, is_active, MARKET) for every universe row in every market."""
+    from ..models.stock_universe import StockUniverse
+
+    return [
+        (str(symbol).strip().upper(), bool(is_active), str(market or "US").strip().upper())
+        for symbol, is_active, market in db.query(
+            StockUniverse.symbol, StockUniverse.is_active, StockUniverse.market
+        )
+    ]
+
+
+_PRICE_KEY_SUFFIXES = ("recent", "last_update", "fetch_meta")
+
+
+def _former_universe_symbols(db) -> set[str]:
+    """Symbols with universe lifecycle history.
+
+    A snapshot import replaces a market's rows (it deletes them and inserts
+    only active ones), so a delisted symbol can vanish from stock_universe
+    instead of turning inactive. Its status events survive: they have no
+    foreign key to the universe row.
+    """
+    from ..models.stock_universe import StockUniverseStatusEvent
+
+    return {
+        str(symbol).strip().upper()
+        for (symbol,) in db.query(StockUniverseStatusEvent.symbol).distinct()
+    }
+
+
+def _cleanup_orphaned_price_cache(
+    universe_rows: list[tuple[str, bool, str]], former_symbols: set[str]
+) -> int:
+    """Delete Redis price keys of delisted symbols; returns symbols cleaned.
+
+    An orphan is a symbol the universe holds, or once held (former_symbols),
+    with no active row now. Symbols it
+    never held (SPY, COT instruments, futures) are cached on purpose and kept,
+    which also makes an empty or broken universe delete nothing. Keys are
+    matched by name, ``price:<MARKET>:<SYMBOL>:<suffix>`` or the legacy
+    ``price:<SYMBOL>:<suffix>``, so every market's keys go; deleting by symbol
+    alone would target only the US keys. Redis errors propagate.
+    """
+    from ..services.redis_pool import get_redis_client
+
+    active = {symbol for symbol, is_active, _ in universe_rows if is_active}
+    # A market with no active rows (empty, unreadable, or mid-replacement)
+    # says nothing about its delistings; with history alone, every symbol it
+    # ever held would read as orphaned. Its keys are left alone.
+    active_markets = {market for _, is_active, market in universe_rows if is_active}
+    if not active_markets:
+        logger.warning("Orphan cleanup skipped: the universe has no active symbols")
+        return 0
+    known = {symbol for symbol, _, _ in universe_rows} | set(former_symbols)
+    orphaned = known - active
+    if not orphaned:
+        return 0
+    redis_client = get_redis_client()
+    if redis_client is None:
+        raise RuntimeError("Redis is unavailable for the orphaned price-cache cleanup")
+    doomed, cleaned = [], set()
+    for key in redis_client.scan_iter(match="price:*", count=500):
+        parts = (key.decode() if isinstance(key, bytes) else key).split(":")
+        if parts[-1] not in _PRICE_KEY_SUFFIXES or len(parts) not in (3, 4):
+            continue
+        # Legacy unscoped keys are US keys (the cache policy's default market).
+        market, symbol = (parts[1], parts[2]) if len(parts) == 4 else ("US", parts[1])
+        if symbol in orphaned and market in active_markets:
+            doomed.append(key)
+            cleaned.add(symbol)
+    for start in range(0, len(doomed), 500):
+        redis_client.delete(*doomed[start:start + 500])
+    return len(cleaned)
+
+
+@celery_app.task(bind=True, name='app.tasks.cache_tasks.weekly_global_maintenance')
+def weekly_global_maintenance(self):
+    """Market-independent weekly cleanup (#615).
+
+    Per-market weekly_full_refresh runs skip both steps (one market's symbols
+    would make every other market's cache look orphaned), and Beat only runs
+    the per-market refreshes, so this is their scheduled home.
+    """
+    from ..services.telemetry import get_telemetry
+
+    # Independent of the cache, so it runs even if the Redis step fails.
+    telemetry_deleted = get_telemetry().cleanup_old_events()
+    db = SessionLocal()
+    try:
+        orphans = _cleanup_orphaned_price_cache(_universe_rows(db), _former_universe_symbols(db))
+    finally:
+        db.close()
+    logger.info(
+        "Weekly global maintenance: %d delisted symbols' cache removed, %d expired telemetry events",
+        orphans, telemetry_deleted,
+    )
+    return {
+        'orphans_cleaned': orphans,
+        'telemetry_events_deleted': telemetry_deleted,
+        'timestamp': datetime.now().isoformat(),
+    }
+
+
 @serialized_data_fetch_task(
     celery_app,
     "weekly_full_refresh",
@@ -542,22 +646,20 @@ def weekly_full_refresh(self, market: str | None = None):
         cache_manager = CacheManager(db)
         bulk_fetcher = BulkDataFetcher()
 
-        # 1. Clean up orphaned cache keys (symbols no longer in active universe).
-        #    Skipped for per-market runs: cleanup_orphaned_cache_keys scans ALL
-        #    Redis price keys globally via get_all_cached_symbols(), so passing
-        #    only one market's symbols would treat every other market's cache as
-        #    orphaned and delete it. Only the full-universe (market=None) run
-        #    has the complete active_symbols set needed for correct orphan detection.
+        # 1. Clean up delisted symbols' cache keys. The cleanup is global, so
+        #    only the unscoped run does it; per-market runs leave it to
+        #    weekly_global_maintenance (Beat, Sunday) rather than repeat it
+        #    once per market.
         if market is None:
             logger.info("\n[1/4] Cleaning up orphaned cache entries...", extra=_log_extra)
-            _active_q = db.query(StockUniverse.symbol).filter(StockUniverse.is_active)
-            active_symbols = set(r.symbol for r in _active_q.all())
-            orphan_count = cache_manager.cleanup_orphaned_cache_keys(active_symbols)
+            universe_rows = _universe_rows(db)
+            active_symbols = {symbol for symbol, is_active, _ in universe_rows if is_active}
+            orphan_count = _cleanup_orphaned_price_cache(universe_rows, _former_universe_symbols(db))
             logger.info("✓ Cleaned up %d orphaned cache entries", orphan_count, extra=_log_extra)
         else:
             logger.info(
                 "\n[1/4] Skipping orphan cleanup for market-scoped run (%s) — "
-                "use the full-universe weekly refresh for orphan removal.",
+                "weekly_global_maintenance does it for every market.",
                 normalize_market(market), extra=_log_extra,
             )
             orphan_count = 0

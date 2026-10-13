@@ -624,8 +624,8 @@ class PerMarketTelemetry:
     def cleanup_old_events(self, retention_days: int = _RETENTION_DAYS) -> int:
         """Delete PG event rows older than ``retention_days``. Returns row count.
 
-        Called opportunistically from ``weekly_full_refresh`` so we don't add a
-        dedicated beat entry. Best-effort: returns 0 on any failure.
+        Called weekly by ``weekly_global_maintenance`` (#615), and by an
+        unscoped ``weekly_full_refresh``. Best-effort: returns 0 on any failure.
         """
         try:
             db = self._session()

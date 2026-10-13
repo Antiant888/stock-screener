@@ -662,6 +662,16 @@ def _build_cache_warmup_beat_schedule(enabled_markets: list[str]) -> dict:
             'schedule': crontab(hour=0, minute=30, day_of_week=0),
         },
 
+        # Weekly market-independent cleanup (#615): orphaned price-cache keys
+        # and expired telemetry events. Per-market weekly refreshes skip both.
+        # Sunday 6 AM ET, meant to follow the 3 AM universe refreshes. Best
+        # effort: they share the data-fetch worker, so one still queued at 6 AM
+        # has its deactivations cleaned the next Sunday (keys also expire).
+        'weekly-global-maintenance': {
+            'task': 'app.tasks.cache_tasks.weekly_global_maintenance',
+            'schedule': crontab(hour=6, minute=0, day_of_week=0),
+        },
+
         # Monthly cleanup of old price data (keep 5 years)
         # Runs 1st of each month at 1 AM ET
         # Low priority - prevents unbounded database growth over time
