@@ -592,6 +592,27 @@ def test_broker_check_reports_unknown_when_the_backlog_outruns_its_budget(db_ses
     assert (run["lost_from"], run["still_queued"]) == ("queued", None)
 
 
+def test_several_lost_runs_share_one_broker_pass(db_session):
+    # Each run used to open its own client with its own budget, so N lost runs
+    # (or a broker outage) multiplied the request time by N.
+    waiting = _open_cleanup_run(db_session, age=timedelta(hours=26), status="queued")
+    gone = str(uuid4())
+    db_session.add(TaskExecutionHistory(
+        task_name="weekly-orphaned-scan-cleanup", task_function=CLEANUP, task_id=gone,
+        status="queued", started_at=datetime.now(timezone.utc) - timedelta(hours=26), triggered_by="manual",
+    ))
+    db_session.commit()
+    broker = _Broker()
+    _in_queue(broker, waiting)
+
+    with patch("redis.from_url", return_value=broker) as read_broker:
+        tasks = {t["name"]: t["last_run"] for t in TaskRegistryService().get_all_scheduled_tasks(db_session)}
+
+    read_broker.assert_called_once()
+    assert tasks["monthly-price-data-cleanup"]["still_queued"] is True
+    assert tasks["weekly-orphaned-scan-cleanup"]["still_queued"] is False
+
+
 def test_broker_check_is_cached_between_polls(db_session):
     task_id = _open_cleanup_run(db_session, age=timedelta(hours=26), status="queued")
     broker = _Broker()

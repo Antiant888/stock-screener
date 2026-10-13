@@ -213,26 +213,37 @@ def _message_task_id(raw: bytes) -> Optional[str]:
     return (payload.get('headers') or {}).get('id')
 
 
-def _still_in_broker(task_id: Optional[str]) -> Optional[bool]:
-    """Whether a never-started run's message is still in the broker: in a
-    queue list, or prefetched by a worker that stopped (kombu's ``unacked``
-    hash; a live worker restores it to its queue). None if unreadable.
+def _still_in_broker(task_ids: List[Optional[str]]) -> Dict[str, Optional[bool]]:
+    """For each never-started run, whether its message is still in the broker:
+    in a queue list, or prefetched by a worker that stopped (kombu's
+    ``unacked`` hash; a live worker restores it to its queue). None if the
+    broker is unreadable or the scan runs out of budget.
 
-    Cached briefly: the Schedules list is polled, and a lost run can stay a
-    job's last run until its next scheduled run.
+    All ids share one client, one pass and one deadline. Answers are cached
+    briefly: the Schedules list is polled, and a lost run can stay a job's
+    last run until its next scheduled run. A missing id maps to False: it can
+    never be found or cancelled, so blocking Run would be permanent.
     """
-    if not task_id:
-        return False
     now = datetime.now(timezone.utc).timestamp()
-    cached = _broker_checks.get(task_id)
-    if cached and now - cached[0] < _BROKER_CHECK_TTL_SECONDS:
-        return cached[1]
+    answers: Dict[str, Optional[bool]] = {}
+    pending = set()
+    for task_id in task_ids:
+        if not task_id:
+            continue
+        cached = _broker_checks.get(task_id)
+        if cached and now - cached[0] < _BROKER_CHECK_TTL_SECONDS:
+            answers[task_id] = cached[1]
+        else:
+            pending.add(task_id)
+    if not pending:
+        return answers
     # Lazy: operations_job_service imports this module.
     import redis
 
     from .operations_job_service import OperationsJobService
 
-    found: Optional[bool] = False
+    found: set = set()
+    unknown = False
     broker = None
     try:
         broker = redis.from_url(
@@ -242,25 +253,30 @@ def _still_in_broker(task_id: Optional[str]) -> Optional[bool]:
         )
         queue_names = [*OperationsJobService.broker_queue_names(), 'social_ingestion']
         deadline = time.monotonic() + _BROKER_SCAN_BUDGET_SECONDS
-        found = any(
-            _message_task_id(raw) == task_id
-            for raw in _broker_messages(broker, queue_names, deadline)
-        )
+        for raw in _broker_messages(broker, queue_names, deadline):
+            message_id = _message_task_id(raw)
+            if message_id in pending:
+                found.add(message_id)
+                if found == pending:
+                    break
     except _BrokerScanBudgetExceeded:
-        # A backlog too big to read in budget: unknown, so Run stays blocked
-        # (with that backlog the message is likely still waiting anyway).
-        logger.info("Broker scan for run %s exceeded its budget", task_id)
-        found = None
+        # A backlog too big to read in budget: ids not yet found are unknown,
+        # so Run stays blocked (the message is likely still waiting anyway).
+        logger.info("Broker scan for %d lost runs exceeded its budget", len(pending))
+        unknown = True
     except Exception:
         # Any broker failure means "unknown"; Run stays blocked (it would
         # fail to publish to the same broker anyway).
-        logger.warning("Could not read the broker for run %s", task_id, exc_info=True)
-        found = None
+        logger.warning("Could not read the broker for %d lost runs", len(pending), exc_info=True)
+        unknown = True
     finally:
         if broker is not None:
             broker.close()
-    _broker_checks[task_id] = (now, found)
-    return found
+    for task_id in pending:
+        answer = True if task_id in found else (None if unknown else False)
+        _broker_checks[task_id] = (now, answer)
+        answers[task_id] = answer
+    return answers
 
 
 def _result_summary(result: Any, task_id: str) -> Optional[Dict[str, Any]]:
@@ -513,8 +529,6 @@ class TaskRegistryService:
                     # running at prerun). Its message may still be waiting,
                     # and a second Run would then run the job twice.
                     lost_from = 'queued' if status == 'queued' else 'running'
-                    if lost_from == 'queued':
-                        still_queued = _still_in_broker(last_run.task_id)
                     status = 'lost'
                 task_data['last_run'] = {
                     'id': last_run.id,
@@ -531,6 +545,17 @@ class TaskRegistryService:
                 }
 
             result.append(task_data)
+
+        # One broker pass for every run lost from queued, under one budget,
+        # so several such runs (or a broker outage) cost the request once.
+        lost_queued = [
+            task['last_run'] for task in result
+            if task['last_run'] and task['last_run']['lost_from'] == 'queued'
+        ]
+        if lost_queued:
+            answers = _still_in_broker([run['task_id'] for run in lost_queued])
+            for run in lost_queued:
+                run['still_queued'] = answers.get(run['task_id'], False)
 
         return result
 
