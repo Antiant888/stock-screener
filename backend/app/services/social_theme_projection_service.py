@@ -313,6 +313,20 @@ class SocialThemeProjectionService:
         return sha256(json.dumps(rows, sort_keys=True, default=str).encode()).hexdigest()
 
     @staticmethod
+    def _identity_lost(association, resolution):
+        """A system acceptance whose company identity is gone or has changed (#597).
+
+        The acceptance rested on evidence counted for the old company; an ineligible
+        listing has none, and a new identity must earn its own. An inactive listing
+        (unresolved) already leaves membership and keeps its acceptance. No recorded
+        identity (rows the economic mirror creates) is not a change.
+        """
+        return (association.state == "accepted" and association.decision_owner == "system"
+                and association.origin == "social" and resolution.status == "resolved"
+                and (not resolution.company_count_eligible
+                     or (association.company_key is not None and association.company_key != resolution.company_id)))
+
+    @staticmethod
     def _automatic_accepts(state, owner, resolution, qualifying):
         return (owner == "system" and state == "proposed" and resolution.company_count_eligible
             and len({row[4] for row in qualifying if row[3] == resolution.company_id}) >= 2)
@@ -348,8 +362,16 @@ class SocialThemeProjectionService:
             for key, theme in sorted(themes.items()):
                 members = {(m.market, m.canonical_symbol): m for m in self.effective_live_membership(theme.id)} if theme else {}
                 associations = self.db.scalars(select(SocialThemeAssociation).where(SocialThemeAssociation.theme_cluster_id == theme.id)).all() if theme else []
-                candidates = {(a.market, a.canonical_symbol): (resolver.resolve(a.canonical_symbol, a.market),
-                    "proposed" if a.origin == "legacy" else a.state, a.decision_owner) for a in associations}
+                candidates = {}
+                for a in associations:
+                    r = resolver.resolve(a.canonical_symbol, a.market)
+                    state = "proposed" if a.origin == "legacy" else a.state
+                    pair = (a.market, a.canonical_symbol)
+                    if key in proposed and self._identity_lost(a, r):
+                        # Apply assesses only the themes the run touches: it re-proposes this
+                        # row, then the automatic rule may accept it again under the new identity.
+                        state = "proposed"
+                    candidates[pair] = (r, state, a.decision_owner)
                 for r in proposed.get(key, ()):
                     if r.status == "resolved":
                         candidates.setdefault((r.market, r.symbol), (r, "proposed", "system"))
@@ -751,7 +773,8 @@ class SocialThemeProjectionService:
         from app.services.theme_taxonomy_service import ThemeTaxonomyService
         taxonomy = ThemeTaxonomyService(self.db, pipeline=self.pipeline)
         for theme_id in sorted(touched):
-            self._assess(theme_id, projection, resolver)
+            # A state change on an association with no new evidence must reach the economic mirror too.
+            projected_association_ids |= self._assess(theme_id, projection, resolver)
             # Existing embeddings only: this utility never generates embeddings
             # or commits, and leaves an unembedded new theme unclassified.
             taxonomy.classify_new_l2_to_l1(self.db.get(ThemeCluster, theme_id))
@@ -818,17 +841,31 @@ class SocialThemeProjectionService:
         )
 
     def _assess(self, theme_id, projection, resolver):
+        """Returns the ids of associations whose state the system changed."""
+        changed = set()
         qualifying = self._qualifying(theme_id, projection.prepared_at, resolver)
         associations = self.db.scalars(select(SocialThemeAssociation).where(SocialThemeAssociation.theme_cluster_id == theme_id)).all()
         for association in associations:
             resolution = resolver.resolve(association.canonical_symbol, association.market)
-            if association.company_key != resolution.company_id:
+            identity_lost = self._identity_lost(association, resolution)
+            # An inactive listing resolves to no company; keep the identity it had, or
+            # its return would read as an identity change.
+            if resolution.status == "resolved" and association.company_key != resolution.company_id:
                 association.company_key = resolution.company_id
                 association.version += 1
+            if identity_lost:
+                # The system accepted it on a company identity that is gone or changed (a
+                # second listing appeared, an attestation was removed). Admin decisions
+                # stand; the automatic rule below re-accepts on the new identity's evidence.
+                self._decision(association, "proposed", "company_identity_lost", "system",
+                               projection.prepared_at, projection.run_id)
+                association.accepted_at = None
+                changed.add(association.id)
             company_evidence = [row for row in qualifying if row[3] == resolution.company_id]
             if self._automatic_accepts(association.state, association.decision_owner, resolution, qualifying):
                 self._decision(association, "accepted", "two_independent_authors_14d", "system", projection.prepared_at,
                                projection.run_id, evidence_work_ids=sorted({row[1] for row in company_evidence}))
+                changed.add(association.id)
         companies = {item.company_key for item in self.effective_live_membership(theme_id) if item.company_count_eligible}
         dates = {row[0].date() for row in qualifying if row[3] in companies}
         theme = self.db.get(ThemeCluster, theme_id)
@@ -846,6 +883,7 @@ class SocialThemeProjectionService:
                     metadata=metadata, transitioned_at=projection.prepared_at)
             else:
                 theme.lifecycle_state_metadata = metadata
+        return changed
 
     def _decision(self, association, target, reason, actor, now, run_id=None, *, evidence_work_ids=None):
         self.db.add(SocialThemeDecision(association_id=association.id, run_id=run_id, actor=actor, reason=reason,
@@ -949,6 +987,9 @@ class SocialThemeProjectionService:
         identity = SocialCompanyIdentityService(self.db).read()
         resolver = SocialTickerResolver(self.db, verified_company_ids=identity.verified_company_ids)
         members = {}
+        # Under economic authority these rows mirror economic decisions; the projection's
+        # identity rule governs only the acceptances it makes itself.
+        projection_owned = not economic_authority(self.db)
         for row in self.db.scalars(select(ThemeConstituent).where(ThemeConstituent.theme_cluster_id == theme_cluster_id, ThemeConstituent.is_active.is_(True))):
             r = resolver.resolve(row.symbol)
             if r.status == "resolved":
@@ -956,7 +997,11 @@ class SocialThemeProjectionService:
         for row in self.db.scalars(select(SocialThemeAssociation).where(SocialThemeAssociation.theme_cluster_id == theme_cluster_id,
                                                                        SocialThemeAssociation.state == "accepted", SocialThemeAssociation.origin == "social")):
             r = resolver.resolve(row.canonical_symbol, row.market)
-            if r.status == "resolved":
+            # A system acceptance rests on the company identity it was earned for; once
+            # that is lost or changed the next assessment re-proposes it (#597). Leaving
+            # it out here keeps every read path, prepared and published baskets alike,
+            # equal before that assessment runs.
+            if r.status == "resolved" and not (projection_owned and self._identity_lost(row, r)):
                 members.setdefault((r.market, r.symbol), (r, set()))[1].add("social")
         return tuple(EffectiveThemeMembership(r.symbol, r.market, r.company_id, r.company_count_eligible, tuple(sorted(origins)))
                      for _, (r, origins) in sorted(members.items()))

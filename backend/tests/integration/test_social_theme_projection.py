@@ -1253,3 +1253,204 @@ def test_economic_application_reads_accepted_economic_memberships(social_fixture
     assert [m.canonical_symbol for m in application.read("cooling", "US").membership] == ["AAA"]
     assert {"cooling", canonical_theme_key("Semiconductors")} <= set(f.service.theme_keys(projection))
     assert f.db.query(ThemeCluster).count() == 0
+
+
+def _drop_attestation(f, symbol):
+    from app.services.social_company_identity_service import SocialCompanyIdentityService
+    service = SocialCompanyIdentityService(f.db, admin_authorized=True)
+    current = service.read()
+    f.db.rollback()
+    service.replace([
+        {"symbol": e.symbol, "company_id": e.company_id, "verification_reference": e.verification_reference,
+         "verified_at": e.verified_at} for e in current.entries if e.symbol != symbol
+    ], expected_version=current.registry_version, actor="admin")
+    f.db.commit()
+
+
+def test_system_acceptance_returns_to_proposed_when_derived_identity_is_lost(social_fixture):
+    """A second listing of the same issuer withdraws security:<id>; the stock leaves the basket (#597)."""
+    from app.infra.db.models.social_analysis import SocialThemeDecision
+    f = social_fixture
+    for symbol, name in (("EEE", "Eee Power Inc"), ("FFF", "Fff Grid Corp"), ("GGG", "Ggg Nuclear Ltd")):
+        f.db.add(StockUniverse(symbol=symbol, market="US", name=name, is_active=True))
+    f.db.commit()
+    for age in (3, 2):
+        f.apply(f.prepare([f.save(("EEE", "FFF", "GGG"), age=age)]))
+    eee = next(a for a in f.associations() if a.canonical_symbol == "EEE")
+    assert eee.state == "accepted"
+    f.db.add(StockUniverse(symbol="EEEB", market="US", name="Eee Power Inc.", is_active=True))
+    f.db.commit()
+
+    f.apply(f.prepare([f.save(("FFF",), age=1)]))
+
+    assert (eee.state, eee.decision_owner, eee.accepted_at) == ("proposed", "system", None)
+    decision = f.db.query(SocialThemeDecision).filter_by(association_id=eee.id).order_by(SocialThemeDecision.id.desc()).first()
+    assert (decision.before_state, decision.after_state, decision.reason) == ("accepted", "proposed", "company_identity_lost")
+    members = {m.canonical_symbol for m in f.service.effective_live_membership(eee.theme_cluster_id)}
+    assert members == {"FFF", "GGG"}
+
+
+def test_system_acceptance_returns_to_proposed_when_attestation_is_removed(social_fixture, monkeypatch):
+    f = social_fixture
+    for age in (3, 2):
+        f.apply(f.prepare([f.save(("AAA", "BBB", "CCC"), age=age)]))
+    assert [a.state for a in f.associations()] == ["accepted"] * 3
+    _drop_attestation(f, "AAA")
+    mirrored = []
+    monkeypatch.setattr(f.service, "_project_legacy_association_to_economic", mirrored.append)
+
+    f.apply(f.prepare([f.save(("BBB",), age=1)]))
+
+    assert [(a.canonical_symbol, a.state) for a in f.associations()] == [
+        ("AAA", "proposed"), ("BBB", "accepted"), ("CCC", "accepted")]
+    # AAA had no new evidence this run; its demotion must still reach the economic mirror.
+    assert f.associations()[0].id in mirrored
+
+
+def test_admin_acceptance_survives_lost_identity(social_fixture):
+    f = social_fixture
+    f.apply(f.prepare([f.save(("AAA", "BBB"), age=3)]))
+    aaa = f.associations()[0]
+    if not f.db.in_transaction():
+        f.db.begin()
+    f.service.decide(aaa.id, "accepted", "reviewed evidence", "admin", aaa.version)
+    f.db.commit()
+    _drop_attestation(f, "AAA")
+
+    f.apply(f.prepare([f.save(("AAA", "BBB"), age=1)]))
+
+    assert (aaa.state, aaa.decision_owner) == ("accepted", "admin")
+
+
+def test_prepared_basket_matches_live_basket_after_identity_loss(social_fixture):
+    """Publication compares the prepared basket with the live one after apply; a
+    demotion apply makes but prepare missed would wedge every publish attempt."""
+    from app.services.social_theme_market_service import LiveAcceptedBasketReader
+    f = social_fixture
+    for age in (3, 2):
+        f.apply(f.prepare([f.save(("AAA", "BBB", "CCC"), age=age)]))
+    _drop_attestation(f, "AAA")
+    projection = f.prepare([f.save(("BBB",), age=1)])
+    application = f.service.prepare_application(projection, theme_keys=("cooling",))
+    expected = application.read("cooling", "US")
+
+    f.service.apply_live(projection, projection.registry_version, prepared=application)
+
+    assert LiveAcceptedBasketReader(f.db).read("cooling", "US") == expected
+    assert {m.canonical_symbol for m in expected.membership} == {"BBB", "CCC"}
+
+
+def test_inactive_listing_keeps_its_acceptance_for_when_it_returns(social_fixture):
+    """Only a listing that still resolves is demoted; an inactive one already leaves
+    membership, and keeping its acceptance lets it return on reactivation."""
+    f = social_fixture
+    for age in (3, 2):
+        f.apply(f.prepare([f.save(("AAA", "BBB", "CCC"), age=age)]))
+    f.db.query(StockUniverse).filter_by(symbol="AAA").update({"is_active": False})
+    f.db.commit()
+
+    f.apply(f.prepare([f.save(("BBB",), age=1)]))
+
+    assert f.associations()[0].state == "accepted"
+
+
+def test_system_acceptance_is_reassessed_when_identity_changes_but_stays_eligible(social_fixture):
+    """Two authors pooled under attested company "a" accepted AAA; once AAA derives its own
+    identity it has one author, so it is re-proposed, and baskets still match (#597)."""
+    from app.services.social_theme_market_service import LiveAcceptedBasketReader
+    f = social_fixture
+    f.db.query(StockUniverse).filter_by(symbol="AAA").update({"name": "Aaa Cooling Inc"})
+    f.db.commit()
+    f.apply(f.prepare([f.save(("AAA", "BBB", "CCC"), age=3, author="one"),
+                       f.save(("0005.HK", "BBB", "CCC"), age=2, author="two")]))
+    assert {a.canonical_symbol: a.state for a in f.associations()}["AAA"] == "accepted"
+    _drop_attestation(f, "AAA")
+    projection = f.prepare([f.save(("BBB",), age=1)])
+    application = f.service.prepare_application(projection, theme_keys=("cooling",))
+    expected = application.read("cooling", "US")
+
+    f.service.apply_live(projection, projection.registry_version, prepared=application)
+
+    assert {a.canonical_symbol: a.state for a in f.associations()}["AAA"] == "proposed"
+    assert LiveAcceptedBasketReader(f.db).read("cooling", "US") == expected
+    assert {m.canonical_symbol for m in expected.membership} == {"BBB", "CCC"}
+
+
+def test_changed_identity_with_its_own_evidence_stays_accepted(social_fixture):
+    """Re-assessed under the new identity, two authors of its own keep the acceptance."""
+    from app.services.social_theme_market_service import LiveAcceptedBasketReader
+    f = social_fixture
+    f.db.query(StockUniverse).filter_by(symbol="AAA").update({"name": "Aaa Cooling Inc"})
+    f.db.commit()
+    for age, author in ((3, "one"), (2, "two")):
+        f.apply(f.prepare([f.save(("AAA", "BBB", "CCC"), age=age, author=author)]))
+    _drop_attestation(f, "AAA")
+    projection = f.prepare([f.save(("BBB",), age=1)])
+    application = f.service.prepare_application(projection, theme_keys=("cooling",))
+    expected = application.read("cooling", "US")
+
+    f.service.apply_live(projection, projection.registry_version, prepared=application)
+
+    aaa = f.associations()[0]
+    assert (aaa.canonical_symbol, aaa.state, aaa.company_key) == ("AAA", "accepted", f"security:{f.db.query(StockUniverse).filter_by(symbol='AAA').one().id}")
+    assert LiveAcceptedBasketReader(f.db).read("cooling", "US") == expected
+    assert "AAA" in {m.canonical_symbol for m in expected.membership}
+
+
+def test_changed_identity_leaves_untouched_theme_membership_until_reassessed(social_fixture):
+    """Read paths must not present evidence accepted for one company as acceptance of another."""
+    f = social_fixture
+    f.db.query(StockUniverse).filter_by(symbol="AAA").update({"name": "Aaa Cooling Inc"})
+    f.db.commit()
+    for age in (3, 2):
+        f.apply(f.prepare([f.save(("AAA", "BBB", "CCC"), age=age)]))
+    theme_id = f.associations()[0].theme_cluster_id
+    _drop_attestation(f, "AAA")
+
+    # No run has touched the theme since: AAA is still stored as accepted for company "a".
+    assert f.associations()[0].state == "accepted"
+    assert {m.canonical_symbol for m in f.service.effective_live_membership(theme_id)} == {"BBB", "CCC"}
+
+
+def test_inactive_listing_keeps_its_identity_for_when_it_returns(social_fixture):
+    """Assessing while a listing is inactive must not erase the identity its acceptance rests on."""
+    f = social_fixture
+    for age in (3, 2):
+        f.apply(f.prepare([f.save(("AAA", "BBB", "CCC"), age=age)]))
+    f.db.query(StockUniverse).filter_by(symbol="AAA").update({"is_active": False})
+    f.db.commit()
+    f.apply(f.prepare([f.save(("BBB",), age=1)]))
+    assert f.associations()[0].company_key == "a"
+    f.db.query(StockUniverse).filter_by(symbol="AAA").update({"is_active": True})
+    f.db.commit()
+
+    f.apply(f.prepare([f.save(("BBB",), age=1)]))
+
+    assert (f.associations()[0].state, f.associations()[0].company_key) == ("accepted", "a")
+
+
+def test_economic_authority_membership_shows_mirrored_acceptances_as_they_are(social_fixture, monkeypatch):
+    """Under economic authority the legacy rows mirror economic decisions, so the
+    projection's identity rule must not hide them (the theme detail reads them)."""
+    from app.services import social_theme_projection_service as module
+    f = social_fixture
+    for age in (3, 2):
+        f.apply(f.prepare([f.save(("AAA", "BBB", "CCC"), age=age)]))
+    theme_id = f.associations()[0].theme_cluster_id
+    _drop_attestation(f, "AAA")
+    monkeypatch.setattr(module, "economic_authority", lambda db: True)
+
+    assert "AAA" in {m.canonical_symbol for m in f.service.effective_live_membership(theme_id)}
+
+
+def test_mirrored_acceptance_without_a_recorded_identity_is_not_an_identity_change(social_fixture):
+    """The economic mirror creates accepted rows with no company_key; that is not a change."""
+    from app.infra.db.models.social_analysis import SocialThemeAssociation
+    f = social_fixture
+    for age in (3, 2):
+        f.apply(f.prepare([f.save(("AAA", "BBB", "CCC"), age=age)]))
+    aaa = f.associations()[0]
+    f.db.query(SocialThemeAssociation).filter_by(id=aaa.id).update({"company_key": None})
+    f.db.commit()
+
+    assert "AAA" in {m.canonical_symbol for m in f.service.effective_live_membership(aaa.theme_cluster_id)}

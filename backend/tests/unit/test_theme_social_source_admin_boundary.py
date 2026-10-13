@@ -157,7 +157,8 @@ async def test_live_theme_detail_unions_legacy_and_accepted_social_membership(
     db_session.add_all([
         theme,
         StockUniverse(symbol="AAA", market="US", exchange="NASDAQ", is_active=True),
-        StockUniverse(symbol="BBB", market="US", exchange="NASDAQ", is_active=True),
+        # A system acceptance rests on a company identity; a named single listing derives one.
+        StockUniverse(symbol="BBB", market="US", exchange="NASDAQ", name="Bbb Systems Inc", is_active=True),
     ])
     db_session.flush()
     db_session.add(ThemeConstituent(
@@ -165,8 +166,9 @@ async def test_live_theme_detail_unions_legacy_and_accepted_social_membership(
         confidence=0.8, mention_count=2, is_active=True,
     ))
     now = datetime(2026, 9, 7, tzinfo=timezone.utc)
+    bbb_id = db_session.query(StockUniverse).filter_by(symbol="BBB").one().id
     db_session.add(SocialThemeAssociation(
-        theme_cluster_id=theme.id, company_key="US:BBB", market="US",
+        theme_cluster_id=theme.id, company_key=f"security:{bbb_id}", market="US",
         canonical_symbol="BBB", state="accepted", origin="social",
         decision_owner="system", evidence_work_ids=[], policy_version="policy-v1",
         version=1, first_seen_at=now, accepted_at=now, updated_at=now,
