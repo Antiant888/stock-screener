@@ -842,9 +842,27 @@ def test_every_weekly_beat_entry_has_a_matching_registry_entry():
         assert registry["task_function"] == beat_entry["task"]
         assert registry["manual_dispatch_kwargs"] == beat_entry["kwargs"]
         assert registry["manual_dispatch_options"]["queue"] == beat_entry["options"]["queue"]
-    # No shared entry left to collect every market's runs.
-    assert "weekly-full-refresh" not in SCHEDULED_TASKS
+    # No shared fundamentals entry left to collect every market's runs.
     assert "weekly-fundamental-refresh" not in SCHEDULED_TASKS
+
+
+def test_unscoped_full_refresh_keeps_its_own_entry_without_collecting_market_runs(db_session):
+    # Only weekly_full_refresh(market=None) cleans orphaned cache keys and old
+    # telemetry, and Beat never runs it unscoped, so its manual entry stays.
+    # Market runs must still land on their own entries, not this one.
+    from app.services.task_registry_service import SCHEDULED_TASKS
+
+    function = "app.tasks.cache_tasks.weekly_full_refresh"
+    assert not SCHEDULED_TASKS["weekly-full-refresh"].get("manual_dispatch_kwargs")
+
+    unscoped, us = str(uuid4()), str(uuid4())
+    _start(function, unscoped, {})
+    _finish(function, unscoped, {}, state="SUCCESS", retval={"status": "ok"})
+    _start(function, us, {"market": "US"})
+    _finish(function, us, {"market": "US"}, state="FAILURE", retval=RuntimeError("provider down"))
+
+    assert _last_run(db_session, "weekly-full-refresh")["task_id"] == unscoped
+    assert _last_run(db_session, "weekly-full-refresh-us")["status"] == "failed"
 
 
 def test_weekly_schedule_text_matches_the_beat_settings():
