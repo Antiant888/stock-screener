@@ -1253,3 +1253,70 @@ def test_economic_application_reads_accepted_economic_memberships(social_fixture
     assert [m.canonical_symbol for m in application.read("cooling", "US").membership] == ["AAA"]
     assert {"cooling", canonical_theme_key("Semiconductors")} <= set(f.service.theme_keys(projection))
     assert f.db.query(ThemeCluster).count() == 0
+
+
+def _drop_attestation(f, symbol):
+    from app.services.social_company_identity_service import SocialCompanyIdentityService
+    service = SocialCompanyIdentityService(f.db, admin_authorized=True)
+    current = service.read()
+    f.db.rollback()
+    service.replace([
+        {"symbol": e.symbol, "company_id": e.company_id, "verification_reference": e.verification_reference,
+         "verified_at": e.verified_at} for e in current.entries if e.symbol != symbol
+    ], expected_version=current.registry_version, actor="admin")
+    f.db.commit()
+
+
+def test_system_acceptance_returns_to_proposed_when_derived_identity_is_lost(social_fixture):
+    """A second listing of the same issuer withdraws security:<id>; the stock leaves the basket (#597)."""
+    from app.infra.db.models.social_analysis import SocialThemeDecision
+    f = social_fixture
+    for symbol, name in (("EEE", "Eee Power Inc"), ("FFF", "Fff Grid Corp"), ("GGG", "Ggg Nuclear Ltd")):
+        f.db.add(StockUniverse(symbol=symbol, market="US", name=name, is_active=True))
+    f.db.commit()
+    for age in (3, 2):
+        f.apply(f.prepare([f.save(("EEE", "FFF", "GGG"), age=age)]))
+    eee = next(a for a in f.associations() if a.canonical_symbol == "EEE")
+    assert eee.state == "accepted"
+    f.db.add(StockUniverse(symbol="EEEB", market="US", name="Eee Power Inc.", is_active=True))
+    f.db.commit()
+
+    f.apply(f.prepare([f.save(("FFF",), age=1)]))
+
+    assert (eee.state, eee.decision_owner, eee.accepted_at) == ("proposed", "system", None)
+    decision = f.db.query(SocialThemeDecision).filter_by(association_id=eee.id).order_by(SocialThemeDecision.id.desc()).first()
+    assert (decision.before_state, decision.after_state, decision.reason) == ("accepted", "proposed", "company_identity_lost")
+    members = {m.canonical_symbol for m in f.service.effective_live_membership(eee.theme_cluster_id)}
+    assert members == {"FFF", "GGG"}
+
+
+def test_system_acceptance_returns_to_proposed_when_attestation_is_removed(social_fixture, monkeypatch):
+    f = social_fixture
+    for age in (3, 2):
+        f.apply(f.prepare([f.save(("AAA", "BBB", "CCC"), age=age)]))
+    assert [a.state for a in f.associations()] == ["accepted"] * 3
+    _drop_attestation(f, "AAA")
+    mirrored = []
+    monkeypatch.setattr(f.service, "_project_legacy_association_to_economic", mirrored.append)
+
+    f.apply(f.prepare([f.save(("BBB",), age=1)]))
+
+    assert [(a.canonical_symbol, a.state) for a in f.associations()] == [
+        ("AAA", "proposed"), ("BBB", "accepted"), ("CCC", "accepted")]
+    # AAA had no new evidence this run; its demotion must still reach the economic mirror.
+    assert f.associations()[0].id in mirrored
+
+
+def test_admin_acceptance_survives_lost_identity(social_fixture):
+    f = social_fixture
+    f.apply(f.prepare([f.save(("AAA", "BBB"), age=3)]))
+    aaa = f.associations()[0]
+    if not f.db.in_transaction():
+        f.db.begin()
+    f.service.decide(aaa.id, "accepted", "reviewed evidence", "admin", aaa.version)
+    f.db.commit()
+    _drop_attestation(f, "AAA")
+
+    f.apply(f.prepare([f.save(("AAA", "BBB"), age=1)]))
+
+    assert (aaa.state, aaa.decision_owner) == ("accepted", "admin")

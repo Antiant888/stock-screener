@@ -751,7 +751,8 @@ class SocialThemeProjectionService:
         from app.services.theme_taxonomy_service import ThemeTaxonomyService
         taxonomy = ThemeTaxonomyService(self.db, pipeline=self.pipeline)
         for theme_id in sorted(touched):
-            self._assess(theme_id, projection, resolver)
+            # A state change on an association with no new evidence must reach the economic mirror too.
+            projected_association_ids |= self._assess(theme_id, projection, resolver)
             # Existing embeddings only: this utility never generates embeddings
             # or commits, and leaves an unembedded new theme unclassified.
             taxonomy.classify_new_l2_to_l1(self.db.get(ThemeCluster, theme_id))
@@ -818,6 +819,8 @@ class SocialThemeProjectionService:
         )
 
     def _assess(self, theme_id, projection, resolver):
+        """Returns the ids of associations whose state the system changed."""
+        changed = set()
         qualifying = self._qualifying(theme_id, projection.prepared_at, resolver)
         associations = self.db.scalars(select(SocialThemeAssociation).where(SocialThemeAssociation.theme_cluster_id == theme_id)).all()
         for association in associations:
@@ -825,10 +828,19 @@ class SocialThemeProjectionService:
             if association.company_key != resolution.company_id:
                 association.company_key = resolution.company_id
                 association.version += 1
+            if (association.state == "accepted" and association.decision_owner == "system"
+                    and association.origin == "social" and not resolution.company_count_eligible):
+                # The system accepted it on a company identity that is gone (a second
+                # listing appeared, or an attestation was removed). Admin decisions stand.
+                self._decision(association, "proposed", "company_identity_lost", "system",
+                               projection.prepared_at, projection.run_id)
+                association.accepted_at = None
+                changed.add(association.id)
             company_evidence = [row for row in qualifying if row[3] == resolution.company_id]
             if self._automatic_accepts(association.state, association.decision_owner, resolution, qualifying):
                 self._decision(association, "accepted", "two_independent_authors_14d", "system", projection.prepared_at,
                                projection.run_id, evidence_work_ids=sorted({row[1] for row in company_evidence}))
+                changed.add(association.id)
         companies = {item.company_key for item in self.effective_live_membership(theme_id) if item.company_count_eligible}
         dates = {row[0].date() for row in qualifying if row[3] in companies}
         theme = self.db.get(ThemeCluster, theme_id)
@@ -846,6 +858,7 @@ class SocialThemeProjectionService:
                     metadata=metadata, transitioned_at=projection.prepared_at)
             else:
                 theme.lifecycle_state_metadata = metadata
+        return changed
 
     def _decision(self, association, target, reason, actor, now, run_id=None, *, evidence_work_ids=None):
         self.db.add(SocialThemeDecision(association_id=association.id, run_id=run_id, actor=actor, reason=reason,
