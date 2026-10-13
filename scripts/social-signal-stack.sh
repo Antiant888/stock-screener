@@ -3,7 +3,6 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BASE_COMPOSE="$ROOT_DIR/docker-compose.yml"
-SOCIAL_COMPOSE="$ROOT_DIR/docker-compose.social.yml"
 XUI_COMPOSE="$ROOT_DIR/docker-compose.social-xui.yml"
 STACK_WRAPPER="$ROOT_DIR/scripts/docker-compose-enabled-markets.sh"
 
@@ -57,7 +56,6 @@ setting() {
 compose_social() {
   docker compose --env-file "$ENV_FILE" \
     -f "$BASE_COMPOSE" \
-    -f "$SOCIAL_COMPOSE" \
     -f "$XUI_COMPOSE" \
     --profile social "$@"
 }

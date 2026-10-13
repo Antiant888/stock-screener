@@ -76,7 +76,7 @@ def test_local_up_builds_then_starts_normal_stack_then_private_worker(tmp_path):
     assert commands[1].startswith("compose --env-file ")
     assert commands[1].endswith("up -d")
     assert "docker-compose.social" not in commands[1]
-    assert "-f " + str(ROOT / "docker-compose.social.yml") in commands[2]
+    assert "docker-compose.social.yml" not in commands[2]
     assert "-f " + str(ROOT / "docker-compose.social-xui.yml") in commands[2]
     assert commands[2].endswith("--profile social up -d --no-build celery-social")
 
