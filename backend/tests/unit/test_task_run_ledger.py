@@ -544,6 +544,23 @@ def _in_queue(broker, task_id):
     broker.queues.setdefault("celery", []).append(_message(task_id))
 
 
+def test_uncached_broker_search_neither_reads_nor_writes_the_cache():
+    # The pipeline-chain heartbeat (#605): a cached "not found" from before a
+    # stage was published would read a live chain as missing.
+    from app.services import task_registry_service as registry
+
+    task_id = str(uuid4())
+    registry._broker_checks[task_id] = (datetime.now(timezone.utc).timestamp(), False)
+    broker = _Broker()
+    _in_queue(broker, task_id)
+    try:
+        with patch("redis.from_url", return_value=broker):
+            assert registry.still_in_broker([task_id], cache=False) == {task_id: True}
+        assert registry._broker_checks[task_id][1] is False
+    finally:
+        registry._broker_checks.pop(task_id, None)
+
+
 def test_lost_run_that_never_started_and_is_still_queued_reports_it(db_session):
     run, read_broker = _lost_run_with_broker(db_session, _Broker(), message_for=_in_queue)
 

@@ -269,7 +269,9 @@ def _message_task_id(raw: bytes) -> Optional[str]:
     return (payload.get('headers') or {}).get('id')
 
 
-def _still_in_broker(task_ids: List[Optional[str]]) -> Dict[str, Optional[bool]]:
+def still_in_broker(
+    task_ids: List[Optional[str]], *, cache: bool = True
+) -> Dict[str, Optional[bool]]:
     """For each never-started run, whether its message is still in the broker:
     in a queue list, or prefetched by a worker that stopped (kombu's
     ``unacked`` hash; a live worker restores it to its queue). None if the
@@ -279,6 +281,7 @@ def _still_in_broker(task_ids: List[Optional[str]]) -> Dict[str, Optional[bool]]
     briefly: the Schedules list is polled, and a lost run can stay a job's
     last run until its next scheduled run. A missing id maps to False: it can
     never be found or cancelled, so blocking Run would be permanent.
+    ``cache=False`` reads the broker fresh and does not cache the answers.
     """
     now = datetime.now(timezone.utc).timestamp()
     answers: Dict[str, Optional[bool]] = {}
@@ -286,7 +289,7 @@ def _still_in_broker(task_ids: List[Optional[str]]) -> Dict[str, Optional[bool]]
     for task_id in task_ids:
         if not task_id:
             continue
-        cached = _broker_checks.get(task_id)
+        cached = _broker_checks.get(task_id) if cache else None
         if cached and now - cached[0] < _BROKER_CHECK_TTL_SECONDS:
             answers[task_id] = cached[1]
         else:
@@ -336,7 +339,8 @@ def _still_in_broker(task_ids: List[Optional[str]]) -> Dict[str, Optional[bool]]
             broker.close()
     for task_id in pending:
         answer = True if task_id in found else (None if unknown else False)
-        _broker_checks[task_id] = (now, answer)
+        if cache:
+            _broker_checks[task_id] = (now, answer)
         answers[task_id] = answer
     return answers
 
@@ -618,7 +622,7 @@ class TaskRegistryService:
             if task['last_run'] and task['last_run']['lost_from'] == 'queued'
         ]
         if lost_queued:
-            answers = _still_in_broker([run['task_id'] for run in lost_queued])
+            answers = still_in_broker([run['task_id'] for run in lost_queued])
             absent = [run['task_id'] for run in lost_queued if answers.get(run['task_id'], False) is False]
             # A worker that took the message after the history read has acked
             # it (so it is gone) and flipped the row to running: not safe to
