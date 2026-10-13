@@ -20,12 +20,12 @@ The indexes cover the promoted fields 0064 indexed, plus industry group and
 sector for the peer lookups. Each is partial on its column being NOT NULL: no
 existing row qualifies, so each build scans the heap but writes no entries, and
 PostgreSQL proves the predicate from the strict range, IN and equality filters
-the repository emits. 0064's indexes on the copy for those same fields are
-dropped (see ``_SUPERSEDED_INDEXES``).
+the repository emits. 0064's indexes on the copy for those same fields stay:
+runs written between 0064 and this revision still filter on the copy.
 
 Locking: as in 0064, ADD COLUMN's ACCESS EXCLUSIVE lock is held through the
-index builds and drops, blocking the table for one heap scan per index; the
-backend migrates before it serves.
+index builds, blocking the table for one heap scan per index; the backend
+migrates before it serves.
 """
 
 from __future__ import annotations
@@ -70,18 +70,6 @@ _INDEXED_COLUMNS = (
 )
 _INDEXES = {f"ix_sfd_hot_{column}": column for column in _INDEXED_COLUMNS}
 
-# 0064's indexes on the copy for the same fields. Every new row still has the
-# copy, so they would take an entry per row and serve no new run; only runs
-# written between 0064 and this revision used them, and those now scan.
-_SUPERSEDED_INDEXES = {
-    **{
-        f"ix_sfd_td_{column}": f"CAST(table_details_json ->> '{column}' AS FLOAT)"
-        for column in _INDEXED_COLUMNS
-        if column in _NUMERIC_COLUMNS
-    },
-    "ix_sfd_td_ibd_industry_group": "(table_details_json ->> 'ibd_industry_group')",
-}
-
 
 def _create_indexes() -> None:
     for name, column in _INDEXES.items():
@@ -97,21 +85,6 @@ def _drop_indexes() -> None:
         op.execute(f"DROP INDEX IF EXISTS {name}")
 
 
-def _drop_superseded_indexes() -> None:
-    for name in _SUPERSEDED_INDEXES:
-        op.execute(f"DROP INDEX IF EXISTS {name}")
-
-
-def _restore_superseded_indexes() -> None:
-    # As 0064 built them; rows written since then are indexed again.
-    for name, expression in _SUPERSEDED_INDEXES.items():
-        op.execute(
-            f"CREATE INDEX IF NOT EXISTS {name} "
-            f"ON stock_feature_daily (run_id, ({expression})) "
-            f"WHERE table_details_json IS NOT NULL"
-        )
-
-
 def upgrade() -> None:
     op.add_column(
         "stock_feature_daily", sa.Column("hot_fields_stored", sa.Boolean(), nullable=True)
@@ -122,12 +95,10 @@ def upgrade() -> None:
         op.add_column("stock_feature_daily", sa.Column(column, sa.Text(), nullable=True))
     if op.get_bind().dialect.name == "postgresql":
         _create_indexes()
-        _drop_superseded_indexes()
 
 
 def downgrade() -> None:
     if op.get_bind().dialect.name == "postgresql":
         _drop_indexes()
-        _restore_superseded_indexes()
     for column in (*_TEXT_COLUMNS, *_NUMERIC_COLUMNS, "hot_fields_stored"):
         op.drop_column("stock_feature_daily", column)

@@ -14,6 +14,7 @@ from __future__ import annotations
 import importlib.util
 from datetime import date
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import create_engine, event, null, select, update
@@ -513,17 +514,14 @@ def test_migration_adds_exactly_the_model_hot_columns():
     assert migration._TEXT_COLUMNS == HOT_TEXT_FIELDS
     assert set(migration._INDEXED_COLUMNS) <= {*HOT_NUMERIC_FIELDS, *HOT_TEXT_FIELDS}
 
-    # It drops exactly 0064's indexes on promoted fields, as 0064 defined them.
-    table_details = importlib.util.module_from_spec(
-        spec := importlib.util.spec_from_file_location(
-            "_table_details_migration",
-            path.with_name("20261011_0064_feature_table_details.py"),
-        )
+    # 0064's indexes on the copy must survive: runs written between 0064 and
+    # 0066 still filter on it, and rebuilding them on downgrade could fail on
+    # a value the cast rejects.
+    executed: list[str] = []
+    migration.op = SimpleNamespace(
+        add_column=lambda *_args: None,
+        execute=executed.append,
+        get_bind=lambda: SimpleNamespace(dialect=SimpleNamespace(name="postgresql")),
     )
-    spec.loader.exec_module(table_details)
-    promoted = {
-        name: expression
-        for name, expression in table_details._INDEXES.items()
-        if name.removeprefix("ix_sfd_td_") in (*HOT_NUMERIC_FIELDS, *HOT_TEXT_FIELDS)
-    }
-    assert migration._SUPERSEDED_INDEXES == promoted
+    migration.upgrade()
+    assert executed and not [sql for sql in executed if "DROP INDEX" in sql], executed
