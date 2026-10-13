@@ -622,27 +622,16 @@ class EconomicSocialTaxonomyAdapter:
                 if current_state == "conflict_review_required":
                     continue
                 resolution = self._resolve(security_id)
-                if current_state == "accepted" and self.identity_lost(current, resolution):
-                    # The acceptance counted evidence for a company identity that is
-                    # gone or changed (#611). The automatic rule below may accept it
-                    # again, on the new identity's own evidence.
-                    revisions.append(
-                        self._revise(
-                            association.id,
-                            state="proposed",
-                            idempotency_key=(
-                                f"company-identity-lost:{association.id}:"
-                                f"r{current.revision_number}"
-                            ),
-                            actor=SYSTEM_REFRESH_ACTOR,
-                            reason="company_identity_lost",
-                            mirror_acknowledged=True,
-                            admission_state="live",
-                            evidence_packet_id=social_packet.id,
-                            authority_epoch=authority_epoch,
-                        )
+                if current_state == "accepted":
+                    # The automatic rule below may accept it again, on the new
+                    # identity's own evidence.
+                    reopened = self._reopen_lost_identity(
+                        association.id, current, resolution, social_packet.id, authority_epoch
                     )
-                    current_state = "proposed"
+                    if reopened is not None:
+                        revisions.append(reopened)
+                        current_state = "proposed"
+                by_rule = False
                 if requested_state == "proposed" and current_state in {
                     None, "proposed", "accepted", "rejected"
                 }:
@@ -654,7 +643,7 @@ class EconomicSocialTaxonomyAdapter:
                     )
                     if accepted:
                         if current_state in {None, "proposed"}:
-                            requested_state = "accepted"
+                            requested_state, by_rule = "accepted", True
                         siblings.extend(row for row in accepted if row.id != association.id)
                 if current_state in {"accepted", "rejected"} and requested_state == "proposed":
                     continue
@@ -677,13 +666,24 @@ class EconomicSocialTaxonomyAdapter:
                         admission_state="live",
                         evidence_packet_id=social_packet.id,
                         authority_epoch=authority_epoch,
-                        source_payload=self._acceptance_payload(requested_state, resolution),
+                        source_payload=self._acceptance_payload(resolution) if by_rule else {},
                     )
                 )
         # The rule is per company: its other listings on the theme follow.
         revised = {revision.association_id for revision in revisions}
         for sibling in siblings:
-            if sibling.id in revised or self._requested_state(sibling.id) not in {None, "proposed"}:
+            if sibling.id in revised:
+                continue
+            resolution = self._resolve(sibling.security_id)
+            if self._requested_state(sibling.id) == "accepted":
+                reopened = self._reopen_lost_identity(
+                    sibling.id, self._latest_revision(sibling.id), resolution,
+                    social_packet.id, authority_epoch,
+                )
+                if reopened is None:
+                    continue
+                revisions.append(reopened)
+            elif self._requested_state(sibling.id) not in {None, "proposed"}:
                 continue
             revised.add(sibling.id)
             revisions.append(
@@ -697,9 +697,7 @@ class EconomicSocialTaxonomyAdapter:
                     admission_state="live",
                     evidence_packet_id=social_packet.id,
                     authority_epoch=authority_epoch,
-                    source_payload=self._acceptance_payload(
-                        "accepted", self._resolve(sibling.security_id)
-                    ),
+                    source_payload=self._acceptance_payload(resolution),
                 )
             )
         return tuple(revisions)
@@ -717,27 +715,52 @@ class EconomicSocialTaxonomyAdapter:
         return self._resolver.resolve(security.symbol, security.market)
 
     @staticmethod
-    def _acceptance_payload(state, resolution):
-        # Recorded so a later identity change can be told apart (#611).
-        return {"company_id": resolution.company_id} if state == "accepted" else {}
+    def _acceptance_payload(resolution):
+        # Marks the automatic rule's own acceptance and the identity it counted, so a
+        # later loss or change can be told apart (#611). Acceptances carried from a
+        # legacy decision (an ETF, an administrator's) carry no marker.
+        return {"rule": "automatic", "company_id": resolution.company_id}
+
+    def _latest_revision(self, association_id):
+        return self.db.scalar(
+            select(EconomicSocialAssociationRevision)
+            .where(EconomicSocialAssociationRevision.association_id == association_id)
+            .order_by(EconomicSocialAssociationRevision.revision_number.desc())
+            .limit(1)
+        )
+
+    def _reopen_lost_identity(self, association_id, current, resolution, packet_id, authority_epoch):
+        """Re-propose an automatic acceptance whose company identity is gone or changed."""
+        if not self.identity_lost(current, resolution):
+            return None
+        return self._revise(
+            association_id,
+            state="proposed",
+            idempotency_key=f"company-identity-lost:{association_id}:r{current.revision_number}",
+            actor=SYSTEM_REFRESH_ACTOR,
+            reason="company_identity_lost",
+            mirror_acknowledged=True,
+            admission_state="live",
+            evidence_packet_id=packet_id,
+            authority_epoch=authority_epoch,
+        )
 
     def identity_lost(self, revision, resolution) -> bool:
         """The processor's acceptance whose company identity is gone or changed (#611).
 
-        Only the automatic rule's own acceptances: administrator and legacy
-        reconciliation decisions stand. An inactive listing (unresolved) keeps
-        its acceptance; acceptances made before identities were recorded are
-        judged on eligibility alone.
+        Only acceptances the automatic rule made and marked: administrator,
+        legacy-carried (an ETF the legacy basket accepted) and reconciliation
+        decisions stand, as do acceptances made before the marker existed. An
+        inactive listing (unresolved) keeps its acceptance.
         """
         if revision is None or revision.state not in {"accepted", "pending_legacy_mirror"}:
             return False
         decision = self.db.get(EconomicSocialDecisionRevision, revision.decision_revision_id)
-        if decision is None or decision.actor != SYSTEM_REFRESH_ACTOR or resolution.status != "resolved":
+        payload = (decision.source_payload or {}) if decision is not None else {}
+        if payload.get("rule") != "automatic" or resolution.status != "resolved":
             return False
-        recorded = (decision.source_payload or {}).get("company_id")
-        return not resolution.company_count_eligible or (
-            recorded is not None and recorded != resolution.company_id
-        )
+        return (not resolution.company_count_eligible
+                or payload.get("company_id") != resolution.company_id)
 
     def _requested_state(self, association_id):
         current = self.db.scalar(
@@ -964,6 +987,12 @@ class EconomicSocialTaxonomyAdapter:
             raise KeyError(
                 f"economic social revision {association_revision_id} not found"
             )
+        latest = self._latest_revision(revision.association_id)
+        if latest is not None and latest.revision_number != revision.revision_number:
+            # A later revision superseded this one (a company_identity_lost re-proposal,
+            # or an acceptance after a retraction); delivering it late or twice must
+            # not undo that decision. The latest revision carries its own delivery.
+            return revision
         if revision.state != "pending_legacy_mirror":
             if revision.mirror_state == "pending":
                 return self._apply_legacy_retraction(
