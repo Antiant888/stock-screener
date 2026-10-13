@@ -141,7 +141,7 @@ function PreflightNote({ task }) {
       {task.run_blocker.reason === PIPELINE_ACTIVE && (
         <>
           {' '}
-          <Link href="#pipeline-chain-claims">See its claim in Lease status</Link>.
+          <Link href="#lease-status">See its claim in Lease status</Link>.
         </>
       )}
     </Typography>
@@ -307,6 +307,7 @@ function JobCards({ tasks, pendingNames, onRun }) {
             <LastRun run={task.last_run} />
           </Box>
           <StatusNote task={task} />
+          <PreflightNote task={task} />
           <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.5 }}>
             {task.schedule_description}
           </Typography>

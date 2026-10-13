@@ -253,7 +253,7 @@ describe('SchedulesSection', () => {
       expect(within(row).getByText(new RegExp(`Pipeline in progress since ${new Date(since).toLocaleString()}`)))
         .toBeInTheDocument();
       expect(within(row).getByRole('link', { name: 'See its claim in Lease status' }))
-        .toHaveAttribute('href', '#pipeline-chain-claims');
+        .toHaveAttribute('href', '#lease-status');
     });
 
     it('says why on a non-trading day, even before the job has ever run', async () => {
@@ -421,6 +421,20 @@ describe('SchedulesSection', () => {
       expect(within(card).queryByText('Weekly Full Refresh description')).not.toBeInTheDocument();
       expect(within(card).getByRole('button', { name: 'Run Weekly Full Refresh now' })).toBeEnabled();
       expect(screen.getByRole('button', { name: 'Run Weekly Scan Cleanup now' })).toBeDisabled();
+    });
+
+    it('shows the pre-flight reason and claim link on the card, not only in a tooltip', async () => {
+      getScheduledTasks.mockResolvedValue(payload([{
+        ...task('daily-market-pipeline-us', 'Daily Market Pipeline (US)', lastRun('dispatched')),
+        run_blocker: { reason: 'market_pipeline_already_active', active_since: '2026-10-13T20:30:00+00:00' },
+      }]));
+
+      renderSection();
+
+      const list = await screen.findByRole('list', { name: 'Scheduled jobs' });
+      const card = within(list).getByText('Daily Market Pipeline (US)').closest('li');
+      expect(within(card).getByText(/Pipeline in progress since/)).toBeInTheDocument();
+      expect(within(card).getByRole('link', { name: 'See its claim in Lease status' })).toBeInTheDocument();
     });
   });
 });

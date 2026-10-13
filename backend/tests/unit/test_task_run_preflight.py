@@ -39,6 +39,7 @@ class _Claims:
 
 
 def _blocker(monkeypatch, *, calendar=None, claims=None):
+    monkeypatch.setattr(pipeline, "_preflight_calendar_cache", [])
     monkeypatch.setattr(pipeline, "MarketCalendarService", lambda: calendar or _Calendar())
     monkeypatch.setattr(pipeline, "_pipeline_chain_claims", lambda: claims or _Claims())
     return pipeline.pipeline_run_blocker("us")
@@ -73,6 +74,20 @@ def test_unreadable_checks_never_block(monkeypatch):
         calendar=_Calendar(error=RuntimeError("calendar down")),
         claims=_Claims(error=ConnectionError("redis down")),
     ) is None
+
+
+def test_the_polled_list_reuses_one_calendar_across_markets(monkeypatch):
+    # Each MarketCalendarService() re-reads every market's coverage manifests;
+    # the list asks once per market on every 5-30s poll.
+    built = []
+    monkeypatch.setattr(pipeline, "_preflight_calendar_cache", [])
+    monkeypatch.setattr(pipeline, "MarketCalendarService", lambda: built.append(1) or _Calendar())
+    monkeypatch.setattr(pipeline, "_pipeline_chain_claims", lambda: _Claims())
+
+    for market in ("US", "HK", "JP"):
+        pipeline.pipeline_run_blocker(market)
+
+    assert len(built) == 1
 
 
 def test_registry_entries_without_a_pre_flight_are_never_blocked():

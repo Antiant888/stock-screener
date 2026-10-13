@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from datetime import date, datetime
 from typing import Any
 from uuid import uuid4
@@ -409,6 +410,20 @@ def _pipeline_chain_holder(claims: Any, market: str) -> dict | None:
         return {}
 
 
+_PREFLIGHT_CALENDAR_TTL_SECONDS = 300
+_preflight_calendar_cache: list = []  # [(built_at_monotonic, calendar)]
+
+
+def _preflight_calendar():
+    """A shared calendar for pre-flight checks: the Scheduled jobs list polls
+    every 5-30s and asks once per market, and each MarketCalendarService()
+    re-reads every market's coverage manifests."""
+    now = time.monotonic()
+    if not _preflight_calendar_cache or now - _preflight_calendar_cache[0][0] > _PREFLIGHT_CALENDAR_TTL_SECONDS:
+        _preflight_calendar_cache[:] = [(now, MarketCalendarService())]
+    return _preflight_calendar_cache[0][1]
+
+
 def pipeline_run_blocker(market: str) -> dict | None:
     """Why a manual Run would only skip right now, else None.
 
@@ -418,7 +433,7 @@ def pipeline_run_blocker(market: str) -> dict | None:
     """
     market_code = _normalize_pipeline_market(market)
     try:
-        calendar = MarketCalendarService()
+        calendar = _preflight_calendar()
         today = calendar.market_now(market_code).date()
         if not calendar.is_trading_day(market_code, today):
             return {
