@@ -1320,3 +1320,35 @@ def test_admin_acceptance_survives_lost_identity(social_fixture):
     f.apply(f.prepare([f.save(("AAA", "BBB"), age=1)]))
 
     assert (aaa.state, aaa.decision_owner) == ("accepted", "admin")
+
+
+def test_prepared_basket_matches_live_basket_after_identity_loss(social_fixture):
+    """Publication compares the prepared basket with the live one after apply; a
+    demotion apply makes but prepare missed would wedge every publish attempt."""
+    from app.services.social_theme_market_service import LiveAcceptedBasketReader
+    f = social_fixture
+    for age in (3, 2):
+        f.apply(f.prepare([f.save(("AAA", "BBB", "CCC"), age=age)]))
+    _drop_attestation(f, "AAA")
+    projection = f.prepare([f.save(("BBB",), age=1)])
+    application = f.service.prepare_application(projection, theme_keys=("cooling",))
+    expected = application.read("cooling", "US")
+
+    f.service.apply_live(projection, projection.registry_version, prepared=application)
+
+    assert LiveAcceptedBasketReader(f.db).read("cooling", "US") == expected
+    assert {m.canonical_symbol for m in expected.membership} == {"BBB", "CCC"}
+
+
+def test_inactive_listing_keeps_its_acceptance_for_when_it_returns(social_fixture):
+    """Only a listing that still resolves is demoted; an inactive one already leaves
+    membership, and keeping its acceptance lets it return on reactivation."""
+    f = social_fixture
+    for age in (3, 2):
+        f.apply(f.prepare([f.save(("AAA", "BBB", "CCC"), age=age)]))
+    f.db.query(StockUniverse).filter_by(symbol="AAA").update({"is_active": False})
+    f.db.commit()
+
+    f.apply(f.prepare([f.save(("BBB",), age=1)]))
+
+    assert f.associations()[0].state == "accepted"

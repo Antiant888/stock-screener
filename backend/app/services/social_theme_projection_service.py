@@ -829,9 +829,11 @@ class SocialThemeProjectionService:
                 association.company_key = resolution.company_id
                 association.version += 1
             if (association.state == "accepted" and association.decision_owner == "system"
-                    and association.origin == "social" and not resolution.company_count_eligible):
+                    and association.origin == "social" and resolution.status == "resolved"
+                    and not resolution.company_count_eligible):
                 # The system accepted it on a company identity that is gone (a second
                 # listing appeared, or an attestation was removed). Admin decisions stand.
+                # An inactive listing already leaves membership and keeps its acceptance.
                 self._decision(association, "proposed", "company_identity_lost", "system",
                                projection.prepared_at, projection.run_id)
                 association.accepted_at = None
@@ -969,7 +971,10 @@ class SocialThemeProjectionService:
         for row in self.db.scalars(select(SocialThemeAssociation).where(SocialThemeAssociation.theme_cluster_id == theme_cluster_id,
                                                                        SocialThemeAssociation.state == "accepted", SocialThemeAssociation.origin == "social")):
             r = resolver.resolve(row.canonical_symbol, row.market)
-            if r.status == "resolved":
+            # A system acceptance rests on the company identity; once that is lost the
+            # next assessment re-proposes it (#597). Leaving it out here keeps prepared
+            # and published baskets equal before that assessment runs.
+            if r.status == "resolved" and (r.company_count_eligible or row.decision_owner != "system"):
                 members.setdefault((r.market, r.symbol), (r, set()))[1].add("social")
         return tuple(EffectiveThemeMembership(r.symbol, r.market, r.company_id, r.company_count_eligible, tuple(sorted(origins)))
                      for _, (r, origins) in sorted(members.items()))
