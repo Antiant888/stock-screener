@@ -392,7 +392,7 @@ function LeaseSummary({ leases, onReleaseChain, releasingToken }) {
             </Stack>
           ) : (
             <Typography variant="body2" color="text.secondary">
-              No market pipeline is in progress.
+              No pipeline chain claims are held.
             </Typography>
           )}
         </CardContent>

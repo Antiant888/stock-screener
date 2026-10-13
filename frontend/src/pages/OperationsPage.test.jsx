@@ -261,7 +261,7 @@ describe('OperationsPage', () => {
     it('says when no pipeline holds a claim', async () => {
       renderWithProviders(<OperationsPage />);
 
-      expect(await screen.findByText('No market pipeline is in progress.')).toBeInTheDocument();
+      expect(await screen.findByText('No pipeline chain claims are held.')).toBeInTheDocument();
     });
 
     it('releases a claim only after confirming, with the token it showed', async () => {

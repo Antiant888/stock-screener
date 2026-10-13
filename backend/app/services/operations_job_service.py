@@ -947,9 +947,11 @@ class OperationsJobService:
                 record = self._parse_queue_message(raw, queue_name)
                 if record and record.task_id == task_id:
                     removed = broker.lrem(queue_name, 1, raw)
-                    celery_app.control.revoke(task_id, terminate=False)
+                    # Release before revoking: once removed, the stage can never
+                    # run its errback, so a revoke error must not skip this.
                     if removed and record.chain_claim:
                         self._release_removed_chain(record)
+                    celery_app.control.revoke(task_id, terminate=False)
                     return bool(removed), queue_name
         return False, None
 

@@ -996,6 +996,21 @@ def test_a_failed_claim_release_does_not_undo_the_removal():
     assert broker.messages_by_queue["data_fetch_us"] == []
 
 
+def test_a_failed_revoke_after_removal_still_releases_the_claim():
+    raw = _stage_message("stage-1", "app.tasks.cache_tasks.smart_refresh_cache", errbacks=[_release_sig()])
+    service = OperationsJobService()
+    service._broker = lambda: _FakeBroker({"data_fetch_us": [raw]})
+    with patch.object(service, "broker_queue_names", return_value=["data_fetch_us"]), patch(
+        "app.services.operations_job_service.celery_app.control.revoke", side_effect=ConnectionError("broker")
+    ), patch("app.services.operations_job_service.get_workload_coordination") as coordination:
+        try:
+            service._remove_queued_task(task_id="stage-1")
+        except ConnectionError:
+            pass
+
+    coordination.return_value.release_pipeline_chain.assert_called_once_with("tok-1", market="US")
+
+
 def test_operator_release_is_owner_checked_and_audited():
     service = OperationsJobService()
     audit = MagicMock()
