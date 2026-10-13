@@ -5,6 +5,7 @@ Provides task metadata, execution history, and manual triggering capabilities.
 """
 import json
 import logging
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
@@ -160,6 +161,41 @@ _TRACKED_ORIGINS = frozenset({'manual', 'scheduled'})
 _BROKER_TIMEOUT_SECONDS = 2
 _BROKER_CHECK_TTL_SECONDS = 60
 _broker_checks: Dict[str, tuple] = {}
+_BROKER_SCAN_BATCH = 200
+_BROKER_SCAN_BUDGET_SECONDS = 2.0
+
+
+class _BrokerScanBudgetExceeded(Exception):
+    pass
+
+
+def _broker_messages(broker, queue_names, deadline):
+    """Every message in the queue lists, then the ``unacked`` hash, read in
+    batches under one overall deadline.
+
+    Paging from the head is safe while workers consume: kombu pushes at the
+    head and pops from the tail, so a page can repeat a message but not skip one.
+    """
+    def _check_deadline():
+        if time.monotonic() > deadline:
+            raise _BrokerScanBudgetExceeded()
+
+    for name in queue_names:
+        start = 0
+        while True:
+            _check_deadline()
+            batch = broker.lrange(name, start, start + _BROKER_SCAN_BATCH - 1)
+            yield from batch
+            if len(batch) < _BROKER_SCAN_BATCH:
+                break
+            start += _BROKER_SCAN_BATCH
+    cursor = 0
+    while True:
+        _check_deadline()
+        cursor, entries = broker.hscan('unacked', cursor, count=_BROKER_SCAN_BATCH)
+        yield from entries.values()
+        if not cursor:
+            break
 
 
 def _message_task_id(raw: bytes) -> Optional[str]:
@@ -204,12 +240,17 @@ def _still_in_broker(task_id: Optional[str]) -> Optional[bool]:
             socket_timeout=_BROKER_TIMEOUT_SECONDS,
             socket_connect_timeout=_BROKER_TIMEOUT_SECONDS,
         )
-        for queue_name in [*OperationsJobService.broker_queue_names(), 'social_ingestion']:
-            if any(_message_task_id(raw) == task_id for raw in broker.lrange(queue_name, 0, -1)):
-                found = True
-                break
-        else:
-            found = any(_message_task_id(raw) == task_id for raw in broker.hvals('unacked'))
+        queue_names = [*OperationsJobService.broker_queue_names(), 'social_ingestion']
+        deadline = time.monotonic() + _BROKER_SCAN_BUDGET_SECONDS
+        found = any(
+            _message_task_id(raw) == task_id
+            for raw in _broker_messages(broker, queue_names, deadline)
+        )
+    except _BrokerScanBudgetExceeded:
+        # A backlog too big to read in budget: unknown, so Run stays blocked
+        # (with that backlog the message is likely still waiting anyway).
+        logger.info("Broker scan for run %s exceeded its budget", task_id)
+        found = None
     except Exception:
         # Any broker failure means "unknown"; Run stays blocked (it would
         # fail to publish to the same broker anyway).

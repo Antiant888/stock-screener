@@ -512,14 +512,16 @@ class _Broker:
     def __init__(self, queues=None, unacked=None, error=None):
         self.queues, self.unacked, self.error = queues or {}, unacked or [], error
 
-    def lrange(self, name, _start, _end):
+    def lrange(self, name, start, end):
         if self.error:
             raise self.error
-        return self.queues.get(name, [])
+        return self.queues.get(name, [])[start:end + 1]
 
-    def hvals(self, name):
+    def hscan(self, name, cursor, count):
         assert name == "unacked"
-        return self.unacked
+        page = self.unacked[cursor:cursor + count]
+        next_cursor = cursor + count if cursor + count < len(self.unacked) else 0
+        return next_cursor, {str(cursor + i).encode(): raw for i, raw in enumerate(page)}
 
     def close(self):
         pass
@@ -568,6 +570,26 @@ def test_a_child_message_does_not_count_as_its_parent_still_queued(db_session):
     run, _ = _lost_run_with_broker(db_session, _Broker(), message_for=_child)
 
     assert run["still_queued"] is False
+
+
+def test_broker_check_pages_past_the_first_batch(db_session):
+    def _deep(broker, task_id):
+        broker.queues["celery"] = [_message(str(uuid4())) for _ in range(450)] + [_message(task_id)]
+
+    run, _ = _lost_run_with_broker(db_session, _Broker(), message_for=_deep)
+
+    assert run["still_queued"] is True
+
+
+def test_broker_check_reports_unknown_when_the_backlog_outruns_its_budget(db_session):
+    def _backlog(broker, _task_id):
+        broker.queues["celery"] = [_message(str(uuid4())) for _ in range(450)]
+
+    clock = iter(range(0, 1000, 5))  # every deadline check is 5s later
+    with patch("app.services.task_registry_service.time.monotonic", side_effect=lambda: next(clock)):
+        run, _ = _lost_run_with_broker(db_session, _Broker(), message_for=_backlog)
+
+    assert (run["lost_from"], run["still_queued"]) == ("queued", None)
 
 
 def test_broker_check_is_cached_between_polls(db_session):
