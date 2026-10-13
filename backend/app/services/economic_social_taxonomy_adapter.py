@@ -86,6 +86,9 @@ class SocialEvidenceAdmissionResult:
     live: bool
 
 
+SYSTEM_REFRESH_ACTOR = "system:economic-taxonomy-refresh"
+
+
 class EconomicSocialTaxonomyAdapter:
     """Preserve legacy Social history while projecting global memberships."""
 
@@ -343,6 +346,7 @@ class EconomicSocialTaxonomyAdapter:
         evidence_packet_id: UUID | None,
         authority_epoch: int,
         expected_revision: int | None = None,
+        source_payload: dict | None = None,
     ) -> EconomicSocialAssociationRevision:
         if state not in {
             "proposed",
@@ -384,7 +388,7 @@ class EconomicSocialTaxonomyAdapter:
             idempotency_key=idempotency_key,
             actor=actor,
             reason=reason,
-            source_payload={},
+            source_payload=dict(source_payload or {}),
         )
         authority = self.db.get(TaxonomyAuthority, 1)
         mirror_enabled = (
@@ -617,6 +621,28 @@ class EconomicSocialTaxonomyAdapter:
                 )
                 if current_state == "conflict_review_required":
                     continue
+                resolution = self._resolve(security_id)
+                if current_state == "accepted" and self.identity_lost(current, resolution):
+                    # The acceptance counted evidence for a company identity that is
+                    # gone or changed (#611). The automatic rule below may accept it
+                    # again, on the new identity's own evidence.
+                    revisions.append(
+                        self._revise(
+                            association.id,
+                            state="proposed",
+                            idempotency_key=(
+                                f"company-identity-lost:{association.id}:"
+                                f"r{current.revision_number}"
+                            ),
+                            actor=SYSTEM_REFRESH_ACTOR,
+                            reason="company_identity_lost",
+                            mirror_acknowledged=True,
+                            admission_state="live",
+                            evidence_packet_id=social_packet.id,
+                            authority_epoch=authority_epoch,
+                        )
+                    )
+                    current_state = "proposed"
                 if requested_state == "proposed" and current_state in {
                     None, "proposed", "accepted", "rejected"
                 }:
@@ -645,12 +671,13 @@ class EconomicSocialTaxonomyAdapter:
                             f"assignment:{assignment.id}:security:{security_id}:"
                             f"social-packet:{social_packet.id}"
                         ),
-                        actor="system:economic-taxonomy-refresh",
+                        actor=SYSTEM_REFRESH_ACTOR,
                         reason="classified_social_membership",
                         mirror_acknowledged=requested_state != "accepted",
                         admission_state="live",
                         evidence_packet_id=social_packet.id,
                         authority_epoch=authority_epoch,
+                        source_payload=self._acceptance_payload(requested_state, resolution),
                     )
                 )
         # The rule is per company: its other listings on the theme follow.
@@ -664,15 +691,53 @@ class EconomicSocialTaxonomyAdapter:
                     sibling.id,
                     state="accepted",
                     idempotency_key=f"company-acceptance:{sibling.id}:social-packet:{social_packet.id}",
-                    actor="system:economic-taxonomy-refresh",
+                    actor=SYSTEM_REFRESH_ACTOR,
                     reason="classified_social_membership",
                     mirror_acknowledged=False,
                     admission_state="live",
                     evidence_packet_id=social_packet.id,
                     authority_epoch=authority_epoch,
+                    source_payload=self._acceptance_payload(
+                        "accepted", self._resolve(sibling.security_id)
+                    ),
                 )
             )
         return tuple(revisions)
+
+    def _resolve(self, security_id):
+        """The security's current Social identity (one resolver per adapter)."""
+        if getattr(self, "_resolver", None) is None:
+            from app.services.social_company_identity_service import SocialCompanyIdentityService
+            from app.services.social_ticker_resolver import SocialTickerResolver
+            identity = SocialCompanyIdentityService(self.db).read()
+            self._resolver = SocialTickerResolver(
+                self.db, verified_company_ids=identity.verified_company_ids
+            )
+        security = self.db.get(StockUniverse, security_id)
+        return self._resolver.resolve(security.symbol, security.market)
+
+    @staticmethod
+    def _acceptance_payload(state, resolution):
+        # Recorded so a later identity change can be told apart (#611).
+        return {"company_id": resolution.company_id} if state == "accepted" else {}
+
+    def identity_lost(self, revision, resolution) -> bool:
+        """The processor's acceptance whose company identity is gone or changed (#611).
+
+        Only the automatic rule's own acceptances: administrator and legacy
+        reconciliation decisions stand. An inactive listing (unresolved) keeps
+        its acceptance; acceptances made before identities were recorded are
+        judged on eligibility alone.
+        """
+        if revision is None or revision.state not in {"accepted", "pending_legacy_mirror"}:
+            return False
+        decision = self.db.get(EconomicSocialDecisionRevision, revision.decision_revision_id)
+        if decision is None or decision.actor != SYSTEM_REFRESH_ACTOR or resolution.status != "resolved":
+            return False
+        recorded = (decision.source_payload or {}).get("company_id")
+        return not resolution.company_count_eligible or (
+            recorded is not None and recorded != resolution.company_id
+        )
 
     def _requested_state(self, association_id):
         current = self.db.scalar(
