@@ -45,7 +45,7 @@ def _db(rows):
 def _clean(rows, keys, **redis_kwargs):
     redis = _Redis(keys, **redis_kwargs)
     with patch("app.services.redis_pool.get_redis_client", return_value=redis):
-        cleaned = cache_tasks._cleanup_orphaned_price_cache([(s.upper(), a) for s, a in rows])
+        cleaned = cache_tasks._cleanup_orphaned_price_cache([(s.upper(), a) for s, a in rows], set())
     return cleaned, {k.decode() for k in redis.keys}
 
 
@@ -108,7 +108,7 @@ def test_redis_errors_fail_the_run_instead_of_reading_as_zero_cleaned():
     with pytest.raises(ConnectionError):
         _clean([("OLDCO", False)], {"price:OLDCO:recent"}, error=ConnectionError("redis down"))
     with patch("app.services.redis_pool.get_redis_client", return_value=None), pytest.raises(RuntimeError):
-        cache_tasks._cleanup_orphaned_price_cache([("OLDCO", False)])
+        cache_tasks._cleanup_orphaned_price_cache([("OLDCO", False)], set())
 
 
 def test_the_task_runs_telemetry_retention_even_if_the_cache_step_fails():

@@ -999,7 +999,9 @@ def test_weekly_full_refresh_reraises_nested_soft_time_limit(monkeypatch):
     first_query.__iter__.side_effect = lambda: iter([("AAPL", True)])  # universe (symbol, is_active)
     second_query = MagicMock()
     second_query.filter.return_value.order_by.return_value.all.return_value = [SimpleNamespace(symbol="AAPL")]
-    fake_db.query.side_effect = [first_query, second_query]
+    history_query = MagicMock()  # universe status events (former symbols)
+    history_query.distinct.return_value = []
+    fake_db.query.side_effect = [first_query, history_query, second_query]
 
     fake_price_cache = MagicMock()
     fake_cache_manager = MagicMock()
@@ -1039,7 +1041,9 @@ def test_weekly_full_refresh_counts_a_failed_batch_store_as_failures_only(monkey
     second_query = MagicMock()
     second_query.filter.return_value.order_by.return_value.all.return_value = rows
     fake_db = MagicMock()
-    fake_db.query.side_effect = [first_query, second_query]
+    history_query = MagicMock()  # universe status events (former symbols)
+    history_query.distinct.return_value = []
+    fake_db.query.side_effect = [first_query, history_query, second_query]
 
     fake_price_cache = MagicMock()
     fake_price_cache.store_batch_in_cache.side_effect = RuntimeError("commit failed")

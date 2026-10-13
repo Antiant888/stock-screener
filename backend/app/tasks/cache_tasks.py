@@ -517,7 +517,7 @@ def _former_universe_symbols(db) -> set[str]:
 
 
 def _cleanup_orphaned_price_cache(
-    universe_rows: list[tuple[str, bool]], former_symbols: set[str] = frozenset()
+    universe_rows: list[tuple[str, bool]], former_symbols: set[str]
 ) -> int:
     """Delete Redis price keys of delisted symbols; returns symbols cleaned.
 
@@ -643,7 +643,7 @@ def weekly_full_refresh(self, market: str | None = None):
             logger.info("\n[1/4] Cleaning up orphaned cache entries...", extra=_log_extra)
             universe_rows = _universe_rows(db)
             active_symbols = {symbol for symbol, is_active in universe_rows if is_active}
-            orphan_count = _cleanup_orphaned_price_cache(universe_rows)
+            orphan_count = _cleanup_orphaned_price_cache(universe_rows, _former_universe_symbols(db))
             logger.info("✓ Cleaned up %d orphaned cache entries", orphan_count, extra=_log_extra)
         else:
             logger.info(
