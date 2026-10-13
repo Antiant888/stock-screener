@@ -232,10 +232,63 @@ describe('SchedulesSection', () => {
 
     const row = rowFor('Refresh Social Signals');
     expect(within(row).getByText(
-      'Not picked up for 30m. Start the social worker, or wait until this run reads as Unknown.',
+      'Not picked up for 30m. Start the social worker to let it run.',
     )).toBeInTheDocument();
     expect(within(row).queryByText(/job console/)).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Run Refresh Social Signals now' })).toBeDisabled();
+  });
+
+  describe('a run with no outcome past the cutoff (Unknown)', () => {
+    const lost = (extra) => lastRun('lost', { started_at: new Date(Date.now() - 26 * 3600 * 1000).toISOString(), ...extra });
+
+    it('keeps Run blocked when it never started and its message is still queued', async () => {
+      getScheduledTasks.mockResolvedValue(payload([
+        task('refresh', 'Weekly Full Refresh', lost({ lost_from: 'queued', still_queued: true })),
+      ]));
+
+      renderSection();
+
+      expect(await screen.findByRole('button', { name: 'Run Weekly Full Refresh now' })).toBeDisabled();
+      const row = rowFor('Weekly Full Refresh');
+      expect(within(row).getByText('Unknown')).toBeInTheDocument();
+      expect(within(row).getByText(
+        'Not picked up, and its message is still waiting. It runs once a worker takes it, or cancel it in the job console to run it again.',
+      )).toBeInTheDocument();
+    });
+
+    it('keeps Run blocked when the queue could not be checked', async () => {
+      getScheduledTasks.mockResolvedValue(payload([
+        task('refresh', 'Weekly Full Refresh', lost({ lost_from: 'queued', still_queued: null })),
+      ]));
+
+      renderSection();
+
+      expect(await screen.findByRole('button', { name: 'Run Weekly Full Refresh now' })).toBeDisabled();
+      expect(within(rowFor('Weekly Full Refresh')).getByText(/Could not check whether it is still queued/))
+        .toBeInTheDocument();
+    });
+
+    it('allows a re-run when it never started and its message is gone', async () => {
+      getScheduledTasks.mockResolvedValue(payload([
+        task('refresh', 'Weekly Full Refresh', lost({ lost_from: 'queued', still_queued: false })),
+      ]));
+
+      renderSection();
+
+      expect(await screen.findByRole('button', { name: 'Run Weekly Full Refresh now' })).toBeEnabled();
+      expect(within(rowFor('Weekly Full Refresh')).getByText(/no message is waiting/)).toBeInTheDocument();
+    });
+
+    it('allows a re-run when it started and the worker died', async () => {
+      getScheduledTasks.mockResolvedValue(payload([
+        task('prune', 'Monthly Price Data Cleanup', lost({ lost_from: 'running' })),
+      ]));
+
+      renderSection();
+
+      expect(await screen.findByRole('button', { name: 'Run Monthly Price Data Cleanup now' })).toBeEnabled();
+      expect(within(rowFor('Monthly Price Data Cleanup')).getByText(/no result was recorded/)).toBeInTheDocument();
+    });
   });
 
   it('does not flag a freshly queued run as stuck', async () => {

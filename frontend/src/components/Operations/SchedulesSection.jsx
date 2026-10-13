@@ -82,8 +82,26 @@ const NOT_IN_JOB_CONSOLE = new Set(['social-signal-refresh']);
 // How to clear a run stuck in the queue so Run works again.
 function stuckRecovery(taskName) {
   return NOT_IN_JOB_CONSOLE.has(taskName)
-    ? 'Start the social worker, or wait until this run reads as Unknown.'
+    ? 'Start the social worker to let it run.'
     : 'Cancel it in the job console to run it again.';
+}
+
+// A lost run that never started whose message may still be in the broker:
+// queueing another would run the job twice once a worker picks both up.
+// still_queued is null when the broker could not be read.
+function lostButMaybeQueued(run) {
+  return run?.status === 'lost' && run.lost_from === 'queued' && run.still_queued !== false;
+}
+
+// The message may sit in a queue (the console can cancel it) or be held by a
+// stopped worker (it runs once a worker restores it), so name both ways out.
+function lostQueuedReason(task) {
+  if (task.last_run.still_queued !== true) {
+    return 'Not picked up. Could not check whether it is still queued; try again shortly.';
+  }
+  return NOT_IN_JOB_CONSOLE.has(task.name)
+    ? 'Not picked up, and its message is still waiting. Start the social worker to let it run.'
+    : 'Not picked up, and its message is still waiting. It runs once a worker takes it, or cancel it in the job console to run it again.';
 }
 
 // Why Run is unavailable for this job, or null when it may run again.
@@ -92,6 +110,7 @@ function runBlockedReason(task) {
   if (run?.status === 'running') return 'Already running';
   if (isStaleQueued(run)) return `Still queued. ${stuckRecovery(task.name)}`;
   if (run?.status === 'queued') return 'Already queued';
+  if (lostButMaybeQueued(run)) return lostQueuedReason(task);
   return null;
 }
 
@@ -131,6 +150,14 @@ function statusNote(task) {
   if (run?.status === 'failed') return [run.error_message, 'error'];
   if (isStaleQueued(run)) {
     return [`Not picked up for ${ageLabel(ageMs(run.started_at))}. ${stuckRecovery(task.name)}`, 'warning.main'];
+  }
+  if (lostButMaybeQueued(run)) return [lostQueuedReason(task), 'warning.main'];
+  if (run?.status === 'lost' && run.lost_from === 'queued') {
+    // Usually never started; a worker whose start write failed also lands here.
+    return ['No outcome recorded, and no message is waiting. Run it again.', 'text.secondary'];
+  }
+  if (run?.status === 'lost' && run.lost_from === 'running') {
+    return ['Started, but no result was recorded (the worker may have stopped). Run it again.', 'text.secondary'];
   }
   if (run?.status === 'skipped' && run.detail) return [humanizeReason(run.detail), 'text.secondary'];
   if (run?.status === 'dispatched') {

@@ -5,6 +5,7 @@ Provides task metadata, execution history, and manual triggering capabilities.
 """
 import json
 import logging
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
@@ -155,6 +156,133 @@ RUN_LOST_AFTER = timedelta(seconds=celery_app.conf.task_time_limit) + timedelta(
 # Callers that tag the origin kwarg outside these dispatch the task ad hoc
 # (e.g. per-attachment social refreshes), not as the scheduled job.
 _TRACKED_ORIGINS = frozenset({'manual', 'scheduled'})
+
+
+_BROKER_TIMEOUT_SECONDS = 2
+_BROKER_CHECK_TTL_SECONDS = 60
+_broker_checks: Dict[str, tuple] = {}
+_BROKER_SCAN_BATCH = 200
+_BROKER_SCAN_BUDGET_SECONDS = 2.0
+
+
+class _BrokerScanBudgetExceeded(Exception):
+    pass
+
+
+def _broker_messages(broker, queue_names, deadline):
+    """Every message in the queue lists, then the ``unacked`` hash, read in
+    batches under one overall deadline.
+
+    Paging from the head is safe while workers consume: kombu pushes at the
+    head and pops from the tail, so a page can repeat a message but not skip one.
+    """
+    def _check_deadline():
+        if time.monotonic() > deadline:
+            raise _BrokerScanBudgetExceeded()
+
+    for name in queue_names:
+        start = 0
+        while True:
+            _check_deadline()
+            batch = broker.lrange(name, start, start + _BROKER_SCAN_BATCH - 1)
+            yield from batch
+            if len(batch) < _BROKER_SCAN_BATCH:
+                break
+            start += _BROKER_SCAN_BATCH
+    cursor = 0
+    while True:
+        _check_deadline()
+        cursor, entries = broker.hscan('unacked', cursor, count=_BROKER_SCAN_BATCH)
+        yield from entries.values()
+        if not cursor:
+            break
+
+
+def _message_task_id(raw: bytes) -> Optional[str]:
+    """The task id in a queued message, or in an ``unacked`` entry (a JSON
+    ``[message, exchange, routing_key]``). Not parent_id/root_id: a child's
+    message must not count as its parent's."""
+    try:
+        payload = json.loads(raw)
+    except (ValueError, TypeError):
+        return None
+    if isinstance(payload, list) and payload:
+        payload = payload[0]
+    if not isinstance(payload, dict):
+        return None
+    return (payload.get('headers') or {}).get('id')
+
+
+def _still_in_broker(task_ids: List[Optional[str]]) -> Dict[str, Optional[bool]]:
+    """For each never-started run, whether its message is still in the broker:
+    in a queue list, or prefetched by a worker that stopped (kombu's
+    ``unacked`` hash; a live worker restores it to its queue). None if the
+    broker is unreadable or the scan runs out of budget.
+
+    All ids share one client, one pass and one deadline. Answers are cached
+    briefly: the Schedules list is polled, and a lost run can stay a job's
+    last run until its next scheduled run. A missing id maps to False: it can
+    never be found or cancelled, so blocking Run would be permanent.
+    """
+    now = datetime.now(timezone.utc).timestamp()
+    answers: Dict[str, Optional[bool]] = {}
+    pending = set()
+    for task_id in task_ids:
+        if not task_id:
+            continue
+        cached = _broker_checks.get(task_id)
+        if cached and now - cached[0] < _BROKER_CHECK_TTL_SECONDS:
+            answers[task_id] = cached[1]
+        else:
+            pending.add(task_id)
+    if not pending:
+        return answers
+    # Lazy: operations_job_service imports this module.
+    import redis
+
+    from .operations_job_service import OperationsJobService
+
+    found: set = set()
+    unknown = False
+    broker = None
+    try:
+        broker = redis.from_url(
+            settings.celery_broker_url,
+            socket_timeout=_BROKER_TIMEOUT_SECONDS,
+            socket_connect_timeout=_BROKER_TIMEOUT_SECONDS,
+        )
+        queue_names = [*OperationsJobService.broker_queue_names(), 'social_ingestion']
+        deadline = time.monotonic() + _BROKER_SCAN_BUDGET_SECONDS
+        # Two passes under the one deadline: a message kombu moves between a
+        # queue and ``unacked`` mid-pass (a worker taking it, or a restore)
+        # can slip past both reads of one pass, but not two passes in a row.
+        for _ in range(2):
+            for raw in _broker_messages(broker, queue_names, deadline):
+                message_id = _message_task_id(raw)
+                if message_id in pending:
+                    found.add(message_id)
+                    if found == pending:
+                        break
+            if found == pending:
+                break
+    except _BrokerScanBudgetExceeded:
+        # A backlog too big to read in budget: ids not yet found are unknown,
+        # so Run stays blocked (the message is likely still waiting anyway).
+        logger.info("Broker scan for %d lost runs exceeded its budget", len(pending))
+        unknown = True
+    except Exception:
+        # Any broker failure means "unknown"; Run stays blocked (it would
+        # fail to publish to the same broker anyway).
+        logger.warning("Could not read the broker for %d lost runs", len(pending), exc_info=True)
+        unknown = True
+    finally:
+        if broker is not None:
+            broker.close()
+    for task_id in pending:
+        answer = True if task_id in found else (None if unknown else False)
+        _broker_checks[task_id] = (now, answer)
+        answers[task_id] = answer
+    return answers
 
 
 def _result_summary(result: Any, task_id: str) -> Optional[Dict[str, Any]]:
@@ -397,11 +525,16 @@ class TaskRegistryService:
             if last_run:
                 status = last_run.status
                 started_at = _coerce_utc_datetime(last_run.started_at)
+                lost_from = still_queued = None
                 if (
                     status not in _FINISHED_STATUSES
                     and started_at
                     and datetime.now(timezone.utc) - started_at > RUN_LOST_AFTER
                 ):
+                    # A queued row was never picked up (a worker flips it to
+                    # running at prerun). Its message may still be waiting,
+                    # and a second Run would then run the job twice.
+                    lost_from = 'queued' if status == 'queued' else 'running'
                     status = 'lost'
                 task_data['last_run'] = {
                     'id': last_run.id,
@@ -413,9 +546,33 @@ class TaskRegistryService:
                     'triggered_by': last_run.triggered_by,
                     'error_message': last_run.error_message,
                     'detail': _skip_detail(last_run.result_summary) if status == 'skipped' else None,
+                    'lost_from': lost_from,
+                    'still_queued': still_queued,
                 }
 
             result.append(task_data)
+
+        # One broker pass for every run lost from queued, under one budget,
+        # so several such runs (or a broker outage) cost the request once.
+        lost_queued = [
+            task['last_run'] for task in result
+            if task['last_run'] and task['last_run']['lost_from'] == 'queued'
+        ]
+        if lost_queued:
+            answers = _still_in_broker([run['task_id'] for run in lost_queued])
+            absent = [run['task_id'] for run in lost_queued if answers.get(run['task_id'], False) is False]
+            # A worker that took the message after the history read has acked
+            # it (so it is gone) and flipped the row to running: not safe to
+            # rerun. The next poll shows it Running; until then, unknown.
+            picked_up = {
+                task_id for (task_id,) in db.query(TaskExecutionHistory.task_id).filter(
+                    TaskExecutionHistory.task_id.in_([t for t in absent if t]),
+                    TaskExecutionHistory.status != 'queued',
+                )
+            } if any(absent) else set()
+            for run in lost_queued:
+                answer = answers.get(run['task_id'], False)
+                run['still_queued'] = None if run['task_id'] in picked_up else answer
 
         return result
 

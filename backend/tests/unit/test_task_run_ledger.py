@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+import json
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 from uuid import uuid4
@@ -493,16 +494,190 @@ def test_dispatch_error_does_not_overwrite_a_run_the_worker_already_started(db_s
     assert row.status == "running"
 
 
-def _open_cleanup_run(db_session, *, age):
+def _open_cleanup_run(db_session, *, age, status="running"):
+    task_id = str(uuid4())
     db_session.add(TaskExecutionHistory(
         task_name="monthly-price-data-cleanup",
         task_function="app.tasks.cache_tasks.cleanup_old_price_data",
-        task_id=str(uuid4()),
-        status="running",
+        task_id=task_id,
+        status=status,
         started_at=datetime.now(timezone.utc) - age,
-        triggered_by="auto",
+        triggered_by="auto" if status == "running" else "manual",
     ))
     db_session.commit()
+    return task_id
+
+
+class _Broker:
+    def __init__(self, queues=None, unacked=None, error=None):
+        self.queues, self.unacked, self.error = queues or {}, unacked or [], error
+
+    def lrange(self, name, start, end):
+        if self.error:
+            raise self.error
+        return self.queues.get(name, [])[start:end + 1]
+
+    def hscan(self, name, cursor, count):
+        assert name == "unacked"
+        page = self.unacked[cursor:cursor + count]
+        next_cursor = cursor + count if cursor + count < len(self.unacked) else 0
+        return next_cursor, {str(cursor + i).encode(): raw for i, raw in enumerate(page)}
+
+    def close(self):
+        pass
+
+
+def _message(task_id, **headers):
+    return json.dumps({"headers": {"id": task_id, **headers}, "body": "e30="}).encode()
+
+
+def _lost_run_with_broker(db_session, broker, *, status="queued", message_for=None):
+    task_id = _open_cleanup_run(db_session, age=timedelta(hours=26), status=status)
+    if message_for:
+        message_for(broker, task_id)
+    with patch("redis.from_url", return_value=broker) as read_broker:
+        run = _last_run(db_session, "monthly-price-data-cleanup")
+    return run, read_broker
+
+
+def _in_queue(broker, task_id):
+    broker.queues.setdefault("celery", []).append(_message(task_id))
+
+
+def test_lost_run_that_never_started_and_is_still_queued_reports_it(db_session):
+    run, read_broker = _lost_run_with_broker(db_session, _Broker(), message_for=_in_queue)
+
+    assert (run["status"], run["lost_from"], run["still_queued"]) == ("lost", "queued", True)
+    # A hung broker must not hang the polled endpoint.
+    assert read_broker.call_args.kwargs["socket_timeout"] == 2
+    assert read_broker.call_args.kwargs["socket_connect_timeout"] == 2
+
+
+def test_lost_run_prefetched_by_a_dead_worker_counts_as_still_queued(db_session):
+    # An unacked entry is [message, exchange, routing_key]; a live worker restores it.
+    def _unacked(broker, task_id):
+        broker.unacked.append(json.dumps([json.loads(_message(task_id)), "", "celery"]).encode())
+
+    run, _ = _lost_run_with_broker(db_session, _Broker(), message_for=_unacked)
+
+    assert run["still_queued"] is True
+
+
+def test_a_child_message_does_not_count_as_its_parent_still_queued(db_session):
+    def _child(broker, task_id):
+        broker.queues["celery"] = [_message(str(uuid4()), parent_id=task_id, root_id=task_id)]
+
+    run, _ = _lost_run_with_broker(db_session, _Broker(), message_for=_child)
+
+    assert run["still_queued"] is False
+
+
+def test_broker_check_pages_past_the_first_batch(db_session):
+    def _deep(broker, task_id):
+        broker.queues["celery"] = [_message(str(uuid4())) for _ in range(450)] + [_message(task_id)]
+
+    run, _ = _lost_run_with_broker(db_session, _Broker(), message_for=_deep)
+
+    assert run["still_queued"] is True
+
+
+def test_broker_check_reports_unknown_when_the_backlog_outruns_its_budget(db_session):
+    def _backlog(broker, _task_id):
+        broker.queues["celery"] = [_message(str(uuid4())) for _ in range(450)]
+
+    clock = iter(range(0, 1000, 5))  # every deadline check is 5s later
+    with patch("app.services.task_registry_service.time.monotonic", side_effect=lambda: next(clock)):
+        run, _ = _lost_run_with_broker(db_session, _Broker(), message_for=_backlog)
+
+    assert (run["lost_from"], run["still_queued"]) == ("queued", None)
+
+
+def test_several_lost_runs_share_one_broker_pass(db_session):
+    # Each run used to open its own client with its own budget, so N lost runs
+    # (or a broker outage) multiplied the request time by N.
+    waiting = _open_cleanup_run(db_session, age=timedelta(hours=26), status="queued")
+    gone = str(uuid4())
+    db_session.add(TaskExecutionHistory(
+        task_name="weekly-orphaned-scan-cleanup", task_function=CLEANUP, task_id=gone,
+        status="queued", started_at=datetime.now(timezone.utc) - timedelta(hours=26), triggered_by="manual",
+    ))
+    db_session.commit()
+    broker = _Broker()
+    _in_queue(broker, waiting)
+
+    with patch("redis.from_url", return_value=broker) as read_broker:
+        tasks = {t["name"]: t["last_run"] for t in TaskRegistryService().get_all_scheduled_tasks(db_session)}
+
+    read_broker.assert_called_once()
+    assert tasks["monthly-price-data-cleanup"]["still_queued"] is True
+    assert tasks["weekly-orphaned-scan-cleanup"]["still_queued"] is False
+
+
+def test_a_message_restored_from_unacked_mid_pass_is_still_found(db_session):
+    # kombu restores an unacked message into its queue after that queue was
+    # read but before the unacked read: one pass misses it in both places.
+    task_id = _open_cleanup_run(db_session, age=timedelta(hours=26), status="queued")
+
+    class _Restoring(_Broker):
+        def hscan(self, name, cursor, count):
+            if not self.queues.get("celery"):
+                self.queues["celery"] = [_message(task_id)]  # restored, after the queue read
+            return super().hscan(name, cursor, count)
+
+    with patch("redis.from_url", return_value=_Restoring()):
+        run = _last_run(db_session, "monthly-price-data-cleanup")
+
+    assert run["still_queued"] is True
+
+
+def test_a_run_picked_up_during_the_broker_check_does_not_enable_run(db_session):
+    # The worker acks the message (gone from the broker) and flips the row to
+    # running after the history read; "absent" must not mean "safe to rerun".
+    task_id = _open_cleanup_run(db_session, age=timedelta(hours=26), status="queued")
+
+    class _PickedUp(_Broker):
+        def lrange(self, name, start, end):
+            row = db_session.query(TaskExecutionHistory).filter_by(task_id=task_id).one()
+            if row.status == "queued":
+                row.status = "running"
+                db_session.commit()
+            return super().lrange(name, start, end)
+
+    with patch("redis.from_url", return_value=_PickedUp()):
+        run = _last_run(db_session, "monthly-price-data-cleanup")
+
+    assert (run["status"], run["lost_from"], run["still_queued"]) == ("lost", "queued", None)
+
+
+def test_broker_check_is_cached_between_polls(db_session):
+    task_id = _open_cleanup_run(db_session, age=timedelta(hours=26), status="queued")
+    broker = _Broker()
+    _in_queue(broker, task_id)
+
+    with patch("redis.from_url", return_value=broker) as read_broker:
+        _last_run(db_session, "monthly-price-data-cleanup")
+        _last_run(db_session, "monthly-price-data-cleanup")
+
+    read_broker.assert_called_once()
+
+
+def test_lost_run_that_never_started_and_whose_message_is_gone_can_rerun(db_session):
+    run, _ = _lost_run_with_broker(db_session, _Broker())
+
+    assert (run["lost_from"], run["still_queued"]) == ("queued", False)
+
+
+def test_lost_run_reports_unknown_queue_state_when_the_broker_is_unreadable(db_session):
+    run, _ = _lost_run_with_broker(db_session, _Broker(error=ConnectionError("down")))
+
+    assert (run["lost_from"], run["still_queued"]) == ("queued", None)
+
+
+def test_lost_run_that_started_does_not_read_the_broker(db_session):
+    run, read_broker = _lost_run_with_broker(db_session, _Broker(), status="running")
+
+    assert (run["status"], run["lost_from"], run["still_queued"]) == ("lost", "running", None)
+    read_broker.assert_not_called()
 
 
 def test_run_killed_at_the_hard_time_limit_is_still_reconcilable_not_lost(db_session):

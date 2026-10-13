@@ -18,6 +18,14 @@ class LastRunInfo(BaseModel):
     triggered_by: str = Field(..., description="Trigger source: manual, auto, or the task's origin tag")
     error_message: Optional[str] = Field(None, description="Error message if failed")
     detail: Optional[str] = Field(None, description="Why the run skipped (reason or reason codes)")
+    lost_from: Optional[str] = Field(
+        None, description="For a lost run: 'queued' (never started) or 'running' (worker died)"
+    )
+    still_queued: Optional[bool] = Field(
+        None,
+        description="For a run lost from queued: whether its message is still in the broker "
+        "(null if the broker could not be read)",
+    )
 
 
 class ScheduledTaskResponse(BaseModel):
