@@ -432,7 +432,9 @@ def _apply_chain_verdict(claims: Any, market: str, token: str, verdict: str) -> 
         verdict == "missing"
         and claims.pipeline_chain_missing_seconds(token) < PIPELINE_CHAIN_MISSING_RELEASE_SECONDS
     ):
-        return "missing"
+        # Unconfirmed: renew so a claim near its TTL (after a stretch of
+        # failed checks) lasts until the confirming check releases it.
+        return "missing" if claims.renew_pipeline_chain(token, market=market) else "lost"
     # Owner-checked: a newer chain that took the claim meanwhile keeps it.
     released = claims.release_pipeline_chain(token, market=market)
     return f"released_{verdict}" if released else "lost"

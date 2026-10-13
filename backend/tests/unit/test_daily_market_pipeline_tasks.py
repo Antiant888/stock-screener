@@ -629,6 +629,9 @@ def test_a_chain_with_no_trace_is_freed_on_the_next_heartbeat_only(monkeypatch):
 
     assert module.renew_daily_market_pipeline_claims.run()["claims"] == {"US": "missing"}
     assert claims.holders["US"]["task_id"] == token
+    # Renewed while unconfirmed, so a claim near its TTL (after a stretch of
+    # failed checks) survives until the confirming check.
+    assert claims.renewed == [("US", token)]
 
     claims.clock += PIPELINE_CHAIN_HEARTBEAT_SECONDS
     assert module.renew_daily_market_pipeline_claims.run()["claims"] == {"US": "released_missing"}
@@ -687,7 +690,8 @@ def test_a_broker_search_out_of_budget_renews_the_claim(monkeypatch):
     for _beat in range(3):
         claims.clock += PIPELINE_CHAIN_HEARTBEAT_SECONDS
         assert module.renew_daily_market_pipeline_claims.run()["claims"] == {"US": "renewed_unknown"}
-    assert claims.renewed == [("US", token)] * 3
+    # The unconfirmed miss renews too, then each inconclusive beat.
+    assert claims.renewed == [("US", token)] * 4
     # ...which an inconclusive search clears, since it proved nothing gone.
     assert claims.missing_since == {}
     assert claims.holders["US"]["task_id"] == token
