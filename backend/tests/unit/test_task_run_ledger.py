@@ -613,6 +613,42 @@ def test_several_lost_runs_share_one_broker_pass(db_session):
     assert tasks["weekly-orphaned-scan-cleanup"]["still_queued"] is False
 
 
+def test_a_message_restored_from_unacked_mid_pass_is_still_found(db_session):
+    # kombu restores an unacked message into its queue after that queue was
+    # read but before the unacked read: one pass misses it in both places.
+    task_id = _open_cleanup_run(db_session, age=timedelta(hours=26), status="queued")
+
+    class _Restoring(_Broker):
+        def hscan(self, name, cursor, count):
+            if not self.queues.get("celery"):
+                self.queues["celery"] = [_message(task_id)]  # restored, after the queue read
+            return super().hscan(name, cursor, count)
+
+    with patch("redis.from_url", return_value=_Restoring()):
+        run = _last_run(db_session, "monthly-price-data-cleanup")
+
+    assert run["still_queued"] is True
+
+
+def test_a_run_picked_up_during_the_broker_check_does_not_enable_run(db_session):
+    # The worker acks the message (gone from the broker) and flips the row to
+    # running after the history read; "absent" must not mean "safe to rerun".
+    task_id = _open_cleanup_run(db_session, age=timedelta(hours=26), status="queued")
+
+    class _PickedUp(_Broker):
+        def lrange(self, name, start, end):
+            row = db_session.query(TaskExecutionHistory).filter_by(task_id=task_id).one()
+            if row.status == "queued":
+                row.status = "running"
+                db_session.commit()
+            return super().lrange(name, start, end)
+
+    with patch("redis.from_url", return_value=_PickedUp()):
+        run = _last_run(db_session, "monthly-price-data-cleanup")
+
+    assert (run["status"], run["lost_from"], run["still_queued"]) == ("lost", "queued", None)
+
+
 def test_broker_check_is_cached_between_polls(db_session):
     task_id = _open_cleanup_run(db_session, age=timedelta(hours=26), status="queued")
     broker = _Broker()

@@ -253,12 +253,18 @@ def _still_in_broker(task_ids: List[Optional[str]]) -> Dict[str, Optional[bool]]
         )
         queue_names = [*OperationsJobService.broker_queue_names(), 'social_ingestion']
         deadline = time.monotonic() + _BROKER_SCAN_BUDGET_SECONDS
-        for raw in _broker_messages(broker, queue_names, deadline):
-            message_id = _message_task_id(raw)
-            if message_id in pending:
-                found.add(message_id)
-                if found == pending:
-                    break
+        # Two passes under the one deadline: a message kombu moves between a
+        # queue and ``unacked`` mid-pass (a worker taking it, or a restore)
+        # can slip past both reads of one pass, but not two passes in a row.
+        for _ in range(2):
+            for raw in _broker_messages(broker, queue_names, deadline):
+                message_id = _message_task_id(raw)
+                if message_id in pending:
+                    found.add(message_id)
+                    if found == pending:
+                        break
+            if found == pending:
+                break
     except _BrokerScanBudgetExceeded:
         # A backlog too big to read in budget: ids not yet found are unknown,
         # so Run stays blocked (the message is likely still waiting anyway).
@@ -554,8 +560,19 @@ class TaskRegistryService:
         ]
         if lost_queued:
             answers = _still_in_broker([run['task_id'] for run in lost_queued])
+            absent = [run['task_id'] for run in lost_queued if answers.get(run['task_id'], False) is False]
+            # A worker that took the message after the history read has acked
+            # it (so it is gone) and flipped the row to running: not safe to
+            # rerun. The next poll shows it Running; until then, unknown.
+            picked_up = {
+                task_id for (task_id,) in db.query(TaskExecutionHistory.task_id).filter(
+                    TaskExecutionHistory.task_id.in_([t for t in absent if t]),
+                    TaskExecutionHistory.status != 'queued',
+                )
+            } if any(absent) else set()
             for run in lost_queued:
-                run['still_queued'] = answers.get(run['task_id'], False)
+                answer = answers.get(run['task_id'], False)
+                run['still_queued'] = None if run['task_id'] in picked_up else answer
 
         return result
 
