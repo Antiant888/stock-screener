@@ -12,6 +12,8 @@ Tables:
     stock_feature_daily       — Per-symbol screening scores
     feature_run_pointers      — Atomic publish pointers (e.g. 'latest_published')
 """
+import math
+
 from sqlalchemy import (
     Boolean, Column, Integer, Float, Text, Date, DateTime, JSON,
     ForeignKey, Index, event, false, inspect,
@@ -200,9 +202,14 @@ def _hot_number(value):
     if isinstance(value, bool) or not isinstance(value, (int, float, str)):
         return None
     try:
-        return float(value)
+        number = float(value)
     except (ValueError, OverflowError):
         return None
+    # float() turns an out-of-range string ("1e400") into inf where the cast
+    # fails; only the digit-free NaN/Infinity literals are non-finite there.
+    if not math.isfinite(number) and any(char.isdigit() for char in str(value)):
+        return None
+    return number
 
 
 def derived_details_columns(details) -> dict:

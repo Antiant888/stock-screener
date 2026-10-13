@@ -404,6 +404,9 @@ def test_inserting_a_row_stores_its_hot_fields(session):
     [
         # Beyond float range: must not fail the snapshot batch.
         pytest.param(10**400, None, id="overflow"),
+        # PostgreSQL rejects out-of-range strings, where float() gives inf.
+        pytest.param("1e400", None, id="exponent-overflow"),
+        pytest.param("-" + "9" * 400, None, id="digits-overflow"),
         ("NaN", "nan"),  # PostgreSQL casts these strings too
         ("-Infinity", "-inf"),
     ],
