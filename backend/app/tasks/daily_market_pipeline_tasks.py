@@ -418,9 +418,16 @@ def _broker_verdict(task_ids: list[str], in_broker: dict[str, bool | None]) -> s
 def _apply_chain_verdict(claims: Any, market: str, token: str, verdict: str) -> str:
     from app.tasks.workload_coordination import PIPELINE_CHAIN_MISSING_RELEASE_SECONDS
 
-    if verdict == "alive":
+    if verdict in ("alive", "unknown"):
+        # An inconclusive search proved nothing gone. A stage buried past the
+        # search budget is most likely still queued, and only renewing keeps a
+        # backlog longer than the TTL from letting a second chain start; once
+        # the backlog drains, a conclusive search frees a dead chain's claim.
         claims.clear_pipeline_chain_missing(token)
-        return "renewed" if claims.renew_pipeline_chain(token, market=market) else "lost"
+        renewed = claims.renew_pipeline_chain(token, market=market)
+        if not renewed:
+            return "lost"
+        return "renewed" if verdict == "alive" else "renewed_unknown"
     if (
         verdict == "missing"
         and claims.pipeline_chain_missing_seconds(token) < PIPELINE_CHAIN_MISSING_RELEASE_SECONDS
@@ -443,9 +450,11 @@ def renew_daily_market_pipeline_claims() -> dict:
     errback), the chain finished, or heartbeats found no trace of it for
     PIPELINE_CHAIN_MISSING_RELEASE_SECONDS. Chains whose states do not decide
     share one broker search, bounded like the Schedules page's
-    (``still_in_broker``). A market whose check raises, or whose search runs
-    out of budget, keeps its claim until the next beat or
-    PIPELINE_CHAIN_TTL_SECONDS.
+    (``still_in_broker``); a search that runs out of budget or cannot read
+    the broker renews the claim, since it proved nothing gone. A market whose
+    check raises keeps its claim, unrenewed, until the next beat or
+    PIPELINE_CHAIN_TTL_SECONDS: an error that never clears must not hold a
+    market forever.
 
     A stage killed with its worker (OOM, SIGKILL), or whose retry message was
     lost, keeps its STARTED/PROGRESS/RETRY state until its result expires
@@ -483,10 +492,8 @@ def renew_daily_market_pipeline_claims() -> dict:
     # read a live chain as missing.
     in_broker = still_in_broker(undecided, cache=False) if undecided else {}
     for market, (token, task_ids, verdict) in checks.items():
-        verdict = verdict or _broker_verdict(task_ids, in_broker)
-        if verdict is None:
-            outcomes[market] = "unknown"
-            continue
+        # None: the search ran out of budget or the broker was unreadable.
+        verdict = verdict or _broker_verdict(task_ids, in_broker) or "unknown"
         try:
             outcomes[market] = _apply_chain_verdict(claims, market, token, verdict)
         except Exception:

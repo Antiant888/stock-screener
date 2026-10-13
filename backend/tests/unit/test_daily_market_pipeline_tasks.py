@@ -660,23 +660,37 @@ def test_a_live_heartbeat_resets_the_missing_clock(monkeypatch):
     assert claims.holders["US"]["task_id"] == token
 
 
-def test_a_broker_search_out_of_budget_keeps_the_claim(monkeypatch):
+def test_a_broker_search_out_of_budget_renews_the_claim(monkeypatch):
     # still_in_broker answers None when the broker is unreadable or the
-    # backlog is too big to search in its budget: keep the claim and do not
-    # start the missing clock.
+    # backlog is too big to search in its budget. A stage buried that deep is
+    # likely still queued, so renew: only renewing keeps a backlog longer than
+    # the 48h TTL from letting a second chain start. A conclusive search once
+    # the backlog drains frees a dead chain's claim.
     from app.tasks.workload_coordination import PIPELINE_CHAIN_HEARTBEAT_SECONDS
 
-    module, claims, token, _ = _dispatched_chain(monkeypatch, states={})
-    monkeypatch.setattr(
-        "app.services.task_registry_service.still_in_broker",
-        lambda task_ids, *, cache=True: {task_id: None for task_id in task_ids},
-    )
+    from app.services import task_registry_service as registry
 
+    module, claims, token, _ = _dispatched_chain(monkeypatch, states={})
+    real_search = registry.still_in_broker  # the fake that finds nothing
+    inconclusive = {"on": False}
+
+    def search(task_ids, *, cache=True):
+        if inconclusive["on"]:
+            return {task_id: None for task_id in task_ids}
+        return real_search(task_ids, cache=cache)
+
+    monkeypatch.setattr("app.services.task_registry_service.still_in_broker", search)
+
+    # One miss starts the missing clock...
+    assert module.renew_daily_market_pipeline_claims.run()["claims"] == {"US": "missing"}
+    inconclusive["on"] = True
     for _beat in range(3):
-        assert module.renew_daily_market_pipeline_claims.run()["claims"] == {"US": "unknown"}
         claims.clock += PIPELINE_CHAIN_HEARTBEAT_SECONDS
-    assert claims.holders["US"]["task_id"] == token
+        assert module.renew_daily_market_pipeline_claims.run()["claims"] == {"US": "renewed_unknown"}
+    assert claims.renewed == [("US", token)] * 3
+    # ...which an inconclusive search clears, since it proved nothing gone.
     assert claims.missing_since == {}
+    assert claims.holders["US"]["task_id"] == token
 
 
 def test_undecided_chains_share_one_fresh_broker_search(monkeypatch):
