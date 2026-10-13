@@ -157,6 +157,31 @@ RUN_LOST_AFTER = timedelta(seconds=celery_app.conf.task_time_limit) + timedelta(
 _TRACKED_ORIGINS = frozenset({'manual', 'scheduled'})
 
 
+def _still_in_broker(task_id: Optional[str]) -> Optional[bool]:
+    """Whether a never-started run's message is still in the broker: in a
+    queue list, or prefetched by a worker that died (kombu's ``unacked`` hash,
+    restored to its queue after the visibility timeout). None if unreadable.
+    """
+    if not task_id:
+        return False
+    # Lazy: operations_job_service imports this module.
+    from .operations_job_service import OperationsJobService
+
+    needle = task_id.encode()
+    try:
+        ops = OperationsJobService()
+        broker = ops._broker()
+        for queue_name in [*ops.broker_queue_names(), 'social_ingestion']:
+            if any(needle in raw for raw in broker.lrange(queue_name, 0, -1)):
+                return True
+        # ponytail: substring match on the task id (a UUID) instead of
+        # decoding each message; ids do not collide with other content.
+        return any(needle in raw for raw in broker.hvals('unacked'))
+    except Exception:
+        logger.warning("Could not read the broker for run %s", task_id, exc_info=True)
+        return None
+
+
 def _result_summary(result: Any, task_id: str) -> Optional[Dict[str, Any]]:
     """A task's dict result as JSON, or None (PostgreSQL JSON rejects NaN).
 
@@ -397,11 +422,18 @@ class TaskRegistryService:
             if last_run:
                 status = last_run.status
                 started_at = _coerce_utc_datetime(last_run.started_at)
+                lost_from = still_queued = None
                 if (
                     status not in _FINISHED_STATUSES
                     and started_at
                     and datetime.now(timezone.utc) - started_at > RUN_LOST_AFTER
                 ):
+                    # A queued row was never picked up (a worker flips it to
+                    # running at prerun). Its message may still be waiting,
+                    # and a second Run would then run the job twice.
+                    lost_from = 'queued' if status == 'queued' else 'running'
+                    if lost_from == 'queued':
+                        still_queued = _still_in_broker(last_run.task_id)
                     status = 'lost'
                 task_data['last_run'] = {
                     'id': last_run.id,
@@ -413,6 +445,8 @@ class TaskRegistryService:
                     'triggered_by': last_run.triggered_by,
                     'error_message': last_run.error_message,
                     'detail': _skip_detail(last_run.result_summary) if status == 'skipped' else None,
+                    'lost_from': lost_from,
+                    'still_queued': still_queued,
                 }
 
             result.append(task_data)

@@ -493,16 +493,79 @@ def test_dispatch_error_does_not_overwrite_a_run_the_worker_already_started(db_s
     assert row.status == "running"
 
 
-def _open_cleanup_run(db_session, *, age):
+def _open_cleanup_run(db_session, *, age, status="running"):
+    task_id = str(uuid4())
     db_session.add(TaskExecutionHistory(
         task_name="monthly-price-data-cleanup",
         task_function="app.tasks.cache_tasks.cleanup_old_price_data",
-        task_id=str(uuid4()),
-        status="running",
+        task_id=task_id,
+        status=status,
         started_at=datetime.now(timezone.utc) - age,
-        triggered_by="auto",
+        triggered_by="auto" if status == "running" else "manual",
     ))
     db_session.commit()
+    return task_id
+
+
+class _Broker:
+    def __init__(self, queues=None, unacked=None, error=None):
+        self.queues, self.unacked, self.error = queues or {}, unacked or [], error
+
+    def lrange(self, name, _start, _end):
+        if self.error:
+            raise self.error
+        return self.queues.get(name, [])
+
+    def hvals(self, name):
+        assert name == "unacked"
+        return self.unacked
+
+
+def _lost_run_with_broker(db_session, broker, *, status="queued", message_for=None):
+    task_id = _open_cleanup_run(db_session, age=timedelta(hours=26), status=status)
+    if message_for:
+        message_for(broker, f'{{"headers": {{"id": "{task_id}"}}}}'.encode())
+    with patch(
+        "app.services.operations_job_service.OperationsJobService._broker", return_value=broker
+    ) as read_broker:
+        run = _last_run(db_session, "monthly-price-data-cleanup")
+    return run, read_broker
+
+
+def test_lost_run_that_never_started_and_is_still_queued_reports_it(db_session):
+    broker = _Broker()
+    run, _ = _lost_run_with_broker(
+        db_session, broker, message_for=lambda b, raw: b.queues.setdefault("celery", []).append(raw)
+    )
+
+    assert (run["status"], run["lost_from"], run["still_queued"]) == ("lost", "queued", True)
+
+
+def test_lost_run_prefetched_by_a_dead_worker_counts_as_still_queued(db_session):
+    # kombu restores an unacked message to its queue after the visibility timeout.
+    broker = _Broker()
+    run, _ = _lost_run_with_broker(db_session, broker, message_for=lambda b, raw: b.unacked.append(raw))
+
+    assert run["still_queued"] is True
+
+
+def test_lost_run_that_never_started_and_whose_message_is_gone_can_rerun(db_session):
+    run, _ = _lost_run_with_broker(db_session, _Broker())
+
+    assert (run["lost_from"], run["still_queued"]) == ("queued", False)
+
+
+def test_lost_run_reports_unknown_queue_state_when_the_broker_is_unreadable(db_session):
+    run, _ = _lost_run_with_broker(db_session, _Broker(error=ConnectionError("down")))
+
+    assert (run["lost_from"], run["still_queued"]) == ("queued", None)
+
+
+def test_lost_run_that_started_does_not_read_the_broker(db_session):
+    run, read_broker = _lost_run_with_broker(db_session, _Broker(), status="running")
+
+    assert (run["status"], run["lost_from"], run["still_queued"]) == ("lost", "running", None)
+    read_broker.assert_not_called()
 
 
 def test_run_killed_at_the_hard_time_limit_is_still_reconcilable_not_lost(db_session):
