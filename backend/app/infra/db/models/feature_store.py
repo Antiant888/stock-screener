@@ -12,8 +12,6 @@ Tables:
     stock_feature_daily       — Per-symbol screening scores
     feature_run_pointers      — Atomic publish pointers (e.g. 'latest_published')
 """
-import math
-
 from sqlalchemy import (
     Boolean, Column, Integer, Float, Text, Date, DateTime, JSON,
     ForeignKey, Index, event, false, inspect,
@@ -197,18 +195,14 @@ HOT_TEXT_FIELDS = ("ibd_industry_group", "gics_sector")
 
 
 def _hot_number(value):
-    """``value`` as PostgreSQL's ``CAST(details ->> key AS FLOAT)`` reads it."""
-    if isinstance(value, bool):
+    """``value`` as PostgreSQL's ``CAST(details ->> key AS FLOAT)`` reads it,
+    with NULL where that cast would fail the whole query or overflow."""
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
         return None
-    if isinstance(value, (int, float)):
-        return float(value) if math.isfinite(value) else None
-    if isinstance(value, str):
-        try:
-            number = float(value)
-        except ValueError:
-            return None
-        return number if math.isfinite(number) else None
-    return None
+    try:
+        return float(value)
+    except (ValueError, OverflowError):
+        return None
 
 
 def derived_details_columns(details) -> dict:

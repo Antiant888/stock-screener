@@ -23,11 +23,13 @@ from sqlalchemy.orm.attributes import flag_modified
 from app.database import Base
 from app.domain.common.query import (
     CategoricalFilter,
+    FilterMode,
     FilterSpec,
     PageSpec,
     RangeFilter,
     SortOrder,
     SortSpec,
+    TextSearchFilter,
 )
 from app.domain.feature_store.models import FeatureRowWrite
 from app.domain.scanning.filter_expression_model import FilterExpression, QuerySpec
@@ -69,6 +71,7 @@ def _details(symbol: str) -> dict:
         "adr_percent": adr,
         "ibd_industry_group": group,
         "gics_sector": sector,
+        "avg_dollar_volume": rs * 1e6,
         "setup_engine": {"setup_score": rs / 10, **SETUP_PAYLOAD},
     }
     if beta is not None:
@@ -396,6 +399,20 @@ def test_inserting_a_row_stores_its_hot_fields(session):
     }
 
 
+@pytest.mark.parametrize(
+    ("raw", "stored"),
+    [
+        # Beyond float range: must not fail the snapshot batch.
+        pytest.param(10**400, None, id="overflow"),
+        ("NaN", "nan"),  # PostgreSQL casts these strings too
+        ("-Infinity", "-inf"),
+    ],
+)
+def test_hot_numbers_follow_postgresql_casts(raw, stored):
+    value = derived_details_columns({"beta": raw})["beta"]
+    assert (value if value is None else str(value)) == stored
+
+
 def test_replacing_details_refreshes_the_hot_fields(session):
     """Group enrichment rewrites ``details_json`` on published rows."""
     row = StockFeatureDaily(
@@ -457,6 +474,29 @@ def test_sorting_on_a_hot_field_keeps_missing_values_last(session, run_id):
         assert symbols == expected, order
 
 
+@pytest.mark.parametrize(
+    ("condition", "expected"),
+    [
+        (RangeFilter("listing_aware_volume", min_value=80e6), ("AAPL", "MSFT", "XOM")),
+        (
+            CategoricalFilter("gics_sector", values=("Technology",), mode=FilterMode.EXCLUDE),
+            ("GOOGL", "XOM"),
+        ),
+        (TextSearchFilter("ibd_industry_group", "soft"), ("GOOGL", "MSFT")),
+    ],
+    ids=["listing_aware_volume", "exclude", "text_search"],
+)
+def test_filters_with_their_own_null_handling(session, run_id, sql, condition, expected):
+    symbols, _total = SqlFeatureStoreRepository(session).query_run_symbols(
+        run_id,
+        FilterExpression(required_conditions=(condition,)),
+        SortSpec(field="symbol", order=SortOrder.ASC),
+    )
+
+    assert symbols == expected
+    _assert_reads_expected_column(session, sql)
+
+
 def test_migration_adds_exactly_the_model_hot_columns():
     path = (
         Path(__file__).parents[2]
@@ -469,3 +509,18 @@ def test_migration_adds_exactly_the_model_hot_columns():
     assert migration._NUMERIC_COLUMNS == HOT_NUMERIC_FIELDS
     assert migration._TEXT_COLUMNS == HOT_TEXT_FIELDS
     assert set(migration._INDEXED_COLUMNS) <= {*HOT_NUMERIC_FIELDS, *HOT_TEXT_FIELDS}
+
+    # It drops exactly 0064's indexes on promoted fields, as 0064 defined them.
+    table_details = importlib.util.module_from_spec(
+        spec := importlib.util.spec_from_file_location(
+            "_table_details_migration",
+            path.with_name("20261011_0064_feature_table_details.py"),
+        )
+    )
+    spec.loader.exec_module(table_details)
+    promoted = {
+        name: expression
+        for name, expression in table_details._INDEXES.items()
+        if name.removeprefix("ix_sfd_td_") in (*HOT_NUMERIC_FIELDS, *HOT_TEXT_FIELDS)
+    }
+    assert migration._SUPERSEDED_INDEXES == promoted
