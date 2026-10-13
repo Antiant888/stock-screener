@@ -691,6 +691,7 @@ def test_no_signal_posts_finish_without_an_llm_call(backlog, value):
     replace(post(1), text="Look at MU here"),
     replace(post(1), text="Tencent 0700.HK looks heavy"),
     replace(post(1), text="F cuts EV spending"),
+    replace(post(1), text="3008.TWO rallies"),
     replace(post(1), text="雷军说小米汽车订单很多"),
     replace(post(1), text="this chart", attachments=(SocialAttachmentRef("image", "https://pbs.twimg.com/a.jpg"),)),
     replace(post(1), text="agreed", quoted_text="$AAA beats"),
@@ -703,6 +704,7 @@ def test_posts_with_a_ticker_name_or_attachment_still_reach_the_llm(backlog, val
         db.add(StockUniverse(symbol="MU", name="Micron Technology Inc", market="US", exchange="NASDAQ", is_active=True))
         db.add(StockUniverse(symbol="0700.HK", name="TENCENT", market="HK", exchange="HKEX", is_active=True))
         db.add(StockUniverse(symbol="F", name="Ford Motor Co", market="US", exchange="NYSE", is_active=True))
+        db.add(StockUniverse(symbol="3008.TWO", name="LARGAN", market="TW", exchange="TPEX", is_active=True))
     configure_budget(backlog)
     llm = FakeLLM()
     worker = processor(backlog, llm)
@@ -713,8 +715,8 @@ def test_posts_with_a_ticker_name_or_attachment_still_reach_the_llm(backlog, val
     assert llm.calls == 1
 
 
-def test_a_no_signal_skip_reopens_once_the_universe_lists_the_ticker(backlog):
-    """A skip made before a listing loaded must not stick once the post names it."""
+def test_a_no_signal_skip_yields_new_work_once_the_universe_lists_the_ticker(backlog):
+    """A skip made before a listing loaded must not stick, nor change under runs that saved it."""
     from app.infra.db.models.social_analysis import SocialExtractionWork
     from app.models.stock_universe import StockUniverse
 
@@ -726,9 +728,15 @@ def test_a_no_signal_skip_reopens_once_the_universe_lists_the_ticker(backlog):
         db.add(StockUniverse(symbol="ZZZ", name="Zeta Cooling Inc", market="US", exchange="NASDAQ", is_active=True))
     worker = processor(backlog, llm)
 
-    assert worker.enqueue(1, value, selected_model="synthetic/requested", now=NOW) == work_id
+    new_id = worker.enqueue(1, value, selected_model="synthetic/requested", now=NOW)
     asyncio.run(worker.execute(NOW, 1))
 
-    assert llm.calls == 1
+    assert new_id != work_id and llm.calls == 1
     with backlog() as db:
-        assert db.get(SocialExtractionWork, work_id).error_code is None
+        skipped, extracted = db.get(SocialExtractionWork, work_id), db.get(SocialExtractionWork, new_id)
+        assert (skipped.state, skipped.error_code) == ("succeeded", "skipped:no_signal")
+        assert (extracted.state, extracted.error_code) == ("succeeded", None)
+    # Still no signal for a post that names nothing: the saved skip is reused.
+    quiet = replace(post(2), text="good morning")
+    first = enqueue(backlog, worker, quiet)
+    assert worker.enqueue(2, quiet, selected_model="synthetic/requested", now=NOW) == first

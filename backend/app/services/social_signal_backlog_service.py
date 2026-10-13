@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 
 NO_SIGNAL_GATE = "no_signal_gate"
 _WORD = re.compile(r"\w+")
-_SYMBOL = re.compile(r"[A-Za-z0-9]+(?:[.\-][A-Za-z]{1,2})?")  # MU, BRK.B, 0700.HK
+_SYMBOL = re.compile(r"[A-Za-z0-9]+(?:[.\-][A-Za-z]{1,3}\b)?")  # MU, BRK.B, 0700.HK, 3008.TWO
 _CJK = re.compile(r"[぀-ヿ㐀-鿿가-힯]")
 
 
@@ -247,28 +247,37 @@ class ProcessSocialBacklog:
                 run = db.get(SocialSignalRun, run_id)
                 if run is None or run.status != "running":
                     raise ValueError("terminal_or_missing_social_run")
-            work = db.scalar(select(SocialExtractionWork).where(
-                SocialExtractionWork.content_item_id == content_item_id,
-                SocialExtractionWork.input_hash == input_hash,
-                SocialExtractionWork.prompt_version == prompt_version,
-                SocialExtractionWork.schema_version == schema_version,
-                SocialExtractionWork.selected_model == selected_model))
-            if work is not None and work.error_code == SKIPPED_NO_SIGNAL and self._has_signal(db, post):
-                # The universe has since listed something the post names; extract it after all.
-                work.state, work.error_code, work.result_json = "pending", None, None
-                work.actual_provider = work.actual_model = None
-                work.updated_at = now
+            def saved(model):
+                return db.scalar(select(SocialExtractionWork).where(
+                    SocialExtractionWork.content_item_id == content_item_id,
+                    SocialExtractionWork.input_hash == input_hash,
+                    SocialExtractionWork.prompt_version == prompt_version,
+                    SocialExtractionWork.schema_version == schema_version,
+                    SocialExtractionWork.selected_model == model))
+            work = saved(selected_model)
+            if work is None:
+                # Gate skips carry their own model identity and are never rewritten: runs
+                # that saved one keep it, and a post that gains signal (the universe now
+                # lists what it names) gets separate LLM work.
+                skipped = saved(NO_SIGNAL_GATE)
+                if not self._has_signal(db, post):
+                    work = skipped
+                    if work is None:
+                        # Saved as an empty judgment, so readiness and replays treat it like any result.
+                        result = ExtractionResult(input_hash, NO_SIGNAL_GATE, NO_SIGNAL_GATE, prompt_version,
+                            schema_version, (), None, None, (ExtractionPostJudgment(post.provider_post_id, False, None),))
+                        work = SocialExtractionWork(content_item_id=content_item_id, input_hash=input_hash,
+                            prompt_version=prompt_version, schema_version=schema_version,
+                            selected_model=NO_SIGNAL_GATE, input_snapshot_json=snapshot,
+                            actual_provider=NO_SIGNAL_GATE, actual_model=NO_SIGNAL_GATE,
+                            result_json=asdict(result), error_code=SKIPPED_NO_SIGNAL,
+                            state="succeeded", created_at=now, updated_at=now)
             if work is None:
                 work = SocialExtractionWork(content_item_id=content_item_id, input_hash=input_hash,
                     prompt_version=prompt_version, schema_version=schema_version,
                     selected_model=selected_model, input_snapshot_json=snapshot,
                     state="pending", created_at=now, updated_at=now)
-                if not self._has_signal(db, post):
-                    # Saved as an empty judgment, so readiness and replays treat it like any result.
-                    result = ExtractionResult(input_hash, NO_SIGNAL_GATE, NO_SIGNAL_GATE, prompt_version,
-                        schema_version, (), None, None, (ExtractionPostJudgment(post.provider_post_id, False, None),))
-                    work.state, work.error_code, work.result_json = "succeeded", SKIPPED_NO_SIGNAL, asdict(result)
-                    work.actual_provider = work.actual_model = NO_SIGNAL_GATE
+            if work.id is None:
                 db.add(work)
                 db.flush()
             if run_id and db.get(SocialRunWork, (run_id, work.id)) is None:
