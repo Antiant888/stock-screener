@@ -275,6 +275,9 @@ describe('OperationsPage', () => {
         () => expect(screen.getAllByText(/Couldn't refresh\. Showing the last known status from/)).toHaveLength(4),
         { timeout: 4000 },
       );
+      // With the date: data from yesterday must not read as today's.
+      expect(screen.getAllByText(new RegExp(new Date().toLocaleDateString().replace(/[.*+?^${}()|[\]\\/]/g, '\\$&')))
+        .length).toBeGreaterThanOrEqual(4);
       // The lease holder from the last success is still shown, not hidden.
       expect(screen.getAllByText(/task-fetch-us/).length).toBeGreaterThan(0);
       expect(screen.queryByText('Failed to load Operations job inventory.')).not.toBeInTheDocument();

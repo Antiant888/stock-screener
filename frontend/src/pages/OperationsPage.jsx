@@ -490,7 +490,8 @@ function JobsData({ query, children }) {
       {query.isError && (
         <Typography variant="caption" color="warning.main" sx={{ display: 'block', mb: 1 }}>
           Couldn&apos;t refresh. Showing the last known status from{' '}
-          {new Date(query.dataUpdatedAt).toLocaleTimeString()}.
+          {/* Date and time: the last data can be from yesterday (an open tab). */}
+          {formatTimestamp(new Date(query.dataUpdatedAt).toISOString())}.
         </Typography>
       )}
       {children}
