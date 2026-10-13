@@ -11,7 +11,9 @@ from ...schemas.operations import (
     OperationsCancelJobRequest,
     OperationsCancelJobResponse,
     OperationsJobsResponse,
+    OperationsReleaseChainRequest,
 )
+from ...tasks.market_queues import normalize_market
 from ...services.cot_operations_service import CotOperationsService
 from ...services.operations_job_service import OperationsJobService
 from ...services.social_signal_operations_service import SocialSignalOperationsService
@@ -42,6 +44,20 @@ def cancel_operations_job(
     if result["status"] == "conflict":
         raise HTTPException(status_code=409, detail=result["message"])
     return OperationsCancelJobResponse(**result)
+
+
+@router.post("/pipeline-chains/{market}/release", response_model=OperationsCancelJobResponse)
+def release_pipeline_chain(
+    market: str,
+    body: OperationsReleaseChainRequest,
+    db: Session = Depends(get_db),
+) -> OperationsCancelJobResponse:
+    """Release a market's daily pipeline chain claim if ``body.token`` holds it."""
+    try:
+        market = normalize_market(market)
+    except ValueError:
+        raise HTTPException(status_code=422, detail=f"Unknown market: {market}")
+    return OperationsCancelJobResponse(**_service.release_pipeline_chain(db, market, body.token))
 
 
 @router.get("/social-signals")

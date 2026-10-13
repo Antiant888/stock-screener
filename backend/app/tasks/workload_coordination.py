@@ -192,6 +192,12 @@ class WorkloadCoordination:
     def get_pipeline_chain_holder(self, market: Optional[str]) -> Optional[Dict[str, Any]]:
         return self._holder(_pipeline_chain_key(market))
 
+    def get_pipeline_chain_holders(self) -> dict[str, Optional[Dict[str, Any]]]:
+        return {
+            normalize_market(market): self.get_pipeline_chain_holder(market)
+            for market in SUPPORTED_MARKETS
+        }
+
     def get_market_workload_holders(self) -> dict[str, Optional[Dict[str, Any]]]:
         holders: dict[str, Optional[Dict[str, Any]]] = {}
         for market in SUPPORTED_MARKETS:

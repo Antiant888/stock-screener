@@ -109,6 +109,32 @@ async def test_operations_cancel_endpoint_returns_service_payload(client, monkey
 
 
 @pytest.mark.asyncio
+async def test_release_pipeline_chain_endpoint_passes_the_token_and_rejects_unknown_markets(client, monkeypatch):
+    from app.api.v1 import operations as module
+    from app.services import server_auth
+
+    seen = []
+    monkeypatch.setattr(server_auth.settings, "server_auth_enabled", False)
+    monkeypatch.setattr(
+        module._service,
+        "release_pipeline_chain",
+        lambda _db, market, token: seen.append((market, token)) or {
+            "status": "accepted", "cancel_strategy": "release_pipeline_chain", "message": "ok",
+        },
+    )
+    app.dependency_overrides[get_db] = lambda: _FakeDb()
+    try:
+        ok = await client.post("/api/v1/operations/pipeline-chains/us/release", json={"token": "tok-1"})
+        unknown = await client.post("/api/v1/operations/pipeline-chains/zz/release", json={"token": "tok-1"})
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+    assert ok.status_code == 200
+    assert seen == [("US", "tok-1")]
+    assert unknown.status_code == 422
+
+
+@pytest.mark.asyncio
 async def test_operations_cancel_endpoint_returns_409_when_the_job_moved(client, monkeypatch):
     from app.api.v1 import operations as module
     from app.services import server_auth

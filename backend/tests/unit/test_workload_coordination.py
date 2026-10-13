@@ -280,3 +280,15 @@ def test_pipeline_chain_holder_reads_token_and_start():
     assert holder["task_id"] == "token-1"
     assert holder["started_at"] == "2026-03-16T20:30:00+00:00"
     mock_redis.get.assert_called_with("pipeline_chain:us")
+
+
+def test_pipeline_chain_holders_cover_every_market():
+    from app.tasks.market_queues import SUPPORTED_MARKETS
+
+    coordination, mock_redis, _ = _make_coordination()
+    mock_redis.get.return_value = None
+
+    holders = coordination.get_pipeline_chain_holders()
+
+    assert set(holders) == {m.upper() for m in SUPPORTED_MARKETS}
+    assert all(holder is None for holder in holders.values())

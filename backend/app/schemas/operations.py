@@ -45,6 +45,8 @@ class OperationsWorkerStatus(BaseModel):
 class OperationsLeaseSnapshot(BaseModel):
     external_fetch_global: dict[str, Any] | None = None
     market_workload: dict[str, dict[str, Any] | None] = Field(default_factory=dict)
+    # Held daily pipeline chain claims by market (task_id is the claim token).
+    pipeline_chain: dict[str, dict[str, Any]] = Field(default_factory=dict)
 
 
 class OperationsJobsResponse(BaseModel):
@@ -53,6 +55,11 @@ class OperationsJobsResponse(BaseModel):
     workers: list[OperationsWorkerStatus] = Field(default_factory=list)
     leases: OperationsLeaseSnapshot = Field(default_factory=OperationsLeaseSnapshot)
     generated_at: str
+
+
+class OperationsReleaseChainRequest(BaseModel):
+    # The claim token the operator saw; another chain's claim is never freed.
+    token: str
 
 
 class OperationsCancelJobRequest(BaseModel):

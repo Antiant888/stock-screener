@@ -887,3 +887,101 @@ def test_scan_cancel_resolves_scan_id_from_task_id_for_lease_only_rows():
 
     assert result["status"] == "accepted"
     assert cancelled == ["scan-009"]
+
+
+RELEASE = "app.tasks.daily_market_pipeline_tasks.release_daily_market_pipeline_claim"
+
+
+def _stage_message(task_id, task_name, *, kwargs=None, errbacks=None, chain=None) -> bytes:
+    body = base64.b64encode(json.dumps(
+        [[], kwargs or {}, {"callbacks": None, "errbacks": errbacks, "chain": chain, "chord": None}]
+    ).encode()).decode()
+    return json.dumps({
+        "body": body,
+        "headers": {"id": task_id, "task": task_name},
+        "properties": {"correlation_id": task_id, "body_encoding": "base64"},
+    }).encode()
+
+
+def _release_sig(market="US", token="tok-1"):
+    return {"task": RELEASE, "args": [], "kwargs": {"market": market, "token": token}, "immutable": True}
+
+
+def _remove(raw, queue="data_fetch_us", task_id="stage-1"):
+    service = OperationsJobService()
+    broker = _FakeBroker({queue: [raw]})
+    service._broker = lambda: broker
+    with patch.object(service, "broker_queue_names", return_value=[queue]), patch(
+        "app.services.operations_job_service.celery_app.control.revoke"
+    ), patch("app.services.operations_job_service.get_workload_coordination") as coordination:
+        removed, _ = service._remove_queued_task(task_id=task_id)
+    return removed, coordination.return_value
+
+
+def test_removing_a_queued_pipeline_stage_releases_its_chain_claim():
+    # Revoking a queued stage fires no errback, so without this the market's
+    # pipeline reads Skipped until the claim's 20h expiry (#602).
+    raw = _stage_message(
+        "stage-1", "app.tasks.cache_tasks.smart_refresh_cache",
+        kwargs={"market": "US"}, errbacks=[_release_sig()],
+    )
+
+    removed, coordination = _remove(raw)
+
+    assert removed is True
+    coordination.release_pipeline_chain.assert_called_once_with("tok-1", market="US")
+
+
+def test_removing_the_queued_release_stage_itself_releases_the_claim():
+    raw = _stage_message("stage-1", RELEASE, kwargs={"market": "HK", "token": "tok-9"})
+
+    _, coordination = _remove(raw, queue="market_jobs_hk")
+
+    coordination.release_pipeline_chain.assert_called_once_with("tok-9", market="HK")
+
+
+def test_removing_an_ordinary_queued_task_releases_no_claim():
+    raw = _stage_message("stage-1", "app.tasks.cache_tasks.cleanup_orphaned_scans")
+
+    _, coordination = _remove(raw, queue="celery")
+
+    coordination.release_pipeline_chain.assert_not_called()
+
+
+def test_a_failed_claim_release_does_not_undo_the_removal():
+    raw = _stage_message("stage-1", "app.tasks.cache_tasks.smart_refresh_cache", errbacks=[_release_sig()])
+    service = OperationsJobService()
+    broker = _FakeBroker({"data_fetch_us": [raw]})
+    service._broker = lambda: broker
+    with patch.object(service, "broker_queue_names", return_value=["data_fetch_us"]), patch(
+        "app.services.operations_job_service.celery_app.control.revoke"
+    ), patch("app.services.operations_job_service.get_workload_coordination") as coordination:
+        coordination.return_value.release_pipeline_chain.side_effect = ConnectionError("redis down")
+        removed, _ = service._remove_queued_task(task_id="stage-1")
+
+    assert removed is True
+    assert broker.messages_by_queue["data_fetch_us"] == []
+
+
+def test_operator_release_is_owner_checked_and_audited():
+    service = OperationsJobService()
+    audit = MagicMock()
+    service._record_cancel_action = audit
+    with patch("app.services.operations_job_service.get_workload_coordination") as coordination:
+        coordination.return_value.release_pipeline_chain.side_effect = [True, False]
+        first = service.release_pipeline_chain(MagicMock(), "US", "tok-1")
+        second = service.release_pipeline_chain(MagicMock(), "US", "tok-1")
+
+    assert (first["status"], second["status"]) == ("accepted", "blocked")
+    coordination.return_value.release_pipeline_chain.assert_called_with("tok-1", market="US")
+    assert [c.kwargs["outcome"] for c in audit.call_args_list] == ["accepted", "blocked"]
+    assert audit.call_args.kwargs["strategy"] == "release_pipeline_chain"
+
+
+def test_lease_snapshot_lists_only_held_chain_claims():
+    holder = {"task_name": "daily_market_pipeline", "task_id": "tok-1", "started_at": "x", "ttl_seconds": 100}
+    with patch("app.services.operations_job_service.get_workload_coordination") as coordination:
+        coordination.return_value.get_pipeline_chain_holders.return_value = {"US": holder, "HK": None}
+        snapshot = OperationsJobService()._lease_snapshot()
+
+    assert snapshot["pipeline_chain"] == {"US": holder}
