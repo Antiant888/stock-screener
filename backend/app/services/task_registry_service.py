@@ -22,6 +22,7 @@ from .errors import TaskCooldownError
 from ..tasks.market_queues import (
     SHARED_DATA_FETCH_QUEUE,
     SUPPORTED_MARKETS,
+    data_fetch_queue_for_market,
     market_jobs_queue_for_market,
 )
 
@@ -56,6 +57,46 @@ def _weekly_universe_task_definitions() -> Dict[str, Dict]:
             'manual_dispatch_kwargs': {'market': market},
             'manual_dispatch_headers': {'origin': 'manual'},
             'manual_dispatch_options': {'queue': SHARED_DATA_FETCH_QUEUE},
+        }
+    return entries
+
+
+_CRON_DAY_NAMES = ('Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday')
+
+
+def _weekly_at(day: int, hour: int) -> str:
+    """'Saturday 8:00 AM ET' from crontab day_of_week (0 = Sunday) and hour."""
+    return f"{_CRON_DAY_NAMES[day % 7]} {hour % 12 or 12}:00 {'AM' if hour < 12 else 'PM'} ET"
+
+
+def _weekly_refresh_task_definitions() -> Dict[str, Dict]:
+    """One entry per market, matching the per-market Beat fanout, so each
+    market's run is its own last run: a failed US run is no longer hidden by
+    a later HK success (#591)."""
+    entries: Dict[str, Dict] = {}
+    for market in SUPPORTED_MARKETS:
+        common = {
+            'manual_dispatch_kwargs': {'market': market},
+            'manual_dispatch_headers': {'origin': 'manual'},
+            'manual_dispatch_options': {'queue': data_fetch_queue_for_market(market)},
+        }
+        entries[f'weekly-full-refresh-{market.lower()}'] = {
+            'task_function': 'app.tasks.cache_tasks.weekly_full_refresh',
+            'display_name': f'Weekly Full Refresh ({market})',
+            'description': 'Clears the market\'s Redis caches and re-fetches fresh data',
+            'schedule_description': (
+                f'{_weekly_at(settings.cache_weekly_day, settings.cache_weekly_hour)} ({market})'
+            ),
+            **common,
+        }
+        entries[f'weekly-fundamental-refresh-{market.lower()}'] = {
+            'task_function': 'app.tasks.fundamentals_tasks.refresh_all_fundamentals',
+            'display_name': f'Weekly Fundamental Refresh ({market})',
+            'description': 'Fetches PE, EPS, revenue, margins for the market\'s stocks',
+            'schedule_description': (
+                f'{_weekly_at(settings.fundamental_refresh_day, settings.fundamental_refresh_hour)} ({market})'
+            ),
+            **common,
         }
     return entries
 
@@ -95,12 +136,6 @@ SCHEDULED_TASKS = {
         'description': 'Deletes cancelled and stale scans',
         'schedule_description': 'Sunday 2:00 AM ET',
     },
-    'weekly-full-refresh': {
-        'task_function': 'app.tasks.cache_tasks.weekly_full_refresh',
-        'display_name': 'Weekly Full Refresh',
-        'description': 'Clears all Redis caches and re-fetches fresh data',
-        'schedule_description': f'Sunday {settings.cache_weekly_hour}:00 AM ET',
-    },
     # ===== WEEKDAYS (After Market Close) =====
     **_daily_market_pipeline_task_definitions(),
     'daily-us-options-analytics': {
@@ -116,12 +151,21 @@ SCHEDULED_TASKS = {
         'enabled_setting': 'options_analytics_enabled',
     },
 
-    # ===== FRIDAY =====
-    'weekly-fundamental-refresh': {
-        'task_function': 'app.tasks.fundamentals_tasks.refresh_all_fundamentals',
-        'display_name': 'Weekly Fundamental Refresh',
-        'description': 'Fetches PE, EPS, revenue, margins for all stocks',
-        'schedule_description': f'Friday {settings.fundamental_refresh_hour}:00 PM ET',
+    # ===== WEEKLY, PER MARKET (cache: Sunday; fundamentals: Saturday) =====
+    **_weekly_refresh_task_definitions(),
+    # The unscoped run is the only one that removes orphaned price-cache keys
+    # and expired telemetry events (weekly_full_refresh does both only when
+    # market is None); Beat runs per market, so this is its manual trigger.
+    # Per-market runs match their own entries first in _registry_entry_for,
+    # so only market=None runs land here.
+    'weekly-full-refresh': {
+        'task_function': 'app.tasks.cache_tasks.weekly_full_refresh',
+        'display_name': 'Weekly Full Refresh (all markets)',
+        'description': (
+            'Refreshes every market and also removes orphaned cache keys and '
+            'expired telemetry events, which per-market runs skip'
+        ),
+        'schedule_description': 'Manual only',
     },
 
     # ===== MONTHLY =====
