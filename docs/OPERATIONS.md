@@ -185,9 +185,9 @@ Every action asks for confirmation first:
 | **Force cancel** / **Force release** | Releases locks while the worker may still be running. Use only when the worker is dead. |
 
 - If the job changed state after the page loaded, the cancel is refused ("Job moved to …, refresh and retry") and nothing changes.
-- After an accepted cancel, the row reads **Cancel requested** until the job leaves the console (unless the result could not be recorded; see below).
+- After an accepted cancel, the row reads **Cancel requested** until the job leaves the console.
 - Cancelling a queued Daily Market Pipeline stage ends the chain and releases its claim.
-- Every action, including a chain claim release, is recorded in the audit log before it acts. If that record can't be written, the action is refused and nothing changes. If the result can't be recorded afterwards, the console still shows the real result.
+- Every action, including a chain claim release, is recorded in the audit log before it acts. If that record can't be written, the action is refused and nothing changes. If the result can't be recorded afterwards, the console still shows the real result, and the row reads **Cancel requested**, since the action may well have taken effect.
 
 ### Releasing a pipeline chain claim
 

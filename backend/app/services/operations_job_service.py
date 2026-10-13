@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import json
 import logging
+from uuid import uuid4
 from typing import Any, Callable, Iterable, Optional
 
 try:
@@ -814,8 +815,11 @@ class OperationsJobService:
         return records
 
     def _cancel_requests(self, db: Session) -> dict[str, dict[str, Any]]:
-        """Latest accepted cancel per task, so a row reads "cancel requested"
-        until the job actually leaves the inventory."""
+        """Latest cancel per task that was accepted, or whose outcome was never
+        recorded (#613: the action may well have happened, so its button must
+        not invite a repeat). A row reads "cancel requested" until the job
+        actually leaves the inventory. Rows written before #613 carry no
+        action id and count only when accepted."""
         # ponytail: reads the last day of audit rows; a job still listed after
         # a day loses the marker. Index by task id if the rows pile up.
         since = _utcnow() - timedelta(days=1)
@@ -825,13 +829,28 @@ class OperationsJobService:
             .filter(AppSetting.created_at >= since)
             .all()
         )
-        requests: dict[str, dict[str, Any]] = {}
+        actions = []
         for row in rows:
             try:
                 action = json.loads(row.value)
             except (json.JSONDecodeError, TypeError):
                 continue
-            if not isinstance(action, dict) or action.get("outcome") != "accepted":
+            if isinstance(action, dict):
+                actions.append(action)
+        recorded = {
+            action.get("action_id")
+            for action in actions
+            if action.get("action_id") and action.get("outcome") != "requested"
+        }
+        requests: dict[str, dict[str, Any]] = {}
+        for action in actions:
+            outcome = action.get("outcome")
+            unrecorded = (
+                outcome == "requested"
+                and action.get("action_id")
+                and action["action_id"] not in recorded
+            )
+            if outcome != "accepted" and not unrecorded:
                 continue
             # A force action finishes on the spot; a leftover stale row after it
             # should keep its button rather than read "requested" for a day.
@@ -886,15 +905,16 @@ class OperationsJobService:
         strategy: str,
         outcome: str,
         message: str,
+        action_id: str,
     ) -> None:
-        timestamp = _utcnow().strftime("%Y%m%d%H%M%S%f")
         row = AppSetting(
-            # The outcome keeps an action's intent and outcome rows apart on a
-            # clock too coarse to separate them (Windows ticks ~15 ms).
-            key=f"operations.job_action.{task_id}.{timestamp}.{outcome}",
+            # Unique per row: a timestamp is not, on a coarse clock (Windows
+            # ticks ~15 ms) or for two clicks at once.
+            key=f"operations.job_action.{uuid4().hex}",
             value=json.dumps(
                 {
                     "task_id": task_id,
+                    "action_id": action_id,
                     "strategy": strategy,
                     "outcome": outcome,
                     "message": message,
@@ -1003,10 +1023,12 @@ class OperationsJobService:
         that write fails, the action's real result is still returned, since
         the intent row already shows the attempt.
         """
+        action_id = uuid4().hex
         try:
             self._record_cancel_action(
                 db, task_id=task_id, strategy=strategy, outcome="requested",
                 message=f"Operator requested {strategy} for {task_id}.",
+                action_id=action_id,
             )
         except Exception:
             db.rollback()
@@ -1025,18 +1047,21 @@ class OperationsJobService:
         except Exception as exc:
             # It may have changed state before failing (a queue removal that
             # then cannot revoke), so record that it broke, then re-raise.
-            self._record_outcome(db, task_id, strategy, "error", f"{type(exc).__name__}: {exc}")
+            self._record_outcome(
+                db, task_id, strategy, action_id, "error", f"{type(exc).__name__}: {exc}"
+            )
             raise
-        self._record_outcome(db, task_id, strategy, status, message)
+        self._record_outcome(db, task_id, strategy, action_id, status, message)
         return {"status": status, "cancel_strategy": strategy, "message": message}
 
     def _record_outcome(
-        self, db: Session, task_id: str, strategy: str, outcome: str, message: str
+        self, db: Session, task_id: str, strategy: str, action_id: str, outcome: str, message: str
     ) -> None:
         """Best effort: the request row already shows the attempt."""
         try:
             self._record_cancel_action(
                 db, task_id=task_id, strategy=strategy, outcome=outcome, message=message,
+                action_id=action_id,
             )
         except Exception:
             db.rollback()

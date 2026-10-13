@@ -50,7 +50,7 @@ class _Events:
         self.fail_outcomes = set(fail_outcomes)
         self.fail_intent = fail_intent
 
-    def audit(self, _db, *, task_id, strategy, outcome, message):
+    def audit(self, _db, *, task_id, strategy, outcome, message, action_id):
         if outcome == "requested" and self.fail_intent:
             raise ConnectionError("database unavailable")
         if outcome in self.fail_outcomes:
@@ -204,24 +204,20 @@ def db():
         yield session
 
 
-def test_intent_and_outcome_rows_never_collide_on_one_clock_tick(db):
-    # A coarse clock (Windows ticks ~15 ms) gives both rows one timestamp;
-    # the key is unique, so the outcome row would be lost.
+def test_audit_rows_never_collide_on_one_clock_tick(db):
+    # A coarse clock (Windows ticks ~15 ms), or two clicks at once, gives rows
+    # one timestamp; the key is unique, so a colliding intent would refuse a
+    # valid action and a colliding outcome would be lost.
     service = OperationsJobService()
     tick = datetime(2026, 10, 13, 9, 0, tzinfo=timezone.utc)
     with patch("app.services.operations_job_service._utcnow", return_value=tick):
-        for outcome in ("requested", "accepted"):
+        for outcome in ("requested", "accepted", "requested", "accepted"):
             service._record_cancel_action(
-                db, task_id="task-1", strategy="revoke", outcome=outcome, message="m"
+                db, task_id="task-1", strategy="revoke", outcome=outcome,
+                message="m", action_id="a1",
             )
 
-    outcomes = [
-        json.loads(row.value)["outcome"]
-        for row in db.query(AppSetting).filter(
-            AppSetting.category == OPERATIONS_JOB_ACTION_CATEGORY
-        )
-    ]
-    assert sorted(outcomes) == ["accepted", "requested"]
+    assert sorted(_outcomes(db)) == ["accepted", "accepted", "requested", "requested"]
 
 
 def _outcomes(db) -> list[str]:
@@ -295,15 +291,60 @@ def test_a_real_failed_intent_commit_leaves_the_session_usable(db):
     assert _outcomes(db) == ["requested", "accepted"]
 
 
-def test_an_intent_row_alone_does_not_read_cancel_requested(db):
-    service = OperationsJobService()
+def _write(service, db, *, action_id, outcome, task_id="task-1", strategy="revoke"):
     service._record_cancel_action(
-        db, task_id="task-1", strategy="revoke", outcome="requested", message="m"
+        db, task_id=task_id, strategy=strategy, outcome=outcome, message="m",
+        action_id=action_id,
     )
+
+
+def test_an_action_whose_outcome_was_not_recorded_reads_cancel_requested(db):
+    # The action may well have happened; showing its button again would
+    # invite the operator to repeat it.
+    service = OperationsJobService()
+    _write(service, db, action_id="a1", outcome="requested")
+
+    assert service._cancel_requests(db)["task-1"]["strategy"] == "revoke"
+
+
+def test_refused_actions_do_not_read_cancel_requested(db):
+    service = OperationsJobService()
+    for action_id, outcome in (("a1", "blocked"), ("a2", "unsupported"), ("a3", "error")):
+        _write(service, db, action_id=action_id, outcome="requested")
+        _write(service, db, action_id=action_id, outcome=outcome)
 
     assert service._cancel_requests(db) == {}
 
-    service._record_cancel_action(
-        db, task_id="task-1", strategy="revoke", outcome="accepted", message="m"
-    )
+
+def test_an_accepted_action_reads_cancel_requested(db):
+    service = OperationsJobService()
+    _write(service, db, action_id="a1", outcome="requested")
+    _write(service, db, action_id="a1", outcome="accepted")
+
     assert service._cancel_requests(db)["task-1"]["outcome"] == "accepted"
+
+
+def test_a_legacy_row_without_an_action_id_counts_only_when_accepted(db):
+    service = OperationsJobService()
+    for outcome in ("requested", "accepted"):
+        db.add(AppSetting(
+            key=f"legacy.{outcome}",
+            value=json.dumps({
+                "task_id": f"task-{outcome}", "strategy": "revoke", "outcome": outcome,
+                "timestamp": "2099-01-01T00:00:00+00:00",
+            }),
+            category=OPERATIONS_JOB_ACTION_CATEGORY,
+        ))
+    db.commit()
+
+    assert set(service._cancel_requests(db)) == {"task-accepted"}
+
+
+def test_audited_actions_share_one_action_id(db):
+    service = OperationsJobService()
+    service._audited(db, task_id="task-1", strategy="revoke", act=lambda: ("accepted", "m"))
+    service._audited(db, task_id="task-1", strategy="revoke", act=lambda: ("blocked", "m"))
+
+    rows = [json.loads(r.value) for r in db.query(AppSetting).order_by(AppSetting.id)]
+    ids = [row["action_id"] for row in rows]
+    assert ids[0] == ids[1] and ids[2] == ids[3] and ids[0] != ids[2]
