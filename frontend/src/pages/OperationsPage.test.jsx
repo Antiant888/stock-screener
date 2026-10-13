@@ -1,4 +1,4 @@
-import { fireEvent, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { renderWithProviders } from '../test/renderWithProviders';
@@ -244,6 +244,43 @@ describe('OperationsPage', () => {
 
     await waitFor(() => {
       expect(cancelOperationsJob).toHaveBeenCalledWith('task-fetch-hk', 'revoke_and_remove_from_queue');
+    });
+  });
+
+  describe('when the jobs request fails (#567)', () => {
+    it('says so in every jobs section instead of rendering empty data as healthy', async () => {
+      fetchOperationsJobs.mockRejectedValue(new Error('backend down'));
+      renderWithProviders(<OperationsPage />);
+
+      // The jobs table, Lease status, Queues and Workers.
+      await waitFor(
+        () => expect(screen.getAllByText('Failed to load Operations job inventory.')).toHaveLength(4),
+        { timeout: 4000 },
+      );
+      // An empty fallback would claim nothing holds the lease.
+      expect(screen.queryByText('No task currently holds the external fetch lease.')).not.toBeInTheDocument();
+      expect(screen.queryByText('No pipeline chain claims are held.')).not.toBeInTheDocument();
+      expect(screen.queryByText('No queue data available.')).not.toBeInTheDocument();
+      expect(screen.queryByText('No worker inspect data available.')).not.toBeInTheDocument();
+    });
+
+    it('keeps the last known data, marked as such, when a refetch fails', async () => {
+      const { queryClient } = renderWithProviders(<OperationsPage />);
+      expect(await screen.findByText('External Fetch Lease')).toBeInTheDocument();
+
+      fetchOperationsJobs.mockRejectedValue(new Error('backend down'));
+      await act(() => queryClient.refetchQueries({ queryKey: ['operations', 'jobs'] }));
+
+      await waitFor(
+        () => expect(screen.getAllByText(/Couldn't refresh\. Showing the last known status from/)).toHaveLength(4),
+        { timeout: 4000 },
+      );
+      // With the date: data from yesterday must not read as today's.
+      expect(screen.getAllByText(new RegExp(new Date().toLocaleDateString().replace(/[.*+?^${}()|[\]\\/]/g, '\\$&')))
+        .length).toBeGreaterThanOrEqual(4);
+      // The lease holder from the last success is still shown, not hidden.
+      expect(screen.getAllByText(/task-fetch-us/).length).toBeGreaterThan(0);
+      expect(screen.queryByText('Failed to load Operations job inventory.')).not.toBeInTheDocument();
     });
   });
 
