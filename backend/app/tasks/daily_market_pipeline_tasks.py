@@ -428,13 +428,18 @@ def _apply_chain_verdict(claims: Any, market: str, token: str, verdict: str) -> 
         if not renewed:
             return "lost"
         return "renewed" if verdict == "alive" else "renewed_unknown"
-    if (
-        verdict == "missing"
-        and claims.pipeline_chain_missing_seconds(token) < PIPELINE_CHAIN_MISSING_RELEASE_SECONDS
-    ):
-        # Unconfirmed: renew so a claim near its TTL (after a stretch of
-        # failed checks) lasts until the confirming check releases it.
-        return "missing" if claims.renew_pipeline_chain(token, market=market) else "lost"
+    if verdict == "missing":
+        seconds, since = claims.pipeline_chain_missing(token)
+        if since is None or seconds < PIPELINE_CHAIN_MISSING_RELEASE_SECONDS:
+            # Unconfirmed: renew so a claim near its TTL (after a stretch of
+            # failed checks) lasts until the confirming check releases it.
+            return "missing" if claims.renew_pipeline_chain(token, market=market) else "lost"
+        # Only while the marker read above is still there: an overlapping
+        # heartbeat that saw the chain alive since then cleared it (#627).
+        outcome = claims.release_missing_pipeline_chain(
+            token, market=market, missing_since=since
+        )
+        return "released_missing" if outcome == "released" else outcome
     # Owner-checked: a newer chain that took the claim meanwhile keeps it.
     released = claims.release_pipeline_chain(token, market=market)
     return f"released_{verdict}" if released else "lost"

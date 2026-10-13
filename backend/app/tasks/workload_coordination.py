@@ -76,6 +76,22 @@ return 0
 """
 
 
+# Release a chain heartbeats found missing, but only while the missing marker
+# that heartbeat read is still in place: an overlapping heartbeat that saw the
+# chain alive meanwhile cleared it (#627). 0: not this token's claim;
+# 1: released; 2: kept, the marker changed.
+_RELEASE_MISSING_PIPELINE_CHAIN_LUA = """
+local val = redis.call('get', KEYS[1])
+if not (val and string.find(val, ARGV[1], 1, true)) then
+    return 0
+end
+if redis.call('get', KEYS[2]) ~= ARGV[2] then
+    return 2
+end
+return redis.call('del', KEYS[1])
+"""
+
+
 # Keyed by token, not market, and left to expire after release: a heartbeat
 # that read an old holder still finds that chain's ids, and its owner-checked
 # renew or release then leaves the newer claim alone.
@@ -135,6 +151,9 @@ class WorkloadCoordination:
         self._release_script = self.redis.register_script(_RELEASE_LUA)
         self._renew_script = self.redis.register_script(RENEW_LEASE_LUA)
         self._claim_chain_script = self.redis.register_script(_CLAIM_PIPELINE_CHAIN_LUA)
+        self._release_missing_chain_script = self.redis.register_script(
+            _RELEASE_MISSING_PIPELINE_CHAIN_LUA
+        )
 
     def _acquire(self, key: str, task_name: str, task_id: str) -> Tuple[bool, bool]:
         if task_id != "unknown":
@@ -239,14 +258,18 @@ class WorkloadCoordination:
         raw = self.redis.get(_pipeline_chain_tasks_key(token))
         return None if raw is None else json.loads(raw)
 
-    def pipeline_chain_missing_seconds(self, token: str) -> float:
-        """Seconds since heartbeats started finding no trace of the chain;
-        0 when this check is the first."""
+    def pipeline_chain_missing(self, token: str) -> Tuple[float, Optional[str]]:
+        """(seconds since heartbeats started finding no trace of the chain,
+        the missing marker read); 0 seconds when this check is the first.
+        Pass the marker to ``release_missing_pipeline_chain``."""
         key = _pipeline_chain_misses_key(token)
         now = time.time()
         self.redis.set(key, repr(now), nx=True, ex=PIPELINE_CHAIN_TTL_SECONDS)
         since = self.redis.get(key)
-        return max(now - float(since), 0.0) if since is not None else 0.0
+        if since is None:  # cleared by a heartbeat that saw the chain alive
+            return 0.0, None
+        since = since.decode()
+        return max(now - float(since), 0.0), since
 
     def clear_pipeline_chain_missing(self, token: str) -> None:
         self.redis.delete(_pipeline_chain_misses_key(token))
@@ -254,6 +277,19 @@ class WorkloadCoordination:
     def release_pipeline_chain(self, token: str, *, market: Optional[str]) -> bool:
         """Release only if this token still holds it (never a newer chain's)."""
         return self._release(_pipeline_chain_key(market), token)
+
+    def release_missing_pipeline_chain(
+        self, token: str, *, market: Optional[str], missing_since: str
+    ) -> str:
+        """Release a chain found missing, atomically with a check that this
+        token still holds the claim and its missing marker still reads
+        ``missing_since``. "released", "kept" (the marker was cleared or
+        replaced: the chain was seen alive meanwhile), or "lost"."""
+        result = self._release_missing_chain_script(
+            keys=[_pipeline_chain_key(market), _pipeline_chain_misses_key(token)],
+            args=[f":{token}:", missing_since],
+        )
+        return {1: "released", 2: "kept"}.get(int(result), "lost")
 
     def get_pipeline_chain_holder(self, market: Optional[str]) -> Optional[Dict[str, Any]]:
         return self._holder(_pipeline_chain_key(market))

@@ -280,8 +280,19 @@ class _ChainClaims:
         holder = self.holders.get(market)
         return bool(holder and holder["task_id"] == token)
 
-    def pipeline_chain_missing_seconds(self, token):
-        return self.clock - self.missing_since.setdefault(token, self.clock)
+    def pipeline_chain_missing(self, token):
+        since = self.missing_since.setdefault(token, self.clock)
+        return self.clock - since, repr(since)
+
+    def release_missing_pipeline_chain(self, token, *, market, missing_since):
+        self.released.append((market, token))
+        holder = self.holders.get(market)
+        if not (holder and holder["task_id"] == token):
+            return "lost"
+        if token not in self.missing_since or repr(self.missing_since[token]) != missing_since:
+            return "kept"
+        del self.holders[market]
+        return "released"
 
     def clear_pipeline_chain_missing(self, token):
         self.missing_since.pop(token, None)
@@ -645,6 +656,42 @@ def test_overlapping_heartbeats_cannot_both_count_one_gap(monkeypatch):
     assert module.renew_daily_market_pipeline_claims.run()["claims"] == {"US": "missing"}
     claims.clock += 5
     assert module.renew_daily_market_pipeline_claims.run()["claims"] == {"US": "missing"}
+    assert claims.holders["US"]["task_id"] == token
+
+
+def test_a_stale_missing_release_keeps_a_chain_seen_alive_meanwhile(monkeypatch):
+    # #627: heartbeat A reads an aged missing marker; before it releases, an
+    # overlapping heartbeat B sees a live stage, clears the marker and renews.
+    # A's release must then leave the claim alone.
+    from app.tasks.workload_coordination import PIPELINE_CHAIN_HEARTBEAT_SECONDS
+
+    module, claims, token, _ = _dispatched_chain(monkeypatch, states={0: "SUCCESS"})
+    assert module.renew_daily_market_pipeline_claims.run()["claims"] == {"US": "missing"}
+    claims.clock += PIPELINE_CHAIN_HEARTBEAT_SECONDS
+
+    read_marker = claims.pipeline_chain_missing
+
+    def read_then_beat_b_sees_it_alive(chain_token):
+        result = read_marker(chain_token)
+        claims.clear_pipeline_chain_missing(chain_token)
+        claims.renew_pipeline_chain(chain_token, market="US")
+        return result
+
+    monkeypatch.setattr(claims, "pipeline_chain_missing", read_then_beat_b_sees_it_alive)
+
+    assert module.renew_daily_market_pipeline_claims.run()["claims"] == {"US": "kept"}
+    assert claims.holders["US"]["task_id"] == token
+
+    # A marker replaced by a later miss (B cleared it, C started a new one)
+    # is not the one A read either.
+    def read_then_marker_replaced(chain_token):
+        result = read_marker(chain_token)
+        claims.missing_since[chain_token] = claims.clock
+        return result
+
+    claims.missing_since[token] = claims.clock - PIPELINE_CHAIN_HEARTBEAT_SECONDS
+    monkeypatch.setattr(claims, "pipeline_chain_missing", read_then_marker_replaced)
+    assert module.renew_daily_market_pipeline_claims.run()["claims"] == {"US": "kept"}
     assert claims.holders["US"]["task_id"] == token
 
 
