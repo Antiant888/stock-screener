@@ -20,6 +20,7 @@ from app.domain.social_signals.records import (
     ThemeMarketEvidence,
     validate_utc_timestamp,
 )
+from app.infra.db.models.social_analysis import EconomicSocialAssociationRevision
 from app.models.stock import StockPrice
 from app.models.stock_universe import StockUniverse
 from app.models.theme import ThemeCluster
@@ -140,6 +141,10 @@ class EconomicAcceptedBasketReader:
             resolved = resolver.resolve(security.symbol, security.market)
             if resolved.status != "resolved":
                 continue  # as the legacy reader: e.g. an inactive listing
+            if adapter.identity_lost(
+                self.db.get(EconomicSocialAssociationRevision, item.association_revision_id), resolved
+            ):
+                continue  # the processor re-proposes it when it next sees the theme (#611)
             accepted, stock_symbols = by_market[security.market]
             accepted.append(
                 EffectiveThemeMembership(

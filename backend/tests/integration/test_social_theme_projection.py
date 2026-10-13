@@ -1454,3 +1454,200 @@ def test_mirrored_acceptance_without_a_recorded_identity_is_not_an_identity_chan
     f.db.commit()
 
     assert "AAA" in {m.canonical_symbol for m in f.service.effective_live_membership(aaa.theme_cluster_id)}
+
+
+def _economic_latest(f, symbol):
+    from app.infra.db.models.social_analysis import (
+        EconomicSocialAssociation,
+        EconomicSocialAssociationRevision,
+        EconomicSocialDecisionRevision,
+    )
+    security = f.db.query(StockUniverse).filter_by(symbol=symbol).one()
+    association = f.db.query(EconomicSocialAssociation).filter_by(security_id=security.id).one()
+    latest = f.db.query(EconomicSocialAssociationRevision).filter_by(
+        association_id=association.id
+    ).order_by(EconomicSocialAssociationRevision.revision_number.desc()).first()
+    decision = f.db.get(EconomicSocialDecisionRevision, latest.decision_revision_id)
+    return (latest.details or {}).get("requested_state", latest.state), decision.reason
+
+
+def _project_live(f, work_id, theme_id, symbol="AAA"):
+    """Project, then deliver pending legacy mirrors so acceptances become live."""
+    from app.infra.db.models.social_analysis import EconomicSocialAssociationRevision
+    from app.services.economic_social_taxonomy_adapter import EconomicSocialTaxonomyAdapter
+    state = _project_economic(f, work_id, theme_id, symbol=symbol)
+    adapter = EconomicSocialTaxonomyAdapter(f.db)
+    for revision in f.db.query(EconomicSocialAssociationRevision).filter(
+        EconomicSocialAssociationRevision.mirror_state == "pending"
+    ).all():
+        adapter.apply_legacy_mirror(revision.id)
+    f.db.commit()
+    return state
+
+
+def _economic_members(f, theme_id):
+    from app.services.social_theme_market_service import EconomicAcceptedBasketReader
+    snapshots = EconomicAcceptedBasketReader(f.db, economic_theme_id=theme_id).read_markets("cooling", ("US", "HK"))
+    return {m.canonical_symbol for snapshot in snapshots for m in snapshot.membership}
+
+
+def test_economic_system_acceptance_returns_to_proposed_when_attestation_is_removed(social_fixture):
+    """#611: the processor's acceptance rests on the company identity it counted."""
+    from tests.unit.economic_taxonomy_reader_helpers import seed_generation
+    f = social_fixture
+    theme = seed_generation(f.db, display_name="Cooling")["memory"]
+    f.db.commit()
+    _project_live(f, f.save(("AAA",), author="first"), theme.id)
+    _project_live(f, f.save(("AAA",), author="second"), theme.id)
+    assert "AAA" in _economic_members(f, theme.id)
+    _drop_attestation(f, "AAA")
+
+    # Untouched since: read paths already leave the lost identity out.
+    assert "AAA" not in _economic_members(f, theme.id)
+    _project_live(f, f.save(("AAA",), author="third"), theme.id)
+
+    assert _economic_latest(f, "AAA") == ("proposed", "company_identity_lost")
+
+
+def test_economic_changed_identity_is_reassessed_on_its_own_evidence(social_fixture):
+    """Two authors pooled across AAA and 0005.HK (company "a") accepted both; once AAA
+    derives its own identity it needs two authors of its own."""
+    from tests.unit.economic_taxonomy_reader_helpers import seed_generation
+    f = social_fixture
+    f.db.query(StockUniverse).filter_by(symbol="AAA").update({"name": "Aaa Cooling Inc"})
+    theme = seed_generation(f.db, display_name="Cooling")["memory"]
+    f.db.commit()
+    _project_live(f, f.save(("AAA",), author="first"), theme.id)
+    _project_live(f, f.save(("0005.HK",), author="second"), theme.id, symbol="0005.HK")
+    assert _economic_members(f, theme.id) == {"AAA", "0005.HK"}
+    _drop_attestation(f, "AAA")
+
+    assert _economic_members(f, theme.id) == {"0005.HK"}
+    _project_live(f, f.save(("AAA",), author="first"), theme.id)
+    assert _economic_latest(f, "AAA") == ("proposed", "company_identity_lost")
+    assert _economic_latest(f, "0005.HK")[0] == "accepted"
+
+    # A second author of its own: the automatic rule accepts it under the new identity.
+    _project_live(f, f.save(("AAA",), author="third"), theme.id)
+    assert "AAA" in _economic_members(f, theme.id)
+
+
+def test_economic_admin_acceptance_survives_lost_identity(social_fixture):
+    from app.services.economic_social_taxonomy_adapter import EconomicSocialTaxonomyAdapter
+    from tests.unit.economic_taxonomy_reader_helpers import seed_generation
+    f = social_fixture
+    theme = seed_generation(f.db, display_name="Cooling")["memory"]
+    security = f.db.query(StockUniverse).filter_by(symbol="AAA").one()
+    adapter = EconomicSocialTaxonomyAdapter(f.db)
+    association = adapter.get_or_create_association(theme.id, security.id)
+    adapter.revise(association.id, state="accepted", idempotency_key="reviewed",
+                   actor="admin", reason="reviewed", mirror_acknowledged=True)
+    f.db.commit()
+    _drop_attestation(f, "AAA")
+
+    _project_live(f, f.save(("AAA",), author="first"), theme.id)
+
+    assert _economic_latest(f, "AAA") == ("accepted", "reviewed")
+    assert "AAA" in _economic_members(f, theme.id)
+
+
+def _reattest(f, pairs):
+    from app.services.social_company_identity_service import SocialCompanyIdentityService
+    service = SocialCompanyIdentityService(f.db, admin_authorized=True)
+    current = service.read()
+    f.db.rollback()
+    service.replace([
+        {"symbol": s, "company_id": c, "verification_reference": "synthetic-review:2", "verified_at": NOW.isoformat()}
+        for s, c in pairs], expected_version=current.registry_version, actor="admin")
+    f.db.commit()
+
+
+def _project_with_legacy_state(f, work_id, theme_id, symbol, state):
+    """A packet whose legacy membership state (as dual mode admits it) is ``state``."""
+    from types import SimpleNamespace
+    from uuid import uuid4
+    from app.models.economic_taxonomy_runtime import TaxonomyAuthority
+    from app.services.economic_social_taxonomy_adapter import EconomicSocialTaxonomyAdapter
+    from app.services.economic_source_admission import EconomicSourceAdmissionService, EvidenceAdmission
+    security = f.db.query(StockUniverse).filter_by(symbol=symbol).one()
+    admitted = EconomicSourceAdmissionService(f.db).admit_social_work(EvidenceAdmission(
+        provider="x", canonical_item_id=f"post-{work_id}", capture_route="social",
+        original_text=f"post {work_id}", preparation_version="social-prep-v1",
+        captured_at=NOW, available_at=NOW, evidence_channels=("narrative",),
+        source_metadata={"social_work_id": work_id, "social_memberships": [
+            {"theme_key": "cooling", "security_id": security.id, "state": state}]},
+    ))
+    assignment = SimpleNamespace(
+        id=uuid4(), classification_attempt_id=uuid4(), economic_theme_id=theme_id,
+        claim_payload={"display_name": "Cooling", "securities": [{"security_id": security.id}]},
+    )
+    EconomicSocialTaxonomyAdapter(f.db).project_native_assignments(
+        [assignment], evidence_packet_id=admitted.packet_id,
+        authority_epoch=f.db.get(TaxonomyAuthority, 1).authority_epoch,
+    )
+    f.db.commit()
+
+
+def _deliver_mirrors(f):
+    from app.infra.db.models.social_analysis import EconomicSocialAssociationRevision
+    from app.services.economic_social_taxonomy_adapter import EconomicSocialTaxonomyAdapter
+    adapter = EconomicSocialTaxonomyAdapter(f.db)
+    for revision in f.db.query(EconomicSocialAssociationRevision).filter(
+            EconomicSocialAssociationRevision.mirror_state == "pending").all():
+        adapter.apply_legacy_mirror(revision.id)
+    f.db.commit()
+
+
+def test_economic_acceptance_carried_from_legacy_is_not_identity_sensitive(social_fixture):
+    """An ETF the legacy basket accepted has no company identity by design; only the
+    automatic rule's acceptances rest on one. It must stay a member without churn."""
+    from app.infra.db.models.social_analysis import EconomicSocialAssociationRevision
+    from tests.unit.economic_taxonomy_reader_helpers import seed_generation
+    f = social_fixture
+    f.db.add(StockUniverse(symbol="REMX", market="US", is_active=True, name="VanEck Rare Earth ETF"))
+    theme = seed_generation(f.db, display_name="Cooling")["memory"]
+    f.db.commit()
+    counts = []
+    for i in range(3):
+        _project_with_legacy_state(f, f.save(("REMX",), author=f"x{i}"), theme.id, "REMX", "accepted")
+        _deliver_mirrors(f)
+        counts.append(f.db.query(EconomicSocialAssociationRevision).count())
+
+    assert "REMX" in _economic_members(f, theme.id)
+    assert counts[1] == counts[2] == counts[0]
+
+
+def test_superseded_pending_mirror_does_not_resurrect_the_acceptance(social_fixture):
+    """A processor acceptance still awaiting its legacy mirror is re-proposed; the old
+    mirror's late delivery must not append a fresh acceptance."""
+    from tests.unit.economic_taxonomy_reader_helpers import seed_generation
+    f = social_fixture
+    theme = seed_generation(f.db, display_name="Cooling")["memory"]
+    f.db.commit()
+    _project_live(f, f.save(("AAA",), author="first"), theme.id)
+    _project_economic(f, f.save(("AAA",), author="second"), theme.id)  # mirror not delivered yet
+    _drop_attestation(f, "AAA")
+    _project_economic(f, f.save(("AAA",), author="third"), theme.id)
+    assert _economic_latest(f, "AAA") == ("proposed", "company_identity_lost")
+
+    _deliver_mirrors(f)
+
+    assert _economic_latest(f, "AAA") == ("proposed", "company_identity_lost")
+
+
+def test_sibling_whose_identity_changed_is_reassessed_with_its_new_company(social_fixture):
+    """0005.HK moves to company "z"; when z qualifies through BBB, 0005.HK follows it."""
+    from tests.unit.economic_taxonomy_reader_helpers import seed_generation
+    f = social_fixture
+    theme = seed_generation(f.db, display_name="Cooling")["memory"]
+    f.db.commit()
+    _project_live(f, f.save(("AAA",), author="first"), theme.id)
+    _project_live(f, f.save(("0005.HK",), author="second"), theme.id, symbol="0005.HK")
+    assert _economic_members(f, theme.id) == {"AAA", "0005.HK"}
+    _reattest(f, [("AAA", "a"), ("BBB", "z"), ("CCC", "c"), ("0005.HK", "z")])
+    assert "0005.HK" not in _economic_members(f, theme.id)
+
+    _project_live(f, f.save(("BBB",), author="third"), theme.id, symbol="BBB")
+    _project_live(f, f.save(("BBB",), author="fourth"), theme.id, symbol="BBB")
+
+    assert {"BBB", "0005.HK"} <= _economic_members(f, theme.id)
