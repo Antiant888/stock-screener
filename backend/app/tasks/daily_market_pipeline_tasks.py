@@ -415,7 +415,9 @@ def _broker_verdict(task_ids: list[str], in_broker: dict[str, bool | None]) -> s
     return "missing"
 
 
-def _apply_chain_verdict(claims: Any, market: str, token: str, verdict: str) -> str:
+def _apply_chain_verdict(
+    claims: Any, market: str, token: str, verdict: str, heartbeat: str
+) -> str:
     from app.tasks.workload_coordination import PIPELINE_CHAIN_MISSING_RELEASE_SECONDS
 
     if verdict in ("alive", "unknown"):
@@ -434,10 +436,11 @@ def _apply_chain_verdict(claims: Any, market: str, token: str, verdict: str) -> 
             # Unconfirmed: renew so a claim near its TTL (after a stretch of
             # failed checks) lasts until the confirming check releases it.
             return "missing" if claims.renew_pipeline_chain(token, market=market) else "lost"
-        # Only while the marker read above is still there: an overlapping
-        # heartbeat that saw the chain alive since then cleared it (#627).
+        # Only while the marker read above is still there (a heartbeat that
+        # saw the chain alive since then cleared it) and this heartbeat still
+        # holds the heartbeat lock (#627).
         outcome = claims.release_missing_pipeline_chain(
-            token, market=market, missing_since=since
+            token, market=market, missing_since=since, heartbeat=heartbeat
         )
         return "released_missing" if outcome == "released" else outcome
     # Owner-checked: a newer chain that took the claim meanwhile keeps it.
@@ -477,12 +480,12 @@ def renew_daily_market_pipeline_claims() -> dict:
     if not claims.acquire_pipeline_chain_heartbeat(heartbeat):
         return {"status": "skipped", "reason": "heartbeat_running", "claims": {}}
     try:
-        return {"status": "ok", "claims": _renew_pipeline_chain_claims(claims)}
+        return {"status": "ok", "claims": _renew_pipeline_chain_claims(claims, heartbeat)}
     finally:
         claims.release_pipeline_chain_heartbeat(heartbeat)
 
 
-def _renew_pipeline_chain_claims(claims: Any) -> dict[str, str]:
+def _renew_pipeline_chain_claims(claims: Any, heartbeat: str) -> dict[str, str]:
     from app.services.task_registry_service import still_in_broker
 
     outcomes: dict[str, str] = {}
@@ -516,7 +519,7 @@ def _renew_pipeline_chain_claims(claims: Any) -> dict[str, str]:
         # None: the search ran out of budget or the broker was unreadable.
         verdict = verdict or _broker_verdict(task_ids, in_broker) or "unknown"
         try:
-            outcomes[market] = _apply_chain_verdict(claims, market, token, verdict)
+            outcomes[market] = _apply_chain_verdict(claims, market, token, verdict, heartbeat)
         except Exception:
             logger.warning(
                 "Could not update the %s pipeline chain claim; it is kept", market, exc_info=True

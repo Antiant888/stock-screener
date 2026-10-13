@@ -295,11 +295,13 @@ class _ChainClaims:
         since = self.missing_since.setdefault(token, self.clock)
         return self.clock - since, repr(since)
 
-    def release_missing_pipeline_chain(self, token, *, market, missing_since):
+    def release_missing_pipeline_chain(self, token, *, market, missing_since, heartbeat):
         self.released.append((market, token))
         holder = self.holders.get(market)
         if not (holder and holder["task_id"] == token):
             return "lost"
+        if self.heartbeat_holder != heartbeat:
+            return "kept"
         if token not in self.missing_since or repr(self.missing_since[token]) != missing_since:
             return "kept"
         del self.holders[market]
@@ -722,6 +724,30 @@ def test_heartbeats_never_overlap(monkeypatch):
     claims.heartbeat_holder = None
     assert module.renew_daily_market_pipeline_claims.run()["claims"] == {"US": "released_dead"}
     assert claims.heartbeat_holder is None  # released after the beat
+
+
+def test_a_heartbeat_whose_lock_expired_cannot_free_a_missing_chain(monkeypatch):
+    # A heartbeat slower than its lock (e.g. stuck in result-backend retries)
+    # overlaps the next one again; the next may have just seen the chain
+    # alive without clearing the marker yet. Releases are fenced on the lock.
+    from app.tasks.workload_coordination import PIPELINE_CHAIN_HEARTBEAT_SECONDS
+
+    module, claims, token, _ = _dispatched_chain(monkeypatch, states={0: "SUCCESS"})
+    assert module.renew_daily_market_pipeline_claims.run()["claims"] == {"US": "missing"}
+    claims.clock += PIPELINE_CHAIN_HEARTBEAT_SECONDS
+
+    read_marker = claims.pipeline_chain_missing
+
+    def read_then_lock_taken_over(chain_token):
+        result = read_marker(chain_token)
+        claims.heartbeat_holder = "next-heartbeat"  # ours expired; the next took it
+        return result
+
+    monkeypatch.setattr(claims, "pipeline_chain_missing", read_then_lock_taken_over)
+
+    assert module.renew_daily_market_pipeline_claims.run()["claims"] == {"US": "kept"}
+    assert claims.holders["US"]["task_id"] == token
+    assert claims.heartbeat_holder == "next-heartbeat"  # not ours to release
 
 
 def test_a_heartbeat_that_raises_still_frees_the_heartbeat_lock(monkeypatch):

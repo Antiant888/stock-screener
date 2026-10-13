@@ -355,13 +355,13 @@ def test_missing_pipeline_chain_release_checks_the_marker_read(script_result, ou
 
     assert (
         coordination.release_missing_pipeline_chain(
-            "token-1", market="US", missing_since="1000.0"
+            "token-1", market="US", missing_since="1000.0", heartbeat="hb-1"
         )
         == outcome
     )
     mock_script.assert_called_once_with(
-        keys=["pipeline_chain:us", "pipeline_chain_misses:token-1"],
-        args=[":token-1:", "1000.0"],
+        keys=["pipeline_chain:us", "pipeline_chain_misses:token-1", "pipeline_chain_heartbeat"],
+        args=[":token-1:", "1000.0", ":hb-1:"],
     )
 
 
@@ -385,15 +385,21 @@ def test_missing_pipeline_chain_release_lua_against_real_redis():
         _RELEASE_MISSING_PIPELINE_CHAIN_LUA
     )
     claim, marker = "pipeline_chain:us", "pipeline_chain_misses:tok-627"
+    lock = "pipeline_chain_heartbeat"
 
     def release(since):
         return coordination.release_missing_pipeline_chain(
-            "tok-627", market="US", missing_since=since
+            "tok-627", market="US", missing_since=since, heartbeat="hb-1"
         )
 
     try:
         client.set(claim, "daily_market_pipeline:tok-627:2026-10-13T00:00:00+00:00")
         client.set(marker, "1000.0")
+        # The heartbeat lock expired, then went to the next heartbeat: kept.
+        assert release("1000.0") == "kept"
+        client.set(lock, "heartbeat:hb-2:")
+        assert release("1000.0") == "kept"
+        client.set(lock, "heartbeat:hb-1:")
         # Replaced, then cleared: kept, untouched.
         assert release("999.0") == "kept"
         client.delete(marker)
@@ -409,7 +415,7 @@ def test_missing_pipeline_chain_release_lua_against_real_redis():
         assert release("1000.0") == "released"
         assert not client.exists(claim)
     finally:
-        client.delete(claim, marker)
+        client.delete(claim, marker, lock)
         client.close()
 
 
