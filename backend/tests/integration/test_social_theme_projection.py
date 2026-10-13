@@ -1395,3 +1395,62 @@ def test_changed_identity_with_its_own_evidence_stays_accepted(social_fixture):
     assert (aaa.canonical_symbol, aaa.state, aaa.company_key) == ("AAA", "accepted", f"security:{f.db.query(StockUniverse).filter_by(symbol='AAA').one().id}")
     assert LiveAcceptedBasketReader(f.db).read("cooling", "US") == expected
     assert "AAA" in {m.canonical_symbol for m in expected.membership}
+
+
+def test_changed_identity_leaves_untouched_theme_membership_until_reassessed(social_fixture):
+    """Read paths must not present evidence accepted for one company as acceptance of another."""
+    f = social_fixture
+    f.db.query(StockUniverse).filter_by(symbol="AAA").update({"name": "Aaa Cooling Inc"})
+    f.db.commit()
+    for age in (3, 2):
+        f.apply(f.prepare([f.save(("AAA", "BBB", "CCC"), age=age)]))
+    theme_id = f.associations()[0].theme_cluster_id
+    _drop_attestation(f, "AAA")
+
+    # No run has touched the theme since: AAA is still stored as accepted for company "a".
+    assert f.associations()[0].state == "accepted"
+    assert {m.canonical_symbol for m in f.service.effective_live_membership(theme_id)} == {"BBB", "CCC"}
+
+
+def test_inactive_listing_keeps_its_identity_for_when_it_returns(social_fixture):
+    """Assessing while a listing is inactive must not erase the identity its acceptance rests on."""
+    f = social_fixture
+    for age in (3, 2):
+        f.apply(f.prepare([f.save(("AAA", "BBB", "CCC"), age=age)]))
+    f.db.query(StockUniverse).filter_by(symbol="AAA").update({"is_active": False})
+    f.db.commit()
+    f.apply(f.prepare([f.save(("BBB",), age=1)]))
+    assert f.associations()[0].company_key == "a"
+    f.db.query(StockUniverse).filter_by(symbol="AAA").update({"is_active": True})
+    f.db.commit()
+
+    f.apply(f.prepare([f.save(("BBB",), age=1)]))
+
+    assert (f.associations()[0].state, f.associations()[0].company_key) == ("accepted", "a")
+
+
+def test_economic_authority_membership_shows_mirrored_acceptances_as_they_are(social_fixture, monkeypatch):
+    """Under economic authority the legacy rows mirror economic decisions, so the
+    projection's identity rule must not hide them (the theme detail reads them)."""
+    from app.services import social_theme_projection_service as module
+    f = social_fixture
+    for age in (3, 2):
+        f.apply(f.prepare([f.save(("AAA", "BBB", "CCC"), age=age)]))
+    theme_id = f.associations()[0].theme_cluster_id
+    _drop_attestation(f, "AAA")
+    monkeypatch.setattr(module, "economic_authority", lambda db: True)
+
+    assert "AAA" in {m.canonical_symbol for m in f.service.effective_live_membership(theme_id)}
+
+
+def test_mirrored_acceptance_without_a_recorded_identity_is_not_an_identity_change(social_fixture):
+    """The economic mirror creates accepted rows with no company_key; that is not a change."""
+    from app.infra.db.models.social_analysis import SocialThemeAssociation
+    f = social_fixture
+    for age in (3, 2):
+        f.apply(f.prepare([f.save(("AAA", "BBB", "CCC"), age=age)]))
+    aaa = f.associations()[0]
+    f.db.query(SocialThemeAssociation).filter_by(id=aaa.id).update({"company_key": None})
+    f.db.commit()
+
+    assert "AAA" in {m.canonical_symbol for m in f.service.effective_live_membership(aaa.theme_cluster_id)}

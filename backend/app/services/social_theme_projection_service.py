@@ -6,7 +6,7 @@ calls, commits, Social pointer changes, or legacy attention writes occur here.
 """
 
 import json
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 
@@ -318,11 +318,13 @@ class SocialThemeProjectionService:
 
         The acceptance rested on evidence counted for the old company; an ineligible
         listing has none, and a new identity must earn its own. An inactive listing
-        (unresolved) already leaves membership and keeps its acceptance.
+        (unresolved) already leaves membership and keeps its acceptance. No recorded
+        identity (rows the economic mirror creates) is not a change.
         """
         return (association.state == "accepted" and association.decision_owner == "system"
                 and association.origin == "social" and resolution.status == "resolved"
-                and (not resolution.company_count_eligible or association.company_key != resolution.company_id))
+                and (not resolution.company_count_eligible
+                     or (association.company_key is not None and association.company_key != resolution.company_id)))
 
     @staticmethod
     def _automatic_accepts(state, owner, resolution, qualifying):
@@ -369,12 +371,6 @@ class SocialThemeProjectionService:
                         # Apply assesses only the themes the run touches: it re-proposes this
                         # row, then the automatic rule may accept it again under the new identity.
                         state = "proposed"
-                        if pair in members:
-                            origins = set(members[pair].origins) - {"social"}
-                            if origins:
-                                members[pair] = replace(members[pair], origins=tuple(sorted(origins)))
-                            else:
-                                del members[pair]
                     candidates[pair] = (r, state, a.decision_owner)
                 for r in proposed.get(key, ()):
                     if r.status == "resolved":
@@ -852,7 +848,9 @@ class SocialThemeProjectionService:
         for association in associations:
             resolution = resolver.resolve(association.canonical_symbol, association.market)
             identity_lost = self._identity_lost(association, resolution)
-            if association.company_key != resolution.company_id:
+            # An inactive listing resolves to no company; keep the identity it had, or
+            # its return would read as an identity change.
+            if resolution.status == "resolved" and association.company_key != resolution.company_id:
                 association.company_key = resolution.company_id
                 association.version += 1
             if identity_lost:
@@ -989,6 +987,9 @@ class SocialThemeProjectionService:
         identity = SocialCompanyIdentityService(self.db).read()
         resolver = SocialTickerResolver(self.db, verified_company_ids=identity.verified_company_ids)
         members = {}
+        # Under economic authority these rows mirror economic decisions; the projection's
+        # identity rule governs only the acceptances it makes itself.
+        projection_owned = not economic_authority(self.db)
         for row in self.db.scalars(select(ThemeConstituent).where(ThemeConstituent.theme_cluster_id == theme_cluster_id, ThemeConstituent.is_active.is_(True))):
             r = resolver.resolve(row.symbol)
             if r.status == "resolved":
@@ -996,10 +997,11 @@ class SocialThemeProjectionService:
         for row in self.db.scalars(select(SocialThemeAssociation).where(SocialThemeAssociation.theme_cluster_id == theme_cluster_id,
                                                                        SocialThemeAssociation.state == "accepted", SocialThemeAssociation.origin == "social")):
             r = resolver.resolve(row.canonical_symbol, row.market)
-            # A system acceptance rests on the company identity; once that is lost the
-            # next assessment re-proposes it (#597). Leaving it out here keeps prepared
-            # and published baskets equal before that assessment runs.
-            if r.status == "resolved" and (r.company_count_eligible or row.decision_owner != "system"):
+            # A system acceptance rests on the company identity it was earned for; once
+            # that is lost or changed the next assessment re-proposes it (#597). Leaving
+            # it out here keeps every read path, prepared and published baskets alike,
+            # equal before that assessment runs.
+            if r.status == "resolved" and not (projection_owned and self._identity_lost(row, r)):
                 members.setdefault((r.market, r.symbol), (r, set()))[1].add("social")
         return tuple(EffectiveThemeMembership(r.symbol, r.market, r.company_id, r.company_count_eligible, tuple(sorted(origins)))
                      for _, (r, origins) in sorted(members.items()))
