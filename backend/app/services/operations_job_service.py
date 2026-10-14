@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import ast
 import base64
+from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import json
 import logging
+import threading
 from uuid import uuid4
 from typing import Any, Callable, Iterable, Optional
 
@@ -23,6 +25,7 @@ from app.config import settings
 from app.models.app_settings import AppSetting
 from app.models.scan_result import Scan
 from app.services.job_backend import CeleryJobBackend
+from app.services.redis_pool import get_redis_client
 from app.services.market_activity_service import (
     MARKET_ACTIVITY_KEY_PREFIX,
     RUNTIME_ACTIVITY_CATEGORY,
@@ -50,6 +53,20 @@ RUNNING_STALE_AFTER_SECONDS = 30 * 60
 QUEUED_STALE_AFTER_SECONDS = 20 * 60
 HEARTBEAT_STUCK_AFTER_SECONDS = 30 * 60
 LEASE_STUCK_TTL_SECONDS = 10 * 60
+# A queued message whose queue no responding worker reads: it never runs.
+NO_WORKER_WAIT_REASON = "no_worker_for_queue"
+# Worker roster: each worker's queues, rewritten by a heartbeat thread in the
+# worker, so one silent to inspect (a solo-pool worker busy with a task
+# answers nothing) still counts.
+WORKER_QUEUES_KEY = "operations:worker_queues"
+# When the roster began to be kept; gone with it if the cache Redis is flushed.
+WORKER_QUEUES_SINCE_KEY = "operations:worker_queues_since"
+WORKER_QUEUES_HEARTBEAT_SECONDS = 60
+# ponytail: a worker that misses five beats reads as gone; a task holding the
+# GIL that long would drop a live worker. Raise this if that shows up.
+WORKER_QUEUES_MEMORY = timedelta(minutes=5)
+# Every live worker has beaten at least once by then, so the roster is whole.
+WORKER_QUEUES_COMPLETE_AFTER = timedelta(seconds=2 * WORKER_QUEUES_HEARTBEAT_SECONDS)
 
 SCAN_TASK_NAME = "app.tasks.scan_tasks.run_bulk_scan"
 RELEASE_PIPELINE_CLAIM_TASK = "app.tasks.daily_market_pipeline_tasks.release_daily_market_pipeline_claim"
@@ -103,6 +120,33 @@ class _JobRecord:
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def run_worker_queue_heartbeat(worker: str, queues: list[str], stop: threading.Event) -> None:
+    """Write this worker's roster entry now and every heartbeat until stop.
+    A failed write is logged and retried next beat; the entry then ages out."""
+    while True:
+        client = get_redis_client()
+        if client is not None:
+            try:
+                client.hset(
+                    WORKER_QUEUES_KEY,
+                    mapping={worker: json.dumps({"queues": queues, "seen_at": _utcnow().isoformat()})},
+                )
+            except redis.RedisError:
+                logger.warning("Could not write the worker queue heartbeat", exc_info=True)
+        if stop.wait(WORKER_QUEUES_HEARTBEAT_SECONDS):
+            return
+
+
+def start_worker_queue_heartbeat(worker: str, queues: list[str]) -> None:
+    """Run the heartbeat in a daemon thread for the life of the worker."""
+    threading.Thread(
+        target=run_worker_queue_heartbeat,
+        args=(worker, queues, threading.Event()),
+        name="worker-queue-heartbeat",
+        daemon=True,
+    ).start()
 
 
 def _parse_iso(value: Any) -> datetime | None:
@@ -468,7 +512,9 @@ class OperationsJobService:
         record.cancel_strategy = _cancel_strategy_for(record)
         return record
 
-    def _inspect_jobs(self) -> tuple[list[_JobRecord], list[dict[str, Any]]]:
+    def _inspect_jobs(self) -> tuple[list[_JobRecord], list[dict[str, Any]], set[str]]:
+        """Live jobs, the worker roster, and the workers that answered
+        active_queues (an empty queue list there is a known zero)."""
         inspect = self._inspect()
         stats = inspect.stats() or {}
         active = inspect.active() or {}
@@ -510,7 +556,7 @@ class OperationsJobService:
                     jobs.append(record)
 
         jobs.extend(self._scheduled_records(scheduled, queue_map))
-        return jobs, workers
+        return jobs, workers, set(queue_map)
 
     def _scheduled_records(
         self, scheduled: dict[str, Any], queue_map: dict[str, list[str]]
@@ -772,22 +818,80 @@ class OperationsJobService:
             record.cancel_strategy = _cancel_strategy_for(record)
             records[task_id] = record
 
-    def _queue_summaries(self, queued_jobs: Iterable[_JobRecord]) -> list[dict[str, Any]]:
-        depths: dict[str, dict[str, Any]] = {
-            queue_name: {
+    @staticmethod
+    def _queue_consumers(
+        workers: list[dict[str, Any]], queue_repliers: set[str]
+    ) -> dict[str, int] | None:
+        """Workers per queue: this poll's active_queues replies plus the
+        roster, so a worker silent this poll counts by its heartbeat. None
+        (unknown, which must not read as "nobody serves this queue") when no
+        worker answered active_queues, the cache Redis is unavailable, the
+        roster is younger than one full round of heartbeats (just started, or
+        flushed), or a worker answered without its queues and has no entry."""
+        answered = {worker["worker"]: worker["queues"] for worker in workers if worker["worker"] in queue_repliers}
+        client = get_redis_client()
+        if not answered or client is None:
+            return None
+        now = _utcnow()
+        try:
+            client.set(WORKER_QUEUES_SINCE_KEY, now.isoformat(), nx=True)
+            since_raw = client.get(WORKER_QUEUES_SINCE_KEY)
+            stored = client.hgetall(WORKER_QUEUES_KEY)
+        except redis.RedisError:
+            logger.warning("Could not read the worker queue roster", exc_info=True)
+            return None
+        since = _parse_iso(since_raw.decode()) if since_raw else None
+        if since is None or now - since < WORKER_QUEUES_COMPLETE_AFTER:
+            return None
+
+        queue_lists: dict[str, list[str]] = {}
+        expired: list[bytes] = []
+        for raw_name, raw_entry in stored.items():
+            try:
+                entry = json.loads(raw_entry)
+                queues, seen_at = entry["queues"], _parse_iso(entry["seen_at"])
+            except (ValueError, TypeError, KeyError):
+                expired.append(raw_name)
+                continue
+            if (
+                not isinstance(queues, list)
+                or not all(isinstance(queue, str) for queue in queues)
+                or seen_at is None
+                or now - seen_at > WORKER_QUEUES_MEMORY
+            ):
+                expired.append(raw_name)
+                continue
+            queue_lists[raw_name.decode()] = queues
+        if expired:
+            # Worker names carry the container hostname, new on each restart.
+            try:
+                client.hdel(WORKER_QUEUES_KEY, *expired)
+            except redis.RedisError:
+                logger.warning("Could not prune the worker queue roster", exc_info=True)
+
+        queue_lists.update(answered)  # this poll's replies win over a beat
+        if any(worker["worker"] not in queue_lists for worker in workers):
+            return None
+        return Counter(queue for queues in queue_lists.values() for queue in queues)
+
+    def _queue_summaries(
+        self, queued_jobs: Iterable[_JobRecord], consumers: dict[str, int] | None
+    ) -> list[dict[str, Any]]:
+        def _summary(queue_name: str) -> dict[str, Any]:
+            return {
                 "queue": queue_name,
                 "depth": 0,
                 "oldest_age_seconds": None,
+                "consumers": None if consumers is None else consumers.get(queue_name, 0),
             }
-            for queue_name in self.broker_queue_names()
+
+        depths: dict[str, dict[str, Any]] = {
+            queue_name: _summary(queue_name) for queue_name in self.broker_queue_names()
         }
         for job in queued_jobs:
             if not job.queue:
                 continue
-            summary = depths.setdefault(
-                job.queue,
-                {"queue": job.queue, "depth": 0, "oldest_age_seconds": None},
-            )
+            summary = depths.setdefault(job.queue, _summary(job.queue))
             summary["depth"] += 1
             if job.age_seconds is not None:
                 current_oldest = summary["oldest_age_seconds"]
@@ -868,12 +972,17 @@ class OperationsJobService:
     def list_jobs(self, db: Session) -> dict[str, Any]:
         lease_snapshot = self._lease_snapshot()
         queued_jobs = self._queued_jobs(lease_snapshot)
-        inspect_jobs, workers = self._inspect_jobs()
+        inspect_jobs, workers, queue_repliers = self._inspect_jobs()
 
         records = self._merge_live_jobs([*queued_jobs, *inspect_jobs])
         self._augment_with_runtime_activity(db, records, lease_snapshot)
+        consumers = self._queue_consumers(workers, queue_repliers)
         cancel_requests = self._cancel_requests(db)
         for record in records.values():
+            # Only a message still sitting in a broker list: its queue is known
+            # for sure. Outranks a lease wait, which ends; this one never does.
+            if consumers is not None and record.source == "broker" and not consumers.get(record.queue):
+                record.wait_reason = NO_WORKER_WAIT_REASON
             if record.progress_mode == "indeterminate" or not record.message:
                 self._apply_job_backend_progress(record)
             self._apply_heartbeat_progress(record)
@@ -891,7 +1000,7 @@ class OperationsJobService:
 
         return {
             "jobs": jobs,
-            "queues": self._queue_summaries(queued_jobs),
+            "queues": self._queue_summaries(queued_jobs, consumers),
             "workers": workers,
             "leases": lease_snapshot,
             "generated_at": _utcnow().isoformat(),

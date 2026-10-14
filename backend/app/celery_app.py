@@ -299,6 +299,21 @@ def _clear_stale_data_fetch_lock(sender, **kwargs):
         _logger.warning("Failed to check/clear stale lock on startup: %s", e)
 
 
+@worker_ready.connect
+def _register_worker_queues(sender, **kwargs):
+    """Keep this worker's queues on the Operations roster with a heartbeat
+    thread. A solo-pool worker busy with a task answers no inspect, so the
+    roster is how the console knows it still serves its queues."""
+    from .services import operations_job_service
+
+    try:
+        queues = sorted(sender.app.amqp.queues.consume_from)
+    except AttributeError:
+        _logger.warning("Could not read this worker's queues to register them", exc_info=True)
+        return
+    operations_job_service.start_worker_queue_heartbeat(sender.hostname, queues)
+
+
 @worker_process_init.connect
 def _dispose_engine_after_fork(sender=None, **kwargs):
     """Dispose inherited SQLAlchemy engine after Celery prefork.
