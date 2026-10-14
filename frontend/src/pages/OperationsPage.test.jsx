@@ -11,6 +11,7 @@ const cancelOperationsJob = vi.fn();
 const releasePipelineChain = vi.fn();
 const useRuntimeActivity = vi.fn();
 const getBootstrapStatus = vi.fn();
+const getScheduledTasks = vi.fn();
 const runtimeState = vi.hoisted(() => ({ features: { themes: true } }));
 
 vi.mock('../contexts/RuntimeContext', () => ({
@@ -37,7 +38,7 @@ vi.mock('../hooks/useRuntimeActivity', () => ({
 }));
 
 vi.mock('../api/tasks', () => ({
-  getScheduledTasks: () => Promise.resolve({ tasks: [], total_tasks: 0 }),
+  getScheduledTasks: (...args) => getScheduledTasks(...args),
   triggerTask: vi.fn(),
 }));
 
@@ -135,6 +136,7 @@ describe('OperationsPage', () => {
     runtimeState.features = { themes: true };
     delete runtimeState.enabledMarkets;
     delete runtimeState.supportedMarkets;
+    getScheduledTasks.mockResolvedValue({ tasks: [], total_tasks: 0 });
     vi.clearAllMocks();
     fetchAlerts.mockResolvedValue({ summaries: [SUMMARY_US], alerts: [ALERT_US] });
     fetchOperationsJobs.mockResolvedValue(OPERATIONS_PAYLOAD);
@@ -487,6 +489,49 @@ describe('OperationsPage', () => {
     expect(await screen.findByText(/60%/)).toBeInTheDocument();
     expect(screen.getByText(/600\/1000/)).toBeInTheDocument();
     expect(screen.getByText(/Batch 3\/5 · refreshing prices/)).toBeInTheDocument();
+  });
+
+  it('opens with market coverage that names a market enabled without workers', async () => {
+    runtimeState.enabledMarkets = ['US', 'JP'];
+    runtimeState.supportedMarkets = ['US', 'HK', 'JP'];
+    fetchOperationsJobs.mockResolvedValue({
+      ...OPERATIONS_PAYLOAD,
+      queues: [
+        { queue: 'user_scans_us', depth: 0, oldest_age_seconds: null, consumers: 1 },
+        { queue: 'data_fetch_jp', depth: 0, oldest_age_seconds: null, consumers: 0 },
+      ],
+    });
+
+    renderWithProviders(<OperationsPage />);
+
+    expect(await screen.findByText('1 market needs attention: JP.')).toBeInTheDocument();
+    expect(screen.getByText('No worker fetches its prices (data_fetch_jp).')).toBeInTheDocument();
+    // HK has a queued job, so it is active and gets a coverage row too.
+    expect(screen.getAllByRole('rowheader').map((cell) => cell.textContent)).toEqual(['US', 'JP', 'HK']);
+  });
+
+  it('feeds each market its daily pipeline run from the scheduled task list', async () => {
+    runtimeState.features = { themes: true, tasks: true };
+    runtimeState.enabledMarkets = ['US'];
+    runtimeState.supportedMarkets = ['US'];
+    const startedAt = new Date(Date.now() - 6 * 3600 * 1000).toISOString();
+    getScheduledTasks.mockResolvedValue({
+      tasks: [{
+        name: 'daily-market-pipeline-us',
+        display_name: 'Daily Market Pipeline (US)',
+        description: 'Runs price refresh',
+        schedule_description: '16:30 ET',
+        market: 'US',
+        is_enabled: true,
+        last_run: { status: 'dispatched', started_at: startedAt },
+      }],
+      total_tasks: 1,
+    });
+
+    renderWithProviders(<OperationsPage />);
+
+    const usRow = (await screen.findByRole('rowheader', { name: 'US' })).closest('tr');
+    await waitFor(() => expect(within(usRow).getByText('6h ago')).toBeInTheDocument());
   });
 
   it('puts queues, idle leases and telemetry of inactive markets behind disclosures', async () => {
