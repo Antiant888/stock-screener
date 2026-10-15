@@ -47,10 +47,11 @@ class ScheduledTaskResponse(BaseModel):
     typical_duration_seconds: Optional[float] = Field(
         None, description="Median duration of the job's recent completed runs; null without history"
     )
-    open_markets: Optional[List[str]] = Field(
+    unsettled_markets: Optional[List[str]] = Field(
         None,
-        description="For jobs that fetch prices: markets mid-session now, whose run would store a "
-        "partial bar (null when not applicable or the calendar could not say)",
+        description="For jobs that fetch prices: markets whose trading day has not settled (before "
+        "the close plus 30 minutes), so a run would store prices the cache refetches after the "
+        "close (null when not applicable or the calendar could not say)",
     )
     last_run: Optional[LastRunInfo] = Field(None, description="Last execution details")
     run_blocker: Optional[Dict[str, Any]] = Field(

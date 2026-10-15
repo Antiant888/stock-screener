@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 from uuid import uuid4
 
+from app.config import settings
 from app.models.task_execution import TaskExecutionHistory
 from app.services.operations_job_service import _JobRecord
 from app.services.task_registry_service import SCHEDULED_TASKS, TaskRegistryService
@@ -56,41 +57,71 @@ def test_typical_duration_is_the_median_of_the_last_ten_completed_runs(db_sessio
 
 
 class _Calendar:
-    def __init__(self, states):
-        self.states = states
+    """Session closes per market: a datetime, an exception the calendar
+    raises, or absent for a non-trading day."""
 
-    def is_market_open(self, market):
-        state = self.states.get(market, False)
-        if isinstance(state, Exception):
-            raise state
-        return state
+    def __init__(self, closes):
+        self.closes = closes
+
+    def market_now(self, market, now=None):
+        if isinstance(self.closes.get(market), Exception):
+            raise self.closes[market]
+        return now
+
+    def is_trading_day(self, market, day):
+        return market in self.closes
+
+    def session_close(self, market, day):
+        return self.closes[market]
 
 
-def test_price_jobs_name_the_markets_mid_session(db_session):
-    states = {"HK": True, "JP": RuntimeError("no verified calendar coverage")}
+def test_price_jobs_name_the_markets_whose_day_has_not_settled(db_session):
+    now = datetime.now(timezone.utc)
+    closes = {
+        # Closed ten minutes ago: inside the settlement buffer, still partial.
+        "HK": now - timedelta(minutes=10),
+        # Closes later today, so mid-session or at lunch.
+        "TW": now + timedelta(hours=3),
+        "US": now - timedelta(hours=2),
+        "JP": RuntimeError("no verified calendar coverage"),
+    }
     with patch(
         "app.tasks.daily_market_pipeline_tasks._preflight_calendar",
-        return_value=_Calendar(states),
+        return_value=_Calendar(closes),
+    ), patch.object(settings, "enabled_markets", "US,HK,JP,KR"):
+        tasks = _tasks(db_session, include_run_blockers=True)
+
+    assert tasks["daily-market-pipeline-hk"]["unsettled_markets"] == ["HK"]
+    assert tasks["weekly-full-refresh-hk"]["unsettled_markets"] == ["HK"]
+    assert tasks["daily-market-pipeline-tw"]["unsettled_markets"] == ["TW"]
+    assert tasks["daily-market-pipeline-us"]["unsettled_markets"] == []
+    # Not a trading day: nothing to settle.
+    assert tasks["daily-market-pipeline-kr"]["unsettled_markets"] == []
+    # Unknown, not "settled": the calendar could not say.
+    assert tasks["daily-market-pipeline-jp"]["unsettled_markets"] is None
+    # The all-markets refresh fetches the deployed markets: TW is not one.
+    assert tasks["weekly-full-refresh"]["unsettled_markets"] == ["HK"]
+    # Jobs that fetch no prices store no partial bar.
+    assert tasks["weekly-fundamental-refresh-hk"]["unsettled_markets"] is None
+
+
+def test_a_calendar_that_cannot_load_leaves_the_warning_unknown(db_session):
+    with patch(
+        "app.tasks.daily_market_pipeline_tasks._preflight_calendar",
+        side_effect=RuntimeError("coverage manifests unreadable"),
     ):
         tasks = _tasks(db_session, include_run_blockers=True)
 
-    assert tasks["daily-market-pipeline-hk"]["open_markets"] == ["HK"]
-    assert tasks["weekly-full-refresh-hk"]["open_markets"] == ["HK"]
-    assert tasks["daily-market-pipeline-us"]["open_markets"] == []
-    # Unknown, not "closed": the calendar could not say.
-    assert tasks["daily-market-pipeline-jp"]["open_markets"] is None
-    # The all-markets refresh fetches every market's prices.
-    assert tasks["weekly-full-refresh"]["open_markets"] == ["HK"]
-    # Jobs that fetch no prices store no partial bar.
-    assert tasks["weekly-fundamental-refresh-hk"]["open_markets"] is None
+    assert tasks["daily-market-pipeline-hk"]["unsettled_markets"] is None
+    assert tasks["weekly-full-refresh"]["unsettled_markets"] is None
 
 
-def test_open_markets_is_a_live_check_the_plain_list_skips(db_session):
+def test_unsettled_markets_is_a_live_check_the_plain_list_skips(db_session):
     with patch("app.tasks.daily_market_pipeline_tasks._preflight_calendar") as calendar:
         tasks = _tasks(db_session)
 
     calendar.assert_not_called()
-    assert "open_markets" not in tasks["daily-market-pipeline-hk"]
+    assert "unsettled_markets" not in tasks["daily-market-pipeline-hk"]
 
 
 def _record(task_name, kwargs):
@@ -108,3 +139,7 @@ def test_job_console_names_scheduled_jobs_like_the_schedule_does():
     assert _record(pipeline, {"market": "hk"}).to_api()["display_name"] == "Daily Market Pipeline (HK)"
     assert _record(refresh, {}).to_api()["display_name"] == "Weekly Full Refresh (all markets)"
     assert _record("app.tasks.scan_tasks.run_bulk_scan", {"market": "US"}).to_api()["display_name"] is None
+    # An ad hoc per-attachment refresh is not the scheduled job.
+    social = "app.interfaces.tasks.social_signal_tasks.refresh_social_signals"
+    assert _record(social, {"origin": "attachment-evidence"}).to_api()["display_name"] is None
+    assert _record(social, {"origin": "manual"}).to_api()["display_name"] == "Refresh Social Signals"

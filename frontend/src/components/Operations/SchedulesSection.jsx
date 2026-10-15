@@ -5,7 +5,7 @@
  * (#588), so a run started here or by Beat shows up here whether or not this
  * page was open; there is no client-side tracking of triggered runs.
  */
-import { useEffect, useState } from 'react';
+import { useEffect, useId, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   Alert,
@@ -420,33 +420,41 @@ function JobFacts({ task, withDuration = true }) {
   );
 }
 
-function JobHelp({ task, withDuration }) {
+// name tells the rows' buttons apart for screen readers; it follows the
+// visible text so voice control still matches it.
+function JobHelp({ task, name, withDuration }) {
   const [open, setOpen] = useState(false);
+  const detailsId = useId();
   if (!task.when_to_run && !task.impact) return null;
+  const label = open ? 'Hide details' : 'About this job';
   return (
     <Box>
       <Button
         size="small"
         onClick={() => setOpen((value) => !value)}
         aria-expanded={open}
+        aria-controls={detailsId}
+        aria-label={`${label}: ${name}`}
         sx={{ p: 0, minWidth: 0, textTransform: 'none' }}
       >
-        {open ? 'Hide details' : 'About this job'}
+        {label}
       </Button>
-      <Collapse in={open} unmountOnExit>
+      <Collapse in={open} unmountOnExit id={detailsId}>
         <JobFacts task={task} withDuration={withDuration} />
       </Collapse>
     </Box>
   );
 }
 
-function midSessionWarning(markets) {
-  return `${markets.join(', ')} ${markets.length === 1 ? 'is' : 'are'} mid-session. `
-    + 'A run now stores a partial bar for today, which is refreshed after the close.';
+// The price cache's rule: a fetch before the close plus 30 minutes on a
+// trading day may hold a partial bar, which it refetches after the close.
+function unsettledWarning(markets) {
+  return `Today's session has not settled in ${markets.join(', ')}. `
+    + 'Prices a run fetches now count as partial until 30 minutes after the close, and are refetched then.';
 }
 
-// Run asks first: what the job does and costs, and whether it would fetch a
-// market's prices mid-session.
+// Run asks first: what the job does and costs, and whether it would fetch
+// prices for a market whose day has not settled.
 function RunDialog({ task, open, pending, onCancel, onConfirm, onExited }) {
   const blockedReason = task ? runBlockedReason(task) : null;
   return (
@@ -456,8 +464,8 @@ function RunDialog({ task, open, pending, onCancel, onConfirm, onExited }) {
         <DialogContent>
           <DialogContentText>{task.description}</DialogContentText>
           <JobFacts task={task} />
-          {task.open_markets?.length > 0 && (
-            <Alert severity="warning" sx={{ mt: 1.5 }}>{midSessionWarning(task.open_markets)}</Alert>
+          {task.unsettled_markets?.length > 0 && (
+            <Alert severity="warning" sx={{ mt: 1.5 }}>{unsettledWarning(task.unsettled_markets)}</Alert>
           )}
           {blockedReason && (
             <Alert severity="info" sx={{ mt: 1.5 }}>{blockedReason}</Alert>
@@ -500,7 +508,7 @@ function JobsTable({ tasks, pendingNames, onRun }) {
               <TableCell>
                 <Typography variant="body2" fontWeight="medium">{perMarket ? task.job_name : task.display_name}</Typography>
                 <Typography variant="caption" color="text.secondary">{perMarket ? jobDescription(task) : task.description}</Typography>
-                <JobHelp task={task} withDuration={!perMarket} />
+                <JobHelp task={task} name={perMarket ? task.job_name : task.display_name} withDuration={!perMarket} />
               </TableCell>
               <TableCell>
                 <Typography variant="body2">{perMarket ? groupSchedule(group) : task.schedule_description}</Typography>
@@ -546,7 +554,7 @@ function JobCards({ tasks, pendingNames, onRun }) {
                 <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.5 }}>
                   {groupSchedule(group)}
                 </Typography>
-                <JobHelp task={task} withDuration={false} />
+                <JobHelp task={task} name={task.job_name} withDuration={false} />
               </>
             ) : (
               <>
@@ -563,7 +571,7 @@ function JobCards({ tasks, pendingNames, onRun }) {
                 <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.5 }}>
                   {task.schedule_description}
                 </Typography>
-                <JobHelp task={task} />
+                <JobHelp task={task} name={task.display_name} />
               </>
             )}
           </Box>

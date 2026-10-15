@@ -473,35 +473,36 @@ describe('SchedulesSection', () => {
       expect(within(dialog).getByText('Cancelled or abandoned scans clutter the scan list.')).toBeInTheDocument();
       expect(within(dialog).getByText('Deletes cancelled and stale scans with their results.')).toBeInTheDocument();
       expect(within(dialog).getByText('Usually takes about 2m.')).toBeInTheDocument();
-      expect(within(dialog).queryByText(/mid-session/)).not.toBeInTheDocument();
+      expect(within(dialog).queryByText(/has not settled/)).not.toBeInTheDocument();
 
       fireEvent.click(within(dialog).getByRole('button', { name: 'Back' }));
       await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
       expect(triggerTask).not.toHaveBeenCalled();
     });
 
-    it('warns when the run would fetch prices mid-session', async () => {
+    it('warns when the run would fetch prices before a market\u2019s day has settled', async () => {
       getScheduledTasks.mockResolvedValue(payload([
-        explained({ display_name: 'Weekly Full Refresh (all markets)', name: 'weekly-full-refresh', open_markets: ['JP', 'KR'] }),
-        explained({ display_name: 'Daily Market Pipeline (HK)', name: 'pipeline-hk', open_markets: ['HK'] }),
+        explained({ display_name: 'Weekly Full Refresh (all markets)', name: 'weekly-full-refresh', unsettled_markets: ['JP', 'KR'] }),
+        explained({ display_name: 'Daily Market Pipeline (HK)', name: 'pipeline-hk', unsettled_markets: ['HK'] }),
       ]));
 
       renderSection();
       fireEvent.click(await screen.findByRole('button', { name: 'Run Weekly Full Refresh (all markets) now' }));
       expect(within(await screen.findByRole('dialog', { name: /^Run / })).getByRole('alert')).toHaveTextContent(
-        'JP, KR are mid-session. A run now stores a partial bar for today, which is refreshed after the close.',
+        "Today's session has not settled in JP, KR. "
+          + 'Prices a run fetches now count as partial until 30 minutes after the close, and are refetched then.',
       );
     });
 
-    it('says a single market is mid-session', async () => {
+    it('names a single unsettled market', async () => {
       getScheduledTasks.mockResolvedValue(payload([
-        explained({ display_name: 'Daily Market Pipeline (HK)', name: 'pipeline-hk', open_markets: ['HK'] }),
+        explained({ display_name: 'Daily Market Pipeline (HK)', name: 'pipeline-hk', unsettled_markets: ['HK'] }),
       ]));
 
       renderSection();
       fireEvent.click(await screen.findByRole('button', { name: 'Run Daily Market Pipeline (HK) now' }));
       expect(within(await screen.findByRole('dialog', { name: /^Run / })).getByRole('alert'))
-        .toHaveTextContent(/^HK is mid-session\./);
+        .toHaveTextContent(/^Today's session has not settled in HK\./);
     });
 
     it('blocks the confirm when the job starts running while the dialog is open', async () => {
@@ -524,11 +525,11 @@ describe('SchedulesSection', () => {
       const row = (await screen.findByText('Weekly Scan Cleanup')).closest('tr');
       expect(within(row).queryByText('Cancelled or abandoned scans clutter the scan list.')).not.toBeInTheDocument();
 
-      fireEvent.click(within(row).getByRole('button', { name: 'About this job' }));
+      fireEvent.click(within(row).getByRole('button', { name: 'About this job: Weekly Scan Cleanup' }));
 
       expect(within(row).getByText('Cancelled or abandoned scans clutter the scan list.')).toBeInTheDocument();
       expect(within(row).getByText('Usually takes about 2m.')).toBeInTheDocument();
-      expect(within(row).getByRole('button', { name: 'Hide details' })).toHaveAttribute('aria-expanded', 'true');
+      expect(within(row).getByRole('button', { name: 'Hide details: Weekly Scan Cleanup' })).toHaveAttribute('aria-expanded', 'true');
     });
   });
 

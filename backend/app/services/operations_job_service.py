@@ -33,8 +33,8 @@ from app.services.market_activity_service import (
 from app.services.runtime_activity_contract import progress_mode
 from app.services.task_registry_service import (
     SCHEDULED_TASKS,
-    _registry_entry_for,
     record_task_run,
+    scheduled_entry_for,
 )
 from app.tasks.market_queues import (
     SHARED_DATA_FETCH_QUEUE,
@@ -101,7 +101,7 @@ class _JobRecord:
     chain_claim: tuple[str, str] | None = None
 
     def to_api(self) -> dict[str, Any]:
-        entry = _registry_entry_for(self.task_name, self.kwargs or {})
+        entry = scheduled_entry_for(self.task_name, self.kwargs or {})
         return {
             "task_id": self.task_id,
             "task_name": self.task_name,
