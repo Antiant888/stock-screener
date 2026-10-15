@@ -84,7 +84,9 @@ class RSSFetcher(BaseContentFetcher):
             source.url, headers={"User-Agent": _USER_AGENT}, timeout=_REQUEST_TIMEOUT_SECONDS
         )
         response.raise_for_status()
-        feed = feedparser.parse(response.content, response_headers=dict(response.headers))
+        # feedparser reads only lowercase header names, such as content-type for the charset.
+        headers = {name.lower(): value for name, value in response.headers.items()}
+        feed = feedparser.parse(response.content, response_headers=headers)
         if getattr(feed, "bozo", False) and not feed.entries:
             raise SourceFetchError(f"Unreadable feed from {source.url}: {feed.get('bozo_exception')}")
 
@@ -593,18 +595,18 @@ class ContentIngestionService:
 
     def _record_failure(self, source_id: int, exc: Exception, attempted_at: datetime, *, scheduled: bool) -> None:
         """Commit the failure before the caller's rollback, leaving the watermark where it was."""
-        self.db.rollback()
-        source = self.db.get(ContentSource, source_id)
-        if source is None:
-            return
-        failures = (source.consecutive_failures or 0) + 1
         error = f"{type(exc).__name__}: {exc}"[:500]
-        source.consecutive_failures, source.last_error, source.last_error_at = failures, error, attempted_at
-        if scheduled:
-            # The watermark stays put, so waiting the normal interval loses nothing
-            # and spares a failing or rate-limiting provider a retry every poll.
-            source.last_fetched_at = attempted_at
         try:
+            self.db.rollback()
+            source = self.db.get(ContentSource, source_id)
+            if source is None:
+                return
+            failures = (source.consecutive_failures or 0) + 1
+            source.consecutive_failures, source.last_error, source.last_error_at = failures, error, attempted_at
+            if scheduled:
+                # The watermark stays put, so waiting the normal interval loses nothing
+                # and spares a failing or rate-limiting provider a retry every poll.
+                source.last_fetched_at = attempted_at
             self.db.commit()
         except Exception:
             # Never let bookkeeping replace the fetch error the caller re-raises.
