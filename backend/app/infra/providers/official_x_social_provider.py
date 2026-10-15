@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import datetime, timezone
+import logging
 import time
 from typing import Callable
 from urllib.parse import urlparse
@@ -17,6 +18,8 @@ from app.domain.social_signals.records import (
     SocialSourceBatch,
     SocialSourceOutcome,
 )
+
+logger = logging.getLogger(__name__)
 
 Reservation = Callable[[object, int, int], int]
 Release = Callable[[object, int], None]
@@ -146,8 +149,14 @@ class OfficialXSocialProvider:
         raise AssertionError("unreachable")
 
     def _return_unused(self, day, posts):
-        if self._release is not None and posts > 0:
+        if self._release is None or posts <= 0:
+            return
+        try:
             self._release(day, posts)
+        except Exception:
+            # A missed release only over-counts the budget; failing here would
+            # discard posts X has already served and counted.
+            logger.exception("Could not release %d unused official X posts for %s", posts, day)
 
     @staticmethod
     def _reset_at(value):
