@@ -416,6 +416,8 @@ describe('OperationsPage', () => {
       expect(screen.queryByText('No pipeline chain claims are held.')).not.toBeInTheDocument();
       expect(screen.queryByText('No queue data available.')).not.toBeInTheDocument();
       expect(screen.queryByText('No worker inspect data available.')).not.toBeInTheDocument();
+      // Visible from every tab, unlike the errors inside the Jobs panel.
+      expect(screen.getByRole('tab', { name: /^Jobs\s*!$/ })).toBeInTheDocument();
     });
 
     it('keeps the last known data, marked as such, when a refetch fails', async () => {

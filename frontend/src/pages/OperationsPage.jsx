@@ -235,10 +235,10 @@ function FreshnessTable({ summaries }) {
   );
 }
 
-// Declaration order is display order. `badge` returns a count; zero shows none.
+// Declaration order is display order. `badge` returns a count, or '!' when its data failed to load; zero shows none.
 const TABS = [
   { id: 'overview', label: 'Overview', show: () => true },
-  { id: 'jobs', label: 'Jobs', show: () => true, badge: ({ stuckJobs }) => stuckJobs },
+  { id: 'jobs', label: 'Jobs', show: () => true, badge: ({ stuckJobs, jobsFailed }) => (jobsFailed ? '!' : stuckJobs) },
   { id: 'schedules', label: 'Schedules', show: ({ features }) => Boolean(features.tasks) },
   { id: 'alerts', label: 'Alerts', show: () => true, badge: ({ openAlerts }) => openAlerts },
   { id: 'sources', label: 'Sources', show: () => true, badge: ({ failingSourceCount }) => failingSourceCount },
@@ -274,7 +274,8 @@ function useHashTab(visibleIds) {
   }, [selection, activeId]);
 
   const select = (id) => {
-    window.history.replaceState(null, '', `#${id}`);
+    // Keep react-router's history.state; null would drop its key and index.
+    window.history.replaceState(window.history.state, '', `#${id}`);
     setSelection({ id, jumpToLease: false });
   };
   return [activeId, select];
@@ -291,6 +292,7 @@ function TabPanel({ id, activeId, visibleIds, children }) {
       id={`ops-panel-${id}`}
       aria-labelledby={`ops-tab-${id}`}
       hidden={id !== activeId}
+      tabIndex={0}
       sx={{ pt: 2 }}
     >
       {children}
@@ -873,7 +875,7 @@ export default function OperationsPage() {
 
   const stuckJobs = jobs.filter((job) => job.state === 'stuck').length;
   const openAlerts = alerts.filter((alert) => alert.state === 'open').length;
-  const tabContext = { features, stuckJobs, openAlerts, failingSourceCount };
+  const tabContext = { features, stuckJobs, openAlerts, failingSourceCount, jobsFailed: jobsQuery.isError };
   const visibleTabs = TABS.filter((tab) => tab.show(tabContext));
   const visibleIds = visibleTabs.map((tab) => tab.id);
   const [activeId, selectTab] = useHashTab(visibleIds);
