@@ -382,6 +382,43 @@ def test_batch_splitting_stays_within_the_per_run_call_cap(backlog):
     assert (result.succeeded, result.failed, llm.calls) == (0, 8, 3)
 
 
+class FlakyLLM(FakeLLM):
+    def __init__(self, failures):
+        super().__init__()
+        self.failures = failures
+
+    async def completion(self, **kwargs):
+        if self.failures:
+            self.failures -= 1
+            self.calls += 1
+            raise TimeoutError("provider timed out")
+        return await super().completion(**kwargs)
+
+
+@pytest.mark.parametrize("failures,max_calls_per_run,expected", [
+    (1, 20, ((1, 0), 2, ("succeeded", None), ["reconciled", "uncertain"])),
+    (2, 20, ((0, 1), 2, ("failed_terminal", "completion_unknown"), ["uncertain", "uncertain"])),
+    (1, 1, ((0, 1), 1, ("failed_terminal", "completion_unknown"), ["uncertain"])),
+])
+def test_request_with_unknown_outcome_is_retried_once_within_the_run_cap(
+    backlog, failures, max_calls_per_run, expected,
+):
+    from app.infra.db.models.social_analysis import SocialExtractionWork, SocialLLMAttempt
+    from app.services.social_signal_backlog_service import ProcessSocialBacklog
+
+    configure_budget(backlog)
+    llm = FlakyLLM(failures)
+    worker = ProcessSocialBacklog(backlog, llm=llm, max_calls_per_run=max_calls_per_run)
+    work_id = enqueue(backlog, worker, post(1))
+
+    result = asyncio.run(worker.execute(NOW, 1))
+
+    with backlog() as db:
+        work = db.get(SocialExtractionWork, work_id)
+        attempts = sorted(attempt.state for attempt in db.scalars(select(SocialLLMAttempt)))
+        assert ((result.succeeded, result.failed), llm.calls, (work.state, work.error_code), attempts) == expected
+
+
 def test_explicit_generation_counts_preexisting_terminal_work_as_failed(backlog):
     from app.infra.db.models.social_analysis import SocialExtractionWork
 
