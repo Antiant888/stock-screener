@@ -284,6 +284,7 @@ def _social_provider_factories(sessions, *, official_client=None, cooldown_gate=
         "xui": lambda: XuiCliSocialProvider(
             config_path=settings.social_xui_config_path,
             profile=settings.social_xui_profile,
+            timeout_seconds=settings.social_xui_timeout_seconds,
         ),
     }
     if cooldown_gate is None or not hasattr(cooldown_gate, "provider_cooldown"):

@@ -116,6 +116,7 @@ class Settings(BaseSettings):
     social_incremental_limit_per_source: int = 200
     social_xui_config_path: str = "/app/data/xui-reader/config.toml"
     social_xui_profile: str = "automation"
+    social_xui_timeout_seconds: int = 300  # a 1000-post initial scroll outlasts 60s
     social_official_daily_post_limit: int = 2000
     social_llm_daily_budget_usd: Decimal = Decimal("2.00")
     social_llm_budget_timezone: str = "Asia/Singapore"
