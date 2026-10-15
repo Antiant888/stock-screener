@@ -504,6 +504,13 @@ def test_production_factory_has_explicit_lazy_official_and_xui_adapters():
     xui = refresh._provider("xui")
     assert isinstance(xui, XuiCliSocialProvider)
     assert xui._timeout == 300, "a 1000-post backfill scroll needs more than the 60s default"
+    # One xui read can take auth + read + 30s retry delay + read before the next renewal.
+    worst_xui_read = 3 * xui._timeout + 30
+    assert refresh.lease_ttl_seconds > worst_xui_read
+
+    from app.wiring.use_case_factories import get_validate_social_source_use_case
+    validation = get_validate_social_source_use_case(session_factory=lambda: None, provider_lease=lease)
+    assert validation.lease_ttl_seconds > worst_xui_read
     assert refresh.catalog.__class__.__name__ == "SqlSocialRefreshCatalog"
     assert refresh.evidence_reader.__class__.__name__ == "SocialScoringEvidenceReader"
     assert refresh.theme_service.__class__.__name__ == "SqlThemeProjectionFacade"
