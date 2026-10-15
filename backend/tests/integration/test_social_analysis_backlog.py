@@ -807,6 +807,15 @@ def test_cancellation_survives_a_failed_refund(backlog, monkeypatch):
         asyncio.run(worker.execute(NOW, 2))
     assert llm.calls == 0
 
+    from app.infra.db.models.social_analysis import SocialExtractionWork, SocialLLMAttempt
+    with backlog() as db:
+        assert {work.state for work in db.scalars(select(SocialExtractionWork))} == {"running"}
+    # Claim expiry is the recovery path: it releases the reservation and requeues the posts.
+    later = asyncio.run(processor(backlog, FakeLLM()).execute(NOW + timedelta(minutes=11), 2))
+    assert later.succeeded == 2
+    with backlog() as db:
+        assert db.scalars(select(SocialLLMAttempt.state).order_by(SocialLLMAttempt.id)).first() == "released"
+
 
 def test_confirmed_pre_dispatch_failure_releases_budget_without_retry(backlog):
     from app.infra.db.models.social_analysis import (
