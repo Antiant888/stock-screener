@@ -1007,9 +1007,11 @@ class SocialCurrentInputManifest:
     audit_work_ids: tuple[int, ...]
     coverage_reasons: tuple[str, ...] = ()
     scoring_work_ids: tuple[int, ...] = ()
+    unavailable_inputs: tuple[ReplayInput, ...] = ()
 
     def __post_init__(self):
-        for field in ("required_inputs", "carry_in_work_ids", "audit_work_ids", "coverage_reasons", "scoring_work_ids"):
+        for field in ("required_inputs", "carry_in_work_ids", "audit_work_ids", "coverage_reasons",
+                      "scoring_work_ids", "unavailable_inputs"):
             _deeply_immutable(getattr(self, field), field)
 
 

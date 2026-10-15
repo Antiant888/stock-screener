@@ -26,6 +26,8 @@ from app.services.social_ticker_resolver import SocialTickerResolver, cashtags
 logger = logging.getLogger(__name__)
 
 NO_SIGNAL_GATE = "no_signal_gate"
+# Configuration failures repeat for any subset of posts, so splitting the batch cannot help.
+_UNSPLITTABLE_ERRORS = frozenset({"llm_configuration_error", "extraction_model_not_configured"})
 _WORD = re.compile(r"\w+")
 _SYMBOL = re.compile(r"[A-Za-z0-9]+(?:[.\-][A-Za-z]{1,3}\b)?")  # MU, BRK.B, 0700.HK, 3008.TWO
 _CJK = re.compile(r"[぀-ヿ㐀-鿿가-힯]")
@@ -67,6 +69,10 @@ class _Deferred(Exception):
         self.outside = outside
 
 
+class _CompletionUnknown(Exception):
+    """The dispatched model request itself failed, so whether it billed is unknown."""
+
+
 class _NoopRequestGate:
     def acquire(self, owner, ttl):
         return True
@@ -83,8 +89,8 @@ class _NoopRequestGate:
 
 class _MeteredCompletion:
     """Intercept usage BEFORE parsing, including malformed successful responses."""
-    def __init__(self, owner, claims, now):
-        self.owner, self.claims, self.now = owner, claims, now
+    def __init__(self, owner, claims, now, *, retry=0):
+        self.owner, self.claims, self.now, self.retry = owner, claims, now, retry
 
     async def completion(self, **kwargs):
         budget = self.owner.budget
@@ -97,7 +103,9 @@ class _MeteredCompletion:
         outputs = kwargs["max_tokens"]
         work_ids = tuple(work_id for work_id, _ in self.claims)
         identity = ":".join(f"{work_id}:{token}" for work_id, token in self.claims)
-        attempt = budget.reserve(f"social-batch:{hashlib.sha256(identity.encode()).hexdigest()}", work_ids,
+        key = f"social-batch:{hashlib.sha256(identity.encode()).hexdigest()}"
+        # A retry is a new logical request; the uncertain first attempt keeps its own charge.
+        attempt = budget.reserve(key + (f":retry-{self.retry}" if self.retry else ""), work_ids,
             price.cost(inputs, outputs), self.now(), pricing_version=price.version,
             input_token_limit=inputs, output_token_limit=outputs)
         if attempt is None:
@@ -197,6 +205,9 @@ class _MeteredCompletion:
             except LLMPreDispatchError:
                 budget.release_pre_dispatch(attempt)
                 raise SocialExtractionError("llm_configuration_error") from None
+            except Exception as exc:
+                budget.reconcile(attempt, None, None)
+                raise _CompletionUnknown() from exc
             except BaseException:
                 budget.reconcile(attempt, None, None)
                 raise
@@ -405,6 +416,18 @@ class ProcessSocialBacklog:
     def _finish_many(self, claims, state, error=None):
         return sum(self._finish(work_id, token, state, error) for work_id, token in claims)
 
+    def _settle_unknown(self, claims):
+        """Close work a deferral released, unless another claim has taken it since."""
+        settled = 0
+        with social_analysis_transaction(self.session_factory) as db:
+            for work_id, _ in claims:
+                row = db.get(SocialExtractionWork, work_id)
+                if row.state in {"pending", "waiting_budget"} and row.claim_token is None:
+                    row.state, row.error_code = "failed_terminal", "completion_unknown"
+                    row.updated_at = datetime.now(timezone.utc)
+                    settled += 1
+        return settled
+
     @staticmethod
     def _groups(claimed, batch_size):
         current = []
@@ -441,31 +464,84 @@ class ProcessSocialBacklog:
             now, claim_limit, admin_work_ids, work_ids
         )
         succeeded = deferred = 0
-        for batch in self._groups(claimed, self.batch_size):
-            model, prompt, schema = batch[0][2:5]
-            claims = tuple((item[0], item[1]) for item in batch)
-            posts = []
-            for _, _, _, _, _, snapshot in batch:
+        batches = list(self._groups(claimed, self.batch_size))
+        spare_calls = self.max_calls_per_run - len(batches)
+        for batch in batches:
+            items = []
+            for work_id, token, _, _, _, snapshot in batch:
                 snapshot["created_at"] = datetime.fromisoformat(snapshot["created_at"])
                 snapshot["observed_at"] = datetime.fromisoformat(snapshot["observed_at"])
-                posts.append(SocialPostRecord(**snapshot))
+                items.append(((work_id, token), SocialPostRecord(**snapshot)))
+            outcome, spare_calls = await self._extract(tuple(items), batch[0][2:5], current_time, spare_calls)
+            if isinstance(outcome, str):
+                outcome, spare_calls = await self._isolate(
+                    tuple(items), batch[0][2:5], current_time, outcome, spare_calls
+                )
+            succeeded, deferred, failed, outside = (
+                total + part for total, part in zip((succeeded, deferred, failed, outside), outcome)
+            )
+        return BacklogResult(succeeded, deferred, failed, outside, self.budget.status(current_time()).next_reset_at)
+
+    async def _extract(self, items, config, current_time, spare_calls):
+        """Return (succeeded, deferred, failed, outside) or an unusable response's code, and the calls still spare.
+
+        A request whose outcome is unknown, such as a provider timeout, may have
+        billed, so it is retried at most once and only with a call the run's cap left unused.
+        """
+        model, prompt, schema = config
+        claims = tuple(claim for claim, _ in items)
+        work_ids = [work_id for work_id, _ in claims]
+        for retry in range(2):
             try:
                 with self.session_factory() as db:
                     extraction = SocialExtractionService(db, model=model, prompt_version=prompt,
-                        schema_version=schema, llm=_MeteredCompletion(self, claims, current_time))
-                    result = await extraction.extract(tuple(posts))
-                for (work_id, token), post in zip(claims, posts):
-                    succeeded += self._finish(
-                        work_id, token, "succeeded", result=self._single_result(post, result)
-                    )
+                        schema_version=schema, llm=_MeteredCompletion(self, claims, current_time, retry=retry))
+                    result = await extraction.extract(tuple(post for _, post in items))
+                break
             except _Deferred as exc:
-                deferred += exc.count
-                outside += exc.outside
+                if retry:
+                    # The retry never went out, and deferred work would be claimed again
+                    # later, so the first request's unknown outcome stands.
+                    return (0, 0, self._settle_unknown(claims), exc.outside), spare_calls
+                return (0, exc.count, 0, exc.outside), spare_calls
             except asyncio.CancelledError:
                 self._finish_many(claims, "failed_terminal", "completion_unknown")
                 raise
             except SocialExtractionError as exc:
-                failed += self._finish_many(claims, "failed_terminal", str(exc))
+                return str(exc), spare_calls
+            except _CompletionUnknown:
+                logger.warning("Social LLM request outcome unknown (attempt %d) work_ids=%s",
+                               retry + 1, work_ids, exc_info=True)
+                if retry or spare_calls < 1:
+                    return (0, 0, self._finish_many(claims, "failed_terminal", "completion_unknown"), 0), spare_calls
+                spare_calls -= 1
             except Exception:
-                failed += self._finish_many(claims, "failed_terminal", "completion_unknown")
-        return BacklogResult(succeeded, deferred, failed, outside, self.budget.status(current_time()).next_reset_at)
+                logger.exception("Social LLM extraction failed work_ids=%s", work_ids)
+                return (0, 0, self._finish_many(claims, "failed_terminal", "completion_unknown"), 0), spare_calls
+        try:
+            succeeded = sum(self._finish(work_id, token, "succeeded", result=self._single_result(post, result))
+                            for (work_id, token), post in items)
+        except Exception:
+            logger.exception("Saving social LLM results failed work_ids=%s", work_ids)
+            return (0, 0, self._finish_many(claims, "failed_terminal", "completion_unknown"), 0), spare_calls
+        return (succeeded, 0, 0, 0), spare_calls
+
+    async def _isolate(self, items, config, current_time, code, spare_calls):
+        """Narrow an unusable batch response to the posts that provoke it.
+
+        Splitting spends only calls the run's cap left unused, so a model that
+        fails every request costs no more than one call per claimed batch did.
+        Returns the outcome totals and the calls still spare.
+        """
+        claims = tuple(claim for claim, _ in items)
+        if len(items) == 1 or code in _UNSPLITTABLE_ERRORS or spare_calls < 2:
+            return (0, 0, self._finish_many(claims, "failed_terminal", code), 0), spare_calls
+        spare_calls -= 2
+        middle = len(items) // 2
+        totals = (0, 0, 0, 0)
+        for half in (items[:middle], items[middle:]):
+            outcome, spare_calls = await self._extract(half, config, current_time, spare_calls)
+            if isinstance(outcome, str):
+                outcome, spare_calls = await self._isolate(half, config, current_time, outcome, spare_calls)
+            totals = tuple(total + part for total, part in zip(totals, outcome))
+        return totals, spare_calls

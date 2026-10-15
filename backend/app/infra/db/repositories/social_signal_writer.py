@@ -275,16 +275,37 @@ class SocialSignalWriter:
             if replay:
                 observations = {k: v for k, v in observations.items() if k in replay["participating_source_ids"]}
             current, older, after = self._partition_inputs(observations, utc(run.created_at))
-            audit = set(payload.get("current_manifest", {}).get("audit_work_ids", ()))
-            scoring = set(payload.get("current_manifest", {}).get("scoring_work_ids", ()))
+            previous = payload.get("current_manifest", {})
+            audit = set(previous.get("audit_work_ids", ()))
+            scoring = set(previous.get("scoring_work_ids", ()))
+            unavailable = {(value["content_item_id"], value["input_hash"])
+                           for value in previous.get("unavailable_inputs", ())}
             if replay:
                 audit.update(replay["historical_work_ids"])
             carry, kept, succeeded = [], set(), set()
+            linked = []
             for link in db.scalars(select(SocialRunWork).where(SocialRunWork.run_id == run_id).order_by(SocialRunWork.work_id)):
                 work = db.get(SocialExtractionWork, link.work_id)
                 if work is None or work.input_hash != link.input_hash:
                     raise ValueError("pinned_input_mismatch")
-                identity = (work.content_item_id, work.input_hash)
+                linked.append((link, work, (work.content_item_id, work.input_hash)))
+            analyzable = {identity for _, work, identity in linked if work.state != "failed_terminal"}
+            unavailable -= analyzable
+            for link, work, identity in linked:
+                if work.state == "failed_terminal" and identity not in older | after:
+                    # A post whose analysis cannot complete is a coverage gap, like a
+                    # failed list read; it must not hold back the rest of the generation.
+                    if identity not in analyzable:
+                        unavailable.add(identity)
+                    audit.add(work.id)
+                    db.delete(link)
+                    continue
+                if work.state == "outside_window" and identity not in current:
+                    # Retained work past the analysis window is never claimed again, and
+                    # its post is older than every scoring window.
+                    audit.add(work.id)
+                    db.delete(link)
+                    continue
                 if identity not in current | older | after:
                     published = datetime.fromisoformat(work.input_snapshot_json["created_at"])
                     if utc(run.created_at) - timedelta(days=15) <= published <= utc(run.created_at):
@@ -301,9 +322,12 @@ class SocialSignalWriter:
                     carry.append(work.id)
                     succeeded.add(identity)
             reasons = (("outside_window_judgments_missing",) if older - succeeded else ()) + (
-                ("publication_after_evaluation",) if after else ())
-            manifest = SocialCurrentInputManifest(tuple(ReplayInput(*v, "current") for v in sorted(current)),
-                tuple(carry), tuple(sorted(audit - kept)), reasons, tuple(sorted(scoring & kept)))
+                ("publication_after_evaluation",) if after else ()) + (
+                ("analysis_unavailable",) if unavailable else ())
+            manifest = SocialCurrentInputManifest(
+                tuple(ReplayInput(*v, "current") for v in sorted(current - unavailable)),
+                tuple(carry), tuple(sorted(audit - kept)), reasons, tuple(sorted(scoring & kept)),
+                tuple(ReplayInput(*v, "unavailable") for v in sorted(unavailable)))
             payload["current_manifest"] = serialized(manifest)
             run.application_progress_json = payload
         return self.read_run_inputs(run_id)

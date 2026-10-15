@@ -167,7 +167,10 @@ class SocialScoringEvidenceReader:
                 raise ValueError("run_unavailable")
             source_ids = tuple(sorted(current.application_progress_json["sources"]))
             outcomes = current.source_outcomes_json
-            reasons = set(current.application_progress_json.get("current_manifest", {}).get("coverage_reasons", ()))
+            manifest = current.application_progress_json.get("current_manifest", {})
+            reasons = set(manifest.get("coverage_reasons", ()))
+            unavailable = {(value["content_item_id"], value["input_hash"])
+                           for value in manifest.get("unavailable_inputs", ())}
             for source_id in source_ids:
                 reasons.update(outcomes.get(source_id, {}).get("coverage_reason_codes", ()))
             # One canonical observation per post/source. Apply non-null metrics in
@@ -254,6 +257,10 @@ class SocialScoringEvidenceReader:
                 claims.setdefault(post_id, []).extend(work.result_json.get("claims", ()))
 
             for (post_id, source_id), post in canonical.items():
+                if (content_ids[post_id], self._content_revision(post)) in unavailable:
+                    # Its earlier mentions are unknown, so acceleration has no full baseline.
+                    history_complete = False
+                    continue
                 judgment = judgments.get(post_id)
                 if judgment is not None:
                     post = replace(post, has_new_thesis=judgment[0], canonical_claim_key=judgment[1])

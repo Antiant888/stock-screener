@@ -1122,6 +1122,114 @@ async def test_admin_analysis_retry_replays_the_work_linked_generation(
 
 
 @pytest.mark.asyncio
+async def test_admin_analysis_retry_finds_the_generation_that_marked_the_work_unavailable(
+    db_session, social_runtime, monkeypatch
+):
+    from datetime import datetime, timezone
+    from types import SimpleNamespace
+
+    from app.api.v1 import config
+    from app.infra.db.models.social_analysis import SocialExtractionWork
+    from app.infra.db.models.social_signals import SocialSignalRun
+    from app.interfaces.tasks.social_signal_tasks import resume_social_analysis
+    from app.models.theme import ContentItem
+    from app.services import server_auth
+
+    monkeypatch.setattr(server_auth.settings, "server_auth_enabled", False)
+    monkeypatch.setattr(config.settings, "admin_api_key", "admin-secret")
+    runtime = social_runtime.read_runtime()
+    now = datetime(2026, 9, 7, tzinfo=timezone.utc)
+    item = ContentItem(source_type="twitter", external_id="gap-item", content="$AAA",
+                       url="https://x.com/a/status/gap", published_at=now)
+    db_session.add(item)
+    db_session.flush()
+    work = SocialExtractionWork(
+        content_item_id=item.id, input_hash="gap-hash", prompt_version="v1",
+        schema_version="v1", selected_model="model", input_snapshot_json={},
+        state="failed_terminal", error_code="malformed_json", requested_by_admin=False,
+        created_at=now, updated_at=now,
+    )
+    db_session.add(work)
+    db_session.flush()
+    db_session.add(SocialSignalRun(
+        id="gap-generation", registry_id=1, registry_version=runtime.version,
+        mode="live", provider="official", status="published", source_outcomes_json={},
+        application_progress_json={"sources": {}, "observations": {}, "current_manifest": {
+            "required_inputs": [], "carry_in_work_ids": [], "audit_work_ids": [work.id],
+            "unavailable_inputs": [{"content_item_id": item.id, "input_hash": "gap-hash",
+                                    "disposition": "unavailable"}],
+        }}, feature_run_ids_json={}, exposure_dates_json={}, coverage_json={}, created_at=now,
+    ))
+    db_session.commit()
+    calls = []
+    monkeypatch.setattr(resume_social_analysis, "apply_async",
+                        lambda **kwargs: calls.append(kwargs) or SimpleNamespace(id="retry-task"))
+
+    response = await _request(
+        db_session, "POST", f"/api/v1/social-signals/admin/analysis/{work.id}/retry",
+        headers={"X-Admin-Key": "admin-secret"},
+    )
+
+    assert response.status_code == 202
+    assert calls == [{"args": ["gap-generation"], "queue": "social_ingestion"}]
+
+
+@pytest.mark.asyncio
+async def test_admin_analysis_retry_rejects_a_generation_that_resume_would_skip(
+    db_session, social_runtime, monkeypatch
+):
+    from datetime import datetime, timedelta, timezone
+
+    from app.api.v1 import config
+    from app.infra.db.models.social_analysis import SocialExtractionWork
+    from app.infra.db.models.social_signals import SocialSignalRun
+    from app.interfaces.tasks.social_signal_tasks import resume_social_analysis
+    from app.models.theme import ContentItem
+    from app.services import server_auth
+
+    monkeypatch.setattr(server_auth.settings, "server_auth_enabled", False)
+    monkeypatch.setattr(config.settings, "admin_api_key", "admin-secret")
+    runtime = social_runtime.read_runtime()
+    now = datetime(2026, 9, 7, tzinfo=timezone.utc)
+    item = ContentItem(source_type="twitter", external_id="stale-item", content="$AAA",
+                       url="https://x.com/a/status/stale", published_at=now)
+    db_session.add(item)
+    db_session.flush()
+    work = SocialExtractionWork(
+        content_item_id=item.id, input_hash="stale-hash", prompt_version="v1",
+        schema_version="v1", selected_model="model", input_snapshot_json={},
+        state="failed_terminal", error_code="malformed_json", requested_by_admin=False,
+        created_at=now, updated_at=now,
+    )
+    db_session.add(work)
+    db_session.flush()
+    for run_id, status, created_at, audit in (
+        ("deferred-generation", "running", now, [work.id]),
+        ("newer-generation", "published", now + timedelta(hours=6), []),
+    ):
+        db_session.add(SocialSignalRun(
+            id=run_id, registry_id=1, registry_version=runtime.version, mode="live",
+            provider="official", status=status, source_outcomes_json={},
+            application_progress_json={"sources": {}, "observations": {}, "current_manifest": {
+                "required_inputs": [], "carry_in_work_ids": [], "audit_work_ids": audit,
+            }}, feature_run_ids_json={}, exposure_dates_json={}, coverage_json={},
+            created_at=created_at,
+        ))
+    db_session.commit()
+    monkeypatch.setattr(resume_social_analysis, "apply_async",
+                        lambda **kwargs: pytest.fail("a superseded generation must not be resumed"))
+
+    response = await _request(
+        db_session, "POST", f"/api/v1/social-signals/admin/analysis/{work.id}/retry",
+        headers={"X-Admin-Key": "admin-secret"},
+    )
+
+    db_session.refresh(work)
+    assert (response.status_code, response.json()["detail"]["code"], work.state) == (
+        409, "work_generation_superseded", "failed_terminal")
+
+
+@pytest.mark.asyncio
 async def test_validation_preview_includes_staged_association_proposals(
     db_session, social_runtime, monkeypatch
 ):

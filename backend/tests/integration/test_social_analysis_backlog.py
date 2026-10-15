@@ -40,10 +40,11 @@ def post(number, age=1):
 
 
 class FakeLLM:
-    def __init__(self, *, malformed=False, usage=True, model="actual-model"):
+    def __init__(self, *, malformed=False, usage=True, model="actual-model", poison=()):
         self.seen = []
         self.calls = 0
         self.malformed, self.usage, self.model = malformed, usage, model
+        self.poison = set(poison)
 
     async def completion(self, **kwargs):
         self.calls += 1
@@ -53,8 +54,9 @@ class FakeLLM:
         assert kwargs["num_retries"] == 0 and not kwargs["allow_fallbacks"]
         payload = {"posts": [dict(post_id=p["post_id"], claims=[], has_new_thesis=False,
             canonical_claim_key=None) for p in sources]}
+        malformed = self.malformed or bool(self.poison & {p["post_id"] for p in sources})
         return SimpleNamespace(model=self.model, id="safe-request", _hidden_params={"custom_llm_provider": "synthetic"},
-            choices=[SimpleNamespace(message=SimpleNamespace(content="bad" if self.malformed else json.dumps(payload)))],
+            choices=[SimpleNamespace(message=SimpleNamespace(content="bad" if malformed else json.dumps(payload)))],
             usage=SimpleNamespace(prompt_tokens=100, completion_tokens=8192) if self.usage else None)
 
 
@@ -330,6 +332,134 @@ def test_parse_failure_and_ambiguous_billing_are_not_refunded(backlog, malformed
         assert work.state == ("failed_terminal" if malformed else "succeeded")
         attempt = db.scalar(select(SocialLLMAttempt))
         assert attempt.state == ("reconciled" if usage and model == "actual-model" else "uncertain")
+
+
+def test_unparseable_batch_is_split_so_only_the_offending_post_fails(backlog):
+    from app.infra.db.models.social_analysis import SocialExtractionWork
+    from app.services.social_signal_backlog_service import ProcessSocialBacklog
+
+    configure_budget(backlog)
+    llm = FakeLLM(poison={"3"})
+    worker = ProcessSocialBacklog(backlog, llm=llm, batch_size=4)
+    work_ids = [enqueue(backlog, worker, post(number)) for number in range(1, 5)]
+
+    result = asyncio.run(worker.execute(NOW, 4))
+
+    assert (result.succeeded, result.failed) == (3, 1)
+    with backlog() as db:
+        states = [(db.get(SocialExtractionWork, work_id).state,
+                   db.get(SocialExtractionWork, work_id).error_code) for work_id in work_ids]
+    assert states == [("succeeded", None), ("succeeded", None),
+                      ("failed_terminal", "malformed_json"), ("succeeded", None)]
+    assert llm.calls == 5
+
+
+def test_unparseable_posts_in_both_halves_are_each_isolated(backlog):
+    from app.services.social_signal_backlog_service import ProcessSocialBacklog
+
+    configure_budget(backlog)
+    llm = FakeLLM(poison={"1", "3"})
+    worker = ProcessSocialBacklog(backlog, llm=llm, batch_size=4)
+    for number in range(1, 5):
+        enqueue(backlog, worker, post(number))
+
+    result = asyncio.run(worker.execute(NOW, 4))
+
+    assert (result.succeeded, result.failed, llm.calls) == (2, 2, 7)
+
+
+def test_batch_splitting_stays_within_the_per_run_call_cap(backlog):
+    from app.services.social_signal_backlog_service import ProcessSocialBacklog
+
+    configure_budget(backlog)
+    llm = FakeLLM(malformed=True)
+    worker = ProcessSocialBacklog(backlog, llm=llm, batch_size=8, max_calls_per_run=4)
+    for number in range(1, 9):
+        enqueue(backlog, worker, post(number))
+
+    result = asyncio.run(worker.execute(NOW, 8))
+
+    assert (result.succeeded, result.failed, llm.calls) == (0, 8, 3)
+
+
+class FlakyLLM(FakeLLM):
+    def __init__(self, failures):
+        super().__init__()
+        self.failures = failures
+
+    async def completion(self, **kwargs):
+        if self.failures:
+            self.failures -= 1
+            self.calls += 1
+            raise TimeoutError("provider timed out")
+        return await super().completion(**kwargs)
+
+
+@pytest.mark.parametrize("failures,max_calls_per_run,expected", [
+    (1, 20, ((1, 0), 2, ("succeeded", None), ["reconciled", "uncertain"])),
+    (2, 20, ((0, 1), 2, ("failed_terminal", "completion_unknown"), ["uncertain", "uncertain"])),
+    (1, 1, ((0, 1), 1, ("failed_terminal", "completion_unknown"), ["uncertain"])),
+])
+def test_request_with_unknown_outcome_is_retried_once_within_the_run_cap(
+    backlog, failures, max_calls_per_run, expected,
+):
+    from app.infra.db.models.social_analysis import SocialExtractionWork, SocialLLMAttempt
+    from app.services.social_signal_backlog_service import ProcessSocialBacklog
+
+    configure_budget(backlog)
+    llm = FlakyLLM(failures)
+    worker = ProcessSocialBacklog(backlog, llm=llm, max_calls_per_run=max_calls_per_run)
+    work_id = enqueue(backlog, worker, post(1))
+
+    result = asyncio.run(worker.execute(NOW, 1))
+
+    with backlog() as db:
+        work = db.get(SocialExtractionWork, work_id)
+        attempts = sorted(attempt.state for attempt in db.scalars(select(SocialLLMAttempt)))
+        assert ((result.succeeded, result.failed), llm.calls, (work.state, work.error_code), attempts) == expected
+
+
+def test_deferred_retry_keeps_the_unknown_outcome_terminal(backlog):
+    from app.infra.db.models.social_analysis import SocialExtractionWork
+    from app.services.social_signal_backlog_service import ProcessSocialBacklog
+
+    configure_budget(backlog)
+    llm = FlakyLLM(1)
+    worker = ProcessSocialBacklog(backlog, llm=llm, max_calls_per_day=1)
+    work_id = enqueue(backlog, worker, post(1))
+
+    result = asyncio.run(worker.execute(NOW, 1))
+    later = asyncio.run(ProcessSocialBacklog(backlog, llm=llm).execute(
+        NOW + timedelta(days=1), 1, work_ids=(work_id,)))
+
+    with backlog() as db:
+        work = db.get(SocialExtractionWork, work_id)
+        assert ((result.deferred, result.failed), later.succeeded, llm.calls, work.state, work.error_code) == (
+            (0, 1), 0, 1, "failed_terminal", "completion_unknown")
+
+
+def test_bookkeeping_failure_after_a_response_is_not_retried(backlog, monkeypatch):
+    from app.infra.db.models.social_analysis import SocialExtractionWork
+    from app.services.social_llm_budget_service import SocialLLMBudgetService
+    from app.services.social_signal_backlog_service import ProcessSocialBacklog
+
+    configure_budget(backlog)
+    llm = FakeLLM()
+    worker = ProcessSocialBacklog(backlog, llm=llm)
+    work_id = enqueue(backlog, worker, post(1))
+    reconcile = SocialLLMBudgetService.reconcile
+    def ledger_outage(self, attempt, *args, **kwargs):
+        if args[0] is not None:
+            raise RuntimeError("ledger unavailable")
+        return reconcile(self, attempt, *args, **kwargs)
+    monkeypatch.setattr(SocialLLMBudgetService, "reconcile", ledger_outage)
+
+    result = asyncio.run(worker.execute(NOW, 1))
+
+    with backlog() as db:
+        work = db.get(SocialExtractionWork, work_id)
+        assert ((result.failed, llm.calls), (work.state, work.error_code)) == (
+            (1, 1), ("failed_terminal", "completion_unknown"))
 
 
 def test_explicit_generation_counts_preexisting_terminal_work_as_failed(backlog):

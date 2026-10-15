@@ -389,17 +389,26 @@ def retry_admin_analysis(work_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail={"code": "work_not_found"})
     if row.state not in {"waiting_budget", "failed_retryable", "failed_terminal", "outside_window"}:
         raise HTTPException(status_code=422, detail={"code": "work_not_retryable"})
-    run_id = db.scalar(
-        select(SocialRunWork.run_id)
-        .join(SocialSignalRun, SocialSignalRun.id == SocialRunWork.run_id)
-        .where(SocialRunWork.work_id == work_id)
-        .order_by(SocialSignalRun.created_at.desc(), SocialSignalRun.id.desc())
-        .limit(1)
-    )
+    linked = set(db.scalars(select(SocialRunWork.run_id).where(SocialRunWork.work_id == work_id)))
+    runs = db.scalars(select(SocialSignalRun).order_by(
+        SocialSignalRun.created_at.desc(), SocialSignalRun.id.desc()
+    ).execution_options(yield_per=20))
+    # A generation that marked the work unavailable unlinked it and kept it in its audit set.
+    run_id = next((
+        run.id for run in runs
+        if run.id in linked
+        or work_id in run.application_progress_json.get("current_manifest", {}).get("audit_work_ids", ())
+    ), None)
     if run_id is None:
         raise HTTPException(
             status_code=422, detail={"code": "work_generation_not_found"}
         )
+    selected = db.get(SocialSignalRun, run_id)
+    # resume_social_analysis skips a running generation a later publication superseded.
+    if selected.status == "running" and db.scalar(select(SocialSignalRun.id).where(
+        SocialSignalRun.status == "published", SocialSignalRun.created_at >= selected.created_at,
+    ).limit(1)) is not None:
+        raise HTTPException(status_code=409, detail={"code": "work_generation_superseded"})
     prior = (row.state, row.error_code, row.requested_by_admin)
     row.requested_by_admin = True
     row.state = "pending"
