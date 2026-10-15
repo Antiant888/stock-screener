@@ -392,7 +392,7 @@ def retry_admin_analysis(work_id: int, db: Session = Depends(get_db)):
     linked = set(db.scalars(select(SocialRunWork.run_id).where(SocialRunWork.work_id == work_id)))
     runs = db.scalars(select(SocialSignalRun).order_by(
         SocialSignalRun.created_at.desc(), SocialSignalRun.id.desc()
-    ))
+    ).execution_options(yield_per=20))
     # A generation that marked the work unavailable unlinked it and kept it in its audit set.
     run_id = next((
         run.id for run in runs

@@ -22,6 +22,8 @@ from app.domain.social_signals.scoring import (
 )
 from app.domain.social_signals.states import classify_signal_state
 
+_WINDOWS = (1, 7, 14)
+
 
 class RefreshSocialSignals:
     """Coordinate collection, metered analysis, scoring, and publication.
@@ -212,14 +214,17 @@ class RefreshSocialSignals:
             if processed.deferred:
                 return self._result(run_id, runtime.mode, "deferred", "analysis_incomplete", sources=enabled)
         manifest = self.writer.select_current_inputs(run_id).current_manifest
-        # Failed posts become coverage gaps; only a generation with nothing analyzed is withheld.
-        if manifest.unavailable_inputs and not (manifest.required_inputs or manifest.scoring_work_ids):
-            self.writer.fail_analysis(run_id, "analysis_failed")
-            return self._result(run_id, runtime.mode, "failed", "analysis_failed", sources=enabled)
         if hasattr(self.writer, "current_inputs_ready") and not self.writer.current_inputs_ready(run_id):
             return self._result(run_id, runtime.mode, "deferred", "analysis_incomplete", sources=enabled)
 
         evidence = self.evidence_reader.read(run_id, now)
+        window_start = now - timedelta(days=max(_WINDOWS))
+        # Failed posts are coverage gaps; only a generation left with nothing to score is withheld.
+        if manifest.unavailable_inputs and not any(
+            post.created_at >= window_start for item in evidence for post in item.posts
+        ):
+            self.writer.fail_analysis(run_id, "analysis_failed")
+            return self._result(run_id, runtime.mode, "failed", "analysis_failed", sources=enabled)
         projection = self.theme_service.prepare(run_id, now)
         theme_keys = (
             self.theme_service.theme_keys(projection)
@@ -242,7 +247,7 @@ class RefreshSocialSignals:
 
         rows = []
         candidates = []
-        for window_days in (1, 7, 14):
+        for window_days in _WINDOWS:
             scored = score_social_candidates(evidence, window_days, now)
             for social in scored:
                 batch = markets.get(social.market)

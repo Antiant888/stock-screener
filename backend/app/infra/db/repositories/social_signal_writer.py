@@ -283,19 +283,23 @@ class SocialSignalWriter:
             if replay:
                 audit.update(replay["historical_work_ids"])
             carry, kept, succeeded = [], set(), set()
+            linked = []
             for link in db.scalars(select(SocialRunWork).where(SocialRunWork.run_id == run_id).order_by(SocialRunWork.work_id)):
                 work = db.get(SocialExtractionWork, link.work_id)
                 if work is None or work.input_hash != link.input_hash:
                     raise ValueError("pinned_input_mismatch")
-                identity = (work.content_item_id, work.input_hash)
+                linked.append((link, work, (work.content_item_id, work.input_hash)))
+            analyzable = {identity for _, work, identity in linked if work.state != "failed_terminal"}
+            unavailable -= analyzable
+            for link, work, identity in linked:
                 if work.state == "failed_terminal" and identity not in older | after:
                     # A post whose analysis cannot complete is a coverage gap, like a
                     # failed list read; it must not hold back the rest of the generation.
-                    unavailable.add(identity)
+                    if identity not in analyzable:
+                        unavailable.add(identity)
                     audit.add(work.id)
                     db.delete(link)
                     continue
-                unavailable.discard(identity)
                 if identity not in current | older | after:
                     published = datetime.fromisoformat(work.input_snapshot_json["created_at"])
                     if utc(run.created_at) - timedelta(days=15) <= published <= utc(run.created_at):
