@@ -370,8 +370,12 @@ def test_rss_fetcher_handles_aware_since_with_naive_feed_timestamps(
     )
 
     monkeypatch.setattr(
+        "app.services.content_ingestion_service.requests.get",
+        lambda *a, **k: SimpleNamespace(raise_for_status=lambda: None, content=b""),
+    )
+    monkeypatch.setattr(
         "app.services.content_ingestion_service.feedparser.parse",
-        lambda url: SimpleNamespace(entries=[older, newer]),
+        lambda content: SimpleNamespace(entries=[older, newer]),
     )
 
     source = ContentSource(

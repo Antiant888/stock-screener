@@ -225,7 +225,7 @@ export function ManageSourcesContent() {
                   <TableCell align="center" sx={{ minWidth: 80 }}>Priority</TableCell>
                   <TableCell align="center" sx={{ minWidth: 100 }}>Interval (min)</TableCell>
                   <TableCell align="center" sx={{ minWidth: 80 }}>Active</TableCell>
-                  <TableCell sx={{ minWidth: 160 }}>Last Fetched</TableCell>
+                  <TableCell sx={{ minWidth: 160 }}>Last Success</TableCell>
                   <TableCell align="right" sx={{ minWidth: 80 }}>Items</TableCell>
                 </TableRow>
               </TableHead>
@@ -509,9 +509,20 @@ export function ManageSourcesContent() {
                     </TableCell>
 
                     <TableCell>
-                      <Typography variant="caption" color="text.secondary">
-                        {formatDate(source.last_fetched_at)}
-                      </Typography>
+                      <Box display="flex" flexDirection="column" alignItems="flex-start" gap={0.5}>
+                        <Typography variant="caption" color="text.secondary">
+                          {formatDate(source.last_success_at)}
+                        </Typography>
+                        {source.consecutive_failures > 0 && (
+                          <Tooltip title={`${source.last_error} (${formatDate(source.last_error_at)})`}>
+                            <Chip
+                              size="small"
+                              color="error"
+                              label={`Failed ${source.consecutive_failures}× in a row`}
+                            />
+                          </Tooltip>
+                        )}
+                      </Box>
                     </TableCell>
 
                     <TableCell align="right">

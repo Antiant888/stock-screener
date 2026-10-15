@@ -69,9 +69,8 @@ def test_feed_http_error_is_recorded_and_reported(db_session, monkeypatch):
 
     db_session.expire_all()
     stored = db_session.get(ContentSource, source.id)
-    assert (stored.consecutive_failures, stored.last_success_at) == (1, None)
+    assert (stored.consecutive_failures, stored.last_success_at, stored.last_fetched_at) == (1, None, None)
     assert "503" in stored.last_error
-    assert stored.last_fetched_at is not None
 
 
 def test_successful_fetch_clears_the_failure_streak(db_session, monkeypatch):
@@ -116,6 +115,29 @@ def test_reddit_block_page_is_a_failure_not_an_empty_listing(db_session, monkeyp
 
     db_session.expire_all()
     assert db_session.get(ContentSource, source.id).consecutive_failures == 1
+
+
+@pytest.mark.asyncio
+async def test_source_list_reports_fetch_health(db_session, monkeypatch):
+    import httpx
+
+    from app.database import get_db
+    from app.main import app
+    from app.services import server_auth
+
+    monkeypatch.setattr(server_auth.settings, "server_auth_enabled", False)
+    _source(db_session, consecutive_failures=3, last_error="HTTPError: 503 Server Error",
+            last_error_at=NOW, last_success_at=NOW - timedelta(days=2))
+    app.dependency_overrides[get_db] = lambda: db_session
+    try:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.get("/api/v1/themes/sources")
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+    [source] = response.json()
+    assert (source["consecutive_failures"], source["last_error"]) == (3, "HTTPError: 503 Server Error")
+    assert source["last_success_at"] is not None
 
 
 def test_reddit_reads_the_newest_posts_with_a_timeout(db_session, monkeypatch):
