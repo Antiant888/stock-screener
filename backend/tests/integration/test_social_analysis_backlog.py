@@ -734,6 +734,44 @@ def test_cancelled_provider_attempt_is_uncertain_and_never_automatically_retried
     assert asyncio.run(processor(backlog, FakeLLM()).execute(NOW + timedelta(minutes=2), 10)).succeeded == 0
 
 
+def test_cancellation_before_dispatch_releases_budget_and_keeps_work_claimable(backlog):
+    from app.infra.db.models.social_analysis import (
+        SocialExtractionWork, SocialLLMAttempt, SocialLLMBudgetDay,
+    )
+    from app.services.social_signal_backlog_service import ProcessSocialBacklog
+
+    class SpacingGate:
+        def acquire(self, owner, ttl):
+            return True
+
+        def wait_seconds(self):
+            return 5
+
+        def mark_started(self, seconds):
+            pass
+
+        def release(self, owner):
+            pass
+
+    async def cancelled_while_waiting(_seconds):
+        raise asyncio.CancelledError
+
+    configure_budget(backlog)
+    llm = FakeLLM()
+    worker = ProcessSocialBacklog(backlog, llm=llm, request_gate=SpacingGate(), sleep=cancelled_while_waiting)
+    work_id = enqueue(backlog, worker, post(1))
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(worker.execute(NOW, 1))
+
+    with backlog() as db:
+        work = db.get(SocialExtractionWork, work_id)
+        assert (llm.calls, db.scalar(select(SocialLLMAttempt)).state, work.state) == (0, "released", "pending")
+        assert db.scalar(select(SocialLLMBudgetDay)).reserved_usd == 0
+    later = asyncio.run(processor(backlog, FakeLLM()).execute(NOW + timedelta(minutes=2), 1))
+    assert later.succeeded == 1
+
+
 def test_confirmed_pre_dispatch_failure_releases_budget_without_retry(backlog):
     from app.infra.db.models.social_analysis import (
         SocialExtractionWork,
