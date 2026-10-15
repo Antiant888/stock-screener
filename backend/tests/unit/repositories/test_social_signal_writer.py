@@ -268,3 +268,30 @@ def test_scoring_reader_ignores_a_stale_unresolved_mapping(store):
     w.select_current_inputs("run")
     keys = {item.candidate_key for item in SocialScoringEvidenceReader(store).read("run", NOW)}
     assert keys == {"US:AAA"}
+
+
+def test_a_failed_work_does_not_hide_a_succeeded_one_for_the_same_input(store):
+    from app.infra.db.models.social_analysis import SocialExtractionWork, SocialRunWork
+    from app.services.social_extraction_service import SocialExtractionService
+
+    w = writer(store)
+    w.create_run("run", NOW)
+    saved = w.persist_observations(batch(), run_id="run")
+    w.persist_observations(batch(2, post_id="200"), run_id="run")
+    content_id = dict(w.read_run_inputs("run").content_ids)["100"]
+    input_hash = SocialExtractionService.input_hash(saved.posts)
+    with store.begin() as db:
+        for model, state in (("model-a", "succeeded"), ("model-b", "failed_terminal")):
+            work = SocialExtractionWork(
+                content_item_id=content_id, input_hash=input_hash, prompt_version="v1",
+                schema_version="v1", selected_model=model, input_snapshot_json={},
+                state=state, created_at=NOW, updated_at=NOW,
+            )
+            db.add(work)
+            db.flush()
+            db.add(SocialRunWork(run_id="run", work_id=work.id, input_hash=input_hash, included_at=NOW))
+
+    manifest = w.select_current_inputs("run").current_manifest
+
+    assert manifest.unavailable_inputs == ()
+    assert (content_id, input_hash) in {(v.content_item_id, v.input_hash) for v in manifest.required_inputs}

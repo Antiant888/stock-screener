@@ -114,7 +114,7 @@ class Writer:
         }
         self.failures = []
         self.analysis_failed = False
-        self.carry_in = ()
+        self.retained = ()
 
     def create_run(self, run_id, as_of):
         self.events.append("writer.create")
@@ -143,7 +143,8 @@ class Writer:
                             for index, batch in enumerate(self.batches) if batch.posts)
         required = tuple(ReplayInput(content_id, f"hash-{post_id}", "current")
                          for post_id, content_id in content_ids)
-        manifest = (SocialCurrentInputManifest((), self.carry_in, (), ("analysis_unavailable",),
+        manifest = (SocialCurrentInputManifest((), (), (), ("analysis_unavailable",),
+                                               scoring_work_ids=tuple(range(len(self.retained))),
                                                unavailable_inputs=required)
                     if self.analysis_failed else SocialCurrentInputManifest(required, (), ()))
         return SavedSocialRunInputs(
@@ -197,7 +198,9 @@ class EvidenceReader:
 
     def read(self, run_id, as_of):
         self.events.append("evidence.read")
-        posts = tuple(post for source_batch in self.writer.batches for post in source_batch.posts)
+        posts = () if self.writer.analysis_failed else tuple(
+            post for source_batch in self.writer.batches for post in source_batch.posts)
+        posts += self.writer.retained
         return (SocialEvidenceInput("US:AAA", "AAA", "US", posts, ("1", "2"), False,
                                     ("bounded_provider_read",)),)
 
@@ -350,11 +353,15 @@ async def test_budget_pause_keeps_work_and_does_not_prepare():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("carry_in", [(), (99,)])
-async def test_terminal_analysis_failure_fails_generation_without_budget_resume_state(carry_in):
+@pytest.mark.parametrize("retained_age", [None, timedelta(days=14, hours=12)])
+async def test_terminal_analysis_failure_fails_generation_without_budget_resume_state(retained_age):
     refresh, events, _, writer, backlog, _ = use_case(failed=1)
-    # Carried-in judgments are older than the scoring window, so they cannot stand in.
-    writer.carry_in = carry_in
+    if retained_age is not None:
+        # Retained beyond the 14-day scoring window, so it cannot stand in for analysis.
+        writer.retained = (SocialPostRecord(
+            "official", "old", "1", "$AAA", "https://x.com/a/status/old", "author",
+            NOW - retained_age, NOW - retained_age,
+        ),)
 
     result = await refresh.execute("scheduled", NOW)
 
