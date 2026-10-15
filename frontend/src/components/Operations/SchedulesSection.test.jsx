@@ -43,6 +43,15 @@ function rowFor(displayName) {
   return screen.getByText(displayName).closest('tr');
 }
 
+// Run asks first; confirm in its dialog.
+async function runNow(runButton) {
+  fireEvent.click(await runButton);
+  const dialog = await screen.findByRole('dialog', { name: /^Run .*\?$/ });
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Run' }));
+  // The page stays aria-hidden until the dialog has faded out.
+  await waitFor(() => expect(dialog).not.toBeInTheDocument());
+}
+
 function renderSection() {
   return renderWithProviders(<SchedulesSection />);
 }
@@ -180,7 +189,7 @@ describe('SchedulesSection', () => {
     renderSection();
     await screen.findByText('Weekly Scan Cleanup');
 
-    fireEvent.click(screen.getByRole('button', { name: 'Run Weekly Scan Cleanup now' }));
+    await runNow(screen.getByRole('button', { name: 'Run Weekly Scan Cleanup now' }));
 
     await waitFor(() => expect(triggerTask).toHaveBeenCalledWith('cleanup'));
     expect(screen.getByRole('button', { name: 'Run Weekly Scan Cleanup now' })).toBeDisabled();
@@ -200,7 +209,7 @@ describe('SchedulesSection', () => {
     triggerTask.mockResolvedValue({ task_id: 'new-run', status: 'queued' });
 
     renderSection();
-    fireEvent.click(await screen.findByRole('button', { name: 'Run Weekly Scan Cleanup now' }));
+    await runNow(await screen.findByRole('button', { name: 'Run Weekly Scan Cleanup now' }));
 
     expect(await within(rowFor('Weekly Scan Cleanup')).findByText('Queued')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Run Weekly Scan Cleanup now' })).toBeDisabled();
@@ -218,7 +227,7 @@ describe('SchedulesSection', () => {
     triggerTask.mockResolvedValue({ task_id: 'new-run', status: 'queued' });
 
     renderWithProviders(<><SchedulesSection /><JobConsoleQuery /></>);
-    fireEvent.click(await screen.findByRole('button', { name: 'Run Weekly Scan Cleanup now' }));
+    await runNow(await screen.findByRole('button', { name: 'Run Weekly Scan Cleanup now' }));
 
     // The schedules list has refetched (completed again), so the row is free.
     await waitFor(() => expect(screen.getByRole('button', { name: 'Run Weekly Scan Cleanup now' })).toBeEnabled());
@@ -232,8 +241,8 @@ describe('SchedulesSection', () => {
     triggerTask.mockReturnValue(new Promise(() => {}));
 
     renderSection();
-    fireEvent.click(await screen.findByRole('button', { name: 'Run Weekly Scan Cleanup now' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Run Weekly Full Refresh now' }));
+    await runNow(await screen.findByRole('button', { name: 'Run Weekly Scan Cleanup now' }));
+    await runNow(screen.getByRole('button', { name: 'Run Weekly Full Refresh now' }));
 
     await waitFor(() => expect(triggerTask).toHaveBeenCalledTimes(2));
     expect(screen.getByRole('button', { name: 'Run Weekly Scan Cleanup now' })).toBeDisabled();
@@ -438,9 +447,89 @@ describe('SchedulesSection', () => {
     triggerTask.mockRejectedValue({ response: { data: { detail: 'manual_refresh_cooldown' } } });
 
     renderSection();
-    fireEvent.click(await screen.findByRole('button', { name: 'Run Refresh Social Signals now' }));
+    await runNow(await screen.findByRole('button', { name: 'Run Refresh Social Signals now' }));
 
     expect(await screen.findByText(/manual_refresh_cooldown/)).toBeInTheDocument();
+  });
+
+  describe('before a run', () => {
+    const explained = (extra = {}) => ({
+      ...task('cleanup', 'Weekly Scan Cleanup', lastRun('completed')),
+      description: 'Deletes cancelled and stale scans',
+      when_to_run: 'Cancelled or abandoned scans clutter the scan list.',
+      impact: 'Deletes cancelled and stale scans with their results.',
+      typical_duration_seconds: 125,
+      ...extra,
+    });
+
+    it('asks first, saying what the job does, when to run it, what it affects and how long it takes', async () => {
+      getScheduledTasks.mockResolvedValue(payload([explained()]));
+
+      renderSection();
+      fireEvent.click(await screen.findByRole('button', { name: 'Run Weekly Scan Cleanup now' }));
+
+      const dialog = await screen.findByRole('dialog', { name: 'Run Weekly Scan Cleanup?' });
+      expect(within(dialog).getByText('Deletes cancelled and stale scans')).toBeInTheDocument();
+      expect(within(dialog).getByText('Cancelled or abandoned scans clutter the scan list.')).toBeInTheDocument();
+      expect(within(dialog).getByText('Deletes cancelled and stale scans with their results.')).toBeInTheDocument();
+      expect(within(dialog).getByText('Usually takes about 2m.')).toBeInTheDocument();
+      expect(within(dialog).queryByText(/mid-session/)).not.toBeInTheDocument();
+
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Back' }));
+      await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+      expect(triggerTask).not.toHaveBeenCalled();
+    });
+
+    it('warns when the run would fetch prices mid-session', async () => {
+      getScheduledTasks.mockResolvedValue(payload([
+        explained({ display_name: 'Weekly Full Refresh (all markets)', name: 'weekly-full-refresh', open_markets: ['JP', 'KR'] }),
+        explained({ display_name: 'Daily Market Pipeline (HK)', name: 'pipeline-hk', open_markets: ['HK'] }),
+      ]));
+
+      renderSection();
+      fireEvent.click(await screen.findByRole('button', { name: 'Run Weekly Full Refresh (all markets) now' }));
+      expect(within(await screen.findByRole('dialog', { name: /^Run / })).getByRole('alert')).toHaveTextContent(
+        'JP, KR are mid-session. A run now stores a partial bar for today, which is refreshed after the close.',
+      );
+    });
+
+    it('says a single market is mid-session', async () => {
+      getScheduledTasks.mockResolvedValue(payload([
+        explained({ display_name: 'Daily Market Pipeline (HK)', name: 'pipeline-hk', open_markets: ['HK'] }),
+      ]));
+
+      renderSection();
+      fireEvent.click(await screen.findByRole('button', { name: 'Run Daily Market Pipeline (HK) now' }));
+      expect(within(await screen.findByRole('dialog', { name: /^Run / })).getByRole('alert'))
+        .toHaveTextContent(/^HK is mid-session\./);
+    });
+
+    it('blocks the confirm when the job starts running while the dialog is open', async () => {
+      getScheduledTasks.mockReturnValue(new Promise(() => {}));
+      const { queryClient } = renderSection();
+      act(() => queryClient.setQueryData(['scheduledTasks'], payload([explained()])));
+
+      fireEvent.click(await screen.findByRole('button', { name: 'Run Weekly Scan Cleanup now' }));
+      const dialog = await screen.findByRole('dialog', { name: 'Run Weekly Scan Cleanup?' });
+      act(() => queryClient.setQueryData(['scheduledTasks'], payload([explained({ last_run: lastRun('running') })])));
+
+      await waitFor(() => expect(within(dialog).getByRole('button', { name: 'Run' })).toBeDisabled());
+      expect(within(dialog).getByText('Already running')).toBeInTheDocument();
+    });
+
+    it('explains a job on its row without running it', async () => {
+      getScheduledTasks.mockResolvedValue(payload([explained()]));
+
+      renderSection();
+      const row = (await screen.findByText('Weekly Scan Cleanup')).closest('tr');
+      expect(within(row).queryByText('Cancelled or abandoned scans clutter the scan list.')).not.toBeInTheDocument();
+
+      fireEvent.click(within(row).getByRole('button', { name: 'About this job' }));
+
+      expect(within(row).getByText('Cancelled or abandoned scans clutter the scan list.')).toBeInTheDocument();
+      expect(within(row).getByText('Usually takes about 2m.')).toBeInTheDocument();
+      expect(within(row).getByRole('button', { name: 'Hide details' })).toHaveAttribute('aria-expanded', 'true');
+    });
   });
 
   describe('grouped by job type', () => {
@@ -489,7 +578,7 @@ describe('SchedulesSection', () => {
       const detail = await screen.findByRole('dialog', { name: 'Daily Market Pipeline (HK)' });
       expect(within(detail).getByText('provider down')).toBeInTheDocument();
       expect(within(detail).getByText('4:30 ET, Mon-Fri (HK)')).toBeInTheDocument();
-      fireEvent.click(within(detail).getByRole('button', { name: 'Run Daily Market Pipeline (HK) now' }));
+      await runNow(within(detail).getByRole('button', { name: 'Run Daily Market Pipeline (HK) now' }));
 
       await waitFor(() => expect(triggerTask).toHaveBeenCalledWith('daily-market-pipeline-hk'));
       expect(triggerTask).toHaveBeenCalledTimes(1);

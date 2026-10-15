@@ -203,6 +203,26 @@ describe('OperationsPage', () => {
     expect(screen.getByText('open')).toBeInTheDocument();
   });
 
+  it('names a scheduled job in the job console as the schedule does, keeping its Celery name', async () => {
+    fetchOperationsJobs.mockResolvedValue({
+      ...OPERATIONS_PAYLOAD,
+      jobs: [{
+        ...OPERATIONS_PAYLOAD.jobs[1],
+        task_id: 'task-pipeline-hk',
+        task_name: 'app.tasks.daily_market_pipeline_tasks.queue_daily_market_pipeline',
+        display_name: 'Daily Market Pipeline (HK)',
+      }],
+    });
+
+    renderWithProviders(<OperationsPage />);
+
+    const name = await screen.findByText('Daily Market Pipeline (HK)');
+    const cell = name.closest('td');
+    expect(within(cell).getByText('app.tasks.daily_market_pipeline_tasks.queue_daily_market_pipeline')).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText('Task search'), { target: { value: 'pipeline (hk' } });
+    expect(screen.getByText('Daily Market Pipeline (HK)')).toBeInTheDocument();
+  });
+
   it('shows scheduled jobs only when the tasks feature is enabled', async () => {
     const { unmount } = renderWithProviders(<OperationsPage />);
     expect(screen.queryByRole('heading', { name: 'Scheduled jobs' })).not.toBeInTheDocument();
