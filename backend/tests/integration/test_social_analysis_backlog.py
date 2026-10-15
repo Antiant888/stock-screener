@@ -419,6 +419,25 @@ def test_request_with_unknown_outcome_is_retried_once_within_the_run_cap(
         assert ((result.succeeded, result.failed), llm.calls, (work.state, work.error_code), attempts) == expected
 
 
+def test_deferred_retry_keeps_the_unknown_outcome_terminal(backlog):
+    from app.infra.db.models.social_analysis import SocialExtractionWork
+    from app.services.social_signal_backlog_service import ProcessSocialBacklog
+
+    configure_budget(backlog)
+    llm = FlakyLLM(1)
+    worker = ProcessSocialBacklog(backlog, llm=llm, max_calls_per_day=1)
+    work_id = enqueue(backlog, worker, post(1))
+
+    result = asyncio.run(worker.execute(NOW, 1))
+    later = asyncio.run(ProcessSocialBacklog(backlog, llm=llm).execute(
+        NOW + timedelta(days=1), 1, work_ids=(work_id,)))
+
+    with backlog() as db:
+        work = db.get(SocialExtractionWork, work_id)
+        assert ((result.deferred, result.failed), later.succeeded, llm.calls, work.state, work.error_code) == (
+            (0, 1), 0, 1, "failed_terminal", "completion_unknown")
+
+
 def test_bookkeeping_failure_after_a_response_is_not_retried(backlog, monkeypatch):
     from app.infra.db.models.social_analysis import SocialExtractionWork
     from app.services.social_llm_budget_service import SocialLLMBudgetService

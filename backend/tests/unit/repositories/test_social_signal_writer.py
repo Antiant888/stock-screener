@@ -295,3 +295,65 @@ def test_a_failed_work_does_not_hide_a_succeeded_one_for_the_same_input(store):
 
     assert manifest.unavailable_inputs == ()
     assert (content_id, input_hash) in {(v.content_item_id, v.input_hash) for v in manifest.required_inputs}
+
+
+def test_retained_work_that_aged_out_of_analysis_does_not_hold_the_generation(store):
+    from app.infra.db.models.social_analysis import SocialExtractionWork, SocialRunWork
+
+    w = writer(store)
+    w.create_run("run", NOW)
+    w.persist_observations(batch(), run_id="run")
+    w.persist_observations(batch(2, post_id="200"), run_id="run")
+    created = NOW - timedelta(days=14, hours=12)
+    with store.begin() as db:
+        item = ContentItem(source_type="twitter", external_id="retained", url="https://x.com/a/status/9",
+                           content="$AAA", published_at=created)
+        db.add(item)
+        db.flush()
+        work = SocialExtractionWork(
+            content_item_id=item.id, input_hash="retained-hash", prompt_version="v1",
+            schema_version="v1", selected_model="model",
+            input_snapshot_json={"created_at": created.isoformat()},
+            state="outside_window", error_code="outside_signal_window", created_at=NOW, updated_at=NOW,
+        )
+        db.add(work)
+        db.flush()
+        db.add(SocialRunWork(run_id="run", work_id=work.id, input_hash="retained-hash", included_at=NOW))
+        work_id = work.id
+
+    manifest = w.select_current_inputs("run").current_manifest
+
+    assert (manifest.scoring_work_ids, work_id in manifest.audit_work_ids) == ((), True)
+
+
+def test_unavailable_revision_does_not_hide_another_revision_of_the_same_post(store):
+    from app.infra.db.models.social_analysis import SocialExtractionWork, SocialRunWork
+    from app.infra.db.repositories.social_refresh_support import SocialScoringEvidenceReader
+    from app.models.stock_universe import StockUniverse
+    from app.services.social_extraction_service import SocialExtractionService
+
+    w = writer(store)
+    w.create_run("run", NOW)
+    first = w.persist_observations(batch(), run_id="run")
+    edited = batch(2)
+    edited = replace(edited, posts=(replace(edited.posts[0], text="$AAA supplies cooling, edited"),))
+    second = w.persist_observations(edited, run_id="run")
+    content_id = dict(w.read_run_inputs("run").content_ids)["100"]
+    with store.begin() as db:
+        db.add(StockUniverse(symbol="AAA", name="AAA Corp", market="US", exchange="NASDAQ", is_active=True))
+        for saved, state in ((first, "failed_terminal"), (second, "succeeded")):
+            input_hash = SocialExtractionService.input_hash(saved.posts)
+            work = SocialExtractionWork(
+                content_item_id=content_id, input_hash=input_hash, prompt_version="v1",
+                schema_version="v1", selected_model="model", input_snapshot_json={},
+                state=state, result_json={"claims": [], "judgments": []} if state == "succeeded" else None,
+                created_at=NOW, updated_at=NOW,
+            )
+            db.add(work)
+            db.flush()
+            db.add(SocialRunWork(run_id="run", work_id=work.id, input_hash=input_hash, included_at=NOW))
+    w.select_current_inputs("run")
+
+    evidence = SocialScoringEvidenceReader(store).read("run", NOW)
+
+    assert [post.text for item in evidence for post in item.posts] == ["$AAA supplies cooling, edited"]
