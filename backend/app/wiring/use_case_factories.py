@@ -303,6 +303,12 @@ def _social_provider_lease():
     return RedisSocialSignalGate(get_redis_client())
 
 
+def _social_read_lease_seconds(minimum):
+    """Hold the provider lease past one slow xui read: auth, read, 30s delay, retried read."""
+    from app.config import settings
+    return max(minimum, 3 * settings.social_xui_timeout_seconds + 30 + 60)
+
+
 def _social_llm_request_gate():
     from app.services.redis_pool import get_redis_client
     from app.services.social_signal_runtime_gate import RedisSocialLLMRequestGate
@@ -391,6 +397,7 @@ def get_refresh_social_signals_use_case(
         initial_days=settings.social_initial_backfill_days,
         initial_limit=settings.social_initial_backfill_limit_per_source,
         incremental_limit=settings.social_incremental_limit_per_source,
+        lease_ttl_seconds=_social_read_lease_seconds(1800),
     )
 
 
@@ -412,6 +419,7 @@ def get_validate_social_source_use_case(
         ),
         provider_lease=provider_lease,
         clock=lambda: datetime.now(timezone.utc),
+        lease_ttl_seconds=_social_read_lease_seconds(300),
     )
 
 
