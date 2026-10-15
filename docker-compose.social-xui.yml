@@ -16,6 +16,7 @@ services:
     environment:
       SOCIAL_XUI_CONFIG_PATH: /app/data/xui-reader/config.toml
       SOCIAL_XUI_PROFILE: ${SOCIAL_XUI_PROFILE:-automation}
+      SOCIAL_XUI_TIMEOUT_SECONDS: ${SOCIAL_XUI_TIMEOUT_SECONDS:-300}
     volumes:
       - ${XUI_PROFILE_DIR:?Set XUI_PROFILE_DIR}:/app/data/xui-reader
 
