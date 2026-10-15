@@ -113,6 +113,7 @@ class Writer:
             "2": SocialCollectionProgress(initial_complete=True, cursor="prior-cursor")
         }
         self.failures = []
+        self.analysis_failed = False
 
     def create_run(self, run_id, as_of):
         self.events.append("writer.create")
@@ -141,9 +142,11 @@ class Writer:
                             for index, batch in enumerate(self.batches) if batch.posts)
         required = tuple(ReplayInput(content_id, f"hash-{post_id}", "current")
                          for post_id, content_id in content_ids)
+        manifest = (SocialCurrentInputManifest((), (), (), ("analysis_unavailable",),
+                                               unavailable_inputs=required)
+                    if self.analysis_failed else SocialCurrentInputManifest(required, (), ()))
         return SavedSocialRunInputs(
-            run_id, NOW, 7, tuple(self.batches), content_ids, (),
-            current_manifest=SocialCurrentInputManifest(required, (), ()),
+            run_id, NOW, 7, tuple(self.batches), content_ids, (), current_manifest=manifest,
         )
 
     def current_inputs_ready(self, run_id):
@@ -248,6 +251,7 @@ def use_case(*, mode="live", fail_sources=(), deferred=0, failed=0, current=True
     catalog = Catalog(mode=mode, current=current)
     provider = Provider(events, fail_sources=fail_sources)
     writer = Writer(events, mode=mode)
+    writer.analysis_failed = bool(failed)
     backlog = Backlog(events, deferred=deferred, failed=failed)
     evidence = EvidenceReader(events)
     evidence.writer = writer
@@ -693,7 +697,9 @@ async def test_refresh_runs_through_real_writer_backlog_and_publication_with_fix
 
 @pytest.mark.asyncio
 async def test_one_malformed_llm_response_does_not_block_later_generations(tmp_path):
-    from app.infra.db.models.social_signals import SocialSignalRunPointer
+    from sqlalchemy import select
+
+    from app.infra.db.models.social_signals import SocialSignalRunPointer, SocialSignalSnapshot
 
     llm = FixtureLLM(malformed_post_ids={"p-1"})
     engine, sessions, writer, refresh = real_refresh(
@@ -710,5 +716,10 @@ async def test_one_malformed_llm_response_does_not_block_later_generations(tmp_p
     assert (first.published, first.reason_codes) == (True, ())
     with sessions() as db:
         assert db.get(SocialSignalRunPointer, "latest_published").run_id == "run-18"
+        rows = db.scalars(select(SocialSignalSnapshot).where(
+            SocialSignalSnapshot.run_id == "run-12", SocialSignalSnapshot.window_days == 14,
+        )).all()
+    assert [(row.candidate_key, row.mention_count) for row in rows] == [("US:AAA", 1)]
+    assert "analysis_unavailable" in str(rows[0].coverage_json)
     assert llm.seen.count(("p-1",)) == 1
     engine.dispose()

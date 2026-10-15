@@ -209,18 +209,15 @@ class RefreshSocialSignals:
             processed = await self.backlog.execute(
                 now, len(run_work_ids), work_ids=tuple(sorted(set(run_work_ids)))
             )
-            if processed.failed:
-                self.writer.fail_analysis(run_id, "analysis_failed")
-                return self._result(
-                    run_id,
-                    runtime.mode,
-                    "failed",
-                    "analysis_failed",
-                    sources=enabled,
-                )
             if processed.deferred:
                 return self._result(run_id, runtime.mode, "deferred", "analysis_incomplete", sources=enabled)
-        self.writer.select_current_inputs(run_id)
+        manifest = self.writer.select_current_inputs(run_id).current_manifest
+        # Failed posts become coverage gaps; only a generation with nothing analyzed is withheld.
+        if manifest.unavailable_inputs and not (
+            manifest.required_inputs or manifest.carry_in_work_ids or manifest.scoring_work_ids
+        ):
+            self.writer.fail_analysis(run_id, "analysis_failed")
+            return self._result(run_id, runtime.mode, "failed", "analysis_failed", sources=enabled)
         if hasattr(self.writer, "current_inputs_ready") and not self.writer.current_inputs_ready(run_id):
             return self._result(run_id, runtime.mode, "deferred", "analysis_incomplete", sources=enabled)
 
