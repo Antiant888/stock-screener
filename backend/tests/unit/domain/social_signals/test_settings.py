@@ -19,6 +19,7 @@ def test_social_ingest_defaults_fail_closed():
     assert settings.social_incremental_limit_per_source == 200
     assert settings.social_xui_config_path == "/app/data/xui-reader/config.toml"
     assert settings.social_xui_profile == "automation"
+    assert settings.social_xui_timeout_seconds == 300
     assert settings.social_official_daily_post_limit == 2000
     assert settings.social_llm_daily_budget_usd == Decimal("2.00")
     assert settings.social_llm_budget_timezone == "Asia/Singapore"

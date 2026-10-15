@@ -501,7 +501,9 @@ def test_production_factory_has_explicit_lazy_official_and_xui_adapters():
     official = refresh._provider("official")
     assert isinstance(official, OfficialXSocialProvider)
     assert official._release is not None, "unused official read capacity must be returned"
-    assert isinstance(refresh._provider("xui"), XuiCliSocialProvider)
+    xui = refresh._provider("xui")
+    assert isinstance(xui, XuiCliSocialProvider)
+    assert xui._timeout == 300, "a 1000-post backfill scroll needs more than the 60s default"
     assert refresh.catalog.__class__.__name__ == "SqlSocialRefreshCatalog"
     assert refresh.evidence_reader.__class__.__name__ == "SocialScoringEvidenceReader"
     assert refresh.theme_service.__class__.__name__ == "SqlThemeProjectionFacade"
