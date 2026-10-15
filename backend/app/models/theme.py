@@ -48,8 +48,14 @@ class ContentSource(Base):
     pipelines = Column(JSON, default=["technical", "fundamental"])
 
     # Stats
-    last_fetched_at = Column(DateTime(timezone=True))
+    last_fetched_at = Column(DateTime(timezone=True))  # last attempt; schedules the next poll
     total_items_fetched = Column(Integer, default=0)
+
+    # Health: a fetch that fails never advances last_success_at, the content watermark
+    last_success_at = Column(DateTime(timezone=True))
+    consecutive_failures = Column(Integer, nullable=False, default=0, server_default="0")
+    last_error = Column(String(500))
+    last_error_at = Column(DateTime(timezone=True))
 
     # Metadata
     created_at = Column(DateTime(timezone=True), server_default=func.now())

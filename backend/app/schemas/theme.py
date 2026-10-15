@@ -70,6 +70,10 @@ class ContentSourceResponse(BaseModel):
     pipelines: Optional[list[str]] = None
     last_fetched_at: Optional[datetime]
     total_items_fetched: int
+    last_success_at: Optional[datetime] = None
+    consecutive_failures: int = 0
+    last_error: Optional[str] = None
+    last_error_at: Optional[datetime] = None
     created_at: Optional[datetime]
     updated_at: Optional[datetime]
     social_managed: bool = False

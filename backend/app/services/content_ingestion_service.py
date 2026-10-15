@@ -36,6 +36,16 @@ from .theme_pipeline_state_service import normalize_pipelines
 
 logger = logging.getLogger(__name__)
 
+_REQUEST_TIMEOUT_SECONDS = 20
+_USER_AGENT = "StockScreener/1.0 (theme discovery)"
+# An item can reach a feed after a poll has passed its publish time. Re-reading
+# this margin before the watermark costs only duplicates, which dedup drops.
+_WATERMARK_OVERLAP = timedelta(days=2)
+
+
+class SourceFetchError(RuntimeError):
+    """A content source could not be read; distinct from a source with nothing new."""
+
 
 def _coerce_utc_datetime(value: datetime | None) -> datetime | None:
     if value is None:
@@ -70,59 +80,62 @@ class RSSFetcher(BaseContentFetcher):
     def fetch(self, source: ContentSource, since: Optional[datetime] = None) -> list[dict]:
         """Fetch RSS feed items"""
         items = []
-        try:
-            feed = feedparser.parse(source.url)
+        response = requests.get(
+            source.url, headers={"User-Agent": _USER_AGENT}, timeout=_REQUEST_TIMEOUT_SECONDS
+        )
+        response.raise_for_status()
+        # feedparser reads only lowercase header names, such as content-type for the charset.
+        headers = {name.lower(): value for name, value in response.headers.items()}
+        feed = feedparser.parse(response.content, response_headers=headers)
+        if getattr(feed, "bozo", False) and not feed.entries:
+            raise SourceFetchError(f"Unreadable feed from {source.url}: {feed.get('bozo_exception')}")
 
-            for entry in feed.entries:
-                # Parse published date
-                published_at = None
-                updated_at = None
-                if hasattr(entry, "updated_parsed") and entry.updated_parsed:
-                    updated_at = _coerce_utc_datetime(datetime(*entry.updated_parsed[:6]))
-                if hasattr(entry, "published_parsed") and entry.published_parsed:
-                    published_at = _coerce_utc_datetime(datetime(*entry.published_parsed[:6]))
-                else:
-                    published_at = updated_at
+        for entry in feed.entries:
+            # Parse published date
+            published_at = None
+            updated_at = None
+            if hasattr(entry, "updated_parsed") and entry.updated_parsed:
+                updated_at = _coerce_utc_datetime(datetime(*entry.updated_parsed[:6]))
+            if hasattr(entry, "published_parsed") and entry.published_parsed:
+                published_at = _coerce_utc_datetime(datetime(*entry.published_parsed[:6]))
+            else:
+                published_at = updated_at
 
-                # Skip entries unchanged since the last poll. A correction keeps
-                # its publish date but bumps <updated>, so it still reaches
-                # economic admission (#501).
-                since_bound = _coerce_utc_datetime(since)
-                last_changed = max(
-                    (moment for moment in (published_at, updated_at) if moment), default=None
-                )
-                if since_bound and last_changed and last_changed < since_bound:
-                    continue
+            # Skip entries unchanged since the last poll. A correction keeps
+            # its publish date but bumps <updated>, so it still reaches
+            # economic admission (#501).
+            since_bound = _coerce_utc_datetime(since)
+            last_changed = max(
+                (moment for moment in (published_at, updated_at) if moment), default=None
+            )
+            if since_bound and last_changed and last_changed < since_bound:
+                continue
 
-                # Extract content
-                content = ""
-                if hasattr(entry, "content") and entry.content:
-                    content = entry.content[0].get("value", "")
-                elif hasattr(entry, "summary"):
-                    content = entry.summary
-                elif hasattr(entry, "description"):
-                    content = entry.description
+            # Extract content
+            content = ""
+            if hasattr(entry, "content") and entry.content:
+                content = entry.content[0].get("value", "")
+            elif hasattr(entry, "summary"):
+                content = entry.summary
+            elif hasattr(entry, "description"):
+                content = entry.description
 
-                # Generate unique ID
-                external_id = self.generate_external_id(
-                    source.source_type,
-                    entry.get("id", entry.get("link", entry.get("title", "")))
-                )
+            # Generate unique ID
+            external_id = self.generate_external_id(
+                source.source_type,
+                entry.get("id", entry.get("link", entry.get("title", "")))
+            )
 
-                items.append({
-                    "external_id": external_id,
-                    "title": entry.get("title", ""),
-                    "content": content,
-                    "url": entry.get("link", ""),
-                    "author": entry.get("author", source.name),
-                    "published_at": published_at,
-                })
+            items.append({
+                "external_id": external_id,
+                "title": entry.get("title", ""),
+                "content": content,
+                "url": entry.get("link", ""),
+                "author": entry.get("author", source.name),
+                "published_at": published_at,
+            })
 
-            logger.info(f"Fetched {len(items)} items from RSS feed: {source.name}")
-
-        except Exception as e:
-            logger.error(f"Error fetching RSS feed {source.name}: {e}")
-
+        logger.info(f"Fetched {len(items)} items from RSS feed: {source.name}")
         return items
 
 
@@ -168,41 +181,43 @@ class NewsFetcher(BaseContentFetcher):
     def _fetch_benzinga(self, source: ContentSource, since: Optional[datetime] = None) -> list[dict]:
         """Fetch from Benzinga API"""
         items = []
-        try:
-            params = {
-                "token": self.benzinga_api_key,
-                "pageSize": 50,
-                "displayOutput": "full",
-            }
-            if since:
-                params["dateFrom"] = since.strftime("%Y-%m-%d")
+        params = {
+            "token": self.benzinga_api_key,
+            "pageSize": 50,
+            "displayOutput": "full",
+        }
+        if since:
+            params["dateFrom"] = since.strftime("%Y-%m-%d")
 
-            response = requests.get(
-                "https://api.benzinga.com/api/v2/news",
-                params=params
-            )
-            news_items = response.json()
+        response = requests.get(
+            "https://api.benzinga.com/api/v2/news",
+            params=params,
+            headers={"Accept": "application/json"},
+            timeout=_REQUEST_TIMEOUT_SECONDS,
+        )
+        response.raise_for_status()
+        news_items = response.json()
 
-            for article in news_items:
+        for article in news_items:
+            try:
                 published_at = _coerce_utc_datetime(
                     datetime.fromisoformat(article.get("created", "").replace("Z", "+00:00"))
                 )
-                external_id = self.generate_external_id("benzinga", str(article.get("id", "")))
+            except (AttributeError, ValueError):
+                logger.warning("Skipping Benzinga article %s with unreadable date", article.get("id"))
+                continue
+            external_id = self.generate_external_id("benzinga", str(article.get("id", "")))
 
-                items.append({
-                    "external_id": external_id,
-                    "title": article.get("title", ""),
-                    "content": article.get("body", article.get("teaser", "")),
-                    "url": article.get("url", ""),
-                    "author": article.get("author", "Benzinga"),
-                    "published_at": published_at,
-                })
+            items.append({
+                "external_id": external_id,
+                "title": article.get("title", ""),
+                "content": article.get("body", article.get("teaser", "")),
+                "url": article.get("url", ""),
+                "author": article.get("author", "Benzinga"),
+                "published_at": published_at,
+            })
 
-            logger.info(f"Fetched {len(items)} articles from Benzinga")
-
-        except Exception as e:
-            logger.error(f"Error fetching Benzinga: {e}")
-
+        logger.info(f"Fetched {len(items)} articles from Benzinga")
         return items
 
     def _fetch_seekingalpha_rss(self, source: ContentSource, since: Optional[datetime] = None) -> list[dict]:
@@ -217,66 +232,68 @@ class RedditFetcher(BaseContentFetcher):
     def fetch(self, source: ContentSource, since: Optional[datetime] = None) -> list[dict]:
         """Fetch posts from subreddit"""
         items = []
+        # Extract subreddit from URL
+        # Format: reddit.com/r/wallstreetbets or just /r/wallstreetbets
+        parts = source.url.replace("https://", "").replace("http://", "").split("/")
+        subreddit = None
+        for i, part in enumerate(parts):
+            if part == "r" and i + 1 < len(parts):
+                subreddit = parts[i + 1]
+                break
+
+        if not subreddit:
+            raise SourceFetchError(f"Could not extract subreddit from URL: {source.url}")
+
+        # The newest listing is chronological, so the watermark filter below keeps
+        # what it should; the hot listing's posts were mostly older than any recent
+        # poll and filtered out. Its limit: only the newest 100 posts are seen, so
+        # a busy subreddit needs a short interval, and edits further back are missed.
+        response = requests.get(
+            f"https://www.reddit.com/r/{subreddit}/new.json",
+            headers={"User-Agent": _USER_AGENT},
+            params={"limit": 100},
+            timeout=_REQUEST_TIMEOUT_SECONDS,
+        )
+        response.raise_for_status()
         try:
-            # Extract subreddit from URL
-            # Format: reddit.com/r/wallstreetbets or just /r/wallstreetbets
-            parts = source.url.replace("https://", "").replace("http://", "").split("/")
-            subreddit = None
-            for i, part in enumerate(parts):
-                if part == "r" and i + 1 < len(parts):
-                    subreddit = parts[i + 1]
-                    break
-
-            if not subreddit:
-                logger.error(f"Could not extract subreddit from URL: {source.url}")
-                return items
-
-            # Fetch via Reddit JSON API (public, no auth needed)
-            response = requests.get(
-                f"https://www.reddit.com/r/{subreddit}/hot.json",
-                headers={"User-Agent": "StockScanner/1.0"},
-                params={"limit": 50}
-            )
             data = response.json()
+        except ValueError as exc:
+            raise SourceFetchError(f"Reddit returned a non-JSON page for r/{subreddit}") from exc
 
-            for post in data.get("data", {}).get("children", []):
-                post_data = post.get("data", {})
+        for post in data.get("data", {}).get("children", []):
+            post_data = post.get("data", {})
 
-                # Convert Unix timestamp
-                created_utc = post_data.get("created_utc", 0)
-                published_at = _coerce_utc_datetime(datetime.utcfromtimestamp(created_utc))
+            # Convert Unix timestamp
+            created_utc = post_data.get("created_utc", 0)
+            published_at = _coerce_utc_datetime(datetime.utcfromtimestamp(created_utc))
 
-                # An edited post keeps created_utc; "edited" is its edit time
-                # (False if never edited), so edits still reach admission (#501).
-                edited = post_data.get("edited")
-                last_changed = published_at
-                if edited and not isinstance(edited, bool):
-                    last_changed = max(published_at, datetime.fromtimestamp(edited, tz=timezone.utc))
-                since_bound = _coerce_utc_datetime(since)
-                if since_bound and last_changed < since_bound:
-                    continue
+            # An edited post keeps created_utc; "edited" is its edit time
+            # (False if never edited), so edits still reach admission (#501).
+            edited = post_data.get("edited")
+            last_changed = published_at
+            if edited and not isinstance(edited, bool):
+                last_changed = max(published_at, datetime.fromtimestamp(edited, tz=timezone.utc))
+            since_bound = _coerce_utc_datetime(since)
+            if since_bound and last_changed < since_bound:
+                continue
 
-                external_id = self.generate_external_id("reddit", post_data.get("id", ""))
+            external_id = self.generate_external_id("reddit", post_data.get("id", ""))
 
-                # Combine title and selftext for content
-                content = post_data.get("title", "")
-                if post_data.get("selftext"):
-                    content += "\n\n" + post_data.get("selftext", "")
+            # Combine title and selftext for content
+            content = post_data.get("title", "")
+            if post_data.get("selftext"):
+                content += "\n\n" + post_data.get("selftext", "")
 
-                items.append({
-                    "external_id": external_id,
-                    "title": post_data.get("title", ""),
-                    "content": content,
-                    "url": f"https://reddit.com{post_data.get('permalink', '')}",
-                    "author": post_data.get("author", ""),
-                    "published_at": published_at,
-                })
+            items.append({
+                "external_id": external_id,
+                "title": post_data.get("title", ""),
+                "content": content,
+                "url": f"https://reddit.com{post_data.get('permalink', '')}",
+                "author": post_data.get("author", ""),
+                "published_at": published_at,
+            })
 
-            logger.info(f"Fetched {len(items)} posts from r/{subreddit}")
-
-        except Exception as e:
-            logger.error(f"Error fetching Reddit {source.name}: {e}")
-
+        logger.info(f"Fetched {len(items)} posts from r/{subreddit}")
         return items
 
 
@@ -462,21 +479,32 @@ class ContentIngestionService:
             source: The content source to fetch from.
             lookback_days: If set, override the since date to fetch articles
                 from the last N days. Used for backfilling gaps. When backfilling,
-                last_fetched_at is NOT updated so normal runs resume correctly.
+                last_fetched_at and last_success_at are NOT updated so normal
+                runs resume correctly.
+
+        A failure while fetching or storing is recorded on the source and re-raised.
         """
         if is_social_owned_source(self.db, source):
             return 0
+        attempted_at = datetime.now(timezone.utc)
+        source_id = source.id
+        try:
+            return self._fetch_and_store(source, lookback_days, attempted_at)
+        except Exception as exc:
+            self._record_failure(source_id, exc, attempted_at, scheduled=not lookback_days)
+            raise
+
+    def _fetch_and_store(self, source: ContentSource, lookback_days: int | None, attempted_at: datetime) -> int:
         fetcher = self.get_fetcher(source.source_type)
 
         # Determine since date
         if lookback_days:
-            since = datetime.now(timezone.utc) - timedelta(days=lookback_days)
+            since = attempted_at - timedelta(days=lookback_days)
         else:
-            since = _coerce_utc_datetime(source.last_fetched_at)
-            if not since:
-                since = datetime.now(timezone.utc) - timedelta(days=30)  # Default 30-day lookback for new sources
+            watermark = _coerce_utc_datetime(source.last_success_at)
+            # Default 30-day lookback for new sources
+            since = watermark - _WATERMARK_OVERLAP if watermark else attempted_at - timedelta(days=30)
 
-        # Fetch items
         items = fetcher.fetch(source, since)
 
         # Store new items - track seen external_ids to avoid duplicates within batch
@@ -554,14 +582,38 @@ class ContentIngestionService:
         # Backfill leaves last_fetched_at unchanged so the next normal run
         # resumes from the correct point.
         if not lookback_days:
-            source.last_fetched_at = datetime.now(timezone.utc)
+            source.last_fetched_at = attempted_at
+            source.last_success_at = attempted_at
             if source_type == "twitter":
                 self._persist_twitter_since_id(source_id, items)
+        source.consecutive_failures = 0
         source.total_items_fetched = (source.total_items_fetched or 0) + new_count
         self.db.commit()
 
         logger.info(f"Ingested {new_count} new items from {source.name}")
         return new_count
+
+    def _record_failure(self, source_id: int, exc: Exception, attempted_at: datetime, *, scheduled: bool) -> None:
+        """Commit the failure before the caller's rollback, leaving the watermark where it was."""
+        error = f"{type(exc).__name__}: {exc}"[:500]
+        try:
+            self.db.rollback()
+            source = self.db.get(ContentSource, source_id)
+            if source is None:
+                return
+            failures = (source.consecutive_failures or 0) + 1
+            source.consecutive_failures, source.last_error, source.last_error_at = failures, error, attempted_at
+            if scheduled:
+                # The watermark stays put, so waiting the normal interval loses nothing
+                # and spares a failing or rate-limiting provider a retry every poll.
+                source.last_fetched_at = attempted_at
+            self.db.commit()
+        except Exception:
+            # Never let bookkeeping replace the fetch error the caller re-raises.
+            self.db.rollback()
+            logger.exception("Could not record the failure of content source %s", source_id)
+            return
+        logger.warning("Content source %s failed (%d in a row): %s", source_id, failures, error)
 
     def fetch_source_by_id(self, source_id: int, lookback_days: int | None = None) -> int:
         source = self.db.get(ContentSource, source_id)

@@ -37,10 +37,17 @@ def _entry(*, link, published, updated, summary="Memory demand is accelerating."
     )
 
 
+def _response(**fields):
+    return SimpleNamespace(raise_for_status=lambda: None, content=b"", headers={}, **fields)
+
+
 def _feed(monkeypatch, *entries):
     monkeypatch.setattr(
+        "app.services.content_ingestion_service.requests.get", lambda *a, **k: _response()
+    )
+    monkeypatch.setattr(
         "app.services.content_ingestion_service.feedparser.parse",
-        lambda url: SimpleNamespace(entries=list(entries)),
+        lambda content, **_: SimpleNamespace(entries=list(entries)),
     )
 
 
@@ -69,7 +76,7 @@ def test_reddit_post_edited_since_the_last_poll_is_returned(monkeypatch):
     ]
     monkeypatch.setattr(
         "app.services.content_ingestion_service.requests.get",
-        lambda *a, **k: SimpleNamespace(
+        lambda *a, **k: _response(
             json=lambda: {"data": {"children": [{"data": post} for post in posts]}}
         ),
     )

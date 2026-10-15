@@ -138,6 +138,7 @@ def rewind_theme_content_source_cursors(conn) -> None:
             """
             UPDATE content_sources
             SET last_fetched_at = :rewind_at,
+                last_success_at = :rewind_at,
                 total_items_fetched = 0
             """
         ),

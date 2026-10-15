@@ -196,7 +196,7 @@ def test_fetch_source_backfills_missing_pipeline_state_for_existing_item(
     assert all(state.status == "pending" for state in states)
 
 
-def test_fetch_source_propagates_adapter_error_and_does_not_advance_last_fetched_at(
+def test_fetch_source_propagates_adapter_error_and_does_not_advance_the_watermark(
     db_session,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -208,6 +208,7 @@ def test_fetch_source_propagates_adapter_error_and_does_not_advance_last_fetched
         is_active=True,
         fetch_interval_minutes=60,
         last_fetched_at=previous_fetch,
+        last_success_at=previous_fetch,
     )
     db_session.add(source)
     db_session.commit()
@@ -226,7 +227,8 @@ def test_fetch_source_propagates_adapter_error_and_does_not_advance_last_fetched
         service.fetch_source(source)
 
     db_session.refresh(source)
-    assert source.last_fetched_at == previous_fetch
+    assert source.last_success_at == previous_fetch
+    assert source.consecutive_failures == 1
     assert db_session.query(ContentItem).count() == 0
 
 
@@ -370,8 +372,12 @@ def test_rss_fetcher_handles_aware_since_with_naive_feed_timestamps(
     )
 
     monkeypatch.setattr(
+        "app.services.content_ingestion_service.requests.get",
+        lambda *a, **k: SimpleNamespace(raise_for_status=lambda: None, content=b"", headers={}),
+    )
+    monkeypatch.setattr(
         "app.services.content_ingestion_service.feedparser.parse",
-        lambda url: SimpleNamespace(entries=[older, newer]),
+        lambda content, **_: SimpleNamespace(entries=[older, newer]),
     )
 
     source = ContentSource(
