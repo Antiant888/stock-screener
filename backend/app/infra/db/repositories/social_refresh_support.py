@@ -169,7 +169,8 @@ class SocialScoringEvidenceReader:
             outcomes = current.source_outcomes_json
             manifest = current.application_progress_json.get("current_manifest", {})
             reasons = set(manifest.get("coverage_reasons", ()))
-            unavailable = {value["content_item_id"] for value in manifest.get("unavailable_inputs", ())}
+            unavailable = {(value["content_item_id"], value["input_hash"])
+                           for value in manifest.get("unavailable_inputs", ())}
             for source_id in source_ids:
                 reasons.update(outcomes.get(source_id, {}).get("coverage_reason_codes", ()))
             # One canonical observation per post/source. Apply non-null metrics in
@@ -256,7 +257,7 @@ class SocialScoringEvidenceReader:
                 claims.setdefault(post_id, []).extend(work.result_json.get("claims", ()))
 
             for (post_id, source_id), post in canonical.items():
-                if content_ids[post_id] in unavailable:
+                if (content_ids[post_id], self._content_revision(post)) in unavailable:
                     # Its earlier mentions are unknown, so acceleration has no full baseline.
                     history_complete = False
                     continue

@@ -300,6 +300,12 @@ class SocialSignalWriter:
                     audit.add(work.id)
                     db.delete(link)
                     continue
+                if work.state == "outside_window" and identity not in current:
+                    # Retained work past the analysis window is never claimed again, and
+                    # its post is older than every scoring window.
+                    audit.add(work.id)
+                    db.delete(link)
+                    continue
                 if identity not in current | older | after:
                     published = datetime.fromisoformat(work.input_snapshot_json["created_at"])
                     if utc(run.created_at) - timedelta(days=15) <= published <= utc(run.created_at):

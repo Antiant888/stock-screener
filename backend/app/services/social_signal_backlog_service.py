@@ -416,6 +416,18 @@ class ProcessSocialBacklog:
     def _finish_many(self, claims, state, error=None):
         return sum(self._finish(work_id, token, state, error) for work_id, token in claims)
 
+    def _settle_unknown(self, claims):
+        """Close work a deferral released, unless another claim has taken it since."""
+        settled = 0
+        with social_analysis_transaction(self.session_factory) as db:
+            for work_id, _ in claims:
+                row = db.get(SocialExtractionWork, work_id)
+                if row.state in {"pending", "waiting_budget"} and row.claim_token is None:
+                    row.state, row.error_code = "failed_terminal", "completion_unknown"
+                    row.updated_at = datetime.now(timezone.utc)
+                    settled += 1
+        return settled
+
     @staticmethod
     def _groups(claimed, batch_size):
         current = []
@@ -486,6 +498,10 @@ class ProcessSocialBacklog:
                     result = await extraction.extract(tuple(post for _, post in items))
                 break
             except _Deferred as exc:
+                if retry:
+                    # The retry never went out, and deferred work would be claimed again
+                    # later, so the first request's unknown outcome stands.
+                    return (0, 0, self._settle_unknown(claims), exc.outside), spare_calls
                 return (0, exc.count, 0, exc.outside), spare_calls
             except asyncio.CancelledError:
                 self._finish_many(claims, "failed_terminal", "completion_unknown")
