@@ -40,10 +40,11 @@ def post(number, age=1):
 
 
 class FakeLLM:
-    def __init__(self, *, malformed=False, usage=True, model="actual-model"):
+    def __init__(self, *, malformed=False, usage=True, model="actual-model", poison=()):
         self.seen = []
         self.calls = 0
         self.malformed, self.usage, self.model = malformed, usage, model
+        self.poison = set(poison)
 
     async def completion(self, **kwargs):
         self.calls += 1
@@ -53,8 +54,9 @@ class FakeLLM:
         assert kwargs["num_retries"] == 0 and not kwargs["allow_fallbacks"]
         payload = {"posts": [dict(post_id=p["post_id"], claims=[], has_new_thesis=False,
             canonical_claim_key=None) for p in sources]}
+        malformed = self.malformed or bool(self.poison & {p["post_id"] for p in sources})
         return SimpleNamespace(model=self.model, id="safe-request", _hidden_params={"custom_llm_provider": "synthetic"},
-            choices=[SimpleNamespace(message=SimpleNamespace(content="bad" if self.malformed else json.dumps(payload)))],
+            choices=[SimpleNamespace(message=SimpleNamespace(content="bad" if malformed else json.dumps(payload)))],
             usage=SimpleNamespace(prompt_tokens=100, completion_tokens=8192) if self.usage else None)
 
 
@@ -330,6 +332,25 @@ def test_parse_failure_and_ambiguous_billing_are_not_refunded(backlog, malformed
         assert work.state == ("failed_terminal" if malformed else "succeeded")
         attempt = db.scalar(select(SocialLLMAttempt))
         assert attempt.state == ("reconciled" if usage and model == "actual-model" else "uncertain")
+
+
+def test_unparseable_batch_is_split_so_only_the_offending_post_fails(backlog):
+    from app.infra.db.models.social_analysis import SocialExtractionWork
+    from app.services.social_signal_backlog_service import ProcessSocialBacklog
+
+    configure_budget(backlog)
+    llm = FakeLLM(poison={"3"})
+    worker = ProcessSocialBacklog(backlog, llm=llm, batch_size=4)
+    work_ids = [enqueue(backlog, worker, post(number)) for number in range(1, 5)]
+
+    result = asyncio.run(worker.execute(NOW, 4))
+
+    assert (result.succeeded, result.failed) == (3, 1)
+    with backlog() as db:
+        states = [(db.get(SocialExtractionWork, work_id).state,
+                   db.get(SocialExtractionWork, work_id).error_code) for work_id in work_ids]
+    assert states == [("succeeded", None), ("succeeded", None),
+                      ("failed_terminal", "malformed_json"), ("succeeded", None)]
 
 
 def test_explicit_generation_counts_preexisting_terminal_work_as_failed(backlog):
