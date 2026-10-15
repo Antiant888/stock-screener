@@ -117,6 +117,19 @@ def test_reddit_block_page_is_a_failure_not_an_empty_listing(db_session, monkeyp
     assert db_session.get(ContentSource, source.id).consecutive_failures == 1
 
 
+def test_empty_feed_with_a_header_charset_is_not_a_failure(monkeypatch):
+    from requests.structures import CaseInsensitiveDict
+
+    body = '<?xml version="1.0"?><rss version="2.0"><channel><title>Café</title></channel></rss>'.encode()
+    monkeypatch.setattr(ingestion.requests, "get", lambda url, **kwargs: SimpleNamespace(
+        content=body, raise_for_status=lambda: None,
+        headers=CaseInsensitiveDict({"Content-Type": "application/rss+xml; charset=utf-8"})))
+
+    items = ingestion.RSSFetcher().fetch(ContentSource(name="F", source_type="rss", url="https://e.com/feed"))
+
+    assert items == []
+
+
 def test_failed_fetch_waits_its_interval_but_keeps_the_watermark(db_session, monkeypatch):
     _serve(monkeypatch, status=429, body=b"Too Many Requests")
     succeeded = NOW - timedelta(hours=3)
