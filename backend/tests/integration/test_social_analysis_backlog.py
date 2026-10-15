@@ -772,6 +772,42 @@ def test_cancellation_before_dispatch_releases_budget_and_keeps_work_claimable(b
     assert later.succeeded == 1
 
 
+def test_cancellation_survives_a_failed_refund(backlog, monkeypatch):
+    from app.services.social_llm_budget_service import SocialLLMBudgetService
+    from app.services.social_signal_backlog_service import ProcessSocialBacklog
+
+    class SpacingGate:
+        def acquire(self, owner, ttl):
+            return True
+
+        def wait_seconds(self):
+            return 5
+
+        def mark_started(self, seconds):
+            pass
+
+        def release(self, owner):
+            pass
+
+    async def cancelled_while_waiting(_seconds):
+        raise asyncio.CancelledError
+
+    def ledger_down(self, attempt_id):
+        raise RuntimeError("ledger unavailable")
+
+    configure_budget(backlog)
+    monkeypatch.setattr(SocialLLMBudgetService, "release", ledger_down)
+    llm = FakeLLM()
+    worker = ProcessSocialBacklog(backlog, llm=llm, batch_size=1, request_gate=SpacingGate(),
+                                  sleep=cancelled_while_waiting)
+    enqueue(backlog, worker, post(1))
+    enqueue(backlog, worker, post(2))
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(worker.execute(NOW, 2))
+    assert llm.calls == 0
+
+
 def test_confirmed_pre_dispatch_failure_releases_budget_without_retry(backlog):
     from app.infra.db.models.social_analysis import (
         SocialExtractionWork,
