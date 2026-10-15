@@ -65,7 +65,15 @@ def test_private_overlay_reuses_the_one_worker_and_alone_mounts_profile_writable
     assert worker["environment"] == {
         "SOCIAL_XUI_CONFIG_PATH": "/app/data/xui-reader/config.toml",
         "SOCIAL_XUI_PROFILE": "${SOCIAL_XUI_PROFILE:-automation}",
+        "SOCIAL_XUI_TIMEOUT_SECONDS": "${SOCIAL_XUI_TIMEOUT_SECONDS:-300}",
     }
+
+
+def test_env_template_documents_every_private_overlay_setting():
+    template = (ROOT / ".env.docker.example").read_text(encoding="utf-8")
+    overlay = _yaml(XUI_COMPOSE)["services"]["celery-social"]["environment"]
+
+    assert [key for key in overlay if f"\n{key}=" not in template] == []
 
 
 def test_private_worker_reserves_shared_memory_for_playwright_chromium():
