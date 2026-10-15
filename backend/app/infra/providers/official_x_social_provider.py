@@ -19,7 +19,9 @@ from app.domain.social_signals.records import (
 )
 
 Reservation = Callable[[object, int, int], int]
+Release = Callable[[object, int], None]
 X_API_MIN_RESULTS = 5
+GAP_REASON = "incremental_gap_suspected"
 
 
 class OfficialXSocialProvider:
@@ -27,13 +29,15 @@ class OfficialXSocialProvider:
                  client: httpx.Client, daily_post_limit: int,
                  budget_timezone: str, max_results_per_page: int = 100,
                  retry_delay_seconds: float = 1.0,
-                 sleep: Callable[[float], None] = time.sleep):
+                 sleep: Callable[[float], None] = time.sleep,
+                 release: Release | None = None):
         if reservation is None:
             raise ValueError("official_reservation_required")
         if not X_API_MIN_RESULTS <= max_results_per_page <= 100:
             raise ValueError("invalid_max_results_per_page")
         self._token = bearer_token
         self._reserve = reservation
+        self._release = release
         self._client = client
         self._daily_limit = daily_post_limit
         self._timezone = ZoneInfo(budget_timezone)
@@ -72,12 +76,17 @@ class OfficialXSocialProvider:
         observed_initial_window = (
             request.intent == "initial" and (reached_boundary or not cursor)
         )
+        # The limit ended the read while older posts inside its window remained unread.
+        gaps = (((request.target_published_after, min(timestamps)),)
+                if request.intent == "incremental" and ordered and cursor and not reached_boundary
+                else ())
         outcome = SocialSourceOutcome(
             read_status="success", processing_status="pending",
             history_status=("observed_window" if observed_initial_window
                             else "warming_up" if request.intent == "initial" else "limited"),
             coverage_reason_codes=(() if observed_initial_window
-                                   else ("bounded_provider_read",)), known_gap_intervals=(),
+                                   else ("bounded_provider_read",) + ((GAP_REASON,) if gaps else ())),
+            known_gap_intervals=gaps,
             observed_oldest_at=min(timestamps) if timestamps else None,
             observed_newest_at=max(timestamps) if timestamps else None,
             received_count=len(ordered), committed_progress=None, error_code=None,
@@ -107,11 +116,18 @@ class OfficialXSocialProvider:
                 response = self._client.get(
                     f"https://api.x.com/2/lists/{request.list_id}/tweets", params=params,
                     headers={"Authorization": f"Bearer {self._token.strip()}"})
-            except httpx.TransportError:
+            except httpx.TransportError as exc:
+                # A request that never connected read nothing. Any other transport
+                # failure may have been served, so its reservation stays spent.
+                if isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout)):
+                    self._return_unused(day, granted)
                 if attempt == 0:
                     self._sleep(self._retry_delay)
                     continue
                 return self._failed(request, "provider_network_error")
+            if not 200 <= response.status_code < 300:
+                # An error response returns no posts.
+                self._return_unused(day, granted)
             if response.status_code == 429:
                 reset = self._reset_at(response.headers.get("x-rate-limit-reset"))
                 return self._failed(request, "rate_limited", reset)
@@ -120,10 +136,18 @@ class OfficialXSocialProvider:
             if not 200 <= response.status_code < 300:
                 return self._failed(request, "provider_error")
             try:
-                return response.json()
+                payload = response.json()
             except ValueError:
                 return self._failed(request, "invalid_provider_json")
+            data = payload.get("data", []) if isinstance(payload, dict) else None
+            if isinstance(data, list):
+                self._return_unused(day, granted - len(data))
+            return payload
         raise AssertionError("unreachable")
+
+    def _return_unused(self, day, posts):
+        if self._release is not None and posts > 0:
+            self._release(day, posts)
 
     @staticmethod
     def _reset_at(value):

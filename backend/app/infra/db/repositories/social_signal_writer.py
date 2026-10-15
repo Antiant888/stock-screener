@@ -495,13 +495,16 @@ class SocialSignalWriter:
 
     def latest_collection_progress(self, source_id, provider):
         with self.session_factory() as db:
-            observations = []
+            observations, read_times = [], []
             for run in db.scalars(select(SocialSignalRun).where(SocialSignalRun.provider == provider)):
                 if "replay" in run.application_progress_json:
                     continue
                 outcome = run.source_outcomes_json.get(str(source_id), {})
                 observation = run.application_progress_json.get("observations", {}).get(str(source_id))
-                if observation and outcome.get("read_status") == "success" and observation.get("intent") == "initial":
+                if not observation or outcome.get("read_status") != "success":
+                    continue
+                read_times.append(utc(datetime.fromisoformat(observation["observed_at"])))
+                if observation.get("intent") == "initial":
                     observations.append((
                         observation["observed_at"], utc(run.created_at), run.id,
                         observation.get("committed_progress"),
@@ -515,6 +518,7 @@ class SocialSignalWriter:
             return SocialCollectionProgress(
                 initial_complete=(history_status == "observed_window" or cursor is None),
                 cursor=cursor,
+                last_read_at=max(read_times),
             )
 
     def latest_committed_progress(self, source_id, provider):

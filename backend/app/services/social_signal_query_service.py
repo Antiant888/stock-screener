@@ -22,7 +22,8 @@ from app.infra.db.repositories.published_social_signal_reader import (
 
 WINDOW_DAYS = {"1d": 1, "7d": 7, "14d": 14}
 _PUBLIC_ATTEMPT_REASONS = {
-    "bounded_provider_read", "provider_error", "provider_network_error",
+    "bounded_provider_read", "daily_limit_exhausted", "incremental_gap_suspected",
+    "provider_error", "provider_network_error",
     "provider_timeout", "provider_unavailable", "rate_limited",
     "reauthentication_required",
 }

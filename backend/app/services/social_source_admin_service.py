@@ -211,6 +211,15 @@ class SocialSourceAdminService:
             registry.official_reserved_posts += granted
             return granted
 
+    def release_official_capacity(self, day, posts):
+        """Return reserved posts a read did not receive; a past day's budget is already reset."""
+        if (not isinstance(day, date) or isinstance(day, datetime)
+                or not isinstance(posts, int) or isinstance(posts, bool) or posts < 0):
+            raise SocialSourceStateError("invalid_official_capacity_release")
+        with self._transaction(lock=True) as registry:
+            if posts and registry.official_budget_day == day:
+                registry.official_reserved_posts = max(0, registry.official_reserved_posts - posts)
+
     def _create(self, name, list_id, actor, *, seed=False):
         if self.db.query(SocialSourceConfiguration).filter_by(x_list_id=list_id).first():
             raise SocialSourceStateError("duplicate_list_id")
