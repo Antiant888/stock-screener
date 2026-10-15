@@ -189,6 +189,7 @@
       "advanced": false,
       "description": "Runs price refresh, breadth, group rankings, and market scan in order",
       "display_name": "Daily Market Pipeline (AU)",
+      "impact": "Fetches recent prices, then computes breadth and group rankings and publishes the daily scan. Manual scans of the market wait while its stages run, and data fetches in every other market wait during the price fetch.",
       "is_enabled": true,
       "job_description": "Runs price refresh, breadth, group rankings, and market scan in order",
       "job_name": "Daily Market Pipeline",
@@ -197,12 +198,15 @@
       "market": "AU",
       "name": "daily-market-pipeline-au",
       "schedule_description": "7:00 ET, Mon-Fri (AU)",
-      "task_function": "app.tasks.daily_market_pipeline_tasks.queue_daily_market_pipeline"
+      "task_function": "app.tasks.daily_market_pipeline_tasks.queue_daily_market_pipeline",
+      "typical_duration_seconds": null,
+      "when_to_run": "Prices, breadth, group rankings or the daily scan are behind after a missed or failed night."
     },
     {
       "advanced": false,
       "description": "Runs price refresh, breadth, group rankings, and market scan in order",
       "display_name": "Daily Market Pipeline (CA)",
+      "impact": "Fetches recent prices, then computes breadth and group rankings and publishes the daily scan. Manual scans of the market wait while its stages run, and data fetches in every other market wait during the price fetch.",
       "is_enabled": true,
       "job_description": "Runs price refresh, breadth, group rankings, and market scan in order",
       "job_name": "Daily Market Pipeline",
@@ -211,12 +215,15 @@
       "market": "CA",
       "name": "daily-market-pipeline-ca",
       "schedule_description": "17:30 ET, Mon-Fri (CA)",
-      "task_function": "app.tasks.daily_market_pipeline_tasks.queue_daily_market_pipeline"
+      "task_function": "app.tasks.daily_market_pipeline_tasks.queue_daily_market_pipeline",
+      "typical_duration_seconds": null,
+      "when_to_run": "Prices, breadth, group rankings or the daily scan are behind after a missed or failed night."
     },
     {
       "advanced": false,
       "description": "Runs price refresh, breadth, group rankings, and market scan in order",
       "display_name": "Daily Market Pipeline (CN)",
+      "impact": "Fetches recent prices, then computes breadth and group rankings and publishes the daily scan. Manual scans of the market wait while its stages run, and data fetches in every other market wait during the price fetch.",
       "is_enabled": true,
       "job_description": "Runs price refresh, breadth, group rankings, and market scan in order",
       "job_name": "Daily Market Pipeline",
@@ -225,12 +232,15 @@
       "market": "CN",
       "name": "daily-market-pipeline-cn",
       "schedule_description": "3:30 ET, Mon-Fri (CN)",
-      "task_function": "app.tasks.daily_market_pipeline_tasks.queue_daily_market_pipeline"
+      "task_function": "app.tasks.daily_market_pipeline_tasks.queue_daily_market_pipeline",
+      "typical_duration_seconds": null,
+      "when_to_run": "Prices, breadth, group rankings or the daily scan are behind after a missed or failed night."
     },
     {
       "advanced": false,
       "description": "Runs price refresh, breadth, group rankings, and market scan in order",
       "display_name": "Daily Market Pipeline (DE)",
+      "impact": "Fetches recent prices, then computes breadth and group rankings and publishes the daily scan. Manual scans of the market wait while its stages run, and data fetches in every other market wait during the price fetch.",
       "is_enabled": true,
       "job_description": "Runs price refresh, breadth, group rankings, and market scan in order",
       "job_name": "Daily Market Pipeline",
@@ -239,12 +249,15 @@
       "market": "DE",
       "name": "daily-market-pipeline-de",
       "schedule_description": "18:00 ET, Mon-Fri (DE)",
-      "task_function": "app.tasks.daily_market_pipeline_tasks.queue_daily_market_pipeline"
+      "task_function": "app.tasks.daily_market_pipeline_tasks.queue_daily_market_pipeline",
+      "typical_duration_seconds": null,
+      "when_to_run": "Prices, breadth, group rankings or the daily scan are behind after a missed or failed night."
     },
     {
       "advanced": false,
       "description": "Runs price refresh, breadth, group rankings, and market scan in order",
       "display_name": "Daily Market Pipeline (HK)",
+      "impact": "Fetches recent prices, then computes breadth and group rankings and publishes the daily scan. Manual scans of the market wait while its stages run, and data fetches in every other market wait during the price fetch.",
       "is_enabled": true,
       "job_description": "Runs price refresh, breadth, group rankings, and market scan in order",
       "job_name": "Daily Market Pipeline",
@@ -253,12 +266,15 @@
       "market": "HK",
       "name": "daily-market-pipeline-hk",
       "schedule_description": "4:30 ET, Mon-Fri (HK)",
-      "task_function": "app.tasks.daily_market_pipeline_tasks.queue_daily_market_pipeline"
+      "task_function": "app.tasks.daily_market_pipeline_tasks.queue_daily_market_pipeline",
+      "typical_duration_seconds": null,
+      "when_to_run": "Prices, breadth, group rankings or the daily scan are behind after a missed or failed night."
     },
     {
       "advanced": false,
       "description": "Runs price refresh, breadth, group rankings, and market scan in order",
       "display_name": "Daily Market Pipeline (IN)",
+      "impact": "Fetches recent prices, then computes breadth and group rankings and publishes the daily scan. Manual scans of the market wait while its stages run, and data fetches in every other market wait during the price fetch.",
       "is_enabled": true,
       "job_description": "Runs price refresh, breadth, group rankings, and market scan in order",
       "job_name": "Daily Market Pipeline",
@@ -267,12 +283,15 @@
       "market": "IN",
       "name": "daily-market-pipeline-in",
       "schedule_description": "6:30 ET, Mon-Fri (IN)",
-      "task_function": "app.tasks.daily_market_pipeline_tasks.queue_daily_market_pipeline"
+      "task_function": "app.tasks.daily_market_pipeline_tasks.queue_daily_market_pipeline",
+      "typical_duration_seconds": null,
+      "when_to_run": "Prices, breadth, group rankings or the daily scan are behind after a missed or failed night."
     },
     {
       "advanced": false,
       "description": "Runs price refresh, breadth, group rankings, and market scan in order",
       "display_name": "Daily Market Pipeline (JP)",
+      "impact": "Fetches recent prices, then computes breadth and group rankings and publishes the daily scan. Manual scans of the market wait while its stages run, and data fetches in every other market wait during the price fetch.",
       "is_enabled": true,
       "job_description": "Runs price refresh, breadth, group rankings, and market scan in order",
       "job_name": "Daily Market Pipeline",
@@ -281,12 +300,15 @@
       "market": "JP",
       "name": "daily-market-pipeline-jp",
       "schedule_description": "2:30 ET, Mon-Fri (JP)",
-      "task_function": "app.tasks.daily_market_pipeline_tasks.queue_daily_market_pipeline"
+      "task_function": "app.tasks.daily_market_pipeline_tasks.queue_daily_market_pipeline",
+      "typical_duration_seconds": null,
+      "when_to_run": "Prices, breadth, group rankings or the daily scan are behind after a missed or failed night."
     },
     {
       "advanced": false,
       "description": "Runs price refresh, breadth, group rankings, and market scan in order",
       "display_name": "Daily Market Pipeline (KR)",
+      "impact": "Fetches recent prices, then computes breadth and group rankings and publishes the daily scan. Manual scans of the market wait while its stages run, and data fetches in every other market wait during the price fetch.",
       "is_enabled": true,
       "job_description": "Runs price refresh, breadth, group rankings, and market scan in order",
       "job_name": "Daily Market Pipeline",
@@ -295,12 +317,15 @@
       "market": "KR",
       "name": "daily-market-pipeline-kr",
       "schedule_description": "3:00 ET, Mon-Fri (KR)",
-      "task_function": "app.tasks.daily_market_pipeline_tasks.queue_daily_market_pipeline"
+      "task_function": "app.tasks.daily_market_pipeline_tasks.queue_daily_market_pipeline",
+      "typical_duration_seconds": null,
+      "when_to_run": "Prices, breadth, group rankings or the daily scan are behind after a missed or failed night."
     },
     {
       "advanced": false,
       "description": "Runs price refresh, breadth, group rankings, and market scan in order",
       "display_name": "Daily Market Pipeline (MY)",
+      "impact": "Fetches recent prices, then computes breadth and group rankings and publishes the daily scan. Manual scans of the market wait while its stages run, and data fetches in every other market wait during the price fetch.",
       "is_enabled": true,
       "job_description": "Runs price refresh, breadth, group rankings, and market scan in order",
       "job_name": "Daily Market Pipeline",
@@ -309,12 +334,15 @@
       "market": "MY",
       "name": "daily-market-pipeline-my",
       "schedule_description": "5:30 ET, Mon-Fri (MY)",
-      "task_function": "app.tasks.daily_market_pipeline_tasks.queue_daily_market_pipeline"
+      "task_function": "app.tasks.daily_market_pipeline_tasks.queue_daily_market_pipeline",
+      "typical_duration_seconds": null,
+      "when_to_run": "Prices, breadth, group rankings or the daily scan are behind after a missed or failed night."
     },
     {
       "advanced": false,
       "description": "Runs price refresh, breadth, group rankings, and market scan in order",
       "display_name": "Daily Market Pipeline (SG)",
+      "impact": "Fetches recent prices, then computes breadth and group rankings and publishes the daily scan. Manual scans of the market wait while its stages run, and data fetches in every other market wait during the price fetch.",
       "is_enabled": true,
       "job_description": "Runs price refresh, breadth, group rankings, and market scan in order",
       "job_name": "Daily Market Pipeline",
@@ -323,12 +351,15 @@
       "market": "SG",
       "name": "daily-market-pipeline-sg",
       "schedule_description": "5:00 ET, Mon-Fri (SG)",
-      "task_function": "app.tasks.daily_market_pipeline_tasks.queue_daily_market_pipeline"
+      "task_function": "app.tasks.daily_market_pipeline_tasks.queue_daily_market_pipeline",
+      "typical_duration_seconds": null,
+      "when_to_run": "Prices, breadth, group rankings or the daily scan are behind after a missed or failed night."
     },
     {
       "advanced": false,
       "description": "Runs price refresh, breadth, group rankings, and market scan in order",
       "display_name": "Daily Market Pipeline (TW)",
+      "impact": "Fetches recent prices, then computes breadth and group rankings and publishes the daily scan. Manual scans of the market wait while its stages run, and data fetches in every other market wait during the price fetch.",
       "is_enabled": true,
       "job_description": "Runs price refresh, breadth, group rankings, and market scan in order",
       "job_name": "Daily Market Pipeline",
@@ -337,12 +368,15 @@
       "market": "TW",
       "name": "daily-market-pipeline-tw",
       "schedule_description": "2:00 ET, Mon-Fri (TW)",
-      "task_function": "app.tasks.daily_market_pipeline_tasks.queue_daily_market_pipeline"
+      "task_function": "app.tasks.daily_market_pipeline_tasks.queue_daily_market_pipeline",
+      "typical_duration_seconds": null,
+      "when_to_run": "Prices, breadth, group rankings or the daily scan are behind after a missed or failed night."
     },
     {
       "advanced": false,
       "description": "Runs price refresh, breadth, group rankings, and market scan in order",
       "display_name": "Daily Market Pipeline (US)",
+      "impact": "Fetches recent prices, then computes breadth and group rankings and publishes the daily scan. Manual scans of the market wait while its stages run, and data fetches in every other market wait during the price fetch.",
       "is_enabled": true,
       "job_description": "Runs price refresh, breadth, group rankings, and market scan in order",
       "job_name": "Daily Market Pipeline",
@@ -351,7 +385,9 @@
       "market": "US",
       "name": "daily-market-pipeline-us",
       "schedule_description": "16:30 ET, Mon-Fri (US)",
-      "task_function": "app.tasks.daily_market_pipeline_tasks.queue_daily_market_pipeline"
+      "task_function": "app.tasks.daily_market_pipeline_tasks.queue_daily_market_pipeline",
+      "typical_duration_seconds": null,
+      "when_to_run": "Prices, breadth, group rankings or the daily scan are behind after a missed or failed night."
     }
   ],
   "top_candidates": [

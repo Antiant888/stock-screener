@@ -579,7 +579,12 @@ function JobsTable({ jobs, onCancel, cancellingTaskId, cancelInFlight }) {
           return (
             <TableRow key={job.task_id}>
               <TableCell>
-                <Typography variant="body2">{job.task_name}</Typography>
+                <Typography variant="body2">{job.display_name || job.task_name}</Typography>
+                {job.display_name && (
+                  <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+                    {job.task_name}
+                  </Typography>
+                )}
                 <Typography variant="caption" color="text.secondary">
                   {job.task_id}
                 </Typography>
@@ -765,6 +770,7 @@ export default function OperationsPage() {
       if (marketFilter !== 'all' && job.market !== marketFilter) return false;
       if (!normalizedSearch) return true;
       return [
+        job.display_name,
         job.task_name,
         job.task_id,
         job.queue,

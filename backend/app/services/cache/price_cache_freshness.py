@@ -25,6 +25,15 @@ SESSION_SETTLEMENT_BUFFER = timedelta(minutes=30)
 LAST_COMPLETED_REUSE_SECONDS = 5.0
 
 
+def settlement_cutoff(calendar, market: str, session_day: date) -> Optional[datetime]:
+    """When ``session_day``'s bar in ``market`` is final: its close plus the
+    settlement buffer. None on a non-trading day. A fetch before it may hold
+    an in-progress bar for that day (lunch breaks included)."""
+    if not calendar.is_trading_day(market, session_day):
+        return None
+    return calendar.session_close(market, session_day) + SESSION_SETTLEMENT_BUFFER
+
+
 def fetched_at(meta: Mapping) -> Optional[datetime]:
     """Aware fetch time from metadata; legacy naive timestamps were written in ET."""
     raw = meta.get("fetch_timestamp")
@@ -119,11 +128,7 @@ class PriceCacheFreshnessPolicy:
         session_day = calendar.market_now(market, fetch_time).date()
         key = (market, session_day)
         if key not in self._settlement_cutoffs:
-            self._settlement_cutoffs[key] = (
-                calendar.session_close(market, session_day) + SESSION_SETTLEMENT_BUFFER
-                if calendar.is_trading_day(market, session_day)
-                else None
-            )
+            self._settlement_cutoffs[key] = settlement_cutoff(calendar, market, session_day)
         final_after = self._settlement_cutoffs[key]
         return session_day if final_after is not None and fetch_time < final_after else None
 

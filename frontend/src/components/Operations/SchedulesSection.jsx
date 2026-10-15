@@ -5,13 +5,20 @@
  * (#588), so a run started here or by Beat shows up here whether or not this
  * page was open; there is no client-side tracking of triggered runs.
  */
-import { useEffect, useState } from 'react';
+import { useEffect, useId, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   Alert,
   Box,
+  Button,
   Chip,
   CircularProgress,
+  Collapse,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogContentText,
+  DialogTitle,
   Divider,
   IconButton,
   Link,
@@ -247,7 +254,7 @@ function RunButton({ task, pending, onRun }) {
       <span>
         <IconButton
           size="small"
-          color="primary"
+          color={task.advanced ? 'error' : 'primary'}
           aria-label={`Run ${task.display_name} now`}
           onClick={() => onRun(task.name)}
           disabled={Boolean(blockedReason) || pending}
@@ -328,6 +335,9 @@ function MarketDetail({ task, groupDescription, pending, onRun }) {
         <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>{task.description}</Typography>
       )}
       <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>{task.schedule_description}</Typography>
+      {typicalDuration(task) && (
+        <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>{typicalDuration(task)}</Typography>
+      )}
       <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, mt: 1 }}>
         {task.last_run && <StatusChip run={task.last_run} />}
         <LastRun run={task.last_run} />
@@ -383,6 +393,100 @@ function MarketChips({ group, pendingNames, onRun }) {
   );
 }
 
+function typicalDuration(task) {
+  return task.typical_duration_seconds != null
+    ? `Usually takes about ${formatDuration(task.typical_duration_seconds)}.`
+    : null;
+}
+
+// When to run the job by hand and what a run costs. Per-market rows leave the
+// duration to each chip's detail: it differs by market.
+function JobFacts({ task, withDuration = true }) {
+  const facts = [
+    ['When to run it', task.when_to_run],
+    ['What it affects', task.impact],
+  ].filter(([, text]) => text);
+  const duration = withDuration && typicalDuration(task);
+  if (!facts.length && !duration) return null;
+  return (
+    <Box sx={{ mt: 0.5 }}>
+      {facts.map(([label, text]) => (
+        <Typography key={label} variant="caption" sx={{ display: 'block' }}>
+          <strong>{label}:</strong> {text}
+        </Typography>
+      ))}
+      {duration && <Typography variant="caption" sx={{ display: 'block' }}>{duration}</Typography>}
+    </Box>
+  );
+}
+
+// name tells the rows' buttons apart for screen readers; it follows the
+// visible text so voice control still matches it.
+function JobHelp({ task, name, withDuration }) {
+  const [open, setOpen] = useState(false);
+  const detailsId = useId();
+  if (!task.when_to_run && !task.impact) return null;
+  const label = open ? 'Hide details' : 'About this job';
+  return (
+    <Box>
+      <Button
+        size="small"
+        onClick={() => setOpen((value) => !value)}
+        aria-expanded={open}
+        aria-controls={detailsId}
+        aria-label={`${label}: ${name}`}
+        sx={{ p: 0, minWidth: 0, textTransform: 'none' }}
+      >
+        {label}
+      </Button>
+      <Collapse in={open} unmountOnExit id={detailsId}>
+        <JobFacts task={task} withDuration={withDuration} />
+      </Collapse>
+    </Box>
+  );
+}
+
+// The price cache's rule: a fetch before the close plus 30 minutes on a
+// trading day may hold a partial bar, which it refetches after the close.
+function unsettledWarning(markets) {
+  return `Today's session has not settled in ${markets.join(', ')}. `
+    + 'Prices a run fetches now count as partial until 30 minutes after the close, and are refetched then.';
+}
+
+// Run asks first: what the job does and costs, and whether it would fetch
+// prices for a market whose day has not settled.
+function RunDialog({ task, open, pending, onCancel, onConfirm, onExited }) {
+  const blockedReason = task ? runBlockedReason(task) : null;
+  return (
+    <Dialog open={open} onClose={onCancel} aria-labelledby="run-job-title" TransitionProps={{ onExited }}>
+      <DialogTitle id="run-job-title">Run {task?.display_name}?</DialogTitle>
+      {task && (
+        <DialogContent>
+          <DialogContentText>{task.description}</DialogContentText>
+          <JobFacts task={task} />
+          {task.unsettled_markets?.length > 0 && (
+            <Alert severity="warning" sx={{ mt: 1.5 }}>{unsettledWarning(task.unsettled_markets)}</Alert>
+          )}
+          {blockedReason && (
+            <Alert severity="info" sx={{ mt: 1.5 }}>{blockedReason}</Alert>
+          )}
+        </DialogContent>
+      )}
+      <DialogActions>
+        <Button onClick={onCancel}>Back</Button>
+        <Button
+          variant="contained"
+          color={task?.advanced ? 'error' : 'primary'}
+          disabled={!task || pending || Boolean(blockedReason)}
+          onClick={onConfirm}
+        >
+          Run
+        </Button>
+      </DialogActions>
+    </Dialog>
+  );
+}
+
 function JobsTable({ tasks, pendingNames, onRun }) {
   return (
     <Table size="small">
@@ -404,6 +508,7 @@ function JobsTable({ tasks, pendingNames, onRun }) {
               <TableCell>
                 <Typography variant="body2" fontWeight="medium">{perMarket ? task.job_name : task.display_name}</Typography>
                 <Typography variant="caption" color="text.secondary">{perMarket ? jobDescription(task) : task.description}</Typography>
+                <JobHelp task={task} name={perMarket ? task.job_name : task.display_name} withDuration={!perMarket} />
               </TableCell>
               <TableCell>
                 <Typography variant="body2">{perMarket ? groupSchedule(group) : task.schedule_description}</Typography>
@@ -449,6 +554,7 @@ function JobCards({ tasks, pendingNames, onRun }) {
                 <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.5 }}>
                   {groupSchedule(group)}
                 </Typography>
+                <JobHelp task={task} name={task.job_name} withDuration={false} />
               </>
             ) : (
               <>
@@ -465,6 +571,7 @@ function JobCards({ tasks, pendingNames, onRun }) {
                 <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.5 }}>
                   {task.schedule_description}
                 </Typography>
+                <JobHelp task={task} name={task.display_name} />
               </>
             )}
           </Box>
@@ -500,6 +607,7 @@ export default function SchedulesSection({ activeMarkets }) {
   const isMobile = useIsMobileShell();
   const [error, setError] = useState(null);
   const [pendingNames, setPendingNames] = useState(() => new Set());
+  const [confirm, setConfirm] = useState({ name: null, open: false });
 
   const tasksQuery = useQuery({
     queryKey: ['scheduledTasks'],
@@ -544,7 +652,11 @@ export default function SchedulesSection({ activeMarkets }) {
     // blockers (not a trading day) would keep every idle market up front.
     (task) => ATTENTION_STATUSES.has(task.last_run?.status) || task.run_blocker?.reason === PIPELINE_ACTIVE,
   );
-  const onRun = (taskName) => runMutation.mutate(taskName);
+  // Run asks first (RunDialog); the name outlives open so the dialog keeps
+  // its content while it fades out.
+  const onRun = (taskName) => setConfirm({ name: taskName, open: true });
+  const closeConfirm = () => setConfirm((current) => ({ ...current, open: false }));
+  const confirmTask = tasks.find((task) => task.name === confirm.name);
   const routine = shown.filter((task) => !task.advanced);
   const advanced = shown.filter((task) => task.advanced);
 
@@ -554,7 +666,7 @@ export default function SchedulesSection({ activeMarkets }) {
         Scheduled jobs
       </Typography>
       <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
-        Beat schedules and their last run. Run now queues the job right away; once a worker starts it, it shows in the job console above.
+        Beat schedules and their last run. Run shows what the job affects, then queues it; once a worker starts it, it shows in the job console above.
       </Typography>
       {error && (
         <Alert severity="error" sx={{ mb: 1.5 }} onClose={() => setError(null)}>
@@ -589,6 +701,17 @@ export default function SchedulesSection({ activeMarkets }) {
               <Jobs tasks={advanced} pendingNames={pendingNames} onRun={onRun} />
             </Box>
           )}
+          <RunDialog
+            task={confirmTask}
+            open={confirm.open && Boolean(confirmTask)}
+            pending={pendingNames.has(confirm.name)}
+            onCancel={closeConfirm}
+            onConfirm={() => {
+              runMutation.mutate(confirm.name);
+              closeConfirm();
+            }}
+            onExited={() => setConfirm({ name: null, open: false })}
+          />
         </>
       )}
     </Box>

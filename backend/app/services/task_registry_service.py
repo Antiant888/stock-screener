@@ -5,6 +5,7 @@ Provides task metadata, execution history, and manual triggering capabilities.
 """
 import json
 import logging
+import statistics
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
@@ -53,6 +54,13 @@ def _weekly_universe_task_definitions() -> Dict[str, Dict]:
                 "Refreshes each market's stock list: adds new listings, "
                 'deactivates removed ones, updates metadata'
             ),
+            'when_to_run': 'New listings are missing, or delisted stocks still show up.',
+            'impact': (
+                "Rewrites the market's stock list (Finviz for US, official exchange "
+                'sources elsewhere); deactivated stocks drop out of scans. The US '
+                'run also makes manual US scans and data fetches in every other '
+                'market wait.'
+            ),
             'display_name': f'Weekly Universe Refresh ({market})',
             'description': (
                 'Adds new US stocks, deactivates removed, updates metadata'
@@ -90,6 +98,17 @@ def _weekly_refresh_task_definitions() -> Dict[str, Dict]:
             'task_function': 'app.tasks.cache_tasks.weekly_full_refresh',
             'job_type': 'weekly-full-refresh-market',
             'job_name': 'Weekly Full Refresh',
+            'when_to_run': (
+                "A market's cached price history looks wrong or incomplete. "
+                'The daily pipeline covers routine updates.'
+            ),
+            'impact': (
+                'Re-downloads two years of prices for every active stock in the '
+                'market, a heavy provider load. While it runs, manual scans of the '
+                'market wait, other data jobs for it skip, and data fetches in '
+                'every other market wait.'
+            ),
+            'fetches_prices': True,
             'display_name': f'Weekly Full Refresh ({market})',
             'description': 'Clears the market\'s Redis caches and re-fetches fresh data',
             'schedule_description': (
@@ -101,6 +120,13 @@ def _weekly_refresh_task_definitions() -> Dict[str, Dict]:
             'task_function': 'app.tasks.fundamentals_tasks.refresh_all_fundamentals',
             'job_type': 'weekly-fundamental-refresh',
             'job_name': 'Weekly Fundamental Refresh',
+            'when_to_run': 'PE, EPS, revenue or margin figures look stale, such as after earnings.',
+            'impact': (
+                'Fetches fundamentals for every active stock in the market from '
+                'data providers. While it runs, manual scans of the market wait, '
+                'other data jobs for it skip, and data fetches in every other '
+                'market wait.'
+            ),
             'display_name': f'Weekly Fundamental Refresh ({market})',
             'description': 'Fetches PE, EPS, revenue, margins for the market\'s stocks',
             'schedule_description': (
@@ -119,6 +145,17 @@ def _daily_market_pipeline_task_definitions() -> Dict[str, Dict]:
             "task_function": "app.tasks.daily_market_pipeline_tasks.queue_daily_market_pipeline",
             "job_type": "daily-market-pipeline",
             "job_name": "Daily Market Pipeline",
+            "when_to_run": (
+                "Prices, breadth, group rankings or the daily scan are behind "
+                "after a missed or failed night."
+            ),
+            "impact": (
+                "Fetches recent prices, then computes breadth and group rankings "
+                "and publishes the daily scan. Manual scans of the market wait "
+                "while its stages run, and data fetches in every other market "
+                "wait during the price fetch."
+            ),
+            "fetches_prices": True,
             "display_name": f"Daily Market Pipeline ({market})",
             "description": "Runs price refresh, breadth, group rankings, and market scan in order",
             "schedule_description": f"{warm_hour}:{warm_minute:02d} ET, Mon-Fri ({market})",
@@ -136,6 +173,8 @@ SCHEDULED_TASKS = {
     'social-signal-refresh': {
         'task_function': 'app.interfaces.tasks.social_signal_tasks.refresh_social_signals',
         'display_name': 'Refresh Social Signals',
+        'when_to_run': 'The Social Signal Queue needs posts newer than the last scheduled run.',
+        'impact': 'Reads the configured X lists and processes new posts. Manual runs share a cooldown.',
         'description': 'Collects configured X lists and refreshes the Social Signal Queue',
         'schedule_description': 'Every six hours at minute 17',
         'manual_dispatch_kwargs': {'origin': 'manual'},
@@ -147,6 +186,12 @@ SCHEDULED_TASKS = {
     'weekly-orphaned-scan-cleanup': {
         'task_function': 'app.tasks.cache_tasks.cleanup_orphaned_scans',
         'display_name': 'Weekly Scan Cleanup',
+        'when_to_run': 'Cancelled or abandoned scans clutter the scan list.',
+        'impact': (
+            'Deletes cancelled scans, and scans still running or queued an hour '
+            'after they started (even ones still working), with their results. '
+            'They cannot be restored.'
+        ),
         'description': 'Deletes cancelled and stale scans',
         'schedule_description': 'Sunday 2:00 AM ET',
     },
@@ -157,6 +202,12 @@ SCHEDULED_TASKS = {
             'app.interfaces.tasks.options_analytics_tasks.refresh_options_analytics'
         ),
         'display_name': 'Daily US Options Analytics',
+        'when_to_run': 'The Options Command Center is behind after the US daily snapshot published.',
+        'impact': (
+            'Fetches options data for the bounded US cohort. While it runs, '
+            'manual US scans wait, other US data jobs skip, and data fetches in '
+            'every other market wait.'
+        ),
         'description': 'Refreshes the bounded Options Command Center cohort',
         'schedule_description': 'After the published US daily equity snapshot',
         'manual_dispatch_kwargs': {'market': 'US'},
@@ -175,6 +226,17 @@ SCHEDULED_TASKS = {
     'weekly-full-refresh': {
         'task_function': 'app.tasks.cache_tasks.weekly_full_refresh',
         'display_name': 'Weekly Full Refresh (all markets)',
+        'when_to_run': (
+            'Rarely: when every market needs its prices re-downloaded in one run. '
+            'To clear orphaned cache keys or old telemetry alone, run Weekly '
+            'Cache & Telemetry Cleanup instead.'
+        ),
+        'impact': (
+            'Re-downloads two years of prices for every market, the largest '
+            'provider load there is, then removes orphaned cache keys and expired '
+            'telemetry events. Data fetches in every market wait while it runs.'
+        ),
+        'fetches_prices': True,
         'description': (
             'Refreshes every market and also removes orphaned cache keys and '
             'expired telemetry events, which per-market runs skip'
@@ -186,6 +248,11 @@ SCHEDULED_TASKS = {
     'weekly-global-maintenance': {
         'task_function': 'app.tasks.cache_tasks.weekly_global_maintenance',
         'display_name': 'Weekly Cache & Telemetry Cleanup',
+        'when_to_run': "Rarely. Sunday's run keeps the cache and telemetry tidy.",
+        'impact': (
+            'Deletes cached prices of symbols no longer in any universe, and '
+            'telemetry events past retention.'
+        ),
         'description': (
             'Removes cached prices of delisted symbols in every market '
             'and telemetry events past retention'
@@ -199,6 +266,8 @@ SCHEDULED_TASKS = {
     'monthly-price-data-cleanup': {
         'task_function': 'app.tasks.cache_tasks.cleanup_old_price_data',
         'display_name': 'Monthly Price Data Cleanup',
+        'when_to_run': 'Only to reclaim database space before the monthly run.',
+        'impact': 'Permanently deletes price rows older than five years for stocks in the active universe.',
         'description': 'Deletes price data older than 5 years',
         'schedule_description': '1st of month, 1:00 AM ET',
         'advanced': True,
@@ -388,6 +457,80 @@ def _run_blockers(entries: Dict[str, Dict[str, Any]]) -> Dict[str, Optional[Dict
     return answers
 
 
+_TYPICAL_RUNS = 10
+_TYPICAL_WINDOW = timedelta(days=90)
+
+
+def _typical_durations(db: Session) -> Dict[str, float]:
+    """{task name: median duration of its last completed runs}.
+
+    Completed runs only: a skipped run ends at once and a dispatched one only
+    queues its stages, so either would understate the work. The daily
+    pipeline only dispatches, so it has no typical duration.
+    """
+    rows = db.query(TaskExecutionHistory.task_name, TaskExecutionHistory.duration_seconds).filter(
+        TaskExecutionHistory.status == 'completed',
+        TaskExecutionHistory.duration_seconds.isnot(None),
+        TaskExecutionHistory.started_at >= datetime.now(timezone.utc) - _TYPICAL_WINDOW,
+    ).order_by(desc(TaskExecutionHistory.started_at))
+    samples: Dict[str, List[float]] = {}
+    for name, duration in rows:
+        runs = samples.setdefault(name, [])
+        if len(runs) < _TYPICAL_RUNS:
+            runs.append(duration)
+    return {name: statistics.median(runs) for name, runs in samples.items()}
+
+
+def _unsettled_markets(entries: Dict[str, Dict[str, Any]]) -> Dict[str, Optional[List[str]]]:
+    """{entry name: markets whose trading day has not settled, that a run now
+    would fetch prices for}.
+
+    Same rule as the price cache (settlement_cutoff): a fetch on a trading day
+    before its close plus the settlement buffer may hold a partial bar, which
+    the cache refetches after the close, so Run warns first. An entry without
+    a market fetches every deployed market's prices; markets the calendar
+    cannot read are left out of its list, and None means it could read none
+    of them. Never raises.
+    """
+    # ponytail: the first call in a process builds every market's exchange
+    # calendar (~4.5s for 12 markets, then ~140ms per 5-minute calendar
+    # refresh); move this behind the Run dialog if that first poll matters.
+    try:
+        from ..tasks.daily_market_pipeline_tasks import _preflight_calendar
+        from .cache.price_cache_freshness import settlement_cutoff
+
+        calendar = _preflight_calendar()
+    except Exception:
+        logger.warning("Market calendar unavailable for the Run warning", exc_info=True)
+        return {}
+    now = datetime.now(timezone.utc)
+    states: Dict[str, Optional[bool]] = {}
+
+    def unsettled(market: str) -> Optional[bool]:
+        if market not in states:
+            try:
+                cutoff = settlement_cutoff(calendar, market, calendar.market_now(market, now).date())
+                states[market] = cutoff is not None and now < cutoff
+            except Exception:
+                # Expected for markets without verified calendar coverage.
+                logger.debug("Calendar could not say whether %s has settled", market, exc_info=True)
+                states[market] = None
+        return states[market]
+
+    answers: Dict[str, Optional[List[str]]] = {}
+    for name, info in entries.items():
+        if not info.get('fetches_prices'):
+            continue
+        market = (info.get('manual_dispatch_kwargs') or {}).get('market')
+        markets = [market] if market else settings.enabled_markets_list
+        known = {code: unsettled(code) for code in markets}
+        if all(state is None for state in known.values()):
+            answers[name] = None
+        else:
+            answers[name] = [code for code, state in known.items() if state]
+    return answers
+
+
 def _result_summary(result: Any, task_id: str) -> Optional[Dict[str, Any]]:
     """A task's dict result as JSON, or None (PostgreSQL JSON rejects NaN).
 
@@ -481,6 +624,20 @@ def _registry_entry_for(task_function: str, kwargs: Dict[str, Any]) -> Optional[
     return fallback
 
 
+def scheduled_entry_for(task_function: Optional[str], kwargs: Dict[str, Any]) -> Optional[str]:
+    """The registry entry a Celery task run belongs to, or None.
+
+    None for tasks outside the registry, and for registry tasks dispatched ad
+    hoc with an untracked origin (e.g. per-attachment social refreshes).
+    """
+    if task_function not in _REGISTRY_FUNCTIONS:
+        return None
+    origin = kwargs.get('origin')
+    if isinstance(origin, str) and origin not in _TRACKED_ORIGINS:
+        return None
+    return _registry_entry_for(task_function, kwargs)
+
+
 def record_task_run(
     task_id: Optional[str],
     task_function: Optional[str],
@@ -499,11 +656,9 @@ def record_task_run(
     """
     kwargs = kwargs or {}
     origin = kwargs.get('origin')
-    if not task_id or task_function not in _REGISTRY_FUNCTIONS:
+    if not task_id:
         return
-    if isinstance(origin, str) and origin not in _TRACKED_ORIGINS:
-        return
-    task_name = _registry_entry_for(task_function, kwargs)
+    task_name = scheduled_entry_for(task_function, kwargs)
     if task_name is None:
         return
     status, error = _outcome(status, result, error)
@@ -592,6 +747,8 @@ class TaskRegistryService:
         # Opt-in: live checks (calendar, Redis) only the Run UI needs, in one
         # bounded batch for all entries.
         blockers = _run_blockers(SCHEDULED_TASKS) if include_run_blockers else {}
+        unsettled = _unsettled_markets(SCHEDULED_TASKS) if include_run_blockers else {}
+        durations = _typical_durations(db)
 
         for task_name, task_info in SCHEDULED_TASKS.items():
             history_task_names = task_info.get('history_task_names', [task_name])
@@ -634,10 +791,14 @@ class TaskRegistryService:
                 'job_name': task_info.get('job_name', task_info['display_name']),
                 'job_description': task_info.get('job_description', task_info['description']),
                 'advanced': bool(task_info.get('advanced')),
+                'when_to_run': task_info.get('when_to_run'),
+                'impact': task_info.get('impact'),
+                'typical_duration_seconds': durations.get(task_name),
                 'last_run': None,
             }
             if include_run_blockers:
                 task_data['run_blocker'] = blockers.get(task_name)
+                task_data['unsettled_markets'] = unsettled.get(task_name)
 
             if last_run:
                 status = last_run.status

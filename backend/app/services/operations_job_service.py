@@ -31,7 +31,11 @@ from app.services.market_activity_service import (
     RUNTIME_ACTIVITY_CATEGORY,
 )
 from app.services.runtime_activity_contract import progress_mode
-from app.services.task_registry_service import record_task_run
+from app.services.task_registry_service import (
+    SCHEDULED_TASKS,
+    record_task_run,
+    scheduled_entry_for,
+)
 from app.tasks.market_queues import (
     SHARED_DATA_FETCH_QUEUE,
     SHARED_USER_SCANS_QUEUE,
@@ -97,9 +101,13 @@ class _JobRecord:
     chain_claim: tuple[str, str] | None = None
 
     def to_api(self) -> dict[str, Any]:
+        entry = scheduled_entry_for(self.task_name, self.kwargs or {})
         return {
             "task_id": self.task_id,
             "task_name": self.task_name,
+            # The scheduled job's name for registry tasks; None for the rest
+            # (pipeline stages, scans), which keep their Celery name.
+            "display_name": SCHEDULED_TASKS[entry]["display_name"] if entry else None,
             "queue": self.queue,
             "market": self.market,
             "state": self.state,
