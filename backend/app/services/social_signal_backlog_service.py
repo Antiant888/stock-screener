@@ -69,6 +69,10 @@ class _Deferred(Exception):
         self.outside = outside
 
 
+class _CompletionUnknown(Exception):
+    """The dispatched model request itself failed, so whether it billed is unknown."""
+
+
 class _NoopRequestGate:
     def acquire(self, owner, ttl):
         return True
@@ -201,6 +205,9 @@ class _MeteredCompletion:
             except LLMPreDispatchError:
                 budget.release_pre_dispatch(attempt)
                 raise SocialExtractionError("llm_configuration_error") from None
+            except Exception as exc:
+                budget.reconcile(attempt, None, None)
+                raise _CompletionUnknown() from exc
             except BaseException:
                 budget.reconcile(attempt, None, None)
                 raise
@@ -485,11 +492,14 @@ class ProcessSocialBacklog:
                 raise
             except SocialExtractionError as exc:
                 return str(exc), spare_calls
-            except Exception:
+            except _CompletionUnknown:
                 logger.warning("Social LLM request outcome unknown (attempt %d)", retry + 1, exc_info=True)
                 if retry or spare_calls < 1:
                     return (0, 0, self._finish_many(claims, "failed_terminal", "completion_unknown"), 0), spare_calls
                 spare_calls -= 1
+            except Exception:
+                logger.warning("Social LLM extraction failed", exc_info=True)
+                return (0, 0, self._finish_many(claims, "failed_terminal", "completion_unknown"), 0), spare_calls
         try:
             succeeded = sum(self._finish(work_id, token, "succeeded", result=self._single_result(post, result))
                             for (work_id, token), post in items)
