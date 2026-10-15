@@ -351,6 +351,21 @@ def test_unparseable_batch_is_split_so_only_the_offending_post_fails(backlog):
                    db.get(SocialExtractionWork, work_id).error_code) for work_id in work_ids]
     assert states == [("succeeded", None), ("succeeded", None),
                       ("failed_terminal", "malformed_json"), ("succeeded", None)]
+    assert llm.calls == 5
+
+
+def test_batch_failing_in_both_halves_stops_splitting(backlog):
+    from app.services.social_signal_backlog_service import ProcessSocialBacklog
+
+    configure_budget(backlog)
+    llm = FakeLLM(malformed=True)
+    worker = ProcessSocialBacklog(backlog, llm=llm, batch_size=8)
+    for number in range(1, 9):
+        enqueue(backlog, worker, post(number))
+
+    result = asyncio.run(worker.execute(NOW, 8))
+
+    assert (result.succeeded, result.failed, llm.calls) == (0, 8, 3)
 
 
 def test_explicit_generation_counts_preexisting_terminal_work_as_failed(backlog):

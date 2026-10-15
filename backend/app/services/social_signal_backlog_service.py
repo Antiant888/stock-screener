@@ -26,6 +26,8 @@ from app.services.social_ticker_resolver import SocialTickerResolver, cashtags
 logger = logging.getLogger(__name__)
 
 NO_SIGNAL_GATE = "no_signal_gate"
+# Configuration failures repeat for any subset of posts, so splitting the batch cannot help.
+_UNSPLITTABLE_ERRORS = frozenset({"llm_configuration_error", "extraction_model_not_configured"})
 _WORD = re.compile(r"\w+")
 _SYMBOL = re.compile(r"[A-Za-z0-9]+(?:[.\-][A-Za-z]{1,3}\b)?")  # MU, BRK.B, 0700.HK, 3008.TWO
 _CJK = re.compile(r"[぀-ヿ㐀-鿿가-힯]")
@@ -442,30 +444,58 @@ class ProcessSocialBacklog:
         )
         succeeded = deferred = 0
         for batch in self._groups(claimed, self.batch_size):
-            model, prompt, schema = batch[0][2:5]
-            claims = tuple((item[0], item[1]) for item in batch)
-            posts = []
-            for _, _, _, _, _, snapshot in batch:
+            items = []
+            for work_id, token, _, _, _, snapshot in batch:
                 snapshot["created_at"] = datetime.fromisoformat(snapshot["created_at"])
                 snapshot["observed_at"] = datetime.fromisoformat(snapshot["observed_at"])
-                posts.append(SocialPostRecord(**snapshot))
-            try:
-                with self.session_factory() as db:
-                    extraction = SocialExtractionService(db, model=model, prompt_version=prompt,
-                        schema_version=schema, llm=_MeteredCompletion(self, claims, current_time))
-                    result = await extraction.extract(tuple(posts))
-                for (work_id, token), post in zip(claims, posts):
-                    succeeded += self._finish(
-                        work_id, token, "succeeded", result=self._single_result(post, result)
-                    )
-            except _Deferred as exc:
-                deferred += exc.count
-                outside += exc.outside
-            except asyncio.CancelledError:
-                self._finish_many(claims, "failed_terminal", "completion_unknown")
-                raise
-            except SocialExtractionError as exc:
-                failed += self._finish_many(claims, "failed_terminal", str(exc))
-            except Exception:
-                failed += self._finish_many(claims, "failed_terminal", "completion_unknown")
+                items.append(((work_id, token), SocialPostRecord(**snapshot)))
+            outcome = await self._extract(tuple(items), batch[0][2:5], current_time)
+            if isinstance(outcome, str):
+                outcome = await self._isolate(tuple(items), batch[0][2:5], current_time, outcome)
+            succeeded, deferred, failed, outside = (
+                total + part for total, part in zip((succeeded, deferred, failed, outside), outcome)
+            )
         return BacklogResult(succeeded, deferred, failed, outside, self.budget.status(current_time()).next_reset_at)
+
+    async def _extract(self, items, config, current_time):
+        """Return (succeeded, deferred, failed, outside), or the code of an unusable response."""
+        model, prompt, schema = config
+        claims = tuple(claim for claim, _ in items)
+        try:
+            with self.session_factory() as db:
+                extraction = SocialExtractionService(db, model=model, prompt_version=prompt,
+                    schema_version=schema, llm=_MeteredCompletion(self, claims, current_time))
+                result = await extraction.extract(tuple(post for _, post in items))
+            succeeded = sum(self._finish(work_id, token, "succeeded", result=self._single_result(post, result))
+                            for (work_id, token), post in items)
+            return succeeded, 0, 0, 0
+        except _Deferred as exc:
+            return 0, exc.count, 0, exc.outside
+        except asyncio.CancelledError:
+            self._finish_many(claims, "failed_terminal", "completion_unknown")
+            raise
+        except SocialExtractionError as exc:
+            return str(exc)
+        except Exception:
+            return 0, 0, self._finish_many(claims, "failed_terminal", "completion_unknown"), 0
+
+    async def _isolate(self, items, config, current_time, code):
+        """Narrow an unusable batch response to the posts that provoke it.
+
+        When both halves fail as well the response is not specific to a post,
+        so the batch stops there instead of spending one call per post.
+        """
+        claims = tuple(claim for claim, _ in items)
+        if len(items) == 1 or code in _UNSPLITTABLE_ERRORS:
+            return 0, 0, self._finish_many(claims, "failed_terminal", code), 0
+        middle = len(items) // 2
+        halves = (items[:middle], items[middle:])
+        outcomes = [await self._extract(half, config, current_time) for half in halves]
+        if all(isinstance(outcome, str) for outcome in outcomes):
+            return 0, 0, self._finish_many(claims, "failed_terminal", code), 0
+        totals = (0, 0, 0, 0)
+        for half, outcome in zip(halves, outcomes):
+            if isinstance(outcome, str):
+                outcome = await self._isolate(half, config, current_time, outcome)
+            totals = tuple(total + part for total, part in zip(totals, outcome))
+        return totals
