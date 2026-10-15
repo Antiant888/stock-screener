@@ -304,6 +304,7 @@ def test_error_response_releases_its_whole_reservation(response):
 
 @pytest.mark.parametrize("failure,released_before_retry", [
     (httpx.ConnectError("synthetic"), [(date(2026, 9, 7), 5)]),
+    (httpx.PoolTimeout("synthetic"), [(date(2026, 9, 7), 5)]),
     (httpx.ReadTimeout("synthetic"), []),
 ])
 def test_only_a_request_that_never_left_releases_before_its_retry(failure, released_before_retry):
@@ -344,6 +345,16 @@ def test_incremental_read_cut_short_by_its_limit_reports_the_unread_gap():
         datetime(2026, 8, 24, tzinfo=timezone.utc), datetime(2026, 9, 5, 1, tzinfo=timezone.utc),
     ),)
     assert "incremental_gap_suspected" in batch.outcome.coverage_reason_codes
+
+
+def test_read_whose_oldest_post_sits_on_the_window_start_reports_no_gap():
+    payload = json.loads(FIXTURE.read_text())
+
+    batch = make_provider(lambda _: httpx.Response(200, json=payload)).read_source(
+        read_request(limit=2, target_published_after=datetime(2026, 9, 5, 1, tzinfo=timezone.utc)))
+
+    assert batch.outcome.known_gap_intervals == ()
+    assert "incremental_gap_suspected" not in batch.outcome.coverage_reason_codes
 
 
 def test_incremental_read_reaching_its_window_start_reports_no_gap():
