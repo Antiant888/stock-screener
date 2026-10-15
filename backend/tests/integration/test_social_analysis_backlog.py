@@ -419,6 +419,30 @@ def test_request_with_unknown_outcome_is_retried_once_within_the_run_cap(
         assert ((result.succeeded, result.failed), llm.calls, (work.state, work.error_code), attempts) == expected
 
 
+def test_bookkeeping_failure_after_a_response_is_not_retried(backlog, monkeypatch):
+    from app.infra.db.models.social_analysis import SocialExtractionWork
+    from app.services.social_llm_budget_service import SocialLLMBudgetService
+    from app.services.social_signal_backlog_service import ProcessSocialBacklog
+
+    configure_budget(backlog)
+    llm = FakeLLM()
+    worker = ProcessSocialBacklog(backlog, llm=llm)
+    work_id = enqueue(backlog, worker, post(1))
+    reconcile = SocialLLMBudgetService.reconcile
+    def ledger_outage(self, attempt, *args, **kwargs):
+        if args[0] is not None:
+            raise RuntimeError("ledger unavailable")
+        return reconcile(self, attempt, *args, **kwargs)
+    monkeypatch.setattr(SocialLLMBudgetService, "reconcile", ledger_outage)
+
+    result = asyncio.run(worker.execute(NOW, 1))
+
+    with backlog() as db:
+        work = db.get(SocialExtractionWork, work_id)
+        assert ((result.failed, llm.calls), (work.state, work.error_code)) == (
+            (1, 1), ("failed_terminal", "completion_unknown"))
+
+
 def test_explicit_generation_counts_preexisting_terminal_work_as_failed(backlog):
     from app.infra.db.models.social_analysis import SocialExtractionWork
 
