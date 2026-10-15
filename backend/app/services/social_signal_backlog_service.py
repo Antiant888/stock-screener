@@ -490,6 +490,7 @@ class ProcessSocialBacklog:
         """
         model, prompt, schema = config
         claims = tuple(claim for claim, _ in items)
+        work_ids = [work_id for work_id, _ in claims]
         for retry in range(2):
             try:
                 with self.session_factory() as db:
@@ -509,18 +510,19 @@ class ProcessSocialBacklog:
             except SocialExtractionError as exc:
                 return str(exc), spare_calls
             except _CompletionUnknown:
-                logger.warning("Social LLM request outcome unknown (attempt %d)", retry + 1, exc_info=True)
+                logger.warning("Social LLM request outcome unknown (attempt %d) work_ids=%s",
+                               retry + 1, work_ids, exc_info=True)
                 if retry or spare_calls < 1:
                     return (0, 0, self._finish_many(claims, "failed_terminal", "completion_unknown"), 0), spare_calls
                 spare_calls -= 1
             except Exception:
-                logger.warning("Social LLM extraction failed", exc_info=True)
+                logger.exception("Social LLM extraction failed work_ids=%s", work_ids)
                 return (0, 0, self._finish_many(claims, "failed_terminal", "completion_unknown"), 0), spare_calls
         try:
             succeeded = sum(self._finish(work_id, token, "succeeded", result=self._single_result(post, result))
                             for (work_id, token), post in items)
         except Exception:
-            logger.warning("Saving social LLM results failed", exc_info=True)
+            logger.exception("Saving social LLM results failed work_ids=%s", work_ids)
             return (0, 0, self._finish_many(claims, "failed_terminal", "completion_unknown"), 0), spare_calls
         return (succeeded, 0, 0, 0), spare_calls
 
