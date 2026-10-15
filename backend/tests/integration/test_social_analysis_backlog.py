@@ -817,6 +817,42 @@ def test_cancellation_survives_a_failed_refund(backlog, monkeypatch):
         assert db.scalars(select(SocialLLMAttempt.state).order_by(SocialLLMAttempt.id)).first() == "released"
 
 
+def test_cancelled_retry_keeps_the_first_unknown_outcome_terminal(backlog):
+    from app.infra.db.models.social_analysis import SocialExtractionWork
+    from app.services.social_signal_backlog_service import ProcessSocialBacklog
+
+    class SecondCallWaits:
+        def __init__(self):
+            self.waits = iter((0, 5))
+
+        def acquire(self, owner, ttl):
+            return True
+
+        def wait_seconds(self):
+            return next(self.waits)
+
+        def mark_started(self, seconds):
+            pass
+
+        def release(self, owner):
+            pass
+
+    async def cancelled_while_waiting(_seconds):
+        raise asyncio.CancelledError
+
+    configure_budget(backlog)
+    llm = FlakyLLM(1)
+    worker = ProcessSocialBacklog(backlog, llm=llm, request_gate=SecondCallWaits(), sleep=cancelled_while_waiting)
+    work_id = enqueue(backlog, worker, post(1))
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(worker.execute(NOW, 1))
+
+    with backlog() as db:
+        work = db.get(SocialExtractionWork, work_id)
+        assert (llm.calls, work.state, work.error_code) == (1, "failed_terminal", "completion_unknown")
+
+
 def test_confirmed_pre_dispatch_failure_releases_budget_without_retry(backlog):
     from app.infra.db.models.social_analysis import (
         SocialExtractionWork,
