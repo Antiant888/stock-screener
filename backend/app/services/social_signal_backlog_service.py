@@ -91,6 +91,7 @@ class _MeteredCompletion:
     """Intercept usage BEFORE parsing, including malformed successful responses."""
     def __init__(self, owner, claims, now, *, retry=0):
         self.owner, self.claims, self.now, self.retry = owner, claims, now, retry
+        self.dispatched = self.refunded = False
 
     async def completion(self, **kwargs):
         budget = self.owner.budget
@@ -132,6 +133,17 @@ class _MeteredCompletion:
                 if wait > 0:
                     await self.owner.sleep(wait)
                 self.owner.request_gate.mark_started(self.owner.min_interval_seconds)
+            except asyncio.CancelledError:
+                # Nothing was sent: refund the reservation and leave the posts claimable.
+                # Claim expiry recovers both if this cleanup fails; the cancellation must
+                # still propagate so no further batch is dispatched.
+                try:
+                    budget.release(attempt)
+                    self.owner._finish_many(self.claims, "pending", "cancelled_before_dispatch")
+                    self.refunded = True
+                except Exception:
+                    logger.warning("Could not refund a cancelled social LLM reservation", exc_info=True)
+                raise
             except Exception:
                 budget.release(attempt)
                 self.owner._finish_many(
@@ -199,6 +211,7 @@ class _MeteredCompletion:
                             work.claim_token = work.claim_expires_at = None
             if not valid:
                 raise _Deferred(len(self.claims) - len(outside_ids), len(outside_ids))
+            self.dispatched = True
             try:
                 llm = self.owner.llm if self.owner.llm is not None else LLMService(use_case="extraction")
                 response = await llm.completion(**kwargs, metered=True)
@@ -492,10 +505,11 @@ class ProcessSocialBacklog:
         claims = tuple(claim for claim, _ in items)
         work_ids = [work_id for work_id, _ in claims]
         for retry in range(2):
+            metered = _MeteredCompletion(self, claims, current_time, retry=retry)
             try:
                 with self.session_factory() as db:
                     extraction = SocialExtractionService(db, model=model, prompt_version=prompt,
-                        schema_version=schema, llm=_MeteredCompletion(self, claims, current_time, retry=retry))
+                        schema_version=schema, llm=metered)
                     result = await extraction.extract(tuple(post for _, post in items))
                 break
             except _Deferred as exc:
@@ -505,7 +519,14 @@ class ProcessSocialBacklog:
                     return (0, 0, self._settle_unknown(claims), exc.outside), spare_calls
                 return (0, exc.count, 0, exc.outside), spare_calls
             except asyncio.CancelledError:
-                self._finish_many(claims, "failed_terminal", "completion_unknown")
+                # A request that never went out leaves its posts pending or, if the refund
+                # failed, running for claim expiry to recover. A sent request, or a retry of
+                # one, may have billed, so its posts must not be sent again. A retry whose
+                # refund failed stays running too: claim expiry releases its reservation and,
+                # seeing the first attempt uncertain, settles the posts as completion_unknown.
+                if metered.dispatched or (retry and metered.refunded):
+                    self._finish_many(claims, "failed_terminal", "completion_unknown")
+                    self._settle_unknown(claims)
                 raise
             except SocialExtractionError as exc:
                 return str(exc), spare_calls

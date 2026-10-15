@@ -734,6 +734,169 @@ def test_cancelled_provider_attempt_is_uncertain_and_never_automatically_retried
     assert asyncio.run(processor(backlog, FakeLLM()).execute(NOW + timedelta(minutes=2), 10)).succeeded == 0
 
 
+def test_cancellation_before_dispatch_releases_budget_and_keeps_work_claimable(backlog):
+    from app.infra.db.models.social_analysis import (
+        SocialExtractionWork, SocialLLMAttempt, SocialLLMBudgetDay,
+    )
+    from app.services.social_signal_backlog_service import ProcessSocialBacklog
+
+    class SpacingGate:
+        def acquire(self, owner, ttl):
+            return True
+
+        def wait_seconds(self):
+            return 5
+
+        def mark_started(self, seconds):
+            pass
+
+        def release(self, owner):
+            pass
+
+    async def cancelled_while_waiting(_seconds):
+        raise asyncio.CancelledError
+
+    configure_budget(backlog)
+    llm = FakeLLM()
+    worker = ProcessSocialBacklog(backlog, llm=llm, request_gate=SpacingGate(), sleep=cancelled_while_waiting)
+    work_id = enqueue(backlog, worker, post(1))
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(worker.execute(NOW, 1))
+
+    with backlog() as db:
+        work = db.get(SocialExtractionWork, work_id)
+        assert (llm.calls, db.scalar(select(SocialLLMAttempt)).state, work.state) == (0, "released", "pending")
+        assert db.scalar(select(SocialLLMBudgetDay)).reserved_usd == 0
+    later = asyncio.run(processor(backlog, FakeLLM()).execute(NOW + timedelta(minutes=2), 1))
+    assert later.succeeded == 1
+
+
+def test_cancellation_survives_a_failed_refund(backlog, monkeypatch):
+    from app.services.social_llm_budget_service import SocialLLMBudgetService
+    from app.services.social_signal_backlog_service import ProcessSocialBacklog
+
+    class SpacingGate:
+        def acquire(self, owner, ttl):
+            return True
+
+        def wait_seconds(self):
+            return 5
+
+        def mark_started(self, seconds):
+            pass
+
+        def release(self, owner):
+            pass
+
+    async def cancelled_while_waiting(_seconds):
+        raise asyncio.CancelledError
+
+    def ledger_down(self, attempt_id):
+        raise RuntimeError("ledger unavailable")
+
+    configure_budget(backlog)
+    monkeypatch.setattr(SocialLLMBudgetService, "release", ledger_down)
+    llm = FakeLLM()
+    worker = ProcessSocialBacklog(backlog, llm=llm, batch_size=1, request_gate=SpacingGate(),
+                                  sleep=cancelled_while_waiting)
+    enqueue(backlog, worker, post(1))
+    enqueue(backlog, worker, post(2))
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(worker.execute(NOW, 2))
+    assert llm.calls == 0
+
+    from app.infra.db.models.social_analysis import SocialExtractionWork, SocialLLMAttempt
+    with backlog() as db:
+        assert {work.state for work in db.scalars(select(SocialExtractionWork))} == {"running"}
+    # Claim expiry is the recovery path: it releases the reservation and requeues the posts.
+    later = asyncio.run(processor(backlog, FakeLLM()).execute(NOW + timedelta(minutes=11), 2))
+    assert later.succeeded == 2
+    with backlog() as db:
+        assert db.scalars(select(SocialLLMAttempt.state).order_by(SocialLLMAttempt.id)).first() == "released"
+
+
+def test_cancelled_retry_keeps_the_first_unknown_outcome_terminal(backlog):
+    from app.infra.db.models.social_analysis import SocialExtractionWork
+    from app.services.social_signal_backlog_service import ProcessSocialBacklog
+
+    class SecondCallWaits:
+        def __init__(self):
+            self.waits = iter((0, 5))
+
+        def acquire(self, owner, ttl):
+            return True
+
+        def wait_seconds(self):
+            return next(self.waits)
+
+        def mark_started(self, seconds):
+            pass
+
+        def release(self, owner):
+            pass
+
+    async def cancelled_while_waiting(_seconds):
+        raise asyncio.CancelledError
+
+    configure_budget(backlog)
+    llm = FlakyLLM(1)
+    worker = ProcessSocialBacklog(backlog, llm=llm, request_gate=SecondCallWaits(), sleep=cancelled_while_waiting)
+    work_id = enqueue(backlog, worker, post(1))
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(worker.execute(NOW, 1))
+
+    with backlog() as db:
+        work = db.get(SocialExtractionWork, work_id)
+        assert (llm.calls, work.state, work.error_code) == (1, "failed_terminal", "completion_unknown")
+
+
+def test_cancelled_retry_with_a_failed_refund_is_settled_by_claim_expiry(backlog, monkeypatch):
+    from app.infra.db.models.social_analysis import SocialExtractionWork, SocialLLMAttempt
+    from app.services.social_llm_budget_service import SocialLLMBudgetService
+    from app.services.social_signal_backlog_service import ProcessSocialBacklog
+
+    class SecondCallWaits:
+        def __init__(self):
+            self.waits = iter((0, 5))
+
+        def acquire(self, owner, ttl):
+            return True
+
+        def wait_seconds(self):
+            return next(self.waits)
+
+        def mark_started(self, seconds):
+            pass
+
+        def release(self, owner):
+            pass
+
+    async def cancelled_while_waiting(_seconds):
+        raise asyncio.CancelledError
+
+    configure_budget(backlog)
+    release = SocialLLMBudgetService.release
+    monkeypatch.setattr(SocialLLMBudgetService, "release",
+                        lambda self, attempt_id: (_ for _ in ()).throw(RuntimeError("ledger unavailable")))
+    llm = FlakyLLM(1)
+    worker = ProcessSocialBacklog(backlog, llm=llm, request_gate=SecondCallWaits(), sleep=cancelled_while_waiting)
+    work_id = enqueue(backlog, worker, post(1))
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(worker.execute(NOW, 1))
+    monkeypatch.setattr(SocialLLMBudgetService, "release", release)
+    asyncio.run(processor(backlog, FakeLLM()).execute(NOW + timedelta(minutes=11), 1))
+
+    with backlog() as db:
+        work = db.get(SocialExtractionWork, work_id)
+        states = sorted(attempt.state for attempt in db.scalars(select(SocialLLMAttempt)))
+        assert (llm.calls, work.state, work.error_code, states) == (
+            1, "failed_terminal", "completion_unknown", ["released", "uncertain"])
+
+
 def test_confirmed_pre_dispatch_failure_releases_budget_without_retry(backlog):
     from app.infra.db.models.social_analysis import (
         SocialExtractionWork,
