@@ -152,6 +152,17 @@ def test_malformed_or_unknown_success_shapes_fail_closed(bad_payload):
     assert batch.outcome.error_code == "invalid_provider_schema"
 
 
+def test_fields_added_by_a_newer_xui_release_are_ignored():
+    payload = json.loads(FIXTURE.read_text())
+    payload["duration_ms"] = 1840
+    payload["outcomes"][0]["retry_count"] = 0
+
+    batch = provider(SyntheticRunner(auth(), completed(payload))).read_source(request())
+
+    assert (batch.outcome.read_status, [post.provider_post_id for post in batch.posts]) == (
+        "success", ["syn-101", "syn-102"])
+
+
 @pytest.mark.parametrize("mutation", ["bad_summary", "missing_outcome_field", "string_repost"])
 def test_incoherent_summary_and_malformed_nested_values_fail_closed(mutation):
     payload = json.loads(FIXTURE.read_text())

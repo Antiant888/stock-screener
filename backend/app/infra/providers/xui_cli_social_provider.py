@@ -155,7 +155,8 @@ class XuiCliSocialProvider:
 
     @staticmethod
     def _normalize(payload, request, limit):
-        if not isinstance(payload, dict) or set(payload) != _READ_KEYS:
+        # Required fields must be present and well-typed; fields a newer xui adds are ignored.
+        if not isinstance(payload, dict) or not _READ_KEYS <= set(payload):
             raise ValueError("envelope")
         succeeded, failed = payload["succeeded_sources"], payload["failed_sources"]
         outcomes, items = payload["outcomes"], payload["items"]
@@ -173,7 +174,7 @@ class XuiCliSocialProvider:
         outcome = outcomes[0]
         expected_source = f"list:{request.list_id}"
         if (
-            not isinstance(outcome, dict) or set(outcome) != _OUTCOME_KEYS
+            not isinstance(outcome, dict) or not _OUTCOME_KEYS <= set(outcome)
             or outcome.get("source_id") != expected_source
             or outcome.get("source_kind") != "list"
             or not isinstance(outcome.get("ok"), bool)
