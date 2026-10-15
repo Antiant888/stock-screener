@@ -853,6 +853,50 @@ def test_cancelled_retry_keeps_the_first_unknown_outcome_terminal(backlog):
         assert (llm.calls, work.state, work.error_code) == (1, "failed_terminal", "completion_unknown")
 
 
+def test_cancelled_retry_with_a_failed_refund_is_settled_by_claim_expiry(backlog, monkeypatch):
+    from app.infra.db.models.social_analysis import SocialExtractionWork, SocialLLMAttempt
+    from app.services.social_llm_budget_service import SocialLLMBudgetService
+    from app.services.social_signal_backlog_service import ProcessSocialBacklog
+
+    class SecondCallWaits:
+        def __init__(self):
+            self.waits = iter((0, 5))
+
+        def acquire(self, owner, ttl):
+            return True
+
+        def wait_seconds(self):
+            return next(self.waits)
+
+        def mark_started(self, seconds):
+            pass
+
+        def release(self, owner):
+            pass
+
+    async def cancelled_while_waiting(_seconds):
+        raise asyncio.CancelledError
+
+    configure_budget(backlog)
+    release = SocialLLMBudgetService.release
+    monkeypatch.setattr(SocialLLMBudgetService, "release",
+                        lambda self, attempt_id: (_ for _ in ()).throw(RuntimeError("ledger unavailable")))
+    llm = FlakyLLM(1)
+    worker = ProcessSocialBacklog(backlog, llm=llm, request_gate=SecondCallWaits(), sleep=cancelled_while_waiting)
+    work_id = enqueue(backlog, worker, post(1))
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(worker.execute(NOW, 1))
+    monkeypatch.setattr(SocialLLMBudgetService, "release", release)
+    asyncio.run(processor(backlog, FakeLLM()).execute(NOW + timedelta(minutes=11), 1))
+
+    with backlog() as db:
+        work = db.get(SocialExtractionWork, work_id)
+        states = sorted(attempt.state for attempt in db.scalars(select(SocialLLMAttempt)))
+        assert (llm.calls, work.state, work.error_code, states) == (
+            1, "failed_terminal", "completion_unknown", ["released", "uncertain"])
+
+
 def test_confirmed_pre_dispatch_failure_releases_budget_without_retry(backlog):
     from app.infra.db.models.social_analysis import (
         SocialExtractionWork,
