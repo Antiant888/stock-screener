@@ -596,17 +596,38 @@ def test_scoring_evidence_retains_older_in_window_post_after_incremental_cap(tmp
     engine.dispose()
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize("fail_sources", [(), ("2",)])
-async def test_refresh_runs_through_real_writer_backlog_and_publication_with_fixture_io(tmp_path, fail_sources):
+class FixtureLLM:
+    def __init__(self, malformed_post_ids=()):
+        self.malformed_post_ids = set(malformed_post_ids)
+        self.seen = []
+
+    async def completion(self, **kwargs):
+        import json
+        from types import SimpleNamespace
+
+        sources = json.loads(kwargs["messages"][1]["content"])["posts"]
+        self.seen.append(tuple(source["post_id"] for source in sources))
+        payload = {"posts": [{"post_id": source["post_id"], "claims": [],
+                              "has_new_thesis": False, "canonical_claim_key": None}
+                             for source in sources]}
+        content = ("bad" if self.malformed_post_ids & {s["post_id"] for s in sources}
+                   else json.dumps(payload))
+        return SimpleNamespace(
+            model="actual", id=f"fixture-{sources[0]['post_id']}",
+            _hidden_params={"custom_llm_provider": "synthetic"},
+            choices=[SimpleNamespace(message=SimpleNamespace(content=content))],
+            usage=SimpleNamespace(prompt_tokens=1, completion_tokens=1),
+        )
+
+
+def real_refresh(tmp_path, llm, *, fail_sources=(), batch_size=1, run_id_factory=None):
     import json
-    from types import SimpleNamespace
 
     from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
 
     from app.database import Base
-    from app.infra.db.models.social_signals import SocialSignalRunPointer, SocialSourceRegistry
+    from app.infra.db.models.social_signals import SocialSourceRegistry
     from app.infra.db.repositories.social_refresh_support import (
         SocialScoringEvidenceReader, SqlSocialRefreshCatalog, SqlThemeProjectionFacade,
     )
@@ -636,18 +657,6 @@ async def test_refresh_runs_through_real_writer_backlog_and_publication_with_fix
             }},
         })))
 
-    class LLM:
-        async def completion(self, **kwargs):
-            source = json.loads(kwargs["messages"][1]["content"])["posts"][0]
-            payload = {"posts": [{"post_id": source["post_id"], "claims": [],
-                                    "has_new_thesis": False, "canonical_claim_key": None}]}
-            return SimpleNamespace(
-                model="actual", id=f"fixture-{source['post_id']}",
-                _hidden_params={"custom_llm_provider": "synthetic"},
-                choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(payload)))],
-                usage=SimpleNamespace(prompt_tokens=1, completion_tokens=1),
-            )
-
     events = []
     provider = Provider(events, fail_sources=fail_sources)
     confirmation = ConfirmationReader(events)
@@ -656,17 +665,50 @@ async def test_refresh_runs_through_real_writer_backlog_and_publication_with_fix
     )
     refresh = RefreshSocialSignals(
         catalog=SqlSocialRefreshCatalog(sessions), providers={"official": provider},
-        writer=writer, backlog=ProcessSocialBacklog(sessions, llm=LLM()),
+        writer=writer, backlog=ProcessSocialBacklog(sessions, llm=llm, batch_size=batch_size),
         evidence_reader=SocialScoringEvidenceReader(sessions),
         theme_service=SqlThemeProjectionFacade(sessions), confirmation_reader=confirmation,
-        provider_lease=Lease(events=events), run_id_factory=lambda origin, now: "fixture-run",
+        provider_lease=Lease(events=events),
+        run_id_factory=run_id_factory or (lambda origin, now: "fixture-run"),
         input_hash=lambda post: SocialExtractionService.input_hash((post,)),
         lease_owner_factory=lambda: "attempt",
     )
+    return engine, sessions, writer, refresh
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fail_sources", [(), ("2",)])
+async def test_refresh_runs_through_real_writer_backlog_and_publication_with_fixture_io(tmp_path, fail_sources):
+    from app.infra.db.models.social_signals import SocialSignalRunPointer
+
+    engine, sessions, writer, refresh = real_refresh(tmp_path, FixtureLLM(), fail_sources=fail_sources)
     result = await refresh.execute("fixture", NOW)
     assert result.published is True
     with sessions() as db:
         assert db.get(SocialSignalRunPointer, "latest_published").run_id == "fixture-run"
     # Replays rebuild every saved outcome, including a failed list's.
     assert len(writer.read_run_inputs("fixture-run").batches) == 2
+    engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_one_malformed_llm_response_does_not_block_later_generations(tmp_path):
+    from app.infra.db.models.social_signals import SocialSignalRunPointer
+
+    llm = FixtureLLM(malformed_post_ids={"p-1"})
+    engine, sessions, writer, refresh = real_refresh(
+        tmp_path, llm, run_id_factory=lambda origin, now: f"run-{now.hour}",
+    )
+    first = await refresh.execute("scheduled", NOW)
+
+    later = NOW + timedelta(hours=6)
+    writer.clock = lambda: later
+    llm.malformed_post_ids.clear()
+    second = await refresh.execute("scheduled", later)
+
+    assert (second.published, second.reason_codes) == (True, ())
+    assert (first.published, first.reason_codes) == (True, ())
+    with sessions() as db:
+        assert db.get(SocialSignalRunPointer, "latest_published").run_id == "run-18"
+    assert llm.seen.count(("p-1",)) == 1
     engine.dispose()
