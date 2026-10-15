@@ -254,7 +254,7 @@ function RunButton({ task, pending, onRun }) {
       <span>
         <IconButton
           size="small"
-          color="primary"
+          color={task.advanced ? 'error' : 'primary'}
           aria-label={`Run ${task.display_name} now`}
           onClick={() => onRun(task.name)}
           disabled={Boolean(blockedReason) || pending}

@@ -692,6 +692,22 @@ describe('SchedulesSection', () => {
       expect(within(advanced).queryByText('Weekly Scan Cleanup')).not.toBeInTheDocument();
       expect(screen.getByText('Weekly Scan Cleanup')).toBeVisible();
     });
+
+    it('colours Run red for an advanced job, on its row as in its dialog', async () => {
+      getScheduledTasks.mockResolvedValue(payload([
+        { ...task('weekly-orphaned-scan-cleanup', 'Weekly Scan Cleanup', null), advanced: false },
+        { ...task('monthly-price-data-cleanup', 'Monthly Price Data Cleanup', null), advanced: true },
+      ]));
+
+      renderSection();
+
+      const destructive = await screen.findByRole('button', { name: 'Run Monthly Price Data Cleanup now' });
+      expect(destructive).toHaveClass('MuiIconButton-colorError');
+      expect(screen.getByRole('button', { name: 'Run Weekly Scan Cleanup now' })).toHaveClass('MuiIconButton-colorPrimary');
+      fireEvent.click(destructive);
+      const dialog = await screen.findByRole('dialog', { name: 'Run Monthly Price Data Cleanup?' });
+      expect(within(dialog).getByRole('button', { name: 'Run' })).toHaveClass('MuiButton-containedError');
+    });
   });
 
   describe('on a phone-width screen', () => {
