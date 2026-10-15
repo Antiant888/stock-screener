@@ -38,7 +38,7 @@ def _entry(*, link, published, updated, summary="Memory demand is accelerating."
 
 
 def _response(**fields):
-    return SimpleNamespace(raise_for_status=lambda: None, content=b"", **fields)
+    return SimpleNamespace(raise_for_status=lambda: None, content=b"", headers={}, **fields)
 
 
 def _feed(monkeypatch, *entries):
@@ -47,7 +47,7 @@ def _feed(monkeypatch, *entries):
     )
     monkeypatch.setattr(
         "app.services.content_ingestion_service.feedparser.parse",
-        lambda content: SimpleNamespace(entries=list(entries)),
+        lambda content, **_: SimpleNamespace(entries=list(entries)),
     )
 
 

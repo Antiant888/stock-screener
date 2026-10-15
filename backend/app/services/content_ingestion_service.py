@@ -84,7 +84,7 @@ class RSSFetcher(BaseContentFetcher):
             source.url, headers={"User-Agent": _USER_AGENT}, timeout=_REQUEST_TIMEOUT_SECONDS
         )
         response.raise_for_status()
-        feed = feedparser.parse(response.content)
+        feed = feedparser.parse(response.content, response_headers=dict(response.headers))
         if getattr(feed, "bozo", False) and not feed.entries:
             raise SourceFetchError(f"Unreadable feed from {source.url}: {feed.get('bozo_exception')}")
 
@@ -242,8 +242,10 @@ class RedditFetcher(BaseContentFetcher):
         if not subreddit:
             raise SourceFetchError(f"Could not extract subreddit from URL: {source.url}")
 
-        # The newest listing is chronological, so the watermark filter below is
-        # meaningful; the hot listing surfaces posts older than any recent poll.
+        # The newest listing is chronological, so the watermark filter below keeps
+        # what it should; the hot listing's posts were mostly older than any recent
+        # poll and filtered out. Its limit: only the newest 100 posts are seen, so
+        # a busy subreddit needs a short interval, and edits further back are missed.
         response = requests.get(
             f"https://www.reddit.com/r/{subreddit}/new.json",
             headers={"User-Agent": _USER_AGENT},
@@ -475,12 +477,23 @@ class ContentIngestionService:
             source: The content source to fetch from.
             lookback_days: If set, override the since date to fetch articles
                 from the last N days. Used for backfilling gaps. When backfilling,
-                last_fetched_at is NOT updated so normal runs resume correctly.
+                last_fetched_at and last_success_at are NOT updated so normal
+                runs resume correctly.
+
+        A failure while fetching or storing is recorded on the source and re-raised.
         """
         if is_social_owned_source(self.db, source):
             return 0
-        fetcher = self.get_fetcher(source.source_type)
         attempted_at = datetime.now(timezone.utc)
+        source_id = source.id
+        try:
+            return self._fetch_and_store(source, lookback_days, attempted_at)
+        except Exception as exc:
+            self._record_failure(source_id, exc, attempted_at, scheduled=not lookback_days)
+            raise
+
+    def _fetch_and_store(self, source: ContentSource, lookback_days: int | None, attempted_at: datetime) -> int:
+        fetcher = self.get_fetcher(source.source_type)
 
         # Determine since date
         if lookback_days:
@@ -490,11 +503,7 @@ class ContentIngestionService:
             # Default 30-day lookback for new sources
             since = watermark - _WATERMARK_OVERLAP if watermark else attempted_at - timedelta(days=30)
 
-        try:
-            items = fetcher.fetch(source, since)
-        except Exception as exc:
-            self._record_failure(source.id, exc, attempted_at)
-            raise
+        items = fetcher.fetch(source, since)
 
         # Store new items - track seen external_ids to avoid duplicates within batch
         new_count = 0
@@ -582,16 +591,27 @@ class ContentIngestionService:
         logger.info(f"Ingested {new_count} new items from {source.name}")
         return new_count
 
-    def _record_failure(self, source_id: int, exc: Exception, attempted_at: datetime) -> None:
-        """Commit the failure before the caller's rollback; the next poll retries the source."""
+    def _record_failure(self, source_id: int, exc: Exception, attempted_at: datetime, *, scheduled: bool) -> None:
+        """Commit the failure before the caller's rollback, leaving the watermark where it was."""
         self.db.rollback()
         source = self.db.get(ContentSource, source_id)
-        source.consecutive_failures = (source.consecutive_failures or 0) + 1
-        source.last_error = f"{type(exc).__name__}: {exc}"[:500]
-        source.last_error_at = attempted_at
-        self.db.commit()
-        logger.warning("Content source %s failed (%d in a row): %s",
-                       source.name, source.consecutive_failures, source.last_error)
+        if source is None:
+            return
+        failures = (source.consecutive_failures or 0) + 1
+        error = f"{type(exc).__name__}: {exc}"[:500]
+        source.consecutive_failures, source.last_error, source.last_error_at = failures, error, attempted_at
+        if scheduled:
+            # The watermark stays put, so waiting the normal interval loses nothing
+            # and spares a failing or rate-limiting provider a retry every poll.
+            source.last_fetched_at = attempted_at
+        try:
+            self.db.commit()
+        except Exception:
+            # Never let bookkeeping replace the fetch error the caller re-raises.
+            self.db.rollback()
+            logger.exception("Could not record the failure of content source %s", source_id)
+            return
+        logger.warning("Content source %s failed (%d in a row): %s", source_id, failures, error)
 
     def fetch_source_by_id(self, source_id: int, lookback_days: int | None = None) -> int:
         source = self.db.get(ContentSource, source_id)

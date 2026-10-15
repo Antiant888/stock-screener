@@ -44,7 +44,7 @@ def _serve(monkeypatch, *, status=200, body=b"", payload=None):
                 raise ValueError("Expecting value: line 1 column 1 (char 0)")
             return payload
 
-        return SimpleNamespace(status_code=status, content=body, text=body.decode(),
+        return SimpleNamespace(status_code=status, content=body, text=body.decode(), headers={},
                                raise_for_status=raise_for_status, json=json)
 
     monkeypatch.setattr(ingestion.requests, "get", get)
@@ -69,7 +69,7 @@ def test_feed_http_error_is_recorded_and_reported(db_session, monkeypatch):
 
     db_session.expire_all()
     stored = db_session.get(ContentSource, source.id)
-    assert (stored.consecutive_failures, stored.last_success_at, stored.last_fetched_at) == (1, None, None)
+    assert (stored.consecutive_failures, stored.last_success_at) == (1, None)
     assert "503" in stored.last_error
 
 
