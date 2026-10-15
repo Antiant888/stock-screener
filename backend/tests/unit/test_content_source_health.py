@@ -117,6 +117,48 @@ def test_reddit_block_page_is_a_failure_not_an_empty_listing(db_session, monkeyp
     assert db_session.get(ContentSource, source.id).consecutive_failures == 1
 
 
+def test_failed_fetch_waits_its_interval_but_keeps_the_watermark(db_session, monkeypatch):
+    _serve(monkeypatch, status=429, body=b"Too Many Requests")
+    succeeded = NOW - timedelta(hours=3)
+    source = _source(db_session, last_fetched_at=succeeded, last_success_at=succeeded)
+
+    with pytest.raises(Exception, match="429"):
+        ContentIngestionService(db_session).fetch_source(source)
+
+    db_session.expire_all()
+    stored = db_session.get(ContentSource, source.id)
+    assert ingestion._coerce_utc_datetime(stored.last_success_at) == succeeded
+    assert ingestion._coerce_utc_datetime(stored.last_fetched_at) > succeeded
+
+
+def test_failure_while_storing_items_counts_against_the_source(db_session, monkeypatch):
+    _serve(monkeypatch, body=_rss(NOW - timedelta(hours=1)))
+    def broken(*_args, **_kwargs):
+        raise RuntimeError("admission store unavailable")
+    monkeypatch.setattr(ContentIngestionService, "_admit_economic_evidence", broken)
+    source = _source(db_session)
+
+    with pytest.raises(RuntimeError, match="admission store unavailable"):
+        ContentIngestionService(db_session).fetch_source(source)
+
+    db_session.expire_all()
+    stored = db_session.get(ContentSource, source.id)
+    assert (stored.consecutive_failures, stored.last_success_at) == (1, None)
+
+
+def test_corruption_reset_rewind_also_rewinds_the_watermark(db_session):
+    from app.services.theme_content_recovery_service import rewind_theme_content_source_cursors
+
+    source = _source(db_session, last_fetched_at=NOW, last_success_at=NOW)
+
+    rewind_theme_content_source_cursors(db_session.connection())
+    db_session.commit()
+
+    db_session.expire_all()
+    stored = db_session.get(ContentSource, source.id)
+    assert ingestion._coerce_utc_datetime(stored.last_success_at) < NOW - timedelta(days=300)
+
+
 @pytest.mark.asyncio
 async def test_source_list_reports_fetch_health(db_session, monkeypatch):
     import httpx
