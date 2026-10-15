@@ -42,6 +42,16 @@ class ScheduledTaskResponse(BaseModel):
     job_name: str = Field(..., description="The job's name without its market")
     job_description: str = Field(..., description="What the job does in every market it runs for")
     advanced: bool = Field(False, description="Manual-only or destructive; listed apart from routine jobs")
+    when_to_run: Optional[str] = Field(None, description="When to run the job by hand")
+    impact: Optional[str] = Field(None, description="What a run costs or changes: provider load, locks, deletions")
+    typical_duration_seconds: Optional[float] = Field(
+        None, description="Median duration of the job's recent completed runs; null without history"
+    )
+    open_markets: Optional[List[str]] = Field(
+        None,
+        description="For jobs that fetch prices: markets mid-session now, whose run would store a "
+        "partial bar (null when not applicable or the calendar could not say)",
+    )
     last_run: Optional[LastRunInfo] = Field(None, description="Last execution details")
     run_blocker: Optional[Dict[str, Any]] = Field(
         None,

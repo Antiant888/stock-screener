@@ -10,6 +10,8 @@ from pydantic import BaseModel, Field
 class OperationsJobRow(BaseModel):
     task_id: str
     task_name: str
+    # The scheduled job's name when the task is one (Daily Market Pipeline (US)).
+    display_name: str | None = None
     queue: str | None = None
     market: str | None = None
     state: str
