@@ -91,7 +91,7 @@ class _MeteredCompletion:
     """Intercept usage BEFORE parsing, including malformed successful responses."""
     def __init__(self, owner, claims, now, *, retry=0):
         self.owner, self.claims, self.now, self.retry = owner, claims, now, retry
-        self.dispatched = False
+        self.dispatched = self.refunded = False
 
     async def completion(self, **kwargs):
         budget = self.owner.budget
@@ -140,6 +140,7 @@ class _MeteredCompletion:
                 try:
                     budget.release(attempt)
                     self.owner._finish_many(self.claims, "pending", "cancelled_before_dispatch")
+                    self.refunded = True
                 except Exception:
                     logger.warning("Could not refund a cancelled social LLM reservation", exc_info=True)
                 raise
@@ -520,8 +521,10 @@ class ProcessSocialBacklog:
             except asyncio.CancelledError:
                 # A request that never went out leaves its posts pending or, if the refund
                 # failed, running for claim expiry to recover. A sent request, or a retry of
-                # one, may have billed, so its posts must not be sent again.
-                if metered.dispatched or retry:
+                # one, may have billed, so its posts must not be sent again. A retry whose
+                # refund failed stays running too: claim expiry releases its reservation and,
+                # seeing the first attempt uncertain, settles the posts as completion_unknown.
+                if metered.dispatched or (retry and metered.refunded):
                     self._finish_many(claims, "failed_terminal", "completion_unknown")
                     self._settle_unknown(claims)
                 raise
