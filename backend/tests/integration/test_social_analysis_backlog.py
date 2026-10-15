@@ -354,12 +354,26 @@ def test_unparseable_batch_is_split_so_only_the_offending_post_fails(backlog):
     assert llm.calls == 5
 
 
-def test_batch_failing_in_both_halves_stops_splitting(backlog):
+def test_unparseable_posts_in_both_halves_are_each_isolated(backlog):
+    from app.services.social_signal_backlog_service import ProcessSocialBacklog
+
+    configure_budget(backlog)
+    llm = FakeLLM(poison={"1", "3"})
+    worker = ProcessSocialBacklog(backlog, llm=llm, batch_size=4)
+    for number in range(1, 5):
+        enqueue(backlog, worker, post(number))
+
+    result = asyncio.run(worker.execute(NOW, 4))
+
+    assert (result.succeeded, result.failed, llm.calls) == (2, 2, 7)
+
+
+def test_batch_splitting_stays_within_the_per_run_call_cap(backlog):
     from app.services.social_signal_backlog_service import ProcessSocialBacklog
 
     configure_budget(backlog)
     llm = FakeLLM(malformed=True)
-    worker = ProcessSocialBacklog(backlog, llm=llm, batch_size=8)
+    worker = ProcessSocialBacklog(backlog, llm=llm, batch_size=8, max_calls_per_run=4)
     for number in range(1, 9):
         enqueue(backlog, worker, post(number))
 

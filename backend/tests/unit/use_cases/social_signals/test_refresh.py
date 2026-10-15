@@ -114,6 +114,7 @@ class Writer:
         }
         self.failures = []
         self.analysis_failed = False
+        self.carry_in = ()
 
     def create_run(self, run_id, as_of):
         self.events.append("writer.create")
@@ -142,7 +143,7 @@ class Writer:
                             for index, batch in enumerate(self.batches) if batch.posts)
         required = tuple(ReplayInput(content_id, f"hash-{post_id}", "current")
                          for post_id, content_id in content_ids)
-        manifest = (SocialCurrentInputManifest((), (), (), ("analysis_unavailable",),
+        manifest = (SocialCurrentInputManifest((), self.carry_in, (), ("analysis_unavailable",),
                                                unavailable_inputs=required)
                     if self.analysis_failed else SocialCurrentInputManifest(required, (), ()))
         return SavedSocialRunInputs(
@@ -349,8 +350,11 @@ async def test_budget_pause_keeps_work_and_does_not_prepare():
 
 
 @pytest.mark.asyncio
-async def test_terminal_analysis_failure_fails_generation_without_budget_resume_state():
+@pytest.mark.parametrize("carry_in", [(), (99,)])
+async def test_terminal_analysis_failure_fails_generation_without_budget_resume_state(carry_in):
     refresh, events, _, writer, backlog, _ = use_case(failed=1)
+    # Carried-in judgments are older than the scoring window, so they cannot stand in.
+    writer.carry_in = carry_in
 
     result = await refresh.execute("scheduled", NOW)
 
@@ -722,4 +726,54 @@ async def test_one_malformed_llm_response_does_not_block_later_generations(tmp_p
     assert [(row.candidate_key, row.mention_count) for row in rows] == [("US:AAA", 1)]
     assert "analysis_unavailable" in str(rows[0].coverage_json)
     assert llm.seen.count(("p-1",)) == 1
+    engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_resumed_generation_scores_a_post_whose_analysis_later_succeeded(tmp_path):
+    from sqlalchemy import select
+
+    from app.infra.db.models.social_analysis import SocialExtractionWork
+    from app.infra.db.models.social_signals import SocialSignalSnapshot
+
+    llm = FixtureLLM(malformed_post_ids={"p-1"})
+    engine, sessions, writer, refresh = real_refresh(tmp_path, llm)
+    read = refresh.evidence_reader.read
+    def interrupted(run_id, as_of):
+        refresh.evidence_reader.read = read
+        raise RuntimeError("worker lost")
+    refresh.evidence_reader.read = interrupted
+    with pytest.raises(RuntimeError, match="worker lost"):
+        await refresh.execute("fixture", NOW)
+    with sessions.begin() as db:
+        work = db.scalar(select(SocialExtractionWork).where(
+            SocialExtractionWork.state == "failed_terminal"))
+        work.state, work.error_code = "pending", None
+    llm.malformed_post_ids.clear()
+
+    result = await refresh.execute("fixture", NOW)
+
+    assert result.published is True
+    with sessions() as db:
+        rows = db.scalars(select(SocialSignalSnapshot).where(
+            SocialSignalSnapshot.window_days == 14)).all()
+    assert [(row.candidate_key, row.mention_count) for row in rows] == [("US:AAA", 2)]
+    engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_unavailable_post_leaves_mention_history_incomplete(tmp_path):
+    from app.infra.db.repositories.social_refresh_support import SocialScoringEvidenceReader
+
+    engine, sessions, writer, refresh = real_refresh(tmp_path, FixtureLLM(malformed_post_ids={"p-1"}))
+    provider = refresh.providers["official"]
+    read_source = provider.read_source
+    provider.read_source = lambda request: (lambda batch: replace(batch, outcome=replace(
+        batch.outcome, history_status="observed_window", coverage_reason_codes=(),
+    )))(read_source(request))
+
+    assert (await refresh.execute("fixture", NOW)).published is True
+    evidence = SocialScoringEvidenceReader(sessions).read("fixture-run", NOW)
+
+    assert [(item.candidate_key, item.history_complete) for item in evidence] == [("US:AAA", False)]
     engine.dispose()
