@@ -295,6 +295,7 @@ class SocialSignalWriter:
                     audit.add(work.id)
                     db.delete(link)
                     continue
+                unavailable.discard(identity)
                 if identity not in current | older | after:
                     published = datetime.fromisoformat(work.input_snapshot_json["created_at"])
                     if utc(run.created_at) - timedelta(days=15) <= published <= utc(run.created_at):

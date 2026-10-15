@@ -443,7 +443,9 @@ class ProcessSocialBacklog:
             now, claim_limit, admin_work_ids, work_ids
         )
         succeeded = deferred = 0
-        for batch in self._groups(claimed, self.batch_size):
+        batches = list(self._groups(claimed, self.batch_size))
+        spare_calls = self.max_calls_per_run - len(batches)
+        for batch in batches:
             items = []
             for work_id, token, _, _, _, snapshot in batch:
                 snapshot["created_at"] = datetime.fromisoformat(snapshot["created_at"])
@@ -451,7 +453,9 @@ class ProcessSocialBacklog:
                 items.append(((work_id, token), SocialPostRecord(**snapshot)))
             outcome = await self._extract(tuple(items), batch[0][2:5], current_time)
             if isinstance(outcome, str):
-                outcome = await self._isolate(tuple(items), batch[0][2:5], current_time, outcome)
+                outcome, spare_calls = await self._isolate(
+                    tuple(items), batch[0][2:5], current_time, outcome, spare_calls
+                )
             succeeded, deferred, failed, outside = (
                 total + part for total, part in zip((succeeded, deferred, failed, outside), outcome)
             )
@@ -479,23 +483,22 @@ class ProcessSocialBacklog:
         except Exception:
             return 0, 0, self._finish_many(claims, "failed_terminal", "completion_unknown"), 0
 
-    async def _isolate(self, items, config, current_time, code):
+    async def _isolate(self, items, config, current_time, code, spare_calls):
         """Narrow an unusable batch response to the posts that provoke it.
 
-        When both halves fail as well the response is not specific to a post,
-        so the batch stops there instead of spending one call per post.
+        Splitting spends only calls the run's cap left unused, so a model that
+        fails every request costs no more than one call per claimed batch did.
+        Returns the outcome totals and the calls still spare.
         """
         claims = tuple(claim for claim, _ in items)
-        if len(items) == 1 or code in _UNSPLITTABLE_ERRORS:
-            return 0, 0, self._finish_many(claims, "failed_terminal", code), 0
+        if len(items) == 1 or code in _UNSPLITTABLE_ERRORS or spare_calls < 2:
+            return (0, 0, self._finish_many(claims, "failed_terminal", code), 0), spare_calls
+        spare_calls -= 2
         middle = len(items) // 2
-        halves = (items[:middle], items[middle:])
-        outcomes = [await self._extract(half, config, current_time) for half in halves]
-        if all(isinstance(outcome, str) for outcome in outcomes):
-            return 0, 0, self._finish_many(claims, "failed_terminal", code), 0
         totals = (0, 0, 0, 0)
-        for half, outcome in zip(halves, outcomes):
+        for half in (items[:middle], items[middle:]):
+            outcome = await self._extract(half, config, current_time)
             if isinstance(outcome, str):
-                outcome = await self._isolate(half, config, current_time, outcome)
+                outcome, spare_calls = await self._isolate(half, config, current_time, outcome, spare_calls)
             totals = tuple(total + part for total, part in zip(totals, outcome))
-        return totals
+        return totals, spare_calls

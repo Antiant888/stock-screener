@@ -257,6 +257,8 @@ class SocialScoringEvidenceReader:
 
             for (post_id, source_id), post in canonical.items():
                 if content_ids[post_id] in unavailable:
+                    # Its earlier mentions are unknown, so acceleration has no full baseline.
+                    history_complete = False
                     continue
                 judgment = judgments.get(post_id)
                 if judgment is not None:
