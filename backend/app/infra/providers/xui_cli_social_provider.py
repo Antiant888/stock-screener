@@ -119,7 +119,8 @@ class XuiCliSocialProvider:
         timestamps = [post.created_at for post in posts]
         # Every item the limit allowed fell inside the window, so older ones may be unread.
         gaps = (((request.target_published_after, min(timestamps)),)
-                if request.intent == "incremental" and posts and len(posts) >= effective_limit
+                if (request.intent == "incremental" and posts and len(posts) >= effective_limit
+                    and min(timestamps) > request.target_published_after)
                 else ())
         return SocialSourceBatch(request, tuple(posts), SocialSourceOutcome(
             read_status="success", processing_status="pending",

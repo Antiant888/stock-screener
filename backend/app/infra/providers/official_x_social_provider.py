@@ -81,7 +81,8 @@ class OfficialXSocialProvider:
         )
         # The limit ended the read while older posts inside its window remained unread.
         gaps = (((request.target_published_after, min(timestamps)),)
-                if request.intent == "incremental" and ordered and cursor and not reached_boundary
+                if (request.intent == "incremental" and ordered and cursor and not reached_boundary
+                    and min(timestamps) > request.target_published_after)
                 else ())
         outcome = SocialSourceOutcome(
             read_status="success", processing_status="pending",
@@ -122,7 +123,7 @@ class OfficialXSocialProvider:
             except httpx.TransportError as exc:
                 # A request that never connected read nothing. Any other transport
                 # failure may have been served, so its reservation stays spent.
-                if isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout)):
+                if isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout)):
                     self._return_unused(day, granted)
                 if attempt == 0:
                     self._sleep(self._retry_delay)
