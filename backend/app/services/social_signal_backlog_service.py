@@ -134,8 +134,13 @@ class _MeteredCompletion:
                 self.owner.request_gate.mark_started(self.owner.min_interval_seconds)
             except asyncio.CancelledError:
                 # Nothing was sent: refund the reservation and leave the posts claimable.
-                budget.release(attempt)
-                self.owner._finish_many(self.claims, "pending", "cancelled_before_dispatch")
+                # Claim expiry recovers both if this cleanup fails; the cancellation must
+                # still propagate so no further batch is dispatched.
+                try:
+                    budget.release(attempt)
+                    self.owner._finish_many(self.claims, "pending", "cancelled_before_dispatch")
+                except Exception:
+                    logger.warning("Could not refund a cancelled social LLM reservation", exc_info=True)
                 raise
             except Exception:
                 budget.release(attempt)
