@@ -23,6 +23,7 @@ from app.domain.social_signals.scoring import (
 from app.domain.social_signals.states import classify_signal_state
 
 _WINDOWS = (1, 7, 14)
+_ENGAGEMENT_REFRESH = timedelta(hours=48)
 
 
 class RefreshSocialSignals:
@@ -90,6 +91,11 @@ class RefreshSocialSignals:
     def _request(self, run_id, source, provider, now):
         progress = self.writer.latest_collection_progress(source.source_id, provider)
         initial = progress is None or not progress.initial_complete
+        window_start = now - timedelta(days=self.initial_days)
+        if not initial and progress.last_read_at is not None:
+            # Older posts are already saved and scoring retains them; re-reading only
+            # the recent ones refreshes their engagement without paying for the rest.
+            window_start = max(window_start, progress.last_read_at - _ENGAGEMENT_REFRESH)
         return SocialReadRequest(
             request_id=f"{run_id}:{source.source_id}",
             source_id=source.source_id,
@@ -97,7 +103,7 @@ class RefreshSocialSignals:
             intent="initial" if initial else "incremental",
             observed_at=now,
             limit=self.initial_limit if initial else self.incremental_limit,
-            target_published_after=now - timedelta(days=self.initial_days),
+            target_published_after=window_start,
             application_progress=progress.cursor if initial and progress else None,
         )
 

@@ -268,10 +268,15 @@ def _social_provider_factories(sessions, *, official_client=None, cooldown_gate=
                 day, requested, daily_limit
             )
 
+    def release_official(day, posts):
+        with sessions() as db:
+            SocialSourceAdminService(db).release_official_capacity(day, posts)
+
     factories = {
         "official": lambda: OfficialXSocialProvider(
             bearer_token=settings.twitter_bearer_token,
             reservation=reserve_official,
+            release=release_official,
             client=official_client or httpx.Client(timeout=30),
             daily_post_limit=settings.social_official_daily_post_limit,
             budget_timezone=settings.social_llm_budget_timezone,

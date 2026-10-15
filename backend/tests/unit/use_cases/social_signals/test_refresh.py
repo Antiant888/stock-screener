@@ -335,6 +335,22 @@ def test_read_intent_distinguishes_completed_cursorless_initial_from_paged_initi
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("last_read_ago,expected_window", [
+    (timedelta(hours=6), timedelta(hours=54)),
+    (timedelta(days=20), timedelta(days=14)),
+])
+async def test_incremental_read_starts_shortly_before_the_last_successful_read(last_read_ago, expected_window):
+    refresh, _, provider, writer, _, _ = use_case()
+    writer.collection_progress["2"] = SocialCollectionProgress(
+        initial_complete=True, cursor="prior-cursor", last_read_at=NOW - last_read_ago)
+
+    await refresh.execute("scheduled", NOW)
+
+    request = next(value for value in provider.requests if value.source_id == "2")
+    assert (request.intent, request.target_published_after) == ("incremental", NOW - expected_window)
+
+
+@pytest.mark.asyncio
 async def test_provider_lease_is_renewed_before_each_source_read():
     refresh, events, provider, writer, backlog, catalog = use_case()
 
@@ -482,7 +498,9 @@ def test_production_factory_has_explicit_lazy_official_and_xui_adapters():
         llm_request_gate=request_gate,
         official_client=object(),
     )
-    assert isinstance(refresh._provider("official"), OfficialXSocialProvider)
+    official = refresh._provider("official")
+    assert isinstance(official, OfficialXSocialProvider)
+    assert official._release is not None, "unused official read capacity must be returned"
     assert isinstance(refresh._provider("xui"), XuiCliSocialProvider)
     assert refresh.catalog.__class__.__name__ == "SqlSocialRefreshCatalog"
     assert refresh.evidence_reader.__class__.__name__ == "SocialScoringEvidenceReader"

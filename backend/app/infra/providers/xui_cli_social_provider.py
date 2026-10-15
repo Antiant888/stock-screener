@@ -117,13 +117,18 @@ class XuiCliSocialProvider:
             break
 
         timestamps = [post.created_at for post in posts]
+        # Every item the limit allowed fell inside the window, so older ones may be unread.
+        gaps = (((request.target_published_after, min(timestamps)),)
+                if (request.intent == "incremental" and posts and len(posts) >= effective_limit
+                    and min(timestamps) > request.target_published_after)
+                else ())
         return SocialSourceBatch(request, tuple(posts), SocialSourceOutcome(
             read_status="success", processing_status="pending",
             history_status="warming_up" if request.intent == "initial" else "limited",
             coverage_reason_codes=("bounded_provider_read",) + (
                 ("initial_read_truncated",) if effective_limit < requested_limit else ()
-            ),
-            known_gap_intervals=(),
+            ) + (("incremental_gap_suspected",) if gaps else ()),
+            known_gap_intervals=gaps,
             observed_oldest_at=min(timestamps) if timestamps else None,
             observed_newest_at=max(timestamps) if timestamps else None,
             received_count=len(posts), committed_progress=None, error_code=None,

@@ -309,3 +309,18 @@ def test_failed_list_outcome_starts_cooldown_and_cannot_be_complete(error_text, 
     assert batch.outcome.error_code == expected
     assert batch.outcome.processing_status == "failed"
     assert batch.outcome.rate_limit_reset_at == NOW + timedelta(minutes=10)
+
+
+@pytest.mark.parametrize("limit,window_start,expected_gaps", [
+    (2, datetime(2026, 8, 24, tzinfo=timezone.utc),
+     ((datetime(2026, 8, 24, tzinfo=timezone.utc), datetime(2026, 9, 5, 1, tzinfo=timezone.utc)),)),
+    (20, datetime(2026, 8, 24, tzinfo=timezone.utc), ()),
+    (2, datetime(2026, 9, 5, 1, tzinfo=timezone.utc), ()),
+])
+def test_incremental_read_filled_to_its_limit_reports_the_unread_gap(limit, window_start, expected_gaps):
+    runner = SyntheticRunner(auth(), completed(json.loads(FIXTURE.read_text())))
+
+    batch = provider(runner).read_source(request(limit=limit, target_published_after=window_start))
+
+    assert batch.outcome.known_gap_intervals == expected_gaps
+    assert ("incremental_gap_suspected" in batch.outcome.coverage_reason_codes) == bool(expected_gaps)

@@ -31,6 +31,8 @@ _PUBLIC_REASON_CODES = {
     "analysis_incomplete",
     "bounded_provider_read",
     "daily_budget_exhausted",
+    "daily_limit_exhausted",
+    "incremental_gap_suspected",
     "invalid_provider_json",
     "invalid_provider_schema",
     "provider_error",

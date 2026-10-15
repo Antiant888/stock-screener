@@ -20,14 +20,16 @@ def read_request(**changes):
     return SocialReadRequest(**values)
 
 
-def make_provider(handler, *, token="secret", reservations=None, sleeps=None, **changes):
+def make_provider(handler, *, token="secret", reservations=None, sleeps=None, releases=None, **changes):
     reservations = reservations if reservations is not None else []
     sleeps = sleeps if sleeps is not None else []
+    releases = releases if releases is not None else []
     def reserve(day, requested_posts, daily_limit):
         reservations.append((day, requested_posts, daily_limit))
         return requested_posts
     return OfficialXSocialProvider(
         bearer_token=token, reservation=reserve,
+        release=lambda day, posts: releases.append((day, posts)),
         client=httpx.Client(transport=httpx.MockTransport(handler), base_url="https://api.x.com"),
         daily_post_limit=2000, budget_timezone="Asia/Singapore",
         sleep=lambda seconds: sleeps.append(seconds), retry_delay_seconds=0.25, **changes)
@@ -276,3 +278,92 @@ def test_initial_read_crossing_requested_boundary_marks_history_observed():
     assert [post.provider_post_id for post in batch.posts] == ["new"]
     assert batch.outcome.history_status == "observed_window"
     assert batch.outcome.coverage_reason_codes == ()
+
+
+def test_unused_page_capacity_is_released():
+    releases = []
+    payload = json.loads(FIXTURE.read_text())
+
+    make_provider(lambda _: httpx.Response(200, json=payload), releases=releases).read_source(read_request())
+
+    assert releases == [(date(2026, 9, 7), 3)]
+
+
+@pytest.mark.parametrize("response", [
+    httpx.Response(429, headers={"x-rate-limit-reset": "1788753600"}),
+    httpx.Response(401),
+    httpx.Response(503),
+])
+def test_error_response_releases_its_whole_reservation(response):
+    releases = []
+
+    make_provider(lambda _: response, releases=releases).read_source(read_request())
+
+    assert releases == [(date(2026, 9, 7), 5)]
+
+
+@pytest.mark.parametrize("failure,released_before_retry", [
+    (httpx.ConnectError("synthetic"), [(date(2026, 9, 7), 5)]),
+    (httpx.PoolTimeout("synthetic"), [(date(2026, 9, 7), 5)]),
+    (httpx.ReadTimeout("synthetic"), []),
+])
+def test_only_a_request_that_never_left_releases_before_its_retry(failure, released_before_retry):
+    releases, attempts = [], []
+    def handler(_):
+        attempts.append(1)
+        if len(attempts) == 1:
+            raise failure
+        return httpx.Response(200, json={"data": [], "meta": {}})
+
+    make_provider(handler, releases=releases).read_source(read_request())
+
+    assert releases == released_before_retry + [(date(2026, 9, 7), 5)]
+
+
+def test_failed_release_does_not_fail_a_read_that_succeeded(caplog):
+    def broken_release(day, posts):
+        raise RuntimeError("registry locked")
+    provider = OfficialXSocialProvider(
+        bearer_token="secret", reservation=lambda day, requested, limit: requested,
+        release=broken_release, daily_post_limit=2000, budget_timezone="Asia/Singapore",
+        client=httpx.Client(transport=httpx.MockTransport(
+            lambda _: httpx.Response(200, json=json.loads(FIXTURE.read_text())))),
+    )
+
+    batch = provider.read_source(read_request())
+
+    assert (batch.outcome.read_status, len(batch.posts)) == ("success", 2)
+    assert "registry locked" in caplog.text
+
+
+def test_incremental_read_cut_short_by_its_limit_reports_the_unread_gap():
+    payload = json.loads(FIXTURE.read_text())
+
+    batch = make_provider(lambda _: httpx.Response(200, json=payload)).read_source(read_request(limit=2))
+
+    assert batch.outcome.known_gap_intervals == ((
+        datetime(2026, 8, 24, tzinfo=timezone.utc), datetime(2026, 9, 5, 1, tzinfo=timezone.utc),
+    ),)
+    assert "incremental_gap_suspected" in batch.outcome.coverage_reason_codes
+
+
+def test_read_whose_oldest_post_sits_on_the_window_start_reports_no_gap():
+    payload = json.loads(FIXTURE.read_text())
+
+    batch = make_provider(lambda _: httpx.Response(200, json=payload)).read_source(
+        read_request(limit=2, target_published_after=datetime(2026, 9, 5, 1, tzinfo=timezone.utc)))
+
+    assert batch.outcome.known_gap_intervals == ()
+    assert "incremental_gap_suspected" not in batch.outcome.coverage_reason_codes
+
+
+def test_incremental_read_reaching_its_window_start_reports_no_gap():
+    response = {"data": [
+        {"id": "new", "author_id": "u", "text": "new", "created_at": "2026-09-05T01:00:00Z", "public_metrics": {}},
+        {"id": "old", "author_id": "u", "text": "old", "created_at": "2026-08-20T01:00:00Z", "public_metrics": {}},
+    ], "includes": {"users": [{"id": "u", "username": "a"}]}, "meta": {"next_token": "older"}}
+
+    batch = make_provider(lambda _: httpx.Response(200, json=response)).read_source(read_request(limit=100))
+
+    assert batch.outcome.known_gap_intervals == ()
+    assert "incremental_gap_suspected" not in batch.outcome.coverage_reason_codes

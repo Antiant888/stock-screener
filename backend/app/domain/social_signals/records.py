@@ -110,6 +110,7 @@ class SocialCollectionProgress:
 
     initial_complete: bool
     cursor: str | None = None
+    last_read_at: datetime | None = None  # latest successful read of any intent
 
 
 @dataclass(frozen=True, slots=True)

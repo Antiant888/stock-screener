@@ -171,6 +171,8 @@ export default function SocialSignalsTab() {
 }
 
 const attemptReasonCopy = {
+  daily_limit_exhausted: 'Daily X read budget used up',
+  incremental_gap_suspected: 'More posts than one read covers; some older posts were not read',
   provider_error: 'Provider error',
   provider_network_error: 'Network error after one retry',
   provider_timeout: 'Provider timed out after one retry',
