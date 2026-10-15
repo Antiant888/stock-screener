@@ -132,6 +132,11 @@ class _MeteredCompletion:
                 if wait > 0:
                     await self.owner.sleep(wait)
                 self.owner.request_gate.mark_started(self.owner.min_interval_seconds)
+            except asyncio.CancelledError:
+                # Nothing was sent: refund the reservation and leave the posts claimable.
+                budget.release(attempt)
+                self.owner._finish_many(self.claims, "pending", "cancelled_before_dispatch")
+                raise
             except Exception:
                 budget.release(attempt)
                 self.owner._finish_many(
