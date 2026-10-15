@@ -185,6 +185,22 @@ def test_cursorless_success_is_a_durable_completed_initial_marker(store):
     assert progress.cursor is None
 
 
+def test_collection_progress_reports_the_latest_successful_read_of_any_intent(store):
+    w = writer(store)
+    w.create_run("initial", NOW)
+    w.persist_observations(batch(), run_id="initial")
+    later = NOW + timedelta(hours=6)
+    w.clock = lambda: later
+    w.create_run("incremental", later)
+    incremental = batch(age=6)
+    w.persist_observations(replace(incremental, request=replace(incremental.request, intent="incremental")),
+                           run_id="incremental")
+    w.create_run("failed", later + timedelta(minutes=1))
+    w.persist_observations(batch(age=6, success=False, post_id="101"), run_id="failed")
+
+    assert w.latest_collection_progress("1", "official").last_read_at == later
+
+
 def test_failed_and_diagnostic_reads_never_commit_progress(store):
     w = writer(store)
     saved = w.persist_observations(batch(success=False))

@@ -255,6 +255,21 @@ def test_prior_day_cannot_reset_newer_official_capacity_day(registry_engine):
         assert service.reserve_official_capacity(date(2026, 9, 8), 5, 10) == 0
 
 
+def test_released_official_capacity_can_be_reserved_again_the_same_day_only(registry_engine):
+    from datetime import date
+    from sqlalchemy.orm import sessionmaker
+    from app.services.social_source_admin_service import SocialSourceAdminService
+    factory = sessionmaker(bind=registry_engine)
+    with factory() as db:
+        service = SocialSourceAdminService(db); service.ensure_seed_sources()
+        assert service.reserve_official_capacity(date(2026, 9, 7), 10, 10) == 10
+        service.release_official_capacity(date(2026, 9, 7), 7)
+        service.release_official_capacity(date(2026, 9, 6), 7)
+        assert service.reserve_official_capacity(date(2026, 9, 7), 10, 10) == 7
+        service.release_official_capacity(date(2026, 9, 7), 50)
+        assert service.reserve_official_capacity(date(2026, 9, 7), 10, 10) == 10
+
+
 def test_concurrent_official_capacity_reservations_never_exceed_daily_limit(registry_engine):
     from concurrent.futures import ThreadPoolExecutor
     from datetime import date
