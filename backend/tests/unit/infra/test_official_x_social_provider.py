@@ -319,6 +319,22 @@ def test_only_a_request_that_never_left_releases_before_its_retry(failure, relea
     assert releases == released_before_retry + [(date(2026, 9, 7), 5)]
 
 
+def test_failed_release_does_not_fail_a_read_that_succeeded(caplog):
+    def broken_release(day, posts):
+        raise RuntimeError("registry locked")
+    provider = OfficialXSocialProvider(
+        bearer_token="secret", reservation=lambda day, requested, limit: requested,
+        release=broken_release, daily_post_limit=2000, budget_timezone="Asia/Singapore",
+        client=httpx.Client(transport=httpx.MockTransport(
+            lambda _: httpx.Response(200, json=json.loads(FIXTURE.read_text())))),
+    )
+
+    batch = provider.read_source(read_request())
+
+    assert (batch.outcome.read_status, len(batch.posts)) == ("success", 2)
+    assert "registry locked" in caplog.text
+
+
 def test_incremental_read_cut_short_by_its_limit_reports_the_unread_gap():
     payload = json.loads(FIXTURE.read_text())
 

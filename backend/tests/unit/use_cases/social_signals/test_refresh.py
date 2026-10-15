@@ -498,7 +498,9 @@ def test_production_factory_has_explicit_lazy_official_and_xui_adapters():
         llm_request_gate=request_gate,
         official_client=object(),
     )
-    assert isinstance(refresh._provider("official"), OfficialXSocialProvider)
+    official = refresh._provider("official")
+    assert isinstance(official, OfficialXSocialProvider)
+    assert official._release is not None, "unused official read capacity must be returned"
     assert isinstance(refresh._provider("xui"), XuiCliSocialProvider)
     assert refresh.catalog.__class__.__name__ == "SqlSocialRefreshCatalog"
     assert refresh.evidence_reader.__class__.__name__ == "SocialScoringEvidenceReader"
