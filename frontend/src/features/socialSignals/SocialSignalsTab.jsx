@@ -123,7 +123,7 @@ export default function SocialSignalsTab() {
       {queueQuery.data?.available === false ? (
         queueQuery.data.latest_attempt
           ? <LatestAttemptPanel attempt={queueQuery.data.latest_attempt}
-              onOpenOperations={() => navigate('/operations')} />
+              onOpenOperations={() => navigate('/operations#sources')} />
           : <Alert severity="info">
               {unavailableCopy[queueQuery.data.reason_code] || 'Social Signals are temporarily unavailable.'}
             </Alert>
