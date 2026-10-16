@@ -1,6 +1,8 @@
 import { act, cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 
+import { Link, MemoryRouter, useLocation } from 'react-router-dom';
+
 import { renderWithProviders } from '../test/renderWithProviders';
 import OperationsPage from './OperationsPage';
 
@@ -19,10 +21,25 @@ vi.mock('../api/themes', () => ({
   getContentSources: (...args) => getContentSources(...args),
 }));
 
-// Selects a tab through the URL hash, the way a shared link does.
-function renderPage(tab) {
-  window.history.replaceState(null, '', tab ? `#${tab}` : window.location.pathname);
-  return renderWithProviders(<OperationsPage />);
+function LocationProbe() {
+  const { pathname, hash } = useLocation();
+  return <span data-testid="location">{pathname + hash}</span>;
+}
+
+// Selects a tab through the URL hash, the way a shared link does. `links`
+// renders beside the page, like the app's nav.
+function page(tab, links = null) {
+  return (
+    <MemoryRouter initialEntries={[tab ? `/operations#${tab}` : '/operations']}>
+      <OperationsPage />
+      {links}
+      <LocationProbe />
+    </MemoryRouter>
+  );
+}
+
+function renderPage(tab, links) {
+  return renderWithProviders(page(tab, links));
 }
 
 vi.mock('../contexts/RuntimeContext', () => ({
@@ -228,7 +245,7 @@ describe('OperationsPage', () => {
 
       expect(await screen.findByRole('columnheader', { name: 'Severity' })).toBeVisible();
       expect(screen.getByText('us-ops')).toBeVisible();
-      expect(window.location.hash).toBe('#alerts');
+      expect(screen.getByTestId('location')).toHaveTextContent('/operations#alerts');
     });
 
     it('counts stuck jobs on the Jobs tab', async () => {
@@ -292,11 +309,11 @@ describe('OperationsPage', () => {
       expect(screen.getByRole('tab', { name: 'Overview', selected: true })).toBeInTheDocument();
 
       runtimeState.features = { themes: true, tasks: true };
-      rerender(<OperationsPage />);
+      rerender(page('schedules'));
       expect(screen.getByRole('tab', { name: 'Schedules', selected: true })).toBeInTheDocument();
     });
 
-    it('opens the Jobs tab and scrolls to Lease status for #lease-status, on load and on hashchange', async () => {
+    it('opens the Jobs tab and scrolls to Lease status for #lease-status, on load and from a link', async () => {
       const original = Element.prototype.scrollIntoView;
       onTestFinished(() => { Element.prototype.scrollIntoView = original; });
       const scrollIntoView = vi.fn();
@@ -309,18 +326,24 @@ describe('OperationsPage', () => {
       cleanup();
       scrollIntoView.mockClear();
 
-      renderPage();
+      renderPage(null, <Link to="#lease-status">See its claim</Link>);
       expect(screen.getByRole('tab', { name: 'Overview', selected: true })).toBeInTheDocument();
       expect(scrollIntoView).not.toHaveBeenCalled();
 
-      window.history.replaceState(null, '', '#lease-status');
-      act(() => {
-        window.dispatchEvent(new HashChangeEvent('hashchange'));
-      });
+      fireEvent.click(screen.getByRole('link', { name: 'See its claim' }));
 
       expect(screen.getByRole('tab', { name: /Jobs/, selected: true })).toBeInTheDocument();
       expect(scrollIntoView).toHaveBeenCalledTimes(1);
       expect(screen.getByText('Lease status')).toBeVisible();
+    });
+
+    it('returns to Overview when a nav link opens bare /operations', () => {
+      renderPage('jobs', <Link to="/operations">Header link</Link>);
+      expect(screen.getByRole('tab', { name: /Jobs/, selected: true })).toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole('link', { name: 'Header link' }));
+
+      expect(screen.getByRole('tab', { name: 'Overview', selected: true })).toBeInTheDocument();
     });
 
     it('keeps job filters when switching tabs', () => {

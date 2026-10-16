@@ -5,6 +5,7 @@
  * operators can inspect queued/running/stuck jobs and cancel supported work.
  */
 import { useEffect, useMemo, useState } from 'react';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   Alert,
@@ -256,28 +257,21 @@ function parseHash(hash) {
   return { id: value, jumpToLease: false };
 }
 
+// The router's location is the only tab state, so any navigation selects the
+// tab: a tab click, a #lease-status anchor, or a nav link to bare /operations.
 function useHashTab(visibleIds) {
-  const [selection, setSelection] = useState(() => parseHash(window.location.hash));
+  const location = useLocation();
+  const navigate = useNavigate();
+  const { id, jumpToLease } = parseHash(location.hash);
+  const activeId = visibleIds.includes(id) ? id : 'overview';
 
   useEffect(() => {
-    const onHashChange = () => setSelection(parseHash(window.location.hash));
-    window.addEventListener('hashchange', onHashChange);
-    return () => window.removeEventListener('hashchange', onHashChange);
-  }, []);
-
-  const activeId = visibleIds.includes(selection.id) ? selection.id : 'overview';
-
-  useEffect(() => {
-    if (selection.jumpToLease && activeId === 'jobs') {
+    if (jumpToLease && activeId === 'jobs') {
       document.getElementById(LEASE_ANCHOR)?.scrollIntoView?.();
     }
-  }, [selection, activeId]);
+  }, [location.key, jumpToLease, activeId]);
 
-  const select = (id) => {
-    // Keep react-router's history.state; null would drop its key and index.
-    window.history.replaceState(window.history.state, '', `#${id}`);
-    setSelection({ id, jumpToLease: false });
-  };
+  const select = (next) => navigate({ search: location.search, hash: next }, { replace: true });
   return [activeId, select];
 }
 
