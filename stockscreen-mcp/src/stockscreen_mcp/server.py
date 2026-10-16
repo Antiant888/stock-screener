@@ -136,8 +136,8 @@ def list_markets() -> dict[str, Any]:
     session or its next update is over a day overdue; or "unknown"), and features: which of "scan"
     (run_screen, get_stock, list_screens), "breadth" (market_overview breadth) and "groups"
     (group_rankings) are published for it. unavailable_markets lists markets that failed this
-    publish. Takes no arguments. Results are cached for up to 10 minutes; each market moves
-    forward once per trading day, in one of two daily publishes (Asia, then US/Europe).
+    publish. Takes no arguments. Results are cached for up to 10 minutes; markets are published
+    after their close by two scheduled runs, one for Asia and one for US/Europe.
     """
     manifest = data.manifest()
     now = datetime.now(timezone.utc)
