@@ -132,11 +132,12 @@ def list_markets() -> dict[str, Any]:
     For one market's health, breadth and leading groups, use market_overview instead.
 
     Each market returns its code (pass it as `market` to the other tools), name, as_of_date (the
-    trading day the data covers), status ("current", "late" if the next publish is overdue, or
-    "unknown"), and features: which of "scan" (run_screen, get_stock, list_screens), "breadth"
-    (market_overview breadth) and "groups" (group_rankings) are published for it.
-    unavailable_markets lists markets that failed this publish. Takes no arguments; the list is
-    re-read at most every 10 minutes and changes once a day, after each market's close.
+    trading day the data covers), status ("current"; "late" if it is behind its latest completed
+    session or its next update is over a day overdue; or "unknown"), and features: which of "scan"
+    (run_screen, get_stock, list_screens), "breadth" (market_overview breadth) and "groups"
+    (group_rankings) are published for it. unavailable_markets lists markets that failed this
+    publish. Takes no arguments. Results are cached for up to 10 minutes; each market moves
+    forward once per trading day, in one of two daily publishes (Asia, then US/Europe).
     """
     manifest = data.manifest()
     now = datetime.now(timezone.utc)
