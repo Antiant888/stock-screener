@@ -1,5 +1,7 @@
-import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { act, cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react';
+import { beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
+
+import { Link, MemoryRouter, useLocation } from 'react-router-dom';
 
 import { renderWithProviders } from '../test/renderWithProviders';
 import OperationsPage from './OperationsPage';
@@ -12,7 +14,33 @@ const releasePipelineChain = vi.fn();
 const useRuntimeActivity = vi.fn();
 const getBootstrapStatus = vi.fn();
 const getScheduledTasks = vi.fn();
+const getContentSources = vi.fn();
 const runtimeState = vi.hoisted(() => ({ features: { themes: true } }));
+
+vi.mock('../api/themes', () => ({
+  getContentSources: (...args) => getContentSources(...args),
+}));
+
+function LocationProbe() {
+  const { pathname, hash } = useLocation();
+  return <span data-testid="location">{pathname + hash}</span>;
+}
+
+// Selects a tab through the URL hash, the way a shared link does. `links`
+// renders beside the page, like the app's nav.
+function page(tab, links = null) {
+  return (
+    <MemoryRouter initialEntries={[tab ? `/operations#${tab}` : '/operations']}>
+      <OperationsPage />
+      {links}
+      <LocationProbe />
+    </MemoryRouter>
+  );
+}
+
+function renderPage(tab, links) {
+  return renderWithProviders(page(tab, links));
+}
 
 vi.mock('../contexts/RuntimeContext', () => ({
   useRuntime: () => runtimeState,
@@ -139,6 +167,7 @@ describe('OperationsPage', () => {
     delete runtimeState.deploymentMarkets;
     getScheduledTasks.mockResolvedValue({ tasks: [], total_tasks: 0 });
     vi.clearAllMocks();
+    getContentSources.mockResolvedValue([]);
     fetchAlerts.mockResolvedValue({ summaries: [SUMMARY_US], alerts: [ALERT_US] });
     fetchOperationsJobs.mockResolvedValue(OPERATIONS_PAYLOAD);
     getBootstrapStatus.mockResolvedValue({
@@ -176,14 +205,17 @@ describe('OperationsPage', () => {
   });
 
   it('renders market activity, job console, and telemetry sections', async () => {
-    renderWithProviders(<OperationsPage />);
+    renderPage();
 
     expect(screen.getByText('Market activity')).toBeInTheDocument();
-    expect(screen.getByText('Job console')).toBeInTheDocument();
-    expect(screen.getByText('Lease status')).toBeInTheDocument();
     expect(screen.getByText('Scan')).toBeInTheDocument();
     expect(screen.getByText(/Running market scan/)).toBeInTheDocument();
     expect(screen.getByText(/Additional data loading continues in the background/)).toBeInTheDocument();
+    expect(await screen.findByText('Data freshness')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('tab', { name: /Jobs/ }));
+    expect(screen.getByText('Job console')).toBeInTheDocument();
+    expect(screen.getByText('Lease status')).toBeInTheDocument();
 
     await waitFor(() => {
       expect(screen.getAllByText('app.tasks.cache_tasks.smart_refresh_cache').length).toBeGreaterThan(0);
@@ -195,12 +227,159 @@ describe('OperationsPage', () => {
     expect(screen.getByRole('heading', { name: 'Workers' })).toBeInTheDocument();
     expect(screen.getAllByText('Queues').length).toBeGreaterThan(0);
 
-    await waitFor(() => {
-      expect(screen.getByText(/Freshness:/)).toBeInTheDocument();
-    });
+    fireEvent.click(screen.getByRole('tab', { name: /Alerts/ }));
+    expect(await screen.findByText('warning')).toBeVisible();
     expect(screen.queryByText(/No active alerts/)).not.toBeInTheDocument();
-    expect(screen.getByText('warning')).toBeInTheDocument();
-    expect(screen.getByText('open')).toBeInTheDocument();
+    expect(screen.getByText('open')).toBeVisible();
+  });
+
+  describe('tabs', () => {
+    it('shows the open-alert count on the Alerts tab and the alerts table once it is selected', async () => {
+      renderPage();
+
+      const alertsTab = screen.getByRole('tab', { name: /Alerts/ });
+      expect(await within(alertsTab).findByText('1')).toBeInTheDocument();
+      expect(screen.queryByRole('columnheader', { name: 'Severity' })).not.toBeInTheDocument();
+
+      fireEvent.click(alertsTab);
+
+      expect(await screen.findByRole('columnheader', { name: 'Severity' })).toBeVisible();
+      expect(screen.getByText('us-ops')).toBeVisible();
+      expect(screen.getByTestId('location')).toHaveTextContent('/operations#alerts');
+    });
+
+    it('counts stuck jobs on the Jobs tab', async () => {
+      fetchOperationsJobs.mockResolvedValue({
+        ...OPERATIONS_PAYLOAD,
+        jobs: [
+          { ...OPERATIONS_PAYLOAD.jobs[0], task_id: 'a', state: 'stuck' },
+          { ...OPERATIONS_PAYLOAD.jobs[1], task_id: 'b', state: 'stuck' },
+          { ...OPERATIONS_PAYLOAD.jobs[1], task_id: 'c', state: 'running' },
+        ],
+      });
+      renderPage();
+
+      expect(await within(screen.getByRole('tab', { name: /Jobs/ })).findByText('2')).toBeInTheDocument();
+      expect(screen.getByRole('tab', { name: 'Overview' })).toBeInTheDocument();
+    });
+
+    it('counts failing theme content sources on the Sources tab', async () => {
+      getContentSources.mockResolvedValue([
+        { id: 1, name: 'Feed A', source_type: 'rss', is_active: true, social_managed: false, consecutive_failures: 3 },
+        { id: 2, name: 'Feed B', source_type: 'rss', is_active: true, social_managed: false, consecutive_failures: 0 },
+      ]);
+      renderPage();
+
+      expect(await within(screen.getByRole('tab', { name: /Sources/ })).findByText('1')).toBeInTheDocument();
+      expect(getContentSources).toHaveBeenCalledWith(false);
+    });
+
+    it('flags Alerts and Sources with ! when their data fails to load', async () => {
+      fetchAlerts.mockRejectedValue(new Error('backend down'));
+      getContentSources.mockRejectedValue(new Error('backend down'));
+      renderPage();
+
+      expect(await screen.findByRole('tab', { name: /^Alerts\s*!$/ })).toBeInTheDocument();
+      expect(await screen.findByRole('tab', { name: /^Sources\s*!$/ })).toBeInTheDocument();
+    });
+
+    it('lists Schedules and Exposure research only for the features that back them', () => {
+      renderPage();
+      expect(screen.queryByRole('tab', { name: /Schedules/ })).not.toBeInTheDocument();
+      expect(screen.getByRole('tab', { name: /Exposure research/ })).toBeInTheDocument();
+    });
+
+    it('falls back to Overview for an unknown hash or a tab that is not shown', () => {
+      renderPage('exposure');
+      expect(screen.getByRole('tab', { name: /Exposure research/, selected: true })).toBeInTheDocument();
+      cleanup();
+
+      runtimeState.features = { themes: false };
+      renderPage('exposure');
+      expect(screen.getByRole('tab', { name: 'Overview', selected: true })).toBeInTheDocument();
+      cleanup();
+
+      renderPage('nonsense');
+      expect(screen.getByRole('tab', { name: 'Overview', selected: true })).toBeInTheDocument();
+    });
+
+    it('opens a linked tab once the feature that shows it loads', () => {
+      runtimeState.features = { themes: true };
+      const { rerender } = renderPage('schedules');
+      expect(screen.getByRole('tab', { name: 'Overview', selected: true })).toBeInTheDocument();
+
+      runtimeState.features = { themes: true, tasks: true };
+      rerender(page('schedules'));
+      expect(screen.getByRole('tab', { name: 'Schedules', selected: true })).toBeInTheDocument();
+    });
+
+    it('opens the Jobs tab and scrolls to Lease status for #lease-status, on load and from a link', async () => {
+      const original = Element.prototype.scrollIntoView;
+      onTestFinished(() => { Element.prototype.scrollIntoView = original; });
+      const scrollIntoView = vi.fn();
+      Element.prototype.scrollIntoView = scrollIntoView;
+      renderPage('lease-status');
+
+      expect(screen.getByRole('tab', { name: /Jobs/, selected: true })).toBeInTheDocument();
+      expect(scrollIntoView).toHaveBeenCalledTimes(1);
+      expect(scrollIntoView.mock.contexts[0].id).toBe('lease-status');
+      cleanup();
+      scrollIntoView.mockClear();
+
+      renderPage(null, <Link to="#lease-status">See its claim</Link>);
+      expect(screen.getByRole('tab', { name: 'Overview', selected: true })).toBeInTheDocument();
+      expect(scrollIntoView).not.toHaveBeenCalled();
+
+      fireEvent.click(screen.getByRole('link', { name: 'See its claim' }));
+
+      expect(screen.getByRole('tab', { name: /Jobs/, selected: true })).toBeInTheDocument();
+      expect(scrollIntoView).toHaveBeenCalledTimes(1);
+      expect(screen.getByText('Lease status')).toBeVisible();
+    });
+
+    it('returns to Overview when a nav link opens bare /operations', () => {
+      renderPage('jobs', <Link to="/operations">Header link</Link>);
+      expect(screen.getByRole('tab', { name: /Jobs/, selected: true })).toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole('link', { name: 'Header link' }));
+
+      expect(screen.getByRole('tab', { name: 'Overview', selected: true })).toBeInTheDocument();
+    });
+
+    it('keeps the router state of the entry when a tab is clicked', () => {
+      function StateProbe() {
+        return <span data-testid="state">{JSON.stringify(useLocation().state)}</span>;
+      }
+      renderWithProviders(
+        <MemoryRouter initialEntries={[{ pathname: '/operations', state: { from: 'social' } }]}>
+          <OperationsPage />
+          <StateProbe />
+        </MemoryRouter>,
+      );
+
+      fireEvent.click(screen.getByRole('tab', { name: /Alerts/ }));
+
+      expect(screen.getByTestId('state')).toHaveTextContent('{"from":"social"}');
+    });
+
+    it('keeps job filters when switching tabs', () => {
+      renderPage('jobs');
+      fireEvent.change(screen.getByLabelText('Task search'), { target: { value: 'scan' } });
+
+      fireEvent.click(screen.getByRole('tab', { name: 'Overview' }));
+      fireEvent.click(screen.getByRole('tab', { name: /Jobs/ }));
+
+      expect(screen.getByLabelText('Task search')).toHaveValue('scan');
+    });
+  });
+
+  it('shows each market as a Data freshness row', async () => {
+    renderPage();
+
+    const row = (await screen.findByText('5000')).closest('tr');
+    expect(within(row).getAllByRole('cell').map((cell) => cell.textContent)).toEqual([
+      'US', '30m', '1h', '5000+10', '1%',
+    ]);
   });
 
   it('names a scheduled job in the job console as the schedule does, keeping its Celery name', async () => {
@@ -214,7 +393,7 @@ describe('OperationsPage', () => {
       }],
     });
 
-    renderWithProviders(<OperationsPage />);
+    renderPage('jobs');
 
     const name = await screen.findByText('Daily Market Pipeline (HK)');
     const cell = name.closest('td');
@@ -224,12 +403,12 @@ describe('OperationsPage', () => {
   });
 
   it('shows scheduled jobs only when the tasks feature is enabled', async () => {
-    const { unmount } = renderWithProviders(<OperationsPage />);
+    const { unmount } = renderPage('schedules');
     expect(screen.queryByRole('heading', { name: 'Scheduled jobs' })).not.toBeInTheDocument();
     unmount();
 
     runtimeState.features = { themes: true, tasks: true };
-    renderWithProviders(<OperationsPage />);
+    renderPage('schedules');
 
     expect(screen.getByRole('heading', { name: 'Scheduled jobs' })).toBeInTheDocument();
     expect(await screen.findByText(/No scheduled tasks/)).toBeInTheDocument();
@@ -237,7 +416,7 @@ describe('OperationsPage', () => {
 
   it('clicking Ack calls acknowledgeAlert', async () => {
     acknowledgeAlert.mockResolvedValue({ ...ALERT_US, state: 'acknowledged' });
-    renderWithProviders(<OperationsPage />);
+    renderPage('alerts');
 
     const ackButton = await screen.findByRole('button', { name: /ack/i });
     fireEvent.click(ackButton);
@@ -256,7 +435,7 @@ describe('OperationsPage', () => {
   };
 
   it('confirms with the plain-language effect before cancelling, and sends the strategy it showed', async () => {
-    renderWithProviders(<OperationsPage />);
+    renderPage('jobs');
 
     const cancelButtons = await screen.findAllByRole('button', { name: /cancel/i });
     fireEvent.click(cancelButtons[0]);
@@ -275,7 +454,7 @@ describe('OperationsPage', () => {
   describe('when the jobs request fails (#567)', () => {
     it('says so in every jobs section instead of rendering empty data as healthy', async () => {
       fetchOperationsJobs.mockRejectedValue(new Error('backend down'));
-      renderWithProviders(<OperationsPage />);
+      renderPage('jobs');
 
       // The jobs table, Lease status, Queues and Workers.
       await waitFor(
@@ -287,10 +466,12 @@ describe('OperationsPage', () => {
       expect(screen.queryByText('No pipeline chain claims are held.')).not.toBeInTheDocument();
       expect(screen.queryByText('No queue data available.')).not.toBeInTheDocument();
       expect(screen.queryByText('No worker inspect data available.')).not.toBeInTheDocument();
+      // Visible from every tab, unlike the errors inside the Jobs panel.
+      expect(screen.getByRole('tab', { name: /^Jobs\s*!$/ })).toBeInTheDocument();
     });
 
     it('keeps the last known data, marked as such, when a refetch fails', async () => {
-      const { queryClient } = renderWithProviders(<OperationsPage />);
+      const { queryClient } = renderPage('jobs');
       expect(await screen.findByText('External Fetch Lease')).toBeInTheDocument();
 
       fetchOperationsJobs.mockRejectedValue(new Error('backend down'));
@@ -321,7 +502,7 @@ describe('OperationsPage', () => {
     };
 
     it('says when no pipeline holds a claim', async () => {
-      renderWithProviders(<OperationsPage />);
+      renderPage('jobs');
 
       expect(await screen.findByText('No pipeline chain claims are held.')).toBeInTheDocument();
     });
@@ -329,7 +510,7 @@ describe('OperationsPage', () => {
     it('releases a claim only after confirming, with the token it showed', async () => {
       fetchOperationsJobs.mockResolvedValue(withClaim);
       releasePipelineChain.mockResolvedValue({ status: 'accepted', cancel_strategy: 'release_pipeline_chain', message: 'ok' });
-      renderWithProviders(<OperationsPage />);
+      renderPage('jobs');
 
       expect(await screen.findByText('Claim: tok-hk')).toBeInTheDocument();
       fireEvent.click(screen.getByRole('button', { name: 'Release HK pipeline chain claim' }));
@@ -347,7 +528,7 @@ describe('OperationsPage', () => {
       releasePipelineChain.mockResolvedValue({
         status: 'blocked', cancel_strategy: 'release_pipeline_chain', message: 'The HK pipeline chain claim tok-hk is no longer held.',
       });
-      renderWithProviders(<OperationsPage />);
+      renderPage('jobs');
 
       fireEvent.click(await screen.findByRole('button', { name: 'Release HK pipeline chain claim' }));
       fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Release' }));
@@ -357,7 +538,7 @@ describe('OperationsPage', () => {
   });
 
   it('backing out of the dialog does not cancel', async () => {
-    renderWithProviders(<OperationsPage />);
+    renderPage('jobs');
 
     fireEvent.click((await screen.findAllByRole('button', { name: /cancel/i }))[0]);
     fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Back' }));
@@ -370,7 +551,7 @@ describe('OperationsPage', () => {
     cancelOperationsJob.mockRejectedValue({
       response: { status: 409, data: { detail: 'Job moved to running, so this action no longer applies. Refresh and retry.' } },
     });
-    renderWithProviders(<OperationsPage />);
+    renderPage('jobs');
 
     await confirmCancel();
 
@@ -388,7 +569,7 @@ describe('OperationsPage', () => {
         },
       ],
     });
-    renderWithProviders(<OperationsPage />);
+    renderPage('jobs');
 
     expect(await screen.findByText('Cancel requested')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Cancel scan' })).not.toBeInTheDocument();
@@ -405,7 +586,7 @@ describe('OperationsPage', () => {
         },
       ],
     });
-    renderWithProviders(<OperationsPage />);
+    renderPage('jobs');
 
     fireEvent.click(await screen.findByRole('button', { name: 'Force release' }));
     expect(
@@ -422,7 +603,7 @@ describe('OperationsPage', () => {
         })
     );
 
-    renderWithProviders(<OperationsPage />);
+    renderPage('jobs');
 
     await confirmCancel();
 
@@ -442,7 +623,7 @@ describe('OperationsPage', () => {
 
   it('shows empty-state message when no alerts active', async () => {
     fetchAlerts.mockResolvedValue({ summaries: [SUMMARY_US], alerts: [] });
-    renderWithProviders(<OperationsPage />);
+    renderPage('alerts');
 
     await waitFor(() => {
       expect(screen.getByText(/No active alerts/)).toBeInTheDocument();
@@ -474,7 +655,7 @@ describe('OperationsPage', () => {
       isError: true,
     });
 
-    renderWithProviders(<OperationsPage />);
+    renderPage();
 
     expect(screen.getByText('Price Refresh')).toBeInTheDocument();
     expect(screen.getByText(/Refreshing prices/)).toBeInTheDocument();
@@ -505,7 +686,7 @@ describe('OperationsPage', () => {
       ],
     });
 
-    renderWithProviders(<OperationsPage />);
+    renderPage('jobs');
 
     expect(await screen.findByText(/60%/)).toBeInTheDocument();
     expect(screen.getByText(/600\/1000/)).toBeInTheDocument();
@@ -523,7 +704,7 @@ describe('OperationsPage', () => {
       ],
     });
 
-    renderWithProviders(<OperationsPage />);
+    renderPage();
 
     expect(await screen.findByText('1 market needs attention: JP.')).toBeInTheDocument();
     expect(screen.getByText('No worker fetches its prices (data_fetch_jp).')).toBeInTheDocument();
@@ -543,7 +724,7 @@ describe('OperationsPage', () => {
       ],
     });
 
-    renderWithProviders(<OperationsPage />);
+    renderPage();
 
     expect(await screen.findByText('1 market needs attention: JP.')).toBeInTheDocument();
     expect(screen.getByText("Enabled in the app, but not in this deployment's ENABLED_MARKETS, so nothing runs it."))
@@ -569,7 +750,7 @@ describe('OperationsPage', () => {
       total_tasks: 1,
     });
 
-    renderWithProviders(<OperationsPage />);
+    renderPage();
 
     const usRow = (await screen.findByRole('rowheader', { name: 'US' })).closest('tr');
     await waitFor(() => expect(within(usRow).getByText('6h ago')).toBeInTheDocument());
@@ -591,21 +772,26 @@ describe('OperationsPage', () => {
       },
     });
 
-    renderWithProviders(<OperationsPage />);
+    renderPage('jobs');
 
     // HK has a queued job, so it stays; DE has nothing, so it waits behind
     // one disclosure per section.
-    const toggles = await screen.findAllByRole('button', { name: 'Inactive markets (1): DE' });
-    expect(toggles).toHaveLength(3);
+    const jobToggles = await screen.findAllByRole('button', { name: 'Inactive markets (1): DE' });
+    expect(jobToggles).toHaveLength(2);
     expect(screen.getAllByText('data_fetch_hk').length).toBeGreaterThan(0);
     expect(screen.queryByText('data_fetch_de')).not.toBeInTheDocument();
     expect(screen.getByText('HK:')).toBeInTheDocument();
     expect(screen.queryByText('DE:')).not.toBeInTheDocument();
 
-    toggles.forEach((toggle) => fireEvent.click(toggle));
+    jobToggles.forEach((toggle) => fireEvent.click(toggle));
 
     expect(screen.getByText('data_fetch_de')).toBeVisible();
     expect(screen.getByText('DE:')).toBeVisible();
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Overview' }));
+    const freshnessToggle = await screen.findByRole('button', { name: 'Inactive markets (1): DE' });
+    expect(screen.queryByText('DE')).not.toBeInTheDocument();
+    fireEvent.click(freshnessToggle);
     expect(screen.getByText('DE')).toBeVisible();
   });
 
@@ -620,7 +806,7 @@ describe('OperationsPage', () => {
       ],
     });
 
-    renderWithProviders(<OperationsPage />);
+    renderPage('jobs');
 
     expect(await screen.findByText(/No responding worker reads data_fetch_jp\. Start one, or cancel this job\./)).toBeInTheDocument();
     expect(screen.queryByText('no_worker_for_queue')).not.toBeInTheDocument();
@@ -636,7 +822,7 @@ describe('OperationsPage', () => {
       queues: [{ queue: 'data_fetch_hk', depth: 1, oldest_age_seconds: 45, consumers: null }],
     });
 
-    renderWithProviders(<OperationsPage />);
+    renderPage('jobs');
 
     expect(await screen.findAllByText('data_fetch_hk', { selector: 'td' })).toHaveLength(2);
     expect(screen.queryByText('No worker')).not.toBeInTheDocument();
@@ -668,20 +854,20 @@ describe('OperationsPage', () => {
       ],
     });
 
-    renderWithProviders(<OperationsPage />);
+    renderPage('jobs');
 
     expect(await screen.findByText('Batch sizing pending')).toBeInTheDocument();
     expect(screen.queryByText(/0%/)).not.toBeInTheDocument();
   });
 
   it('shows exposure research only when the themes feature is enabled', async () => {
-    renderWithProviders(<OperationsPage />);
+    renderPage('exposure');
     expect(await screen.findByText('Company exposure research (shadow)')).toBeInTheDocument();
   });
 
   it('hides exposure research when its routes are not registered', async () => {
     runtimeState.features = { themes: false };
-    renderWithProviders(<OperationsPage />);
+    renderPage();
     expect(await screen.findByText('Batch 3/5 · refreshing prices')).toBeInTheDocument();
     expect(screen.queryByText('Company exposure research (shadow)')).not.toBeInTheDocument();
   });
@@ -694,7 +880,7 @@ describe('OperationsPage', () => {
       },
       features: { cot: 'missing', options: 'disabled', social: 'missing' },
     });
-    renderWithProviders(<OperationsPage />);
+    renderPage();
 
     expect(await screen.findByText('Not yet published')).toBeInTheDocument();
     expect(screen.getByText('US: breadth, groups')).toBeInTheDocument();
@@ -705,7 +891,7 @@ describe('OperationsPage', () => {
   });
 
   it('shows no publication warning when everything enabled has published', async () => {
-    renderWithProviders(<OperationsPage />);
+    renderPage();
     expect(await screen.findByText('Batch 3/5 · refreshing prices')).toBeInTheDocument();
     await waitFor(() => expect(getBootstrapStatus).toHaveBeenCalled());
     expect(screen.queryByText('Not yet published')).not.toBeInTheDocument();
@@ -713,7 +899,7 @@ describe('OperationsPage', () => {
 
   it('says when publication status cannot be loaded instead of looking complete', async () => {
     getBootstrapStatus.mockRejectedValue(new Error('boom'));
-    renderWithProviders(<OperationsPage />);
+    renderPage();
     expect(await screen.findByText('Failed to load publication status.')).toBeInTheDocument();
   });
 });

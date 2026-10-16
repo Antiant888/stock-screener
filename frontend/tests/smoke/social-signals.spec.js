@@ -48,6 +48,7 @@ test.describe('Social Signals', () => {
     await expect(page.getByText(/Social strength 91/)).toBeVisible();
 
     await page.goto('/operations');
+    await page.getByRole('tab', { name: 'Sources' }).click();
     await page.getByLabel('Social admin key').fill('fixture-admin');
     await page.getByRole('button', { name: 'Load Social administration' }).click();
     await expect(page.getByText('Social Sources')).toBeVisible();

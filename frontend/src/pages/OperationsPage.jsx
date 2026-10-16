@@ -4,7 +4,8 @@
  * Polls runtime activity, live job inventory, and telemetry summaries so
  * operators can inspect queued/running/stuck jobs and cancel supported work.
  */
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   Alert,
@@ -26,11 +27,13 @@ import {
   MenuItem,
   Select,
   Stack,
+  Tab,
   Table,
   TableBody,
   TableCell,
   TableHead,
   TableRow,
+  Tabs,
   TextField,
   Typography,
 } from '@mui/material';
@@ -45,6 +48,8 @@ import { getScheduledTasks } from '../api/tasks';
 import SchedulesSection from '../components/Operations/SchedulesSection';
 import MarketCoverage from '../components/Operations/MarketCoverage';
 import InactiveMarkets from '../components/Operations/InactiveMarkets';
+import ThemeSourceHealth from '../components/Operations/ThemeSourceHealth';
+import { failingSources, useContentSources } from '../components/Operations/contentSources';
 import {
   ACTIVE_JOB_STATES,
   findActiveMarkets,
@@ -180,46 +185,122 @@ function UnpublishedDataAlert({ status }) {
   );
 }
 
-function MarketSummaryCard({ summary }) {
-  const freshness = summary.freshness_lag;
-  const benchmark = summary.benchmark_age;
+function FreshnessRow({ summary }) {
   const completeness = summary.completeness_distribution;
   const drift = summary.universe_drift;
 
   return (
-    <Card variant="outlined" sx={{ minWidth: 220 }}>
-      <CardContent>
-        <Typography variant="overline" color="text.secondary">
-          {summary.market}
-        </Typography>
-        <Stack spacing={0.5} sx={{ mt: 1 }}>
-          <Typography variant="body2">
-            <strong>Freshness:</strong> {formatLagSeconds(freshness?.lag_seconds)}
-          </Typography>
-          <Typography variant="body2">
-            <strong>Benchmark age:</strong> {formatLagSeconds(benchmark?.age_seconds)}
-          </Typography>
-          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap' }}>
-            <Typography variant="body2" component="span">
-              <strong>Universe:</strong> {drift?.current_size ?? '—'}
-            </Typography>
-            {drift?.delta != null && drift.delta !== 0 && (
-              <Chip
-                label={`${drift.delta > 0 ? '+' : ''}${drift.delta}`}
-                size="small"
-                color={Math.abs(drift.delta) > (drift.prior_size || 1) * 0.05 ? 'warning' : 'default'}
-              />
-            )}
-          </Box>
-          <Typography variant="body2">
-            <strong>Low completeness (0-25):</strong>{' '}
-            {completeness?.bucket_counts && completeness?.symbols_total
-              ? `${Math.round((completeness.bucket_counts['0-25'] / completeness.symbols_total) * 100)}%`
-              : '—'}
-          </Typography>
+    <TableRow>
+      <TableCell>{summary.market}</TableCell>
+      <TableCell>{formatLagSeconds(summary.freshness_lag?.lag_seconds)}</TableCell>
+      <TableCell>{formatLagSeconds(summary.benchmark_age?.age_seconds)}</TableCell>
+      <TableCell>
+        <Stack direction="row" spacing={1} alignItems="center">
+          <span>{drift?.current_size ?? '—'}</span>
+          {drift?.delta != null && drift.delta !== 0 && (
+            <Chip
+              label={`${drift.delta > 0 ? '+' : ''}${drift.delta}`}
+              size="small"
+              color={Math.abs(drift.delta) > (drift.prior_size || 1) * 0.05 ? 'warning' : 'default'}
+            />
+          )}
         </Stack>
-      </CardContent>
-    </Card>
+      </TableCell>
+      <TableCell>
+        {completeness?.bucket_counts && completeness?.symbols_total
+          ? `${Math.round((completeness.bucket_counts['0-25'] / completeness.symbols_total) * 100)}%`
+          : '—'}
+      </TableCell>
+    </TableRow>
+  );
+}
+
+function FreshnessTable({ summaries }) {
+  return (
+    <Table size="small">
+      <TableHead>
+        <TableRow>
+          <TableCell>Market</TableCell>
+          <TableCell>Freshness</TableCell>
+          <TableCell>Benchmark age</TableCell>
+          <TableCell>Universe</TableCell>
+          <TableCell>Low completeness 0-25</TableCell>
+        </TableRow>
+      </TableHead>
+      <TableBody>
+        {summaries.map((summary) => (
+          <FreshnessRow key={summary.market} summary={summary} />
+        ))}
+      </TableBody>
+    </Table>
+  );
+}
+
+// Declaration order is display order. `badge` returns a count, or '!' when its data failed to load; zero shows none.
+const TABS = [
+  { id: 'overview', label: 'Overview', show: () => true },
+  { id: 'jobs', label: 'Jobs', show: () => true, badge: ({ stuckJobs, jobsFailed }) => (jobsFailed ? '!' : stuckJobs) },
+  { id: 'schedules', label: 'Schedules', show: ({ features }) => Boolean(features.tasks) },
+  { id: 'alerts', label: 'Alerts', show: () => true, badge: ({ openAlerts, alertsFailed }) => (alertsFailed ? '!' : openAlerts) },
+  { id: 'sources', label: 'Sources', show: () => true, badge: ({ failingSourceCount, sourcesFailed }) => (sourcesFailed ? '!' : failingSourceCount) },
+  { id: 'exposure', label: 'Exposure research', show: ({ features }) => Boolean(features.themes) },
+];
+
+const LEASE_ANCHOR = 'lease-status';
+
+// The Schedules tab links to #lease-status, which lives on the Jobs tab.
+// Visibility is checked at render, not here: features can load after the hash
+// is read, and #schedules should still open once tasks turn on.
+function parseHash(hash) {
+  const value = hash.replace(/^#/, '');
+  if (value === LEASE_ANCHOR) return { id: 'jobs', jumpToLease: true };
+  return { id: value, jumpToLease: false };
+}
+
+// The router's location is the only tab state, so any navigation selects the
+// tab: a tab click, a #lease-status anchor, or a nav link to bare /operations.
+function useHashTab(visibleIds) {
+  const location = useLocation();
+  const navigate = useNavigate();
+  const { id, jumpToLease } = parseHash(location.hash);
+  const activeId = visibleIds.includes(id) ? id : 'overview';
+
+  useEffect(() => {
+    if (jumpToLease && activeId === 'jobs') {
+      document.getElementById(LEASE_ANCHOR)?.scrollIntoView?.();
+    }
+  }, [location.key, jumpToLease, activeId]);
+
+  const select = (next) => navigate({ search: location.search, hash: next }, { replace: true, state: location.state });
+  return [activeId, select];
+}
+
+// Every visible panel stays mounted and is hidden with `hidden`: the social
+// and exposure panels hold an admin key in state, and job filters and dialogs
+// must survive a tab switch.
+function TabPanel({ id, activeId, visibleIds, children }) {
+  if (!visibleIds.includes(id)) return null;
+  return (
+    <Box
+      role="tabpanel"
+      id={`ops-panel-${id}`}
+      aria-labelledby={`ops-tab-${id}`}
+      hidden={id !== activeId}
+      tabIndex={0}
+      sx={{ pt: 2 }}
+    >
+      {children}
+    </Box>
+  );
+}
+
+function TabLabel({ label, count }) {
+  if (!count) return label;
+  return (
+    <Stack direction="row" spacing={1} alignItems="center" component="span">
+      <span>{label}</span>
+      <Chip label={count} size="small" color="error" sx={{ height: 20 }} />
+    </Stack>
   );
 }
 
@@ -698,6 +779,9 @@ export default function OperationsPage() {
     enabled: Boolean(features.tasks),
   });
 
+  const contentSourcesQuery = useContentSources({ enabled: Boolean(features.themes) });
+  const failingSourceCount = failingSources(contentSourcesQuery.data).length;
+
   const ackMutation = useMutation({
     mutationFn: (alertId) => acknowledgeAlert(alertId, 'operator'),
     onSuccess: () => {
@@ -783,6 +867,21 @@ export default function OperationsPage() {
     });
   }, [jobs, stateFilter, queueFilter, marketFilter, taskSearch]);
 
+  const stuckJobs = jobs.filter((job) => job.state === 'stuck').length;
+  const openAlerts = alerts.filter((alert) => alert.state === 'open').length;
+  const tabContext = {
+    features,
+    stuckJobs,
+    openAlerts,
+    failingSourceCount,
+    jobsFailed: jobsQuery.isError,
+    alertsFailed: alertsQuery.isError,
+    sourcesFailed: contentSourcesQuery.isError,
+  };
+  const visibleTabs = TABS.filter((tab) => tab.show(tabContext));
+  const visibleIds = visibleTabs.map((tab) => tab.id);
+  const [activeId, selectTab] = useHashTab(visibleIds);
+
   return (
     <Container maxWidth="xl" sx={{ py: 2 }}>
       <Typography variant="h5" gutterBottom>
@@ -792,215 +891,80 @@ export default function OperationsPage() {
         Per-market telemetry, live queue inventory, and safe background-job controls.
       </Typography>
 
-      <MarketCoverage
-        markets={(supportedMarkets ?? []).filter((market) => activeMarkets.has(market))}
-        enabledMarkets={enabledMarkets}
-        deploymentMarkets={deploymentMarkets}
-        queues={queues}
-        tasks={features.tasks ? tasksQuery.data?.tasks : null}
-      />
+      <Tabs
+        value={activeId}
+        onChange={(_, id) => selectTab(id)}
+        variant="scrollable"
+        scrollButtons="auto"
+        aria-label="Operations sections"
+        sx={{ borderBottom: 1, borderColor: 'divider' }}
+      >
+        {visibleTabs.map((tab) => (
+          <Tab
+            key={tab.id}
+            value={tab.id}
+            id={`ops-tab-${tab.id}`}
+            aria-controls={`ops-panel-${tab.id}`}
+            label={<TabLabel label={tab.label} count={tab.badge?.(tabContext)} />}
+          />
+        ))}
+      </Tabs>
 
-      <Typography variant="h6" sx={{ mt: 3, mb: 1 }}>
-        Market activity
-      </Typography>
-      {bootstrap?.background_warning && (
-        <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
-          {bootstrap.background_warning}
+      <TabPanel id="overview" activeId={activeId} visibleIds={visibleIds}>
+        <MarketCoverage
+          markets={(supportedMarkets ?? []).filter((market) => activeMarkets.has(market))}
+          enabledMarkets={enabledMarkets}
+          deploymentMarkets={deploymentMarkets}
+          queues={queues}
+          tasks={features.tasks ? tasksQuery.data?.tasks : null}
+        />
+
+        <Typography variant="h6" sx={{ mt: 3, mb: 1 }}>
+          Market activity
         </Typography>
-      )}
-      {bootstrapStatusQuery.isError && (
-        <Typography variant="body2" color="error" sx={{ mb: 1.5 }}>
-          {bootstrapStatusQuery.data
-            ? 'Failed to refresh publication status. Showing last known status.'
-            : 'Failed to load publication status.'}
-        </Typography>
-      )}
-      <UnpublishedDataAlert status={bootstrapStatusQuery.data} />
-      {activityQuery.isLoading && !hasMarketActivity ? (
-        <CircularProgress size={20} />
-      ) : (
-        <>
-          {activityQuery.isError && (
-            <Typography variant="body2" color="error" sx={{ mb: 1.5 }}>
-              Failed to refresh runtime activity. Showing last known status.
-            </Typography>
-          )}
-          {hasMarketActivity ? (
-            <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap sx={{ mb: 3 }}>
-              {marketActivity.map((activity) => (
-                <MarketActivityCard key={activity.activity_id ?? activity.market} activity={activity} />
-              ))}
-            </Stack>
-          ) : (
-            !activityQuery.isLoading && (
-              <Typography variant="body2" color={activityQuery.isError ? 'error' : 'text.secondary'}>
-                {activityQuery.isError
-                  ? 'Failed to load runtime activity.'
-                  : 'No runtime activity available.'}
+        {bootstrap?.background_warning && (
+          <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
+            {bootstrap.background_warning}
+          </Typography>
+        )}
+        {bootstrapStatusQuery.isError && (
+          <Typography variant="body2" color="error" sx={{ mb: 1.5 }}>
+            {bootstrapStatusQuery.data
+              ? 'Failed to refresh publication status. Showing last known status.'
+              : 'Failed to load publication status.'}
+          </Typography>
+        )}
+        <UnpublishedDataAlert status={bootstrapStatusQuery.data} />
+        {activityQuery.isLoading && !hasMarketActivity ? (
+          <CircularProgress size={20} />
+        ) : (
+          <>
+            {activityQuery.isError && (
+              <Typography variant="body2" color="error" sx={{ mb: 1.5 }}>
+                Failed to refresh runtime activity. Showing last known status.
               </Typography>
-            )
-          )}
-        </>
-      )}
+            )}
+            {hasMarketActivity ? (
+              <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap sx={{ mb: 3 }}>
+                {marketActivity.map((activity) => (
+                  <MarketActivityCard key={activity.activity_id ?? activity.market} activity={activity} />
+                ))}
+              </Stack>
+            ) : (
+              !activityQuery.isLoading && (
+                <Typography variant="body2" color={activityQuery.isError ? 'error' : 'text.secondary'}>
+                  {activityQuery.isError
+                    ? 'Failed to load runtime activity.'
+                    : 'No runtime activity available.'}
+                </Typography>
+              )
+            )}
+          </>
+        )}
 
-      <Typography variant="h6" sx={{ mt: 3, mb: 1 }}>
-        Job console
-      </Typography>
-      <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
-        Shows queued, waiting, reserved, running, stale, and stuck jobs across all Celery queues.
-      </Typography>
-      {jobActionError && (
-        <Alert severity="warning" sx={{ mb: 1.5 }}>
-          {jobActionError}
-        </Alert>
-      )}
-      <Stack direction="row" spacing={2} sx={{ mb: 2 }} flexWrap="wrap" useFlexGap>
-        <FormControl size="small" sx={{ minWidth: 160 }}>
-          <InputLabel id="ops-state-filter-label">State</InputLabel>
-          <Select
-            labelId="ops-state-filter-label"
-            value={stateFilter}
-            label="State"
-            onChange={(event) => setStateFilter(event.target.value)}
-          >
-            <MenuItem value="all">All states</MenuItem>
-            {['queued', 'waiting', 'reserved', 'running', 'stale', 'stuck', 'failed', 'cancelled'].map((state) => (
-              <MenuItem key={state} value={state}>{state}</MenuItem>
-            ))}
-          </Select>
-        </FormControl>
-        <FormControl size="small" sx={{ minWidth: 180 }}>
-          <InputLabel id="ops-queue-filter-label">Queue</InputLabel>
-          <Select
-            labelId="ops-queue-filter-label"
-            value={queueFilter}
-            label="Queue"
-            onChange={(event) => setQueueFilter(event.target.value)}
-          >
-            <MenuItem value="all">All queues</MenuItem>
-            {queueOptions.map((queue) => (
-              <MenuItem key={queue} value={queue}>{queue}</MenuItem>
-            ))}
-          </Select>
-        </FormControl>
-        <FormControl size="small" sx={{ minWidth: 160 }}>
-          <InputLabel id="ops-market-filter-label">Market</InputLabel>
-          <Select
-            labelId="ops-market-filter-label"
-            value={marketFilter}
-            label="Market"
-            onChange={(event) => setMarketFilter(event.target.value)}
-          >
-            <MenuItem value="all">All markets</MenuItem>
-            {marketOptions.map((market) => (
-              <MenuItem key={market} value={market}>{market}</MenuItem>
-            ))}
-          </Select>
-        </FormControl>
-        <TextField
-          size="small"
-          label="Task search"
-          value={taskSearch}
-          onChange={(event) => setTaskSearch(event.target.value)}
-          sx={{ minWidth: 240 }}
-        />
-      </Stack>
-      <JobsData query={jobsQuery}>
-        <JobsTable
-          jobs={filteredJobs}
-          onCancel={setConfirmJob}
-          cancellingTaskId={cancelMutation.variables?.taskId}
-          cancelInFlight={cancelMutation.isPending}
-        />
-      </JobsData>
-      <Dialog open={Boolean(confirmAction)} onClose={() => setConfirmJob(null)}>
-        <DialogTitle>{confirmAction?.label}</DialogTitle>
-        <DialogContent>
-          <DialogContentText>{confirmAction?.detail}</DialogContentText>
-          <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 1 }}>
-            {confirmJob?.task_name} · {confirmJob?.task_id} · {confirmJob?.state}
-          </Typography>
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={() => setConfirmJob(null)}>Back</Button>
-          <Button
-            variant="contained"
-            color={confirmAction?.danger ? 'error' : 'primary'}
-            onClick={() => {
-              cancelMutation.mutate({
-                taskId: confirmJob.task_id,
-                expectedStrategy: confirmJob.cancel_strategy,
-              });
-              setConfirmJob(null);
-            }}
-          >
-            {confirmAction?.label}
-          </Button>
-        </DialogActions>
-      </Dialog>
-
-      {features.tasks && <SchedulesSection activeMarkets={activeMarkets} />}
-
-      {/* Anchor for "See its claim in Lease status" (Scheduled jobs); the
-          heading renders even while the jobs data loads or fails. */}
-      <Typography id="lease-status" variant="h6" sx={{ mt: 3, mb: 1 }}>
-        Lease status
-      </Typography>
-      <JobsData query={jobsQuery}>
-        <LeaseSummary
-          leases={leases}
-          onReleaseChain={setConfirmChain}
-          releasingToken={releaseChainMutation.isPending ? releaseChainMutation.variables?.token : null}
-          activeMarkets={activeMarkets}
-        />
-      </JobsData>
-      <Dialog open={Boolean(confirmChain)} onClose={() => setConfirmChain(null)}>
-        <DialogTitle>Release {confirmChain?.market} pipeline chain claim</DialogTitle>
-        <DialogContent>
-          <DialogContentText>
-            The claim stops a second daily pipeline from starting while one is in progress. Release it only
-            if that market&apos;s pipeline stages are gone from the job console (for example, a stage was
-            revoked); otherwise the next Run starts a second pipeline alongside the first.
-          </DialogContentText>
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={() => setConfirmChain(null)}>Back</Button>
-          <Button
-            variant="contained"
-            color="error"
-            onClick={() => {
-              releaseChainMutation.mutate(confirmChain);
-              setConfirmChain(null);
-            }}
-          >
-            Release
-          </Button>
-        </DialogActions>
-      </Dialog>
-
-      <Stack direction={{ xs: 'column', lg: 'row' }} spacing={2} sx={{ mt: 3 }}>
-        <Box sx={{ flex: 1 }}>
-          <Typography variant="h6" sx={{ mb: 1 }}>
-            Queues
-          </Typography>
-          <JobsData query={jobsQuery}>
-            <QueueSummaryTable queues={queueSplit.shown} />
-            <InactiveMarkets markets={queueSplit.hiddenMarkets}>
-              <QueueSummaryTable queues={queueSplit.hidden} />
-            </InactiveMarkets>
-          </JobsData>
-        </Box>
-        <Box sx={{ flex: 1 }}>
-          <Typography variant="h6" sx={{ mb: 1 }}>
-            Workers
-          </Typography>
-          <JobsData query={jobsQuery}>
-            <WorkerStatusTable workers={workers} />
-          </JobsData>
-        </Box>
-      </Stack>
-
-      <Box sx={{ my: 2 }}>
+        <Typography variant="h6" sx={{ mt: 3, mb: 1 }}>
+          Data freshness
+        </Typography>
         {alertsQuery.isLoading ? (
           <CircularProgress size={20} />
         ) : alertsQuery.isError ? (
@@ -1009,41 +973,201 @@ export default function OperationsPage() {
           </Typography>
         ) : (
           <>
-            <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap>
-              {summarySplit.shown.map((s) => (
-                <MarketSummaryCard key={s.market} summary={s} />
-              ))}
-            </Stack>
+            <FreshnessTable summaries={summarySplit.shown} />
             <InactiveMarkets markets={summarySplit.hiddenMarkets}>
-              <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap>
-                {summarySplit.hidden.map((s) => (
-                  <MarketSummaryCard key={s.market} summary={s} />
-                ))}
-              </Stack>
+              <FreshnessTable summaries={summarySplit.hidden} />
             </InactiveMarkets>
           </>
         )}
-      </Box>
+      </TabPanel>
 
-      <Typography variant="h6" sx={{ mt: 3, mb: 1 }}>
-        Active alerts
-      </Typography>
-      {ackError && (
-        <Typography variant="caption" color="error" sx={{ display: 'block', mb: 1 }}>
-          Acknowledge failed: {ackError}
+      <TabPanel id="jobs" activeId={activeId} visibleIds={visibleIds}>
+        <Typography variant="h6" sx={{ mb: 1 }}>
+          Job console
         </Typography>
-      )}
-      {alertsQuery.isLoading ? (
-        <CircularProgress size={20} />
-      ) : alertsQuery.isError ? (
-        <Typography variant="body2" color="error">
-          Failed to load alerts.
+        <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
+          Shows queued, waiting, reserved, running, stale, and stuck jobs across all Celery queues.
         </Typography>
-      ) : (
-        <AlertsTable alerts={alerts} onAcknowledge={(id) => ackMutation.mutate(id)} />
-      )}
-      <SocialSignalHealthPanel />
-      {features.themes && <ExposureResearchWorkspace />}
+        {jobActionError && (
+          <Alert severity="warning" sx={{ mb: 1.5 }}>
+            {jobActionError}
+          </Alert>
+        )}
+        <Stack direction="row" spacing={2} sx={{ mb: 2 }} flexWrap="wrap" useFlexGap>
+          <FormControl size="small" sx={{ minWidth: 160 }}>
+            <InputLabel id="ops-state-filter-label">State</InputLabel>
+            <Select
+              labelId="ops-state-filter-label"
+              value={stateFilter}
+              label="State"
+              onChange={(event) => setStateFilter(event.target.value)}
+            >
+              <MenuItem value="all">All states</MenuItem>
+              {['queued', 'waiting', 'reserved', 'running', 'stale', 'stuck', 'failed', 'cancelled'].map((state) => (
+                <MenuItem key={state} value={state}>{state}</MenuItem>
+              ))}
+            </Select>
+          </FormControl>
+          <FormControl size="small" sx={{ minWidth: 180 }}>
+            <InputLabel id="ops-queue-filter-label">Queue</InputLabel>
+            <Select
+              labelId="ops-queue-filter-label"
+              value={queueFilter}
+              label="Queue"
+              onChange={(event) => setQueueFilter(event.target.value)}
+            >
+              <MenuItem value="all">All queues</MenuItem>
+              {queueOptions.map((queue) => (
+                <MenuItem key={queue} value={queue}>{queue}</MenuItem>
+              ))}
+            </Select>
+          </FormControl>
+          <FormControl size="small" sx={{ minWidth: 160 }}>
+            <InputLabel id="ops-market-filter-label">Market</InputLabel>
+            <Select
+              labelId="ops-market-filter-label"
+              value={marketFilter}
+              label="Market"
+              onChange={(event) => setMarketFilter(event.target.value)}
+            >
+              <MenuItem value="all">All markets</MenuItem>
+              {marketOptions.map((market) => (
+                <MenuItem key={market} value={market}>{market}</MenuItem>
+              ))}
+            </Select>
+          </FormControl>
+          <TextField
+            size="small"
+            label="Task search"
+            value={taskSearch}
+            onChange={(event) => setTaskSearch(event.target.value)}
+            sx={{ minWidth: 240 }}
+          />
+        </Stack>
+        <JobsData query={jobsQuery}>
+          <JobsTable
+            jobs={filteredJobs}
+            onCancel={setConfirmJob}
+            cancellingTaskId={cancelMutation.variables?.taskId}
+            cancelInFlight={cancelMutation.isPending}
+          />
+        </JobsData>
+        <Dialog open={Boolean(confirmAction)} onClose={() => setConfirmJob(null)}>
+          <DialogTitle>{confirmAction?.label}</DialogTitle>
+          <DialogContent>
+            <DialogContentText>{confirmAction?.detail}</DialogContentText>
+            <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 1 }}>
+              {confirmJob?.task_name} · {confirmJob?.task_id} · {confirmJob?.state}
+            </Typography>
+          </DialogContent>
+          <DialogActions>
+            <Button onClick={() => setConfirmJob(null)}>Back</Button>
+            <Button
+              variant="contained"
+              color={confirmAction?.danger ? 'error' : 'primary'}
+              onClick={() => {
+                cancelMutation.mutate({
+                  taskId: confirmJob.task_id,
+                  expectedStrategy: confirmJob.cancel_strategy,
+                });
+                setConfirmJob(null);
+              }}
+            >
+              {confirmAction?.label}
+            </Button>
+          </DialogActions>
+        </Dialog>
+
+        {/* Anchor for "See its claim in Lease status" (Scheduled jobs); the
+            heading renders even while the jobs data loads or fails. */}
+        <Typography id="lease-status" variant="h6" sx={{ mt: 3, mb: 1 }}>
+          Lease status
+        </Typography>
+        <JobsData query={jobsQuery}>
+          <LeaseSummary
+            leases={leases}
+            onReleaseChain={setConfirmChain}
+            releasingToken={releaseChainMutation.isPending ? releaseChainMutation.variables?.token : null}
+            activeMarkets={activeMarkets}
+          />
+        </JobsData>
+        <Dialog open={Boolean(confirmChain)} onClose={() => setConfirmChain(null)}>
+          <DialogTitle>Release {confirmChain?.market} pipeline chain claim</DialogTitle>
+          <DialogContent>
+            <DialogContentText>
+              The claim stops a second daily pipeline from starting while one is in progress. Release it only
+              if that market&apos;s pipeline stages are gone from the job console (for example, a stage was
+              revoked); otherwise the next Run starts a second pipeline alongside the first.
+            </DialogContentText>
+          </DialogContent>
+          <DialogActions>
+            <Button onClick={() => setConfirmChain(null)}>Back</Button>
+            <Button
+              variant="contained"
+              color="error"
+              onClick={() => {
+                releaseChainMutation.mutate(confirmChain);
+                setConfirmChain(null);
+              }}
+            >
+              Release
+            </Button>
+          </DialogActions>
+        </Dialog>
+
+        <Stack direction={{ xs: 'column', lg: 'row' }} spacing={2} sx={{ mt: 3 }}>
+          <Box sx={{ flex: 1 }}>
+            <Typography variant="h6" sx={{ mb: 1 }}>
+              Queues
+            </Typography>
+            <JobsData query={jobsQuery}>
+              <QueueSummaryTable queues={queueSplit.shown} />
+              <InactiveMarkets markets={queueSplit.hiddenMarkets}>
+                <QueueSummaryTable queues={queueSplit.hidden} />
+              </InactiveMarkets>
+            </JobsData>
+          </Box>
+          <Box sx={{ flex: 1 }}>
+            <Typography variant="h6" sx={{ mb: 1 }}>
+              Workers
+            </Typography>
+            <JobsData query={jobsQuery}>
+              <WorkerStatusTable workers={workers} />
+            </JobsData>
+          </Box>
+        </Stack>
+
+      </TabPanel>
+
+      <TabPanel id="schedules" activeId={activeId} visibleIds={visibleIds}>
+        <SchedulesSection activeMarkets={activeMarkets} />
+      </TabPanel>
+
+      <TabPanel id="alerts" activeId={activeId} visibleIds={visibleIds}>
+        {ackError && (
+          <Typography variant="caption" color="error" sx={{ display: 'block', mb: 1 }}>
+            Acknowledge failed: {ackError}
+          </Typography>
+        )}
+        {alertsQuery.isLoading ? (
+          <CircularProgress size={20} />
+        ) : alertsQuery.isError ? (
+          <Typography variant="body2" color="error">
+            Failed to load alerts.
+          </Typography>
+        ) : (
+          <AlertsTable alerts={alerts} onAcknowledge={(id) => ackMutation.mutate(id)} />
+        )}
+      </TabPanel>
+
+      <TabPanel id="sources" activeId={activeId} visibleIds={visibleIds}>
+        {features.themes && <ThemeSourceHealth />}
+        <SocialSignalHealthPanel />
+      </TabPanel>
+
+      <TabPanel id="exposure" activeId={activeId} visibleIds={visibleIds}>
+        <ExposureResearchWorkspace />
+      </TabPanel>
     </Container>
   );
 }

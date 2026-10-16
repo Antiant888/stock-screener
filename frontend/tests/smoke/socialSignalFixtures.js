@@ -68,6 +68,7 @@ export async function installSocialSignalFixtures(page) {
     if (path === '/v1/pipeline/status') return json(route, { status: 'idle' });
     if (path === '/v1/operations/jobs') return json(route, { jobs: [], queues: [], workers: [], leases: {} });
     if (path === '/v1/telemetry/alerts') return json(route, { summaries: [], alerts: [] });
+    if (path === '/v1/themes/sources') return json(route, []);
     if (path === '/v1/market-scan/daily-snapshot') return json(route, {
       market: url.searchParams.get('market') || 'US', market_display_name: 'United States', scan_id: 'fixture-scan',
       freshness: { as_of_date: '2026-09-07' }, key_markets: [], top_groups: [], leaders: { rows: [] },

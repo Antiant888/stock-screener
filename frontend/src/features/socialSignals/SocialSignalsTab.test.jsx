@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { createTheme, ThemeProvider } from '@mui/material';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter, useLocation } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import SocialSignalsTab from './SocialSignalsTab';
@@ -50,12 +50,18 @@ const queue = (overrides = {}) => ({
   published_at: '2026-09-07T12:00:00Z', ...overrides,
 });
 
+function LocationProbe() {
+  const { pathname, hash } = useLocation();
+  return <span data-testid="location">{pathname + hash}</span>;
+}
+
 function renderTab() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <MemoryRouter>
       <QueryClientProvider client={client}>
         <ThemeProvider theme={createTheme()}><SocialSignalsTab /></ThemeProvider>
+        <LocationProbe />
       </QueryClientProvider>
     </MemoryRouter>,
   );
@@ -178,7 +184,8 @@ describe('SocialSignalsTab', () => {
     expect(screen.getByText('AI Investing')).toBeInTheDocument();
     expect(screen.getByText('Provider timed out after one retry')).toBeInTheDocument();
     expect(screen.getByText(/Analysis did not start because no enabled list collected/)).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Open Operations' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Open Operations' }));
+    expect(screen.getByTestId('location')).toHaveTextContent('/operations#sources');
   });
 
   it('explains terminal analysis failure and directs the admin to retry', async () => {
