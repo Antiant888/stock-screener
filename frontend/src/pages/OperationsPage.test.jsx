@@ -257,6 +257,15 @@ describe('OperationsPage', () => {
       expect(getContentSources).toHaveBeenCalledWith(false);
     });
 
+    it('flags Alerts and Sources with ! when their data fails to load', async () => {
+      fetchAlerts.mockRejectedValue(new Error('backend down'));
+      getContentSources.mockRejectedValue(new Error('backend down'));
+      renderPage();
+
+      expect(await screen.findByRole('tab', { name: /^Alerts\s*!$/ })).toBeInTheDocument();
+      expect(await screen.findByRole('tab', { name: /^Sources\s*!$/ })).toBeInTheDocument();
+    });
+
     it('lists Schedules and Exposure research only for the features that back them', () => {
       renderPage();
       expect(screen.queryByRole('tab', { name: /Schedules/ })).not.toBeInTheDocument();

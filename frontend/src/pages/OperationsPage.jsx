@@ -240,8 +240,8 @@ const TABS = [
   { id: 'overview', label: 'Overview', show: () => true },
   { id: 'jobs', label: 'Jobs', show: () => true, badge: ({ stuckJobs, jobsFailed }) => (jobsFailed ? '!' : stuckJobs) },
   { id: 'schedules', label: 'Schedules', show: ({ features }) => Boolean(features.tasks) },
-  { id: 'alerts', label: 'Alerts', show: () => true, badge: ({ openAlerts }) => openAlerts },
-  { id: 'sources', label: 'Sources', show: () => true, badge: ({ failingSourceCount }) => failingSourceCount },
+  { id: 'alerts', label: 'Alerts', show: () => true, badge: ({ openAlerts, alertsFailed }) => (alertsFailed ? '!' : openAlerts) },
+  { id: 'sources', label: 'Sources', show: () => true, badge: ({ failingSourceCount, sourcesFailed }) => (sourcesFailed ? '!' : failingSourceCount) },
   { id: 'exposure', label: 'Exposure research', show: ({ features }) => Boolean(features.themes) },
 ];
 
@@ -875,7 +875,15 @@ export default function OperationsPage() {
 
   const stuckJobs = jobs.filter((job) => job.state === 'stuck').length;
   const openAlerts = alerts.filter((alert) => alert.state === 'open').length;
-  const tabContext = { features, stuckJobs, openAlerts, failingSourceCount, jobsFailed: jobsQuery.isError };
+  const tabContext = {
+    features,
+    stuckJobs,
+    openAlerts,
+    failingSourceCount,
+    jobsFailed: jobsQuery.isError,
+    alertsFailed: alertsQuery.isError,
+    sourcesFailed: contentSourcesQuery.isError,
+  };
   const visibleTabs = TABS.filter((tab) => tab.show(tabContext));
   const visibleIds = visibleTabs.map((tab) => tab.id);
   const [activeId, selectTab] = useHashTab(visibleIds);
