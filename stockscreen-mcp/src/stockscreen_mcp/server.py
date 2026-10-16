@@ -125,7 +125,20 @@ def _visible_presets(code: str, scan: dict[str, Any]) -> list[dict[str, Any]]:
 
 @mcp.tool(annotations=READ_ONLY)
 def list_markets() -> dict[str, Any]:
-    """Markets in the current publish, with each one's data date, status and published features."""
+    """List the markets that have published data, so you know which market codes the other tools accept
+    and how fresh each one is.
+
+    Call this first when the user names a country or exchange, or asks how current the data is.
+    For one market's health, breadth and leading groups, use market_overview instead.
+
+    Each market returns its code (pass it as `market` to the other tools), name, as_of_date (the
+    trading day the data covers), status ("current"; "late" if it is behind its latest completed
+    session or its next update is over a day overdue; or "unknown"), and features: which of "scan"
+    (run_screen, get_stock, list_screens), "breadth" (market_overview breadth) and "groups"
+    (group_rankings) are published for it. unavailable_markets lists markets that failed this
+    publish. Takes no arguments. Results are cached for up to 10 minutes; markets are published
+    after their close by two scheduled runs, one for Asia and one for US/Europe.
+    """
     manifest = data.manifest()
     now = datetime.now(timezone.utc)
     markets = [
@@ -174,7 +187,7 @@ def run_screen(
     filters: Annotated[list[Filter] | None, Field(description="Extra conditions, all of which must hold.")] = None,
     sort_by: Annotated[str | None, Field(description="Field to sort by; defaults to the screen's own sort.")] = None,
     descending: Annotated[bool, Field(description="Direction for sort_by; ignored without sort_by.")] = True,
-    limit: Annotated[int, Field(ge=1, le=100)] = 25,
+    limit: Annotated[int, Field(ge=1, le=100, description="Rows to return; total_matches counts all.")] = 25,
 ) -> dict[str, Any]:
     """Run a preset screen and/or custom filters over a market's full daily scan (every listed stock).
 
@@ -305,10 +318,18 @@ def _group_summary(g: dict[str, Any]) -> dict[str, Any]:
 def group_rankings(
     market: Market = "US",
     group: Annotated[str | None, Field(description="Industry group name for its detail and constituents.")] = None,
-    limit: Annotated[int, Field(ge=1, le=200)] = 20,
+    limit: Annotated[int, Field(
+        ge=1, le=200, description="Groups to return, or with `group`, constituent stocks to return.",
+    )] = 20,
 ) -> dict[str, Any]:
-    """IBD-style industry group rankings by relative strength, with 1W/1M/3M/6M rank changes and
-    this week's biggest movers. Pass a group name for its rank history and strongest stocks."""
+    """Rank a market's IBD-style industry groups by their stocks' relative strength (1 = strongest),
+    with 1W/1M/3M/6M rank changes and this week's biggest movers.
+
+    Use it to find leading or improving industries. Pass `group` (full name, or any part of it
+    that matches only one group) for that group's rank history and its stocks, strongest RS
+    first. For a quick top-5 alongside breadth, market_overview is enough; to filter stocks by
+    group rank, use run_screen with ibd_group_rank. Rankings are end-of-day and update once a day.
+    """
     page = data.page(market, "groups")
     if page is None or not page.get("available"):
         raise ToolError(f"Group rankings are not published for {market.upper()}.")
