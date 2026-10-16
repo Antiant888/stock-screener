@@ -346,6 +346,22 @@ describe('OperationsPage', () => {
       expect(screen.getByRole('tab', { name: 'Overview', selected: true })).toBeInTheDocument();
     });
 
+    it('keeps the router state of the entry when a tab is clicked', () => {
+      function StateProbe() {
+        return <span data-testid="state">{JSON.stringify(useLocation().state)}</span>;
+      }
+      renderWithProviders(
+        <MemoryRouter initialEntries={[{ pathname: '/operations', state: { from: 'social' } }]}>
+          <OperationsPage />
+          <StateProbe />
+        </MemoryRouter>,
+      );
+
+      fireEvent.click(screen.getByRole('tab', { name: /Alerts/ }));
+
+      expect(screen.getByTestId('state')).toHaveTextContent('{"from":"social"}');
+    });
+
     it('keeps job filters when switching tabs', () => {
       renderPage('jobs');
       fireEvent.change(screen.getByLabelText('Task search'), { target: { value: 'scan' } });

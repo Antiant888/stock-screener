@@ -271,7 +271,7 @@ function useHashTab(visibleIds) {
     }
   }, [location.key, jumpToLease, activeId]);
 
-  const select = (next) => navigate({ search: location.search, hash: next }, { replace: true });
+  const select = (next) => navigate({ search: location.search, hash: next }, { replace: true, state: location.state });
   return [activeId, select];
 }
 
