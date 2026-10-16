@@ -1,5 +1,5 @@
 import { act, cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 
 import { renderWithProviders } from '../test/renderWithProviders';
 import OperationsPage from './OperationsPage';
@@ -288,6 +288,8 @@ describe('OperationsPage', () => {
     });
 
     it('opens the Jobs tab and scrolls to Lease status for #lease-status, on load and on hashchange', async () => {
+      const original = Element.prototype.scrollIntoView;
+      onTestFinished(() => { Element.prototype.scrollIntoView = original; });
       const scrollIntoView = vi.fn();
       Element.prototype.scrollIntoView = scrollIntoView;
       renderPage('lease-status');
