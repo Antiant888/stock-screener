@@ -35,6 +35,8 @@ async def test_every_tool_is_listed_as_read_only():
     for tool in tools.values():
         assert tool.annotations.read_only_hint is True
         assert tool.description
+        undocumented = [p for p, s in tool.input_schema["properties"].items() if "description" not in s]
+        assert not undocumented, f"{tool.name}: {undocumented}"
 
 
 async def test_list_markets_reports_dates_status_and_features():
