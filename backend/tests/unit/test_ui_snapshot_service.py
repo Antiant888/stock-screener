@@ -589,6 +589,84 @@ def test_breadth_source_revision_includes_calculation_revision():
     assert revision == "2026-08-21|breadth-r3"
 
 
+def _seed_balanced_groups(db, *, day: date, universe_hash: str) -> int:
+    run = MarketRsRun(
+        market="US",
+        as_of_date=day,
+        formula_version=BALANCED_RS_FORMULA_VERSION,
+        status="completed",
+        benchmark_symbol="SPY",
+        benchmark_as_of_date=day,
+        universe_hash=universe_hash,
+        expected_symbol_count=5000,
+        eligible_symbol_count=5000,
+        excluded_symbol_count=0,
+        diagnostics_json={
+            "price_basis": BALANCED_RS_PRICE_BASIS,
+            "rs_snapshot_schema_version": BALANCED_RS_SNAPSHOT_SCHEMA_VERSION,
+        },
+    )
+    db.add(run)
+    db.flush()
+    db.add(
+        IBDGroupRank(
+            market="US",
+            industry_group="Software",
+            date=day,
+            rank=1,
+            avg_rs_rating=95.5,
+            median_rs_rating=95.0,
+            weighted_avg_rs_rating=95.2,
+            rs_std_dev=1.0,
+            num_stocks=12,
+            num_stocks_rs_above_80=10,
+            top_symbol="MSFT",
+            top_rs_rating=99.0,
+            rs_formula_version=BALANCED_RS_FORMULA_VERSION,
+            market_rs_run_id=run.id,
+        )
+    )
+    db.commit()
+    return run.id
+
+
+def test_older_groups_build_does_not_overwrite_a_newer_publication(tmp_path):
+    engine = create_engine(f"sqlite:///{tmp_path / 'ui.sqlite'}")
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(bind=engine)
+    with Session() as db:
+        _seed_balanced_groups(db, day=date(2026, 3, 27), universe_hash="hash-27")
+
+    older = UISnapshotService(Session)
+    real_build = older._build_groups_payload
+
+    def build_then_lose_the_race(db):
+        payload = real_build(db)
+        with Session() as other:
+            newer_run_id = _seed_balanced_groups(
+                other, day=date(2026, 3, 28), universe_hash="hash-28"
+            )
+        newer = UISnapshotService(Session).publish_groups_bootstrap()
+        assert newer.source_revision == (
+            f"2026-03-28|{BALANCED_RS_FORMULA_VERSION}|{newer_run_id}"
+        )
+        return payload
+
+    older._build_groups_payload = build_then_lose_the_race
+
+    result = older.publish_groups_bootstrap()
+
+    assert result.payload["rankings"]["date"] == "2026-03-28"
+    with Session() as db:
+        stored = (
+            db.query(UIViewSnapshot.source_revision)
+            .filter(UIViewSnapshot.view_key == "groups_bootstrap")
+            .all()
+        )
+    assert [revision for (revision,) in stored] == [result.source_revision]
+    assert older.get_groups_bootstrap().payload["rankings"]["date"] == "2026-03-28"
+
+
 def test_publish_groups_bootstrap_serializes_rankings_when_available():
     engine = create_engine("sqlite:///:memory:")
     Base.metadata.create_all(engine, tables=[IBDGroupRank.__table__])
