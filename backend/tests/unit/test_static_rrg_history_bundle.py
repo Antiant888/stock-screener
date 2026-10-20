@@ -15,8 +15,16 @@ from app.domain.relative_strength import (
     BALANCED_RS_SNAPSHOT_SCHEMA_VERSION,
 )
 from app.infra.db.models.relative_strength import MarketRsRun
-from app.models.industry import IBDGroupRank
+from app.models.industry import IBDGroupRank, IBDIndustryGroup
+from app.models.stock import StockPrice
+from app.models.stock_universe import StockUniverse
+from app.services.group_rank_history_backfill_service import (
+    GroupRankHistoryBackfillService,
+)
 from app.services.rrg_service import DEFAULT_LOOKBACK_DAYS, MIN_TAIL_WEEKS, RRGService
+from app.services.static_group_snapshot_coordinator import (
+    build_static_group_snapshot_coordinator,
+)
 from app.services.static_rrg_history_bundle import (
     StaticRRGHistoryBundleService,
     StaticRRGHistoryProvider,
@@ -192,6 +200,82 @@ def _seed_weeks(
             ]
         )
     db.commit()
+
+
+class _WeekdayCalendar:
+    @staticmethod
+    def trading_days(_market, start, end):
+        days = (start + timedelta(days=n) for n in range((end - start).days + 1))
+        return [day for day in days if day.weekday() < 5]
+
+    def session_anchors(self, market, as_of_date, *, offsets):
+        days = self.trading_days(market, as_of_date - timedelta(days=400), as_of_date)
+        return {offset: days[-1 - offset] for offset in (0, *offsets)}
+
+    @staticmethod
+    def calendar_metadata(_market):
+        return {"calendar": "weekdays"}
+
+
+def test_first_static_build_bootstraps_via_production_gap_fill(tmp_path):
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine, expire_on_commit=False)
+    calendar = _WeekdayCalendar()
+    latest = date(2026, 3, 20)
+    groups = {"Semiconductors": ("CHIP1", "CHIP2", "CHIP3"), "Banks": ("BANK1", "BANK2", "BANK3")}
+    daily_return = {"SPY": 0.0003}
+    with factory() as db:
+        for group, members in groups.items():
+            for index, symbol in enumerate(members):
+                daily_return[symbol] = 0.0012 - index * 0.0002 if group == "Banks" else 0.0002 * index
+                db.add(StockUniverse(symbol=symbol, market="US", market_cap=1e9, is_active=True, status="active"))
+                db.add(IBDIndustryGroup(symbol=symbol, industry_group=group, market="US", source="manual"))
+        sessions = calendar.trading_days("US", latest - timedelta(days=560), latest)
+        for symbol, step in daily_return.items():
+            for index, session in enumerate(sessions):
+                close = 100 * (1 + step) ** index
+                db.add(StockPrice(symbol=symbol, date=session, close=close, adj_close=close))
+        db.commit()
+
+    class _Taxonomy:
+        @staticmethod
+        def sector_map_for_market(_market):
+            return {"Semiconductors": "Technology", "Banks": "Financials"}
+
+    try:
+        backfill = GroupRankHistoryBackfillService(
+            session_factory=factory,
+            calendar_service=calendar,
+            group_snapshot_coordinator=build_static_group_snapshot_coordinator(
+                calendar_service=calendar,
+            ),
+        ).backfill(as_of_date=latest, market="US", formula_version=BALANCED_RS_FORMULA_VERSION)
+        with factory() as db:
+            preparation = StaticRRGHistoryBundleService().prepare(
+                db,
+                market="US",
+                through_date=latest,
+                directory=tmp_path,
+                formula_version=BALANCED_RS_FORMULA_VERSION,
+            )
+            payload = RRGService(
+                history_provider=StaticRRGHistoryProvider(preparation.state),
+                taxonomy_service=_Taxonomy(),
+            ).get_rrg_scopes(db, market="US", scopes=("groups", "sectors"), as_of_date=latest)
+            stored = db.query(IBDGroupRank.rs_formula_version, IBDGroupRank.market_rs_run_id).all()
+        persisted = StaticRRGHistoryBundleService().persist(preparation, exported_as_of_date=latest)
+
+        assert backfill.status.value == "completed"
+        assert backfill.processed == backfill.missing_dates == len(stored) // 2
+        assert {formula for formula, _run_id in stored} == {BALANCED_RS_FORMULA_VERSION}
+        assert None not in {run_id for _formula, run_id in stored}
+        assert len(preparation.state.weeks) == 27
+        assert sorted(group["industry_group"] for group in payload["groups"]["groups"]) == ["Banks", "Semiconductors"]
+        assert persisted is not None
+        assert preparation.plan.output_path.exists()
+    finally:
+        engine.dispose()
 
 
 def test_weekly_state_round_trips_only_rrg_inputs(tmp_path):
