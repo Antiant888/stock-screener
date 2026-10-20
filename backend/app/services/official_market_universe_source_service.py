@@ -1287,7 +1287,7 @@ class OfficialMarketUniverseSourceService:
                 "the Xetra blob URL likely rotated and needs refreshing"
             )
 
-        # Safety signal: the reconciler in ``ingest_de_snapshot_rows`` can
+        # Safety signal: the reconciler in ``ingest_snapshot_rows(market="DE")`` can
         # deactivate rows that are absent from the snapshot. A live universe
         # that drops curated DAX-40 names is worth surfacing, but it should not
         # collapse an otherwise healthy 800+ row Xetra snapshot to the tiny
@@ -1430,7 +1430,7 @@ class OfficialMarketUniverseSourceService:
         """Read the bundled DE seed CSV into the same row schema as the live path.
 
         Emits the same 8-key dict shape ``_parse_de_xetra_csv`` produces, so
-        downstream consumers (``ingest_de_snapshot_rows``, the DE adapter)
+        downstream consumers (``ingest_snapshot_rows(market="DE")``, the DE adapter)
         see identical fields whether the snapshot came from the live Xetra
         CSV or this curated seed. ``isin`` is read from the optional ``isin``
         column; ``wkn`` is always empty here because the seed CSV doesn't

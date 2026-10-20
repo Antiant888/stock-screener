@@ -25,11 +25,9 @@ from app.services.field_capability_registry import field_capability_registry
 from app.services.official_market_universe_source_service import (
     OfficialMarketUniverseSourceService,
 )
-from app.services.official_universe_dispatch import (
-    OFFICIAL_SOURCE_MARKETS,
-    OFFICIAL_UNIVERSE_INGEST_METHODS,
-)
+from app.services.official_universe_dispatch import OFFICIAL_SOURCE_MARKETS
 from app.services.security_master_service import SecurityMasterResolver
+from app.services.stock_universe_service import SNAPSHOT_INGEST_MARKETS
 from app.services.universe_row_facts import (
     active_universe_currency_drift,
     active_universe_timezone_drift,
@@ -397,7 +395,7 @@ def test_official_universe_dispatch_matches_backend_catalog_capability() -> None
     expected = set(_catalog_market_codes_by_capability("official_universe"))
 
     assert OFFICIAL_SOURCE_MARKETS == expected
-    assert set(OFFICIAL_UNIVERSE_INGEST_METHODS) == expected
+    assert SNAPSHOT_INGEST_MARKETS == expected
     assert set(OfficialMarketUniverseSourceService()._snapshot_fetchers()) == expected
 
 

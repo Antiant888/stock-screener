@@ -4,9 +4,7 @@ Stock Universe Service for managing scannable stock lists.
 Fetches stocks from finviz and manages the stock_universe database table.
 """
 import logging
-import csv
 import hashlib
-import io
 import json
 import os
 from types import SimpleNamespace
@@ -89,6 +87,22 @@ FINVIZ_EXCHANGE_FILTER_CODES = {
 # text, which duplicates the leading ticker letter after Finviz's logo markup.
 FINVIZ_SCREENER_URL = "https://finviz.com/screener.ashx"
 FINVIZ_OVERVIEW_PAGE = 111
+_SNAPSHOT_CANONICALIZERS = {
+    "US": finviz_universe_ingestion_adapter,
+    "AU": au_universe_ingestion_adapter,
+    "HK": FlatUniverseCanonicalizerAdapter(hk_universe_ingestion_adapter),
+    "JP": FlatUniverseCanonicalizerAdapter(jp_universe_ingestion_adapter),
+    "KR": FlatUniverseCanonicalizerAdapter(kr_universe_ingestion_adapter),
+    "TW": FlatUniverseCanonicalizerAdapter(tw_universe_ingestion_adapter),
+    "CA": FlatUniverseCanonicalizerAdapter(ca_universe_ingestion_adapter),
+    "DE": FlatUniverseCanonicalizerAdapter(de_universe_ingestion_adapter),
+    "CN": FlatUniverseCanonicalizerAdapter(cn_universe_ingestion_adapter),
+    "SG": sg_universe_ingestion_adapter,
+    "MY": FlatUniverseCanonicalizerAdapter(my_universe_ingestion_adapter),
+}
+# US ingests through populate_universe, not the official snapshot path. IN has no
+# canonicalizer here because its BSE coverage gate reads the database.
+SNAPSHOT_INGEST_MARKETS = (frozenset(_SNAPSHOT_CANONICALIZERS) - {"US"}) | {"IN"}
 
 
 class StockUniverseService:
@@ -97,31 +111,8 @@ class StockUniverseService:
     def __init__(self):
         """Initialize stock universe service."""
         self._security_master = security_master_resolver
-        self._au_ingestion = au_universe_ingestion_adapter
-        self._ca_ingestion = ca_universe_ingestion_adapter
-        self._cn_ingestion = cn_universe_ingestion_adapter
-        self._de_ingestion = de_universe_ingestion_adapter
-        self._finviz_ingestion = finviz_universe_ingestion_adapter
-        self._hk_ingestion = hk_universe_ingestion_adapter
-        self._jp_ingestion = jp_universe_ingestion_adapter
-        self._kr_ingestion = kr_universe_ingestion_adapter
-        self._my_ingestion = my_universe_ingestion_adapter
-        self._sg_ingestion = sg_universe_ingestion_adapter
-        self._tw_ingestion = tw_universe_ingestion_adapter
         self._universe_ingestion_pipeline = UniverseIngestionPipeline(
-            canonicalizers={
-                "US": self._finviz_ingestion,
-                "AU": self._au_ingestion,
-                "HK": FlatUniverseCanonicalizerAdapter(self._hk_ingestion),
-                "JP": FlatUniverseCanonicalizerAdapter(self._jp_ingestion),
-                "KR": FlatUniverseCanonicalizerAdapter(self._kr_ingestion),
-                "TW": FlatUniverseCanonicalizerAdapter(self._tw_ingestion),
-                "CA": FlatUniverseCanonicalizerAdapter(self._ca_ingestion),
-                "DE": FlatUniverseCanonicalizerAdapter(self._de_ingestion),
-                "CN": FlatUniverseCanonicalizerAdapter(self._cn_ingestion),
-                "SG": self._sg_ingestion,
-                "MY": FlatUniverseCanonicalizerAdapter(self._my_ingestion),
-            },
+            canonicalizers=_SNAPSHOT_CANONICALIZERS,
             persistence=UniversePersistence.for_stock_universe_service(self),
             before_reconciliation_hooks={
                 "CN": self._upsert_cn_stock_industry_from_pipeline_context,
@@ -1495,7 +1486,7 @@ class StockUniverseService:
         updated_reconciliation["safety"] = safety
         return updated_reconciliation
 
-    def _ingest_snapshot_rows_via_pipeline(
+    def ingest_snapshot_rows(
         self,
         db: Session,
         *,
@@ -1506,8 +1497,21 @@ class StockUniverseService:
         snapshot_as_of: str | None = None,
         source_metadata: Optional[dict[str, Any]] = None,
         strict: bool = True,
-        ingestion_context: UniverseIngestionContext | None = None,
     ) -> Dict[str, Any]:
+        """Ingest one market's rows with deterministic canonicalization and lineage metadata."""
+        market = str(market or "").strip().upper()
+        if market not in SNAPSHOT_INGEST_MARKETS:
+            raise ValueError(f"Unsupported snapshot ingest market {market!r}")
+        if market == "IN":
+            return self._ingest_in_snapshot_rows(
+                db,
+                rows=rows,
+                source_name=source_name,
+                snapshot_id=snapshot_id,
+                snapshot_as_of=snapshot_as_of,
+                source_metadata=source_metadata,
+                strict=strict,
+            )
         return self._universe_ingestion_pipeline.ingest_snapshot_rows(
             db,
             market=market,
@@ -1517,12 +1521,9 @@ class StockUniverseService:
             snapshot_as_of=snapshot_as_of,
             source_metadata=source_metadata,
             strict=strict,
-            ingestion_context=(
-                ingestion_context
-                or UniverseIngestionContext.default_for_market(
-                    market,
-                    reconciliation_policy=self._default_reconciliation_policy_for_market(market),
-                )
+            ingestion_context=UniverseIngestionContext.default_for_market(
+                market,
+                reconciliation_policy=self._default_reconciliation_policy_for_market(market),
             ),
         )
 
@@ -1643,7 +1644,7 @@ class StockUniverseService:
                     deactivated += 1
         return {"board_twins_deactivated": deactivated}
 
-    def ingest_in_snapshot_rows(
+    def _ingest_in_snapshot_rows(
         self,
         db: Session,
         *,
@@ -1724,98 +1725,6 @@ class StockUniverseService:
             ),
         )
 
-    def ingest_au_snapshot_rows(
-        self,
-        db: Session,
-        *,
-        rows: Iterable[dict[str, Any]],
-        source_name: str,
-        snapshot_id: str,
-        snapshot_as_of: str | None = None,
-        source_metadata: Optional[dict[str, Any]] = None,
-        strict: bool = True,
-    ) -> Dict[str, Any]:
-        """Ingest AU rows with deterministic canonicalization and lineage metadata."""
-        return self._ingest_snapshot_rows_via_pipeline(
-            db,
-            market="AU",
-            rows=rows,
-            source_name=source_name,
-            snapshot_id=snapshot_id,
-            snapshot_as_of=snapshot_as_of,
-            source_metadata=source_metadata,
-            strict=strict,
-        )
-
-    def ingest_hk_snapshot_rows(
-        self,
-        db: Session,
-        *,
-        rows: Iterable[dict[str, Any]],
-        source_name: str,
-        snapshot_id: str,
-        snapshot_as_of: str | None = None,
-        source_metadata: Optional[dict[str, Any]] = None,
-        strict: bool = True,
-    ) -> Dict[str, Any]:
-        """Ingest HK rows with deterministic canonicalization and lineage metadata."""
-        return self._ingest_snapshot_rows_via_pipeline(
-            db,
-            market="HK",
-            rows=rows,
-            source_name=source_name,
-            snapshot_id=snapshot_id,
-            snapshot_as_of=snapshot_as_of,
-            source_metadata=source_metadata,
-            strict=strict,
-        )
-
-    def ingest_jp_snapshot_rows(
-        self,
-        db: Session,
-        *,
-        rows: Iterable[dict[str, Any]],
-        source_name: str,
-        snapshot_id: str,
-        snapshot_as_of: str | None = None,
-        source_metadata: Optional[dict[str, Any]] = None,
-        strict: bool = True,
-    ) -> Dict[str, Any]:
-        """Ingest JP rows with deterministic canonicalization and lineage metadata."""
-        return self._ingest_snapshot_rows_via_pipeline(
-            db,
-            market="JP",
-            rows=rows,
-            source_name=source_name,
-            snapshot_id=snapshot_id,
-            snapshot_as_of=snapshot_as_of,
-            source_metadata=source_metadata,
-            strict=strict,
-        )
-
-    def ingest_kr_snapshot_rows(
-        self,
-        db: Session,
-        *,
-        rows: Iterable[dict[str, Any]],
-        source_name: str,
-        snapshot_id: str,
-        snapshot_as_of: str | None = None,
-        source_metadata: Optional[dict[str, Any]] = None,
-        strict: bool = True,
-    ) -> Dict[str, Any]:
-        """Ingest KR rows with deterministic canonicalization and lineage metadata."""
-        return self._ingest_snapshot_rows_via_pipeline(
-            db,
-            market="KR",
-            rows=rows,
-            source_name=source_name,
-            snapshot_id=snapshot_id,
-            snapshot_as_of=snapshot_as_of,
-            source_metadata=source_metadata,
-            strict=strict,
-        )
-
     def _upsert_cn_stock_industry_rows(
         self,
         db: Session,
@@ -1885,196 +1794,6 @@ class StockUniverseService:
                 now=now,
             )
         }
-
-    def ingest_cn_snapshot_rows(
-        self,
-        db: Session,
-        *,
-        rows: Iterable[dict[str, Any]],
-        source_name: str,
-        snapshot_id: str,
-        snapshot_as_of: str | None = None,
-        source_metadata: Optional[dict[str, Any]] = None,
-        strict: bool = True,
-    ) -> Dict[str, Any]:
-        """Ingest CN rows with deterministic canonicalization and lineage metadata."""
-        return self._ingest_snapshot_rows_via_pipeline(
-            db,
-            market="CN",
-            rows=rows,
-            source_name=source_name,
-            snapshot_id=snapshot_id,
-            snapshot_as_of=snapshot_as_of,
-            source_metadata=source_metadata,
-            strict=strict,
-        )
-
-    def ingest_tw_snapshot_rows(
-        self,
-        db: Session,
-        *,
-        rows: Iterable[dict[str, Any]],
-        source_name: str,
-        snapshot_id: str,
-        snapshot_as_of: str | None = None,
-        source_metadata: Optional[dict[str, Any]] = None,
-        strict: bool = True,
-    ) -> Dict[str, Any]:
-        """Ingest TW rows with deterministic canonicalization and lineage metadata."""
-        return self._ingest_snapshot_rows_via_pipeline(
-            db,
-            market="TW",
-            rows=rows,
-            source_name=source_name,
-            snapshot_id=snapshot_id,
-            snapshot_as_of=snapshot_as_of,
-            source_metadata=source_metadata,
-            strict=strict,
-        )
-
-    def ingest_ca_snapshot_rows(
-        self,
-        db: Session,
-        *,
-        rows: Iterable[dict[str, Any]],
-        source_name: str,
-        snapshot_id: str,
-        snapshot_as_of: str | None = None,
-        source_metadata: Optional[dict[str, Any]] = None,
-        strict: bool = True,
-    ) -> Dict[str, Any]:
-        """Ingest CA rows with deterministic canonicalization and lineage metadata."""
-        return self._ingest_snapshot_rows_via_pipeline(
-            db,
-            market="CA",
-            rows=rows,
-            source_name=source_name,
-            snapshot_id=snapshot_id,
-            snapshot_as_of=snapshot_as_of,
-            source_metadata=source_metadata,
-            strict=strict,
-        )
-
-    @staticmethod
-    def _parse_de_csv_rows(csv_content: str) -> list[dict[str, Any]]:
-        """Parse DE ingestion CSV into normalized lowercase-key row dicts."""
-        csv_file = io.StringIO(csv_content)
-        reader = csv.DictReader(csv_file)
-        fieldnames = reader.fieldnames or []
-        normalized_fields = [str(name).strip().lower() for name in fieldnames if name]
-        has_symbol_field = any(name in {"symbol", "local_code", "ticker"} for name in normalized_fields)
-        if not fieldnames or not has_symbol_field:
-            csv_file.seek(0)
-            reader = csv.DictReader(
-                csv_file,
-                fieldnames=["symbol", "name", "exchange", "sector", "industry", "market_cap"],
-            )
-
-        rows: list[dict[str, Any]] = []
-        for row in reader:
-            row_lower = {str(k).strip().lower(): v for k, v in row.items() if k}
-            source_symbol = (
-                str(row_lower.get("symbol") or row_lower.get("local_code") or row_lower.get("ticker") or "")
-                .strip()
-                .upper()
-            )
-            if not source_symbol or source_symbol in {"SYMBOL", "LOCAL_CODE", "TICKER"}:
-                continue
-            rows.append(row_lower)
-        return rows
-
-    def ingest_de_snapshot_rows(
-        self,
-        db: Session,
-        *,
-        rows: Iterable[dict[str, Any]],
-        source_name: str,
-        snapshot_id: str,
-        snapshot_as_of: str | None = None,
-        source_metadata: Optional[dict[str, Any]] = None,
-        strict: bool = True,
-    ) -> Dict[str, Any]:
-        """Ingest DE rows with deterministic canonicalization and lineage metadata."""
-        return self._ingest_snapshot_rows_via_pipeline(
-            db,
-            market="DE",
-            rows=rows,
-            source_name=source_name,
-            snapshot_id=snapshot_id,
-            snapshot_as_of=snapshot_as_of,
-            source_metadata=source_metadata,
-            strict=strict,
-        )
-
-    def ingest_de_from_csv(
-        self,
-        db: Session,
-        csv_content: str,
-        *,
-        source_name: str,
-        snapshot_id: str | None = None,
-        snapshot_as_of: str | None = None,
-        source_metadata: Optional[dict[str, Any]] = None,
-        strict: bool = True,
-    ) -> Dict[str, Any]:
-        """Ingest DE universe rows from CSV content."""
-        rows = self._parse_de_csv_rows(csv_content)
-        resolved_snapshot_id = snapshot_id or self._auto_snapshot_id("de")
-        return self.ingest_de_snapshot_rows(
-            db,
-            rows=rows,
-            source_name=source_name,
-            snapshot_id=resolved_snapshot_id,
-            snapshot_as_of=snapshot_as_of,
-            source_metadata=source_metadata,
-            strict=strict,
-        )
-
-    def ingest_sg_snapshot_rows(
-        self,
-        db: Session,
-        *,
-        rows: Iterable[dict[str, Any]],
-        source_name: str,
-        snapshot_id: str,
-        snapshot_as_of: str | None = None,
-        source_metadata: Optional[dict[str, Any]] = None,
-        strict: bool = True,
-    ) -> Dict[str, Any]:
-        """Ingest SG rows with deterministic canonicalization and lineage metadata."""
-        return self._ingest_snapshot_rows_via_pipeline(
-            db,
-            market="SG",
-            rows=rows,
-            source_name=source_name,
-            snapshot_id=snapshot_id,
-            snapshot_as_of=snapshot_as_of,
-            source_metadata=source_metadata,
-            strict=strict,
-        )
-
-    def ingest_my_snapshot_rows(
-        self,
-        db: Session,
-        *,
-        rows: Iterable[dict[str, Any]],
-        source_name: str,
-        snapshot_id: str,
-        snapshot_as_of: str | None = None,
-        source_metadata: Optional[dict[str, Any]] = None,
-        strict: bool = True,
-    ) -> Dict[str, Any]:
-        """Ingest MY rows with deterministic canonicalization and lineage metadata."""
-        return self._ingest_snapshot_rows_via_pipeline(
-            db,
-            market="MY",
-            rows=rows,
-            source_name=source_name,
-            snapshot_id=snapshot_id,
-            snapshot_as_of=snapshot_as_of,
-            source_metadata=source_metadata,
-            strict=strict,
-        )
 
     def _parse_market_cap(self, market_cap_str: str) -> Optional[float]:
         """
@@ -2149,7 +1868,7 @@ class StockUniverseService:
                 if exchange_name is None
                 else f"finviz_{exchange_name.lower()}"
             )
-            stats = self._ingest_snapshot_rows_via_pipeline(
+            stats = self._universe_ingestion_pipeline.ingest_snapshot_rows(
                 db,
                 market="US",
                 rows=stocks,

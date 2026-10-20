@@ -22,7 +22,6 @@ from ..services.market_activity_service import (
 )
 from ..services.official_universe_dispatch import (
     OFFICIAL_SOURCE_MARKETS as _OFFICIAL_SOURCE_MARKETS,
-    OFFICIAL_UNIVERSE_INGEST_METHODS as _OFFICIAL_UNIVERSE_INGEST_METHODS,
     ingest_official_market_snapshot,
 )
 from ..wiring.bootstrap import get_provider_snapshot_service, get_stock_universe_service
