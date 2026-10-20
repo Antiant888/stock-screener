@@ -395,7 +395,7 @@ Plots each group's **RS-Ratio** (x, relative-strength level) against **RS-Moment
 
 A group needs ≥ 12 weeks of history to plot and ≥ 30 weeks for a non-provisional reading; the default tail shows the last 8 weeks.
 
-The RRG transformation above is unchanged by `balanced-horizon-percentile-v2`; only its stored Group overall-RS input series changes. RRG history and rank-change comparisons are filtered to one formula version. Immediately after activation, balanced history may therefore be shorter or rankings may move substantially—especially for prior long-term winners with weak recent performance—without crossing the legacy/balanced boundary.
+The RRG transformation above is unchanged by `balanced-horizon-percentile-v2`; only its stored Group overall-RS input series changes. RRG history and rank-change comparisons read only balanced rows, so Group rows stored before the balanced cutover never enter them. Where balanced history is short, RRG reports insufficient history rather than mixing in older rows.
 
 ![RRG sector rotation with weekly tails](screenshots/rrg-rotation.png)
 *RRG — sector rotation; full 197-group scope available from the same view*

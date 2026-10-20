@@ -20,7 +20,7 @@ export function matrixFixture(market = 'US', count = 120) {
   }));
   return { schema_version:'group-matrix-v1', available:true, reason:null, market, feature_run_id:1,
     as_of_date:'2026-09-11', generated_at:'2026-09-13T00:00:00Z', metadata_read_at:'2026-09-13T00:00:00Z',
-    metadata_basis:'latest_stored', taxonomy:'ibd', rs_formula_version:'legacy-linear-v1', market_rs_run_id:null, rs_universe_size:null,
+    metadata_basis:'latest_stored', taxonomy:'ibd', rs_formula_version:'balanced-horizon-percentile-v2', market_rs_run_id:1, rs_universe_size:count,
     tiers, stocks, coverage: {stock_count:count, universe_count:count, ibd_mapped_count:count, missing_feature_count:0,
       unknown_sector_count:0, unknown_cap_count:stocks.filter(s=>s.market_cap_usd===null).length,
       missing_daily_change_count:stocks.filter(s=>s.price_change_1d===null).length,
