@@ -7,7 +7,9 @@ from datetime import date
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-from app.domain.relative_strength import BALANCED_RS_FORMULA_VERSION
+import pytest
+
+from app.domain.relative_strength import BALANCED_RS_FORMULA_VERSION, StockRsPlacement
 from app.services.market_rs_static_artifact_validator import (
     MarketRsStaticArtifactValidator,
     StaticRsArtifactDocuments,
@@ -125,6 +127,7 @@ def _latest_run():
                 symbol="BBB", overall_rs=80, rs_1m=78, rs_3m=79, rs_12m=81
             ),
         ],
+        placements=[],
     )
 
 
@@ -218,6 +221,7 @@ def test_stock_parity_allows_audited_rows_excluded_from_canonical_ratings():
                 rs_12m=91,
             )
         ],
+        placements=[],
     )
     identity = {
         "rs_formula_version": BALANCED_RS_FORMULA_VERSION,
@@ -332,6 +336,7 @@ def test_stock_parity_uses_latest_run_rows_when_streaming_disabled():
                 rs_12m=91,
             )
         ],
+        placements=[],
     )
     identity = {
         "rs_formula_version": BALANCED_RS_FORMULA_VERSION,
@@ -468,3 +473,139 @@ def test_validate_accepts_unavailable_groups_for_group_less_market(
     assert result.errors == ()
     assert result.rrg_status == "not_enabled"
     validate_group_parity.assert_not_called()
+
+
+# --- placed (young) stocks ---------------------------------------------------
+
+_IDENTITY = {
+    "rs_formula_version": BALANCED_RS_FORMULA_VERSION,
+    "market_rs_run_id": 42,
+    "rs_as_of_date": "2026-04-10",
+    "rs_universe_size": 1,
+}
+_AAA_ROW = {
+    "symbol": "AAA",
+    "rs_rating": 90,
+    "rs_rating_1m": 88,
+    "rs_rating_3m": 89,
+    "rs_rating_12m": 91,
+    **_IDENTITY,
+}
+_YNG_FIELDS = {"rs_rating": None, "rs_rating_1m": 66, "rs_rating_3m": 1, "rs_rating_12m": None}
+
+
+def _placement_row(symbol="YNG", **ratings):
+    row = SimpleNamespace(symbol=symbol)
+    for horizon in ("1d", "1w", "1m", "3m", "6m", "9m", "12m"):
+        setattr(row, f"rs_{horizon}", ratings.get(horizon))
+        setattr(row, f"excess_return_{horizon}", 0.05 if horizon in ratings else None)
+    return row
+
+
+def _run_with_placement(*, placements):
+    return SimpleNamespace(
+        id=42,
+        eligible_symbol_count=1,
+        rows=[SimpleNamespace(symbol="AAA", overall_rs=90, rs_1m=88, rs_3m=89, rs_12m=91)],
+        placements=placements,
+    )
+
+
+def _placed_errors(latest_run, *rows):
+    errors: list[str] = []
+    MarketRsStaticArtifactValidator(stream_stock_rows=False)._validate_stock_parity(
+        latest_run=latest_run,
+        through_date=date(2026, 4, 10),
+        documents=StaticRsArtifactDocuments(manifest={}, groups={}, scan_rows=tuple(rows)),
+        errors=errors,
+    )
+    return errors
+
+
+def _young_run():
+    return _run_with_placement(
+        placements=[_placement_row("YNG", **{"1d": 99, "1w": 99, "1m": 66, "3m": 1})]
+    )
+
+
+def test_stock_parity_accepts_a_placed_row_that_matches_its_placement():
+    errors = _placed_errors(_young_run(), _AAA_ROW, {"symbol": "YNG", **_YNG_FIELDS, **_IDENTITY})
+
+    assert errors == []
+
+
+@pytest.mark.parametrize(
+    ("overrides", "expected"),
+    [
+        ({"rs_rating_1m": 65}, ["Live/static placed stock mismatch for YNG.rs_rating_1m."]),
+        ({"rs_rating": 50}, ["Live/static placed stock mismatch for YNG.rs_rating."]),
+        (
+            {"rs_rating_1m": None, "rs_rating_3m": None},
+            [
+                "Live/static placed stock mismatch for YNG.rs_rating_1m.",
+                "Live/static placed stock mismatch for YNG.rs_rating_3m.",
+            ],
+        ),
+        ({"rs_universe_size": 2}, ["Static stock YNG.rs_universe_size=2; expected 1."]),
+    ],
+)
+def test_stock_parity_rejects_a_placed_row_that_differs_from_its_placement(overrides, expected):
+    errors = _placed_errors(
+        _young_run(), _AAA_ROW, {"symbol": "YNG", **_YNG_FIELDS, **_IDENTITY, **overrides}
+    )
+
+    assert errors == expected
+
+
+def test_stock_parity_still_rejects_rs_on_a_symbol_the_run_never_rated():
+    errors = _placed_errors(
+        _young_run(),
+        _AAA_ROW,
+        {"symbol": "GAP", "rs_rating": None, "rs_rating_1m": 40, "rs_rating_3m": None,
+         "rs_rating_12m": None, **_IDENTITY},
+    )
+
+    assert errors == [
+        "Static stock GAP carries RS ratings but is absent from the canonical Market RS run."
+    ]
+
+
+def test_stock_parity_counts_placed_rows_as_overlap():
+    errors = _placed_errors(_young_run(), {"symbol": "YNG", **_YNG_FIELDS, **_IDENTITY})
+
+    assert errors == []
+
+
+def test_stock_parity_treats_a_run_without_placements_as_today():
+    old_run = _run_with_placement(placements=[])
+    empty = {"rs_rating": None, "rs_rating_1m": None, "rs_rating_3m": None, "rs_rating_12m": None}
+
+    assert _placed_errors(old_run, _AAA_ROW, {"symbol": "YNG", **empty, **_IDENTITY}) == []
+
+
+def test_stock_parity_streams_placements_with_the_stock_rows():
+    repository = MagicMock()
+    repository.iter_stock_rows_for_run.return_value = iter(
+        [SimpleNamespace(symbol="AAA", overall_rs=90, rs_1m=88, rs_3m=89, rs_12m=91)]
+    )
+    repository.iter_placements_for_run.return_value = iter(
+        [StockRsPlacement("YNG", {"1d": 99, "1m": 66, "1w": 99, "3m": 1}, {h: 0.05 for h in ("1d", "1w", "1m", "3m")})]
+    )
+    validator = MarketRsStaticArtifactValidator(market_rs_repository=repository, stream_stock_rows=True)
+    errors: list[str] = []
+    db = object()
+
+    validator._validate_stock_parity(
+        db=db,
+        latest_run=SimpleNamespace(id=42, eligible_symbol_count=1),
+        through_date=date(2026, 4, 10),
+        documents=StaticRsArtifactDocuments(
+            manifest={},
+            groups={},
+            scan_rows=(_AAA_ROW, {"symbol": "YNG", **_YNG_FIELDS, "rs_rating_3m": 2, **_IDENTITY}),
+        ),
+        errors=errors,
+    )
+
+    assert errors == ["Live/static placed stock mismatch for YNG.rs_rating_3m."]
+    repository.iter_placements_for_run.assert_called_once_with(db, run_id=42)

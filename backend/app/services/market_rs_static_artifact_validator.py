@@ -17,7 +17,10 @@ from app.domain.relative_strength import (
     BALANCED_RS_FORMULA_VERSION,
     GROUP_AVG_RS_FIELDS,
 )
-from app.infra.db.repositories.market_rs_repo import MarketRsRunRepository
+from app.infra.db.repositories.market_rs_repo import (
+    MarketRsRunRepository,
+    placement_from_row,
+)
 from app.models.industry import IBDGroupRank
 from app.services.static_groups_rrg_export import (
     StaticGroupsRRGDatabasePayloadSource,
@@ -413,6 +416,7 @@ class MarketRsStaticArtifactValidator:
         documents: StaticRsArtifactDocuments,
         errors: list[str],
     ) -> None:
+        placed_by_symbol = {}
         if self.stream_stock_rows:
             if db is None:
                 errors.append(
@@ -427,8 +431,18 @@ class MarketRsStaticArtifactValidator:
                         run_id=latest_run.id,
                     )
                 }
+                placed_by_symbol = {
+                    placement.symbol: placement
+                    for placement in self.market_rs_repository.iter_placements_for_run(
+                        db,
+                        run_id=latest_run.id,
+                    )
+                }
         else:
             stock_by_symbol = {row.symbol: row for row in latest_run.rows}
+            placed_by_symbol = {
+                row.symbol: placement_from_row(row) for row in latest_run.placements
+            }
         stock_fields = {
             "rs_rating": "overall_rs",
             "rs_rating_1m": "rs_1m",
@@ -451,11 +465,22 @@ class MarketRsStaticArtifactValidator:
                         f"{static_row.get(field)!r}; expected {expected!r}."
                     )
             if stock is None:
-                if any(static_row.get(field) is not None for field in stock_fields):
-                    errors.append(
-                        f"Static stock {static_row.get('symbol')} carries RS ratings "
-                        "but is absent from the canonical Market RS run."
-                    )
+                placement = placed_by_symbol.get(static_row.get("symbol"))
+                if placement is None:
+                    if any(static_row.get(field) is not None for field in stock_fields):
+                        errors.append(
+                            f"Static stock {static_row.get('symbol')} carries RS ratings "
+                            "but is absent from the canonical Market RS run."
+                        )
+                    continue
+                compared += 1
+                placed_fields = placement.scanner_fields()
+                for static_field in stock_fields:
+                    if static_row.get(static_field) != placed_fields.get(static_field):
+                        errors.append(
+                            "Live/static placed stock mismatch for "
+                            f"{placement.symbol}.{static_field}."
+                        )
                 continue
             compared += 1
             for static_field, stock_field in stock_fields.items():
