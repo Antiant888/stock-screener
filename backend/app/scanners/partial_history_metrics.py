@@ -15,10 +15,7 @@ from app.analysis.patterns.rs_line import (
 from app.scanners.base_screener import StockData
 from app.scanners.criteria.adr_calculator import ADRCalculator
 from app.scanners.criteria.price_sparkline import PriceSparklineCalculator
-from app.scanners.criteria.rs_resolution import (
-    CanonicalStockRsUnavailable,
-    resolve_stock_rs,
-)
+from app.scanners.criteria.rs_resolution import canonical_rs_row_fields
 from app.scanners.criteria.rs_sparkline import RSSparklineCalculator
 
 
@@ -82,13 +79,7 @@ def partial_history_metrics(stock_data: StockData) -> dict[str, object]:
         ).as_scan_fields(),
     }
 
-    try:
-        resolved_rs = resolve_stock_rs(stock_data)
-    except CanonicalStockRsUnavailable:
-        resolved_rs = {}
-    for field in ("rs_rating", "rs_rating_1m", "rs_rating_3m", "rs_rating_12m"):
-        if resolved_rs.get(field) is not None:
-            metrics[field] = resolved_rs[field]
+    metrics.update(canonical_rs_row_fields(stock_data))
 
     if close_chrono is not None:
         price_result = PriceSparklineCalculator().calculate_price_sparkline(close_chrono)

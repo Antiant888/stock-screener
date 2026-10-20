@@ -28,3 +28,26 @@ def resolve_stock_rs(stock_data: StockData) -> dict[str, float | int]:
             f"{BALANCED_RS_FORMULA_VERSION} eligible universe"
         )
     return dict(source.ratings)
+
+
+def stock_rs_lacks_overall(stock_data: StockData) -> bool:
+    """True for a young listing: placed horizon ratings, no overall rating."""
+    source = stock_data.rs_source
+    return source is not None and source.placed_ratings is not None
+
+
+def resolve_optional_stock_rs(stock_data: StockData) -> dict[str, float | int] | None:
+    """Ratings for code that can work without the overall rating.
+
+    None for a young listing. Still raises for a stock with no canonical
+    rating at all, so broken data keeps failing closed.
+    """
+    if stock_rs_lacks_overall(stock_data):
+        return None
+    return resolve_stock_rs(stock_data)
+
+
+def canonical_rs_row_fields(stock_data: StockData) -> dict[str, int | None]:
+    """The scan row's RS fields; empty when no Market RS resolution is attached."""
+    source = stock_data.rs_source
+    return source.scan_row_fields() if source is not None else {}

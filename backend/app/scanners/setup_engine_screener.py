@@ -43,7 +43,7 @@ from app.scanners.base_screener import (
 from app.scanners.criteria.moving_averages import MovingAverageAnalyzer
 from app.scanners.criteria.rs_resolution import (
     CanonicalStockRsUnavailable,
-    resolve_stock_rs,
+    resolve_optional_stock_rs,
 )
 from app.scanners.criteria.stage_analysis import quick_stage_check
 from app.scanners.screener_registry import register_screener
@@ -67,6 +67,9 @@ class SetupEngineScanner(BaseStockScreener):
     def __init__(self) -> None:
         self._aggregator = SetupEngineAggregator()
         self._ma_analyzer = MovingAverageAnalyzer()
+
+    def needs_overall_rs(self, criteria: Optional[Dict] = None) -> bool:
+        return False
 
     def get_data_requirements(self, criteria: Optional[Dict] = None) -> DataRequirements:
         return DataRequirements(
@@ -381,7 +384,8 @@ class SetupEngineScanner(BaseStockScreener):
             else None
         )
         if rs_rating is None and stock_data is not None and stock_data.rs_source is not None:
-            rs_rating = float(resolve_stock_rs(stock_data)["rs_rating"])
+            resolved = resolve_optional_stock_rs(stock_data)
+            rs_rating = float(resolved["rs_rating"]) if resolved is not None else None
 
         return {
             "stage": stage,

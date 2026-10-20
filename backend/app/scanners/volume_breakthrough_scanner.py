@@ -49,6 +49,9 @@ class VolumeBreakthroughScanner(BaseStockScreener):
         """Return screener identifier."""
         return "volume_breakthrough"
 
+    def needs_overall_rs(self, criteria: Optional[Dict] = None) -> bool:
+        return False
+
     def get_data_requirements(self, criteria: Optional[Dict] = None) -> DataRequirements:
         """
         Specify data requirements for volume breakthrough detection.

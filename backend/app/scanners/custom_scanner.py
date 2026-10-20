@@ -82,6 +82,9 @@ class CustomScanner(BaseStockScreener):
         """Return screener name."""
         return "custom"
 
+    def needs_overall_rs(self, criteria: Optional[Dict] = None) -> bool:
+        return self._get_filters_config(criteria).get("rs_rating_min") is not None
+
     def get_data_requirements(self, criteria: Optional[Dict] = None) -> DataRequirements:
         """
         Get data requirements based on enabled filters.

@@ -39,6 +39,9 @@ class IPOScanner(BaseStockScreener):
         """Unique identifier for this screener."""
         return "ipo"
 
+    def needs_overall_rs(self, criteria: Optional[Dict] = None) -> bool:
+        return False
+
     def get_data_requirements(self, criteria: Optional[Dict] = None) -> DataRequirements:
         """
         Specify data requirements for IPO screening.

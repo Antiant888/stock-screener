@@ -11,7 +11,10 @@ from app.scanners.canslim_scanner import CANSLIMScanner
 from app.scanners.custom_scanner import CustomScanner
 from app.scanners.criteria.rs_resolution import (
     CanonicalStockRsUnavailable,
+    canonical_rs_row_fields,
+    resolve_optional_stock_rs,
     resolve_stock_rs,
+    stock_rs_lacks_overall,
 )
 from app.scanners.minervini_scanner import MinerviniScanner
 from app.scanners.data_preparation import DataPreparationLayer
@@ -347,3 +350,81 @@ def test_apply_market_rs_resolution_hydrates_only_the_resolutions_market():
     assert isinstance(us.rs_source, CanonicalStockRsSource)
     assert us.rs_source.ratings["rs_rating"] == 87
     assert hk.rs_source is None
+
+
+# --- young listings: horizon ratings without an overall ---------------------
+
+PLACED = {"rs_rating_1m": 66, "rs_rating_3m": 1}
+
+
+def _placed_stock_data() -> StockData:
+    data = _stock_data()
+    data.rs_source = CanonicalStockRsSource(
+        formula_version=BALANCED_RS_FORMULA_VERSION,
+        run_id=42,
+        universe_size=5000,
+        ratings=None,
+        placed_ratings=dict(PLACED),
+    )
+    return data
+
+
+def test_required_resolution_raises_for_a_placed_stock_and_optional_returns_none():
+    with pytest.raises(CanonicalStockRsUnavailable, match="TEST"):
+        resolve_stock_rs(_placed_stock_data())
+
+    assert resolve_optional_stock_rs(_placed_stock_data()) is None
+    assert stock_rs_lacks_overall(_placed_stock_data()) is True
+
+
+def test_optional_resolution_still_fails_closed_for_an_unrated_stock():
+    with pytest.raises(CanonicalStockRsUnavailable, match="TEST"):
+        resolve_optional_stock_rs(_ineligible_stock_data())
+
+    assert stock_rs_lacks_overall(_ineligible_stock_data()) is False
+    assert stock_rs_lacks_overall(_stock_data()) is False
+
+
+def test_optional_resolution_returns_the_canonical_ratings_for_an_eligible_stock():
+    assert resolve_optional_stock_rs(_canonical_stock_data()) == RATINGS
+
+
+def test_canonical_rs_row_fields_cover_every_source_state():
+    assert canonical_rs_row_fields(_placed_stock_data()) == {
+        "rs_rating": None,
+        "rs_rating_1m": 66,
+        "rs_rating_3m": 1,
+        "rs_rating_12m": None,
+    }
+    assert canonical_rs_row_fields(_canonical_stock_data()) == RATINGS
+    assert canonical_rs_row_fields(_stock_data()) == {}
+
+
+def test_precomputed_context_holds_no_ratings_for_a_placed_stock():
+    context = _build_precomputed_scan_context(_placed_stock_data())
+
+    assert context is not None
+    assert context.rs_ratings is None
+
+
+def test_partial_history_carries_placed_horizons_without_an_overall():
+    metrics = partial_history_metrics(_placed_stock_data())
+
+    assert metrics["rs_rating"] is None
+    assert metrics["rs_rating_1m"] == 66
+    assert metrics["rs_rating_3m"] == 1
+    assert metrics["rs_rating_12m"] is None
+
+
+def test_setup_engine_direct_path_scores_a_placed_stock_without_an_overall():
+    result = SetupEngineScanner().scan_stock("TEST", _placed_stock_data())
+
+    assert result.rating not in ("Error", "Insufficient Data")
+    assert result.details["setup_engine"]["rs_rating"] is None
+
+
+def test_custom_needs_the_overall_rating_only_when_its_criteria_filter_on_it():
+    assert CustomScanner().needs_overall_rs({"custom_filters": {"rs_rating_min": 80}}) is True
+    assert CustomScanner().needs_overall_rs({"rs_rating_min": 80}) is True
+    assert CustomScanner().needs_overall_rs({"custom_filters": {"price_min": 5}}) is False
+    assert CustomScanner().needs_overall_rs(None) is False

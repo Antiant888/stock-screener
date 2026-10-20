@@ -43,7 +43,12 @@ from .base_screener import (
     StockData,
     fifty_two_week_range,
 )
-from .criteria.rs_resolution import CanonicalStockRsUnavailable, resolve_stock_rs
+from .criteria.rs_resolution import (
+    CanonicalStockRsUnavailable,
+    canonical_rs_row_fields,
+    resolve_optional_stock_rs,
+    stock_rs_lacks_overall,
+)
 from .partial_history_metrics import partial_history_metrics
 from .scan_result_assembler import (
     ScanResultAssembler,
@@ -130,8 +135,12 @@ def _build_precomputed_scan_context(
         fifty_two_week_range(close_rev) if not close_rev.empty else (None, None)
     )
 
+    # A young listing gets None here, so no screener sees a ratings dict
+    # without an overall rating; an unrated stock still raises.
     rs_ratings = (
-        resolve_stock_rs(stock_data) if stock_data.rs_source is not None else None
+        resolve_optional_stock_rs(stock_data)
+        if stock_data.rs_source is not None
+        else None
     )
 
     rs_leadership = RsLineLeadershipSnapshot.empty()
@@ -259,11 +268,16 @@ def _composite_method(value: str) -> CompositeMethod:
 def _partition_screeners(
     screeners: dict[str, BaseStockScreener],
     history_bars: int,
+    *,
+    criteria: Optional[Dict],
+    lacks_overall_rs: bool,
 ) -> tuple[dict[str, BaseStockScreener], list[str]]:
     runnable: dict[str, BaseStockScreener] = {}
     unavailable: list[str] = []
     for name, screener in screeners.items():
-        if history_bars < _required_bars_for_screener(name):
+        if history_bars < _required_bars_for_screener(name) or (
+            lacks_overall_rs and screener.needs_overall_rs(criteria)
+        ):
             unavailable.append(name)
         else:
             runnable[name] = screener
@@ -414,7 +428,12 @@ class ScanOrchestrator:
             if context_error is not None:
                 return context_error
 
-            runnable, unavailable = _partition_screeners(screeners, history_bars)
+            runnable, unavailable = _partition_screeners(
+                screeners,
+                history_bars,
+                criteria=criteria,
+                lacks_overall_rs=stock_rs_lacks_overall(stock_data),
+            )
             preparation_error = self._pre_execution_result(
                 symbol=symbol,
                 stock_data=stock_data,
@@ -710,6 +729,8 @@ class ScanOrchestrator:
         if data_status == "insufficient_history":
             for key, value in partial_history_metrics(stock_data).items():
                 result.setdefault(key, value)
+        for key, value in canonical_rs_row_fields(stock_data).items():
+            result.setdefault(key, value)
         return result
 
     def _error_result(self, symbol: str, error: str) -> Dict:
