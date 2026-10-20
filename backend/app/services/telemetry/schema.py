@@ -132,10 +132,7 @@ def completeness_bucket_for(score: float) -> str:
 def low_completeness_ratio(payload: Dict[str, Any]) -> Optional[float]:
     """Return fraction of a completeness payload's universe in the 0-25 bucket.
 
-    Shared reader helper for the alert evaluator (live breach check) and the
-    weekly audit (historical regression signal) — both interpret the same
-    payload shape the same way, so the extraction keeps their semantics in
-    lockstep when the payload schema evolves.
+    Reader helper for the alert evaluator (live breach check).
     """
     total = payload.get("symbols_total") or 0
     if total <= 0:
@@ -161,9 +158,8 @@ def field_coverage_payload(
     without a registry lookup.
 
     Dynamic part (from ``stock_fundamentals.growth_reporting_cadence``):
-    per-symbol cadence distribution — the ``comparable_period_yoy`` count
-    over a non-zero ``cadence_eligible_universe`` is the cadence-fallback
-    signal operators watch.
+    per-symbol cadence distribution. No app code reads it; the fields stay
+    because the telemetry history API returns this payload unchanged.
     """
     return {
         "schema_version": SCHEMA_VERSION,
@@ -174,27 +170,6 @@ def field_coverage_payload(
         "cadence_counts": {str(k): int(v) for k, v in cadence_counts.items()},
         "cadence_eligible_universe": int(cadence_eligible_universe),
     }
-
-
-# The fallback-basis key name. String literal rather than an import from
-# growth_cadence_service to keep schema.py free of the growth-pipeline
-# dependency graph (schema is a foundation module; growth_cadence_service
-# depends on the capability registry which depends on routing policy).
-_BASIS_COMPARABLE_YOY = "comparable_period_yoy"
-
-
-def cadence_fallback_ratio(payload: Dict[str, Any]) -> Optional[float]:
-    """Return fraction of universe on comparable-period YoY fallback.
-
-    Shared reader so the alert evaluator and weekly audit agree on the
-    definition. ``comparable_period_yoy`` is the cadence-fallback marker
-    (see ``growth_cadence_service.BASIS_COMPARABLE_YOY``).
-    """
-    eligible = payload.get("cadence_eligible_universe") or 0
-    if eligible <= 0:
-        return None
-    fallbacks = (payload.get("cadence_counts") or {}).get(_BASIS_COMPARABLE_YOY, 0)
-    return float(fallbacks) / float(eligible)
 
 
 def unsupported_field_ratio(payload: Dict[str, Any]) -> Optional[float]:

@@ -99,19 +99,6 @@ def _classify(value: float, levels: Levels, direction: str) -> Optional[str]:
     return None
 
 
-def classify_metric_value(
-    metric_key: str,
-    market: str,
-    value: float,
-) -> Optional[str]:
-    """Classify a scalar metric gauge without mutating alert lifecycle rows."""
-    levels = thresholds_for(metric_key, market)
-    direction = _direction_for_metric(metric_key)
-    if not levels or direction is None:
-        return None
-    return _classify(value, levels, direction)
-
-
 def _format_alert(
     market: str, metric_key: str, severity: str, value: float, levels: Levels,
 ) -> Tuple[str, str]:

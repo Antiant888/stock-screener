@@ -420,7 +420,6 @@ flowchart LR
             <tr><td class="mono">Sun 03:00 ET</td><td><code>refresh_*_universe</code></td><td>Re-ingest each market's ticker universe from official sources</td></tr>
             <tr><td class="mono">*/15 min</td><td><code>poll-content-sources</code></td><td>Theme discovery: fetch due RSS / news / social sources</td></tr>
             <tr><td class="mono">:10 / :40</td><td><code>periodic-theme-extraction</code></td><td>LLM extracts themes + tickers from pending content</td></tr>
-            <tr><td class="mono">Sun 05:00 ET</td><td><code>weekly-telemetry-governance-audit</code></td><td>Emit a signed governance / launch-gate audit report</td></tr>
           </tbody>
         </table>
       </div>
@@ -542,11 +541,7 @@ flowchart LR
       </div>
 
       <div class="callout animate" style="--i:1; --accent:var(--dom)">
-        <span class="lab">Governance — launch gates</span>
-        Release readiness is codified in <code>services/governance/launch_gates.py</code>: nine deterministic gates (schema
-        readiness, universe integrity, benchmark/calendar correctness, fundamentals quality, extraction precision/recall,
-        US-parity, performance p95, observability drills, rollback kill-switches) aggregate into a
-        <strong>PASS / NO_GO / FAIL</strong> verdict, rendered to signed JSON + Markdown. Feature flags
+        <span class="lab">Feature flags</span>
         (<code>feature_themes</code>, <code>feature_chatbot</code>, <code>feature_tasks</code>) gate whole subsystems at the router.
       </div>
     </section>

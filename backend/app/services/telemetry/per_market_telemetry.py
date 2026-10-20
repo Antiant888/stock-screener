@@ -448,8 +448,7 @@ class PerMarketTelemetry:
 
         Eligible universe = active symbols with a non-NULL ``growth_metric_basis``.
         A NULL basis means fundamentals never landed or never produced a
-        reportable basis — excluding from the denominator prevents false
-        ``cadence_fallback_ratio`` signals driven by missing data.
+        reportable basis, so those symbols stay out of the denominator.
         """
         from sqlalchemy import func as sa_func
 
