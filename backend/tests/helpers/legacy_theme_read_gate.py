@@ -64,8 +64,6 @@ PREDICATE_MARKERS = frozenset({
 RAISING_MARKERS = frozenset({
     "app.api.v1.themes_taxonomy._reject_economic_mode",
     "app.api.v1.themes_queries._economic_endpoint_required",
-    "app.services.legacy_theme_write_guard.ensure_legacy_theme_writes_allowed",
-    "app.services.legacy_theme_write_guard.exit_if_legacy_theme_writes_blocked",
 })
 CONTEXT_MARKERS = frozenset({  # fenced writers: refused outside legacy write modes (#472)
     "app.services.theme_discovery_service.ThemeDiscoveryService._fenced_legacy_mutation",

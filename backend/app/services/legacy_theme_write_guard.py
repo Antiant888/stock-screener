@@ -4,7 +4,7 @@ Fenced legacy writers go through ``legacy_producer_write``, which admits only
 ``LEGACY_WRITE_MODES``. The writers that bypass that fence use the same mode set
 here, at two points:
 
-- On entry: tasks skip, APIs return 409 and CLIs refuse, so nothing starts.
+- On entry: tasks skip and APIs return 409, so nothing starts.
 - On write: a guarded writer (a decorated task, or a session marked with
   ``mark_legacy_theme_writer``) takes the shared publication fence in the
   transaction of its first write and re-checks the mode there, holding the
@@ -17,7 +17,6 @@ here, at two points:
 from __future__ import annotations
 
 import logging
-import sys
 from contextvars import ContextVar
 from datetime import datetime, timezone
 from functools import wraps
@@ -62,7 +61,7 @@ def legacy_theme_writes_blocked(db: Session) -> bool:
 
 
 def mark_legacy_theme_writer(session: Session) -> None:
-    """Fence every write this session makes (API request and CLI sessions)."""
+    """Fence every write this session makes (API request sessions)."""
     session.info[_MARK] = True
 
 
@@ -158,30 +157,3 @@ def skip_in_economic_authority(task=None, *, on_skip=None):
 
     return decorate(task) if task is not None else decorate
 
-
-def ensure_legacy_theme_writes_allowed(db: Session, *, force: bool = False) -> None:
-    """For operator CLIs: refuse in economic authority unless explicitly forced.
-
-    Unforced, the session is also marked, so its writes stay fenced if a
-    cutover happens while the CLI runs.
-    """
-    if force:
-        return
-    if legacy_theme_writes_blocked(db):
-        raise LegacyThemeWritesBlocked(
-            "Legacy Theme writes are disabled under economic authority; "
-            "rerun with --force-legacy-writes only if you intend to change legacy tables."
-        )
-    mark_legacy_theme_writer(db)
-
-
-def exit_if_legacy_theme_writes_blocked(db: Session, *, force: bool = False) -> None:
-    """CLI form of ``ensure_legacy_theme_writes_allowed``: print STOP and exit 1."""
-    try:
-        ensure_legacy_theme_writes_allowed(db, force=force)
-    except LegacyThemeWritesBlocked as exc:
-        print(f"STOP: {exc}", file=sys.stderr)
-        raise SystemExit(1) from exc
-
-
-FORCE_LEGACY_WRITES_HELP = "Write legacy Theme tables even under economic authority (#472)."

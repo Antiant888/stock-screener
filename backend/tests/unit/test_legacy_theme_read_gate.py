@@ -217,16 +217,11 @@ _FIXTURE = {
         def _reject_economic_mode(db): ...
     """,
     "services/legacy_theme_write_guard.py": """
-        def ensure_legacy_theme_writes_allowed(db, force=False): ...
-
         def skip_in_economic_authority(task=None, *, on_skip=None): ...
     """,
     "entry.py": """
         from app.api.v1.themes_taxonomy import _reject_economic_mode
-        from app.services.legacy_theme_write_guard import (
-            ensure_legacy_theme_writes_allowed,
-            skip_in_economic_authority,
-        )
+        from app.services.legacy_theme_write_guard import skip_in_economic_authority
         from app.services.economic_theme_read_service import EconomicThemeReader
         from app.services.readers import build_use_case, read_clusters, read_raw
 
@@ -312,11 +307,11 @@ _FIXTURE = {
             return read_clusters(db)
 
         def forced_raising_check(db):
-            ensure_legacy_theme_writes_allowed(db, force=True)  # bypasses the rejection
+            _reject_economic_mode(db, force=True)  # bypasses the rejection
             return read_clusters(db)
 
         def unforced_raising_check(db):
-            ensure_legacy_theme_writes_allowed(db, force=False)
+            _reject_economic_mode(db, force=False)
             return read_clusters(db)
 
         def finally_after_raising_check(db):
