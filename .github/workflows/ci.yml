@@ -438,8 +438,15 @@ jobs:
         run: |
           export IMAGE_OWNER="${GITHUB_REPOSITORY_OWNER,,}"
           if [[ "$EVENT_NAME" == "pull_request" ]]; then
-            # Fail rather than skip when the file list cannot be read.
-            changed="$(gh pr diff "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --name-only)"
+            # Fail rather than skip when the file list cannot be read. `gh pr diff`
+            # fails on diffs over 20,000 lines; the files API lists up to 3,000 files.
+            changed="$(gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/files" --jq '.[].filename')"
+            expected="$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" --jq '.changed_files')"
+            listed="$(grep -c . <<< "$changed" || true)"
+            if [[ "$listed" -ne "$expected" ]]; then
+              echo "Listed $listed of $expected changed files; refusing to skip." >&2
+              exit 1
+            fi
             if ! grep -qE '^(scripts/quickstart\.sh|scripts/run_quickstart_smoke\.sh|scripts/docker-compose-enabled-markets\.sh|docker-compose[^/]*\.yml|\.env\.docker\.example)$' <<< "$changed"; then
               echo "No install files changed; skipping."
               exit 0
