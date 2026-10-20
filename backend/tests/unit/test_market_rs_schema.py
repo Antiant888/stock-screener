@@ -3,7 +3,6 @@ from pathlib import Path
 
 from app.domain.relative_strength import HORIZONS
 from app.infra.db.models.relative_strength import (
-    STOCK_RS_PLACEMENT_CHECK,
     MarketRsRun,
     StockRsPlacementSnapshot,
     StockRsSnapshot,
@@ -84,7 +83,32 @@ def test_placement_snapshot_columns_follow_the_horizon_list():
     assert MarketRsRun.__table__.columns["placed_symbol_count"].nullable is True
 
 
-def test_placements_migration_extends_current_head_and_matches_the_model():
+PLACEMENT_CHECK_AT_0069 = (
+    "(rs_1d IS NULL OR rs_1d BETWEEN 1 AND 99) AND "
+    "((rs_1d IS NULL AND excess_return_1d IS NULL) OR (rs_1d IS NOT NULL AND excess_return_1d IS NOT NULL)) AND "
+    "(rs_1w IS NULL OR rs_1w BETWEEN 1 AND 99) AND "
+    "((rs_1w IS NULL AND excess_return_1w IS NULL) OR (rs_1w IS NOT NULL AND excess_return_1w IS NOT NULL)) AND "
+    "(rs_1w IS NULL OR rs_1d IS NOT NULL) AND "
+    "(rs_1m IS NULL OR rs_1m BETWEEN 1 AND 99) AND "
+    "((rs_1m IS NULL AND excess_return_1m IS NULL) OR (rs_1m IS NOT NULL AND excess_return_1m IS NOT NULL)) AND "
+    "(rs_1m IS NULL OR rs_1w IS NOT NULL) AND "
+    "(rs_3m IS NULL OR rs_3m BETWEEN 1 AND 99) AND "
+    "((rs_3m IS NULL AND excess_return_3m IS NULL) OR (rs_3m IS NOT NULL AND excess_return_3m IS NOT NULL)) AND "
+    "(rs_3m IS NULL OR rs_1m IS NOT NULL) AND "
+    "(rs_6m IS NULL OR rs_6m BETWEEN 1 AND 99) AND "
+    "((rs_6m IS NULL AND excess_return_6m IS NULL) OR (rs_6m IS NOT NULL AND excess_return_6m IS NOT NULL)) AND "
+    "(rs_6m IS NULL OR rs_3m IS NOT NULL) AND "
+    "(rs_9m IS NULL OR rs_9m BETWEEN 1 AND 99) AND "
+    "((rs_9m IS NULL AND excess_return_9m IS NULL) OR (rs_9m IS NOT NULL AND excess_return_9m IS NOT NULL)) AND "
+    "(rs_9m IS NULL OR rs_6m IS NOT NULL) AND "
+    "(rs_12m IS NULL OR rs_12m BETWEEN 1 AND 99) AND "
+    "((rs_12m IS NULL AND excess_return_12m IS NULL) OR (rs_12m IS NOT NULL AND excess_return_12m IS NOT NULL)) AND "
+    "(rs_12m IS NULL OR rs_9m IS NOT NULL) AND "
+    "rs_12m IS NULL"
+)
+
+
+def test_placements_migration_extends_current_head_with_a_frozen_check():
     migration_path = (
         Path(__file__).resolve().parents[2]
         / "alembic"
@@ -98,5 +122,5 @@ def test_placements_migration_extends_current_head_and_matches_the_model():
 
     assert migration.revision == "20261021_0069"
     assert migration.down_revision == "20261021_0068"
-    assert migration.HORIZONS == HORIZONS
-    assert migration.STOCK_RS_PLACEMENT_CHECK == STOCK_RS_PLACEMENT_CHECK
+    assert migration.HORIZONS == ("1d", "1w", "1m", "3m", "6m", "9m", "12m")
+    assert migration.STOCK_RS_PLACEMENT_CHECK == PLACEMENT_CHECK_AT_0069

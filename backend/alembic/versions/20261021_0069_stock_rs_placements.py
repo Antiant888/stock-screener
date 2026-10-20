@@ -3,7 +3,7 @@
 Additive. Completed runs keep their rows and their v2 snapshot contract, and
 their placed_symbol_count stays NULL, which means the run predates placement.
 The horizon list is a literal on purpose: a migration is frozen in time, and
-tests/unit/test_market_rs_schema.py pins it to the domain's RS_HORIZONS.
+tests/unit/test_market_rs_schema.py pins it and the CHECK to a literal snapshot.
 """
 
 from __future__ import annotations
