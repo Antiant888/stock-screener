@@ -10,6 +10,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.domain.relative_strength import BALANCED_RS_FORMULA_VERSION
+from app.services.bootstrap_readiness_service import BootstrapReadinessService
 from app.services.bootstrap_run_manifest import (
     BootstrapAlreadyRunning,
     BootstrapMarketOutcome,
@@ -86,8 +87,10 @@ class BootstrapDispatchLifecycle:
         self,
         *,
         repository: BootstrapRunManifestRepository | None = None,
+        readiness: BootstrapReadinessService | None = None,
     ) -> None:
         self.repository = repository or BootstrapRunManifestRepository()
+        self.readiness = readiness or BootstrapReadinessService()
 
     def claim(
         self,
@@ -131,6 +134,7 @@ class BootstrapDispatchLifecycle:
         previous_outcome: BootstrapMarketOutcome | None = None
         balanced_activation_completed = (
             completion.expected_formula_version == BALANCED_RS_FORMULA_VERSION
+            and self.readiness.has_balanced_publication(db, market)
         )
 
         try:

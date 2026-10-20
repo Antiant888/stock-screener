@@ -10,9 +10,12 @@ from typing import Mapping
 from sqlalchemy.orm import Session
 
 from ..domain.markets.catalog import get_market_catalog
-from ..infra.db.models.feature_store import FeatureRun
+from ..domain.relative_strength import (
+    BALANCED_RS_FORMULA_VERSION,
+    balanced_run_has_current_snapshot_contract,
+)
+from ..infra.db.models.feature_store import FeatureRun, FeatureRunPointer
 from ..infra.db.models.relative_strength import MarketRsRun
-from ..infra.db.repositories.market_rs_repo import MarketRsRunRepository
 from ..models.app_settings import AppSetting
 from ..models.industry import IBDGroupRank
 from ..models.market_breadth import MarketBreadth
@@ -20,6 +23,10 @@ from ..models.market_exposure import MarketExposure
 from ..models.scan_result import SCAN_TRIGGER_SOURCE_AUTO, Scan
 from ..models.stock import StockFundamental, StockPrice
 from ..models.stock_universe import StockUniverse
+from .feature_run_rs_identity import (
+    FeatureRunRsIdentityError,
+    resolve_feature_run_rs_identity,
+)
 
 PRE_BOOTSTRAP_SEED_IMPORT_KEY = "runtime.bootstrap.pre_bootstrap_seed_import"
 PRE_BOOTSTRAP_SEED_IMPORT_CATEGORY = "runtime_activity"
@@ -344,10 +351,9 @@ class BootstrapReadinessService:
                         market,
                         bootstrap_started_at=bootstrap_started_at,
                     ),
-                    rs_ready=self._has_completed_rs_run(
-                        db,
-                        market=market,
-                        expected_formula_version=normalized_expectations.get(market),
+                    rs_ready=(
+                        market not in normalized_expectations
+                        or self.has_balanced_publication(db, market)
                     ),
                 )
                 for market in normalized_markets
@@ -420,23 +426,33 @@ class BootstrapReadinessService:
             ),
         }
 
-    def _has_completed_rs_run(
-        self,
-        db: Session,
-        *,
-        market: str,
-        expected_formula_version: str | None,
-    ) -> bool:
-        if expected_formula_version is None:
-            return True
-        return (
-            MarketRsRunRepository().get_latest_completed(
-                db,
-                market=market,
-                formula_version=expected_formula_version,
-                load_rows=False,
+    def has_balanced_publication(self, db: Session, market: str) -> bool:
+        """The market's publication pointer names a committed balanced snapshot.
+
+        The shadow backfill writes completed balanced runs before validation and
+        before the pointer moves, so a completed run alone proves nothing.
+        """
+        market = self.normalize_market(market)
+        pointer = db.get(FeatureRunPointer, f"latest_published_market:{market}")
+        feature_run = db.get(FeatureRun, pointer.run_id) if pointer is not None else None
+        if feature_run is None or feature_run.status != "published":
+            return False
+        try:
+            resolution = resolve_feature_run_rs_identity(
+                feature_run,
+                ranking_date=feature_run.as_of_date,
             )
-            is not None
+        except FeatureRunRsIdentityError:
+            return False
+        if resolution.market_rs_run_id is None:
+            return False
+        rs_run = db.get(MarketRsRun, resolution.market_rs_run_id)
+        return (
+            rs_run is not None
+            and rs_run.status == "completed"
+            and rs_run.market == market
+            and rs_run.formula_version == BALANCED_RS_FORMULA_VERSION
+            and balanced_run_has_current_snapshot_contract(rs_run)
         )
 
     def _has_active_universe_rows(

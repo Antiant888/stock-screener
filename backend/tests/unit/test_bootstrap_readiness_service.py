@@ -11,8 +11,12 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.database import Base
-from app.domain.relative_strength import BALANCED_RS_FORMULA_VERSION
-from app.infra.db.models.feature_store import FeatureRun
+from app.domain.relative_strength import (
+    BALANCED_RS_FORMULA_VERSION,
+    BALANCED_RS_PRICE_BASIS,
+    BALANCED_RS_SNAPSHOT_SCHEMA_VERSION,
+)
+from app.infra.db.models.feature_store import FeatureRun, FeatureRunPointer
 from app.infra.db.models.relative_strength import MarketRsRun
 from app.models.app_settings import AppSetting
 from app.models.industry import IBDGroupRank
@@ -127,6 +131,64 @@ def seed_scan(
             feature_run_id=feature_run.id,
             started_at=ran_at,
             completed_at=ran_at if scan_status == "completed" else None,
+        )
+    )
+    db.commit()
+
+
+def seed_balanced_publication(
+    db,
+    *,
+    market: str = "US",
+    rs_status: str = "completed",
+    feature_status: str = "published",
+    snapshot_contract: bool = True,
+    with_run_id: bool = True,
+) -> None:
+    published_at = datetime(2026, 5, 1, 21, 0, tzinfo=timezone.utc)
+    rs_run = MarketRsRun(
+        market=market,
+        as_of_date=date(2026, 5, 1),
+        formula_version=BALANCED_RS_FORMULA_VERSION,
+        status=rs_status,
+        benchmark_symbol="SPY",
+        benchmark_as_of_date=date(2026, 5, 1),
+        universe_hash="hash",
+        expected_symbol_count=1,
+        eligible_symbol_count=1,
+        excluded_symbol_count=0,
+        diagnostics_json=(
+            {
+                "price_basis": BALANCED_RS_PRICE_BASIS,
+                "rs_snapshot_schema_version": BALANCED_RS_SNAPSHOT_SCHEMA_VERSION,
+            }
+            if snapshot_contract
+            else {}
+        ),
+    )
+    db.add(rs_run)
+    db.flush()
+    config = {
+        "market": market,
+        "rs_formula_version": BALANCED_RS_FORMULA_VERSION,
+        "rs_as_of_date": "2026-05-01",
+        "rs_universe_size": 1,
+    }
+    if with_run_id:
+        config["market_rs_run_id"] = rs_run.id
+    feature_run = FeatureRun(
+        as_of_date=date(2026, 5, 1),
+        run_type="daily_snapshot",
+        status=feature_status,
+        published_at=published_at if feature_status == "published" else None,
+        config_json=config,
+    )
+    db.add(feature_run)
+    db.flush()
+    db.add(
+        FeatureRunPointer(
+            key=f"latest_published_market:{market}",
+            run_id=feature_run.id,
         )
     )
     db.commit()
@@ -525,10 +587,30 @@ def test_pre_bootstrap_seed_import_rejects_bootstrap_outputs(
     assert service.is_pre_bootstrap_seed_import_installation(readiness_db) is False
 
 
-def test_market_readiness_requires_a_completed_balanced_run(readiness_db) -> None:
+def test_market_readiness_requires_a_committed_balanced_publication(readiness_db) -> None:
     seed_core_market_data(readiness_db)
     seed_scan(readiness_db)
     expectation = {"US": BALANCED_RS_FORMULA_VERSION}
+    # The shadow backfill's state: completed balanced runs, nothing published.
+    readiness_db.add(
+        MarketRsRun(
+            market="US",
+            as_of_date=date(2026, 4, 30),
+            formula_version=BALANCED_RS_FORMULA_VERSION,
+            status="completed",
+            benchmark_symbol="SPY",
+            benchmark_as_of_date=date(2026, 4, 30),
+            universe_hash="hash",
+            expected_symbol_count=1,
+            eligible_symbol_count=1,
+            excluded_symbol_count=0,
+            diagnostics_json={
+                "price_basis": BALANCED_RS_PRICE_BASIS,
+                "rs_snapshot_schema_version": BALANCED_RS_SNAPSHOT_SCHEMA_VERSION,
+            },
+        )
+    )
+    readiness_db.commit()
 
     before = BootstrapReadinessService().evaluate(
         readiness_db,
@@ -541,22 +623,7 @@ def test_market_readiness_requires_a_completed_balanced_run(readiness_db) -> Non
     assert before.rs_ready is False
     assert before.ready is False
 
-    readiness_db.add(
-        MarketRsRun(
-            market="US",
-            as_of_date=date(2026, 5, 1),
-            formula_version=BALANCED_RS_FORMULA_VERSION,
-            status="completed",
-            benchmark_symbol="SPY",
-            benchmark_as_of_date=date(2026, 5, 1),
-            universe_hash="hash",
-            expected_symbol_count=0,
-            eligible_symbol_count=0,
-            excluded_symbol_count=0,
-            diagnostics_json={},
-        )
-    )
-    readiness_db.commit()
+    seed_balanced_publication(readiness_db)
 
     after = BootstrapReadinessService().evaluate(
         readiness_db,
@@ -566,6 +633,91 @@ def test_market_readiness_requires_a_completed_balanced_run(readiness_db) -> Non
 
     assert after.rs_ready is True
     assert after.ready is True
+
+
+@pytest.mark.parametrize(
+    "publication_kwargs",
+    [
+        {"feature_status": "completed"},
+        {"rs_status": "failed"},
+        {"snapshot_contract": False},
+        {"with_run_id": False},
+    ],
+    ids=[
+        "feature-run-not-published",
+        "market-rs-run-not-completed",
+        "old-snapshot-contract",
+        "no-market-rs-run-id",
+    ],
+)
+def test_market_readiness_rejects_an_incomplete_publication(
+    readiness_db,
+    publication_kwargs,
+) -> None:
+    seed_core_market_data(readiness_db)
+    seed_scan(readiness_db)
+    seed_balanced_publication(readiness_db, **publication_kwargs)
+
+    result = BootstrapReadinessService().evaluate(
+        readiness_db,
+        enabled_markets=["US"],
+        expected_formula_versions={"US": BALANCED_RS_FORMULA_VERSION},
+    ).market_results["US"]
+
+    assert result.rs_ready is False
+    assert result.ready is False
+
+
+def test_runtime_bootstrap_status_stays_failed_until_the_publication_commits(
+    readiness_db,
+    monkeypatch,
+) -> None:
+    from types import SimpleNamespace
+
+    from app.services import runtime_preferences_service as module
+
+    seed_core_market_data(readiness_db)
+    seed_scan(readiness_db)
+    readiness_db.add(
+        MarketRsRun(
+            market="US",
+            as_of_date=date(2026, 4, 30),
+            formula_version=BALANCED_RS_FORMULA_VERSION,
+            status="completed",
+            benchmark_symbol="SPY",
+            benchmark_as_of_date=date(2026, 4, 30),
+            universe_hash="hash",
+            expected_symbol_count=1,
+            eligible_symbol_count=1,
+            excluded_symbol_count=0,
+            diagnostics_json={},
+        )
+    )
+    readiness_db.commit()
+    prefs = module.RuntimePreferences(
+        primary_market="US",
+        enabled_markets=["US"],
+        bootstrap_state="failed",
+    )
+    manifest = SimpleNamespace(pending_balanced_activation_markets=("US",))
+    monkeypatch.setattr(module, "get_runtime_preferences", lambda _db: prefs)
+    monkeypatch.setattr(
+        module,
+        "BootstrapRunManifestRepository",
+        lambda: SimpleNamespace(load=lambda _db: manifest),
+    )
+
+    status = module.get_runtime_bootstrap_status(readiness_db)
+
+    assert status.bootstrap_state == "failed"
+    assert status.bootstrap_required is True
+
+    seed_balanced_publication(readiness_db)
+
+    status = module.get_runtime_bootstrap_status(readiness_db)
+
+    assert status.bootstrap_state == "ready"
+    assert status.bootstrap_required is False
 
 
 def test_market_readiness_is_rs_ready_without_expectation(readiness_db) -> None:
