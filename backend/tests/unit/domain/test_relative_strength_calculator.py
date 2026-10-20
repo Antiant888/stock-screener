@@ -311,6 +311,14 @@ def test_percentile_ratings_map_five_distinct_values_to_the_fixed_scale():
     }
 
 
-def test_place_rejects_horizons_that_are_not_a_leading_prefix():
-    with pytest.raises(ValueError, match=r"Y excess returns \['1d', '1w', '3m'\] are not a leading prefix"):
-        place_stock_rs({"Y": {"1d": 0.1, "1w": 0.2, "3m": 0.3}}, against=E3)
+@pytest.mark.parametrize(
+    ("returns", "message"),
+    [
+        ({"1d": 0.1, "1w": 0.2, "3m": 0.3}, r"Y placement horizons .* are not the leading prefix"),
+        ({"1d": 0.1, "1m": 0.3}, r"Y placement horizons .* are not the leading prefix"),
+        ({"1d": 0.1, "1y": 0.3}, r"Y excess returns \['1d', '1y'\] name an unknown horizon"),
+    ],
+)
+def test_place_rejects_horizons_that_are_not_a_leading_prefix(returns, message):
+    with pytest.raises(ValueError, match=message):
+        place_stock_rs({"Y": returns}, against=E3)

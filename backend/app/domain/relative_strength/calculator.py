@@ -197,14 +197,10 @@ def place_stock_rs(
 
     placements: dict[str, StockRsPlacement] = {}
     for symbol, returns in young_excess_returns_by_symbol.items():
-        prefix = HORIZONS[: len(returns)]
-        if set(returns) != set(prefix):
-            raise ValueError(
-                f"{symbol} excess returns {list(returns)} are not a leading prefix "
-                f"of {list(HORIZONS)}"
-            )
+        if not set(returns) <= set(HORIZONS):
+            raise ValueError(f"{symbol} excess returns {list(returns)} name an unknown horizon")
         ratings: dict[str, int] = {}
-        for horizon in prefix:
+        for horizon in (h for h in HORIZONS if h in returns):
             value = float(returns[horizon])
             low = bisect_left(reference[horizon], value)
             high = bisect_right(reference[horizon], value)
