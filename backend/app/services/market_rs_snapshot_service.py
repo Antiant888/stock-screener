@@ -12,6 +12,7 @@ from app.domain.relative_strength import (
     BALANCED_RS_SNAPSHOT_SCHEMA_VERSION,
     balanced_run_has_current_snapshot_contract,
     calculate_balanced_rs,
+    place_stock_rs,
 )
 from app.infra.db.models.relative_strength import MarketRsRun
 from app.infra.db.repositories.market_rs_repo import MarketRsRunRepository
@@ -146,7 +147,11 @@ class MarketRsSnapshotService:
 
         try:
             scores = calculate_balanced_rs(inputs.excess_returns_by_symbol)
-            self.repository.replace_rows(db, run, scores)
+            placements = place_stock_rs(
+                inputs.young_excess_returns_by_symbol,
+                against=inputs.excess_returns_by_symbol,
+            )
+            self.repository.replace_rows(db, run, scores, placements=placements)
             self.repository.mark_completed(
                 run,
                 excluded_symbol_count=len(inputs.exclusions),

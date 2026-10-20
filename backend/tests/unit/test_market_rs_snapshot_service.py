@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, timedelta
 
 import pytest
 
@@ -6,9 +6,12 @@ from app.domain.relative_strength import (
     BALANCED_RS_FORMULA_VERSION,
     BALANCED_RS_PRICE_BASIS,
     BALANCED_RS_SNAPSHOT_SCHEMA_VERSION,
+    HORIZONS,
 )
-from app.infra.db.models.relative_strength import MarketRsRun
+from app.infra.db.models.relative_strength import MarketRsRun, StockRsSnapshot
 from app.infra.db.repositories.market_rs_repo import MarketRsRunRepository
+from app.models.industry import IBDIndustryGroup
+from app.services.canonical_group_ranking_service import CanonicalGroupRankingService
 from app.services.market_rs_inputs import MarketRsInputs, MarketRsInputUnavailable
 from app.services.market_rs_snapshot_service import (
     MarketRsSnapshotIncompatible,
@@ -218,3 +221,90 @@ def test_completed_run_without_current_snapshot_schema_is_incompatible(db_sessio
         rebuilt.diagnostics_json["rs_snapshot_schema_version"]
         == BALANCED_RS_SNAPSHOT_SCHEMA_VERSION
     )
+
+
+YNG = {"1d": 0.2, "1w": 0.2, "1m": 0.05, "3m": -0.2}
+
+
+def _inputs_with_young(young):
+    return MarketRsInputs(
+        market="US",
+        as_of_date=AS_OF,
+        benchmark_symbol="SPY",
+        benchmark_as_of_date=AS_OF,
+        universe_hash="u" * 64,
+        expected_symbols=("A", "B", "C", "GAP", "YNG"),
+        excess_returns_by_symbol={
+            symbol: {horizon: value for horizon in HORIZONS}
+            for symbol, value in (("A", -0.1), ("B", 0.0), ("C", 0.1))
+        },
+        exclusions={
+            "YNG": "missing_adjusted_126_session_anchor",
+            "GAP": "missing_adjusted_63_session_anchor",
+        },
+        current_price_coverage=1.0,
+        young_excess_returns_by_symbol=young,
+    )
+
+
+def _eligible_rows(run):
+    columns = [name for name in StockRsSnapshot.__table__.columns.keys() if name != "run_id"]
+    return [
+        tuple(getattr(row, name) for name in columns)
+        for row in sorted(run.rows, key=lambda row: row.symbol)
+    ]
+
+
+def test_young_stock_placement_leaves_eligible_rows_and_group_ranks_unchanged(
+    db_session,
+):
+    repository = MarketRsRunRepository()
+    db_session.add_all(
+        IBDIndustryGroup(symbol=symbol, industry_group="Software", market="US", source="manual")
+        for symbol in ("A", "B", "C", "YNG")
+    )
+    db_session.commit()
+    earlier = AS_OF - timedelta(days=1)
+
+    without = MarketRsSnapshotService(
+        input_loader=_FakeInputLoader(_inputs_with_young({})),
+        repository=repository,
+    ).calculate(db_session, market="US", as_of_date=earlier)
+    with_young = MarketRsSnapshotService(
+        input_loader=_FakeInputLoader(_inputs_with_young({"YNG": YNG})),
+        repository=repository,
+    ).calculate(db_session, market="US", as_of_date=AS_OF)
+
+    assert _eligible_rows(with_young) == _eligible_rows(without)
+    assert [
+        (row.symbol, row.overall_rs, row.rs_1d, row.rs_1m, row.rs_12m)
+        for row in sorted(without.rows, key=lambda row: row.symbol)
+    ] == [("A", 1, 1, 1, 1), ("B", 50, 50, 50, 50), ("C", 99, 99, 99, 99)]
+    for run in (without, with_young):
+        assert (run.eligible_symbol_count, run.excluded_symbol_count) == (3, 2)
+        assert run.diagnostics_json["rs_snapshot_schema_version"] == 2
+    assert (without.placed_symbol_count, without.placements) == (0, [])
+    assert with_young.placed_symbol_count == 1
+    assert [
+        (row.symbol, row.rs_1d, row.rs_1w, row.rs_1m, row.rs_3m, row.rs_6m, row.rs_12m)
+        for row in with_young.placements
+    ] == [("YNG", 99, 99, 66, 1, None, None)]
+
+    groups = CanonicalGroupRankingService(repository=repository)
+
+    def ranking(as_of_date):
+        rows = groups.calculate_and_stage(
+            db_session,
+            market="US",
+            as_of_date=as_of_date,
+            formula_version=BALANCED_RS_FORMULA_VERSION,
+        )
+        return [
+            {key: value for key, value in row.items() if key not in ("date", "market_rs_run_id")}
+            for row in rows
+        ]
+
+    assert ranking(AS_OF) == ranking(earlier)
+    assert [(row["industry_group"], row["avg_rs_rating"], row["num_stocks"]) for row in ranking(AS_OF)] == [
+        ("Software", 50.0, 3)
+    ]
