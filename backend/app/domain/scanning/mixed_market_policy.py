@@ -7,10 +7,9 @@ produce deterministic, fair rankings across markets, two distinct
 dimensions are normalized — and each is orthogonal to the other:
 
 1. **Percentiles — market-scoped.** RS percentiles are computed within
-   each market's peer set, not globally. Implemented upstream in
-   ``data_preparation._compute_market_rs_universe_performances``
-   (T6.2); this module documents the contract but does not compute
-   percentiles itself.
+   each market's peer set, not globally: every stock reads its ratings
+   from that Market's published Market RS snapshot. This module documents
+   the contract but does not compute percentiles itself.
 
 2. **Liquidity / cap constraints — USD-scoped in mixed mode.** When a
    scan spans >1 market, filters like ``market_cap_min`` / ``volume_min``

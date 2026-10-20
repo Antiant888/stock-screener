@@ -320,9 +320,6 @@ class MinerviniScanner(BaseStockScreener):
                 else resolve_stock_rs(data)
             )
 
-            # calculate_all_rs_ratings now surfaces relative_performance and
-            # percentile_rank from the weighted detail it already computed
-            # internally, so no second calculate_rs_rating call is needed.
             rs_result = {
                 'rs_rating': rs_ratings['rs_rating'],
                 'relative_performance': rs_ratings.get('relative_performance'),
