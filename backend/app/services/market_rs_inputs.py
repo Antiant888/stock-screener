@@ -312,27 +312,23 @@ class MarketRsInputLoader:
             if missing_offset is not None:
                 label = "current" if missing_offset == 0 else str(missing_offset)
                 exclusions[symbol] = f"missing_adjusted_{label}_session_anchor"
-                if missing_offset != 0:
-                    missing_anchor_by_symbol[symbol] = anchors[missing_offset]
-                    leading = {
-                        horizon: self._excess_return(
-                            prices, symbol, current_date, anchors[offset],
-                            benchmark_return=benchmark_returns[horizon],
-                        )
-                        for horizon, offset in HORIZON_SESSIONS.items()
-                        if offset < missing_offset
-                    }
-                    if leading:
-                        leading_excess_returns_by_symbol[symbol] = leading
-                continue
+                if missing_offset == 0:
+                    continue
+                missing_anchor_by_symbol[symbol] = anchors[missing_offset]
 
-            excess_returns_by_symbol[symbol] = {
-                horizon: self._excess_return(
-                    prices, symbol, current_date, anchors[offset],
-                    benchmark_return=benchmark_returns[horizon],
+            current_stock = prices[(symbol, current_date)]
+            returns = {
+                horizon: (
+                    current_stock / prices[(symbol, anchors[offset])] - 1.0
                 )
+                - benchmark_returns[horizon]
                 for horizon, offset in HORIZON_SESSIONS.items()
+                if missing_offset is None or offset < missing_offset
             }
+            if missing_offset is None:
+                excess_returns_by_symbol[symbol] = returns
+            elif returns:
+                leading_excess_returns_by_symbol[symbol] = returns
 
         history_gaps, young_symbols = self._classify_missing_anchors(
             db,
@@ -356,17 +352,6 @@ class MarketRsInputLoader:
                 if symbol in leading_excess_returns_by_symbol
             },
         )
-
-    @staticmethod
-    def _excess_return(
-        prices: dict[tuple[str, date], float],
-        symbol: str,
-        current_date: date,
-        anchor: date,
-        *,
-        benchmark_return: float,
-    ) -> float:
-        return (prices[(symbol, current_date)] / prices[(symbol, anchor)] - 1.0) - benchmark_return
 
     @staticmethod
     def _classify_missing_anchors(
