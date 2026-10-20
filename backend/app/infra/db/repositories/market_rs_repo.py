@@ -11,8 +11,17 @@ from typing import Iterator
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, object_session, selectinload
 
-from app.domain.relative_strength import StockRsScore
-from app.infra.db.models.relative_strength import MarketRsRun, StockRsSnapshot
+from app.domain.relative_strength import (
+    HORIZONS,
+    STOCK_RS_RATING_ATTR_BY_HORIZON,
+    StockRsPlacement,
+    StockRsScore,
+)
+from app.infra.db.models.relative_strength import (
+    MarketRsRun,
+    StockRsPlacementSnapshot,
+    StockRsSnapshot,
+)
 from app.models.industry import IBDGroupRank
 
 
@@ -35,6 +44,20 @@ class StockRsSnapshotRecord:
     excess_return_6m: float
     excess_return_9m: float
     excess_return_12m: float
+
+
+def placement_from_row(row) -> StockRsPlacement:
+    """Rebuild a domain placement from a placement row, re-checking its shape."""
+    ratings = {}
+    for horizon in HORIZONS:
+        rating = getattr(row, STOCK_RS_RATING_ATTR_BY_HORIZON[horizon])
+        if rating is not None:
+            ratings[horizon] = int(rating)
+    return StockRsPlacement(
+        row.symbol,
+        ratings,
+        {horizon: float(getattr(row, f"excess_return_{horizon}")) for horizon in ratings},
+    )
 
 
 class MarketRsRunRepository:
@@ -135,6 +158,8 @@ class MarketRsRunRepository:
             db.flush()
 
         run.rows.clear()
+        run.placements.clear()
+        run.placed_symbol_count = None
         run.status = "running"
         run.benchmark_symbol = benchmark_symbol
         run.benchmark_as_of_date = benchmark_as_of_date
@@ -152,7 +177,12 @@ class MarketRsRunRepository:
         db: Session,
         run: MarketRsRun,
         scores: Mapping[str, StockRsScore],
+        *,
+        placements: Mapping[str, StockRsPlacement] | None = None,
     ) -> None:
+        """Write the eligible rows and, when given, the young-stock placements.
+        ``placements=None`` leaves ``placed_symbol_count`` NULL, meaning placement
+        was not computed for this run."""
         if run.status == "completed":
             raise ValueError("completed Market RS runs are immutable")
         run.rows.clear()
@@ -179,6 +209,23 @@ class MarketRsRunRepository:
             for symbol, score in sorted(scores.items())
         )
         run.eligible_symbol_count = len(scores)
+        run.placements.clear()
+        if placements is not None:
+            run.placements.extend(
+                StockRsPlacementSnapshot(
+                    symbol=symbol,
+                    **{
+                        STOCK_RS_RATING_ATTR_BY_HORIZON[horizon]: placement.ratings.get(horizon)
+                        for horizon in HORIZONS
+                    },
+                    **{
+                        f"excess_return_{horizon}": placement.excess_returns.get(horizon)
+                        for horizon in HORIZONS
+                    },
+                )
+                for symbol, placement in sorted(placements.items())
+            )
+        run.placed_symbol_count = None if placements is None else len(placements)
         db.flush()
 
     @staticmethod
@@ -216,6 +263,16 @@ class MarketRsRunRepository:
                 raise ValueError(f"{row.symbol} has an out-of-range RS rating")
             if not math.isfinite(float(row.weighted_composite)):
                 raise ValueError(f"{row.symbol} has a non-finite RS composite")
+        if run.placed_symbol_count is not None:
+            if len(run.placements) != run.placed_symbol_count:
+                raise ValueError("placed symbol count does not match persisted placements")
+            if run.placed_symbol_count > excluded_symbol_count:
+                raise ValueError("placed symbols exceed excluded symbols")
+            eligible = {row.symbol for row in run.rows}
+            for row in run.placements:
+                if row.symbol in eligible:
+                    raise ValueError(f"{row.symbol} is both eligible and placed")
+                placement_from_row(row)
         run.excluded_symbol_count = excluded_symbol_count
         run.diagnostics_json = diagnostics
         run.status = "completed"
@@ -307,6 +364,22 @@ class MarketRsRunRepository:
                 excess_return_9m=float(row.excess_return_9m),
                 excess_return_12m=float(row.excess_return_12m),
             )
+
+    def iter_placements_for_run(
+        self,
+        db: Session,
+        *,
+        run_id: int,
+        batch_size: int = 1000,
+    ) -> Iterator[StockRsPlacement]:
+        query = (
+            db.query(StockRsPlacementSnapshot)
+            .filter(StockRsPlacementSnapshot.run_id == run_id)
+            .order_by(StockRsPlacementSnapshot.symbol)
+            .yield_per(max(1, int(batch_size)))
+        )
+        for row in query:
+            yield placement_from_row(row)
 
     def get_latest_completed(
         self,

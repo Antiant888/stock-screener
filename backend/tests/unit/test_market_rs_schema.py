@@ -1,8 +1,11 @@
 from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
 
+from app.domain.relative_strength import HORIZONS
 from app.infra.db.models.relative_strength import (
+    STOCK_RS_PLACEMENT_CHECK,
     MarketRsRun,
+    StockRsPlacementSnapshot,
     StockRsSnapshot,
 )
 from app.models.industry import IBDGroupRank
@@ -67,3 +70,33 @@ def test_short_horizon_group_rs_migration_extends_canonical_rs_revision():
 
     assert migration.revision == "20260805_0026"
     assert migration.down_revision == "20260718_0025"
+
+
+def test_placement_snapshot_columns_follow_the_horizon_list():
+    assert list(StockRsPlacementSnapshot.__table__.columns.keys()) == [
+        "run_id",
+        "symbol",
+        *(f"rs_{horizon}" for horizon in HORIZONS),
+        *(f"excess_return_{horizon}" for horizon in HORIZONS),
+    ]
+    assert StockRsPlacementSnapshot.__table__.columns["rs_1d"].nullable is False
+    assert StockRsPlacementSnapshot.__table__.columns["rs_12m"].nullable is True
+    assert MarketRsRun.__table__.columns["placed_symbol_count"].nullable is True
+
+
+def test_placements_migration_extends_current_head_and_matches_the_model():
+    migration_path = (
+        Path(__file__).resolve().parents[2]
+        / "alembic"
+        / "versions"
+        / "20261021_0069_stock_rs_placements.py"
+    )
+    spec = spec_from_file_location("stock_rs_placements_migration", migration_path)
+    assert spec is not None and spec.loader is not None
+    migration = module_from_spec(spec)
+    spec.loader.exec_module(migration)
+
+    assert migration.revision == "20261021_0069"
+    assert migration.down_revision == "20261021_0068"
+    assert migration.HORIZONS == HORIZONS
+    assert migration.STOCK_RS_PLACEMENT_CHECK == STOCK_RS_PLACEMENT_CHECK

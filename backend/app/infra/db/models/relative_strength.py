@@ -16,6 +16,30 @@ from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 
 from app.database import Base
+from app.domain.relative_strength import HORIZONS, STOCK_RS_RATING_ATTR_BY_HORIZON
+
+
+def _placement_check() -> str:
+    clauses = []
+    for index, horizon in enumerate(HORIZONS):
+        rating = STOCK_RS_RATING_ATTR_BY_HORIZON[horizon]
+        excess = f"excess_return_{horizon}"
+        clauses.append(f"({rating} IS NULL OR {rating} BETWEEN 1 AND 99)")
+        clauses.append(
+            f"(({rating} IS NULL AND {excess} IS NULL) "
+            f"OR ({rating} IS NOT NULL AND {excess} IS NOT NULL))"
+        )
+        if index:
+            previous = STOCK_RS_RATING_ATTR_BY_HORIZON[HORIZONS[index - 1]]
+            clauses.append(f"({rating} IS NULL OR {previous} IS NOT NULL)")
+    clauses.append(f"{STOCK_RS_RATING_ATTR_BY_HORIZON[HORIZONS[-1]]} IS NULL")
+    return " AND ".join(clauses)
+
+
+# Rated horizons form a leading prefix (a stock with the last horizon is
+# eligible, so the last rating is always NULL), each in 1..99 and paired with
+# its excess return.
+STOCK_RS_PLACEMENT_CHECK = _placement_check()
 
 
 class MarketRsRun(Base):
@@ -37,9 +61,16 @@ class MarketRsRun(Base):
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
     completed_at = Column(DateTime(timezone=True), nullable=True)
+    # NULL: the run predates young-stock placement. 0..N: placement ran.
+    placed_symbol_count = Column(Integer, nullable=True)
 
     rows = relationship(
         "StockRsSnapshot",
+        back_populates="run",
+        cascade="all, delete-orphan",
+    )
+    placements = relationship(
+        "StockRsPlacementSnapshot",
         back_populates="run",
         cascade="all, delete-orphan",
     )
@@ -51,6 +82,10 @@ class MarketRsRun(Base):
         CheckConstraint(
             "status IN ('running', 'completed', 'failed')",
             name="ck_market_rs_run_status",
+        ),
+        CheckConstraint(
+            "placed_symbol_count IS NULL OR placed_symbol_count >= 0",
+            name="ck_market_rs_run_placed_count",
         ),
         Index(
             "ix_market_rs_run_lookup",
@@ -100,3 +135,40 @@ class StockRsSnapshot(Base):
         ),
         Index("ix_stock_rs_symbol_run", "symbol", "run_id"),
     )
+
+
+class StockRsPlacementSnapshot(Base):
+    """One young stock's horizon ratings in one run, placed against that run's
+    eligible universe. Column names match StockRsSnapshot so
+    STOCK_RS_RATING_ATTR_BY_HORIZON maps both tables."""
+
+    __tablename__ = "stock_rs_placement_snapshots"
+
+    run_id = Column(
+        Integer,
+        ForeignKey("market_rs_runs.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    symbol = Column(String(20), primary_key=True)
+    rs_1d = Column(SmallInteger, nullable=False)
+    rs_1w = Column(SmallInteger, nullable=True)
+    rs_1m = Column(SmallInteger, nullable=True)
+    rs_3m = Column(SmallInteger, nullable=True)
+    rs_6m = Column(SmallInteger, nullable=True)
+    rs_9m = Column(SmallInteger, nullable=True)
+    rs_12m = Column(SmallInteger, nullable=True)
+    excess_return_1d = Column(Float, nullable=False)
+    excess_return_1w = Column(Float, nullable=True)
+    excess_return_1m = Column(Float, nullable=True)
+    excess_return_3m = Column(Float, nullable=True)
+    excess_return_6m = Column(Float, nullable=True)
+    excess_return_9m = Column(Float, nullable=True)
+    excess_return_12m = Column(Float, nullable=True)
+
+    run = relationship("MarketRsRun", back_populates="placements")
+
+    __table_args__ = (
+        CheckConstraint(STOCK_RS_PLACEMENT_CHECK, name="ck_stock_rs_placement_range"),
+        Index("ix_stock_rs_placement_symbol_run", "symbol", "run_id"),
+    )
+
