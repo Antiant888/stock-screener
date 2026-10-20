@@ -29,7 +29,6 @@ function renderBreadthPage() {
 
 const runtimeState = {
   runtimeReady: true,
-  uiSnapshots: { breadth: false },
   primaryMarket: 'HK',
   enabledMarkets: ['US', 'HK'],
   supportedMarkets: ['US', 'HK', 'IN', 'JP', 'KR', 'TW', 'CN', 'CA', 'DE', 'SG', 'AU', 'MY'],
@@ -115,7 +114,6 @@ beforeEach(() => {
   vi.clearAllMocks();
   window.localStorage.clear();
   runtimeState.runtimeReady = true;
-  runtimeState.uiSnapshots = { breadth: false };
   runtimeState.primaryMarket = 'HK';
   runtimeState.enabledMarkets = ['US', 'HK'];
   runtimeState.supportedMarkets = ['US', 'HK', 'IN', 'JP', 'KR', 'TW', 'CN', 'CA', 'DE', 'SG', 'AU', 'MY'];
@@ -169,6 +167,7 @@ describe('BreadthPage', () => {
     });
 
     renderBreadthPage();
+    await screen.findByText('04/24/26');
     const button = await screen.findByRole('button', {
       name: 'View 1 contributing stocks for Stocks Up 4%+',
     });
@@ -200,6 +199,7 @@ describe('BreadthPage', () => {
     });
 
     renderBreadthPage();
+    await screen.findByText('04/24/26');
     await user.click(await screen.findByRole('button', {
       name: 'View 1 contributing stocks for Stocks Up 4%+',
     }));
@@ -319,7 +319,6 @@ describe('BreadthPage', () => {
   });
 
   it('seeds bootstrap benchmark overlay under the live benchmark query key', async () => {
-    runtimeState.uiSnapshots = { breadth: true };
     breadthApi.getBreadthBootstrap.mockResolvedValue({
       is_stale: false,
       payload: {
@@ -347,9 +346,8 @@ describe('BreadthPage', () => {
 
     renderBreadthPage();
 
-    const chart = await screen.findByTestId('breadth-chart');
-    expect(chart).toHaveTextContent('2800.HK:1');
-    expect(chart).toHaveAttribute('data-error', '');
+    await waitFor(() => expect(screen.getByTestId('breadth-chart')).toHaveTextContent('2800.HK:1'));
+    expect(screen.getByTestId('breadth-chart')).toHaveAttribute('data-error', '');
   });
 
   it('refetches breadth data when the selected market changes', async () => {

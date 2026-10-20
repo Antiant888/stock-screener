@@ -69,33 +69,6 @@ export const getGroupDetail = async (industryGroup, days = 180, market = 'US') =
 };
 
 /**
- * Get Relative Rotation Graph (RRG) coordinates for groups or sector roll-ups.
- *
- * @param {string} scope - 'groups' or 'sectors'
- * @param {number} tailWeeks - Number of weekly tail points (default: 8)
- * @param {number} limit - Top-N series by rank (default: 197)
- * @param {string} market - Market code (default: 'US')
- * @returns {Promise<Object>} RRG response: { date, market, scope, groups: [...] }
- */
-export const getRRG = async (
-  scope = 'groups',
-  tailWeeks = 8,
-  limit = 197,
-  market = 'US',
-  asOfDate = null,
-) => {
-  const response = await apiClient.get('/v1/groups/rrg', {
-    params: groupRequestParams({
-      scope,
-      tail_weeks: tailWeeks,
-      limit,
-      market,
-    }, asOfDate)
-  });
-  return response.data;
-};
-
-/**
  * Get a bundled Relative Rotation Graph payload with all available scopes.
  *
  * @param {number} tailWeeks - Number of weekly tail points (default: 8)
@@ -111,16 +84,6 @@ export const getRRGBundle = async (tailWeeks = 8, limit = 197, market = 'US', as
       market,
     }, asOfDate)
   });
-  return response.data;
-};
-
-/**
- * Get summary statistics for ranking data.
- *
- * @returns {Promise<Object>} Summary with total_records, date range, etc.
- */
-export const getRankingsSummary = async () => {
-  const response = await apiClient.get('/v1/groups/summary');
   return response.data;
 };
 

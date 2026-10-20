@@ -137,17 +137,6 @@ export const importItems = async (watchlistId, payload) => {
 };
 
 /**
- * Update an item.
- * @param {number} itemId - The item ID
- * @param {Object} updates - Fields to update { display_name?, notes?, position? }
- * @returns {Promise<Object>} Updated item
- */
-export const updateItem = async (itemId, updates) => {
-  const response = await apiClient.put(`${BASE_PATH}/items/${itemId}`, updates);
-  return response.data;
-};
-
-/**
  * Remove an item from a watchlist.
  * @param {number} itemId - The item ID
  * @returns {Promise<Object>} Deletion confirmation

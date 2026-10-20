@@ -38,7 +38,6 @@ const fetchPriceHistoryBatch = vi.fn();
 const runtimeState = {
   features: { tasks: false },
   runtimeReady: true,
-  uiSnapshots: { groups: false },
   primaryMarket: 'HK',
   enabledMarkets: ['HK', 'US'],
   supportedMarkets: ['US', 'HK', 'IN', 'JP', 'KR', 'TW', 'CN', 'CA', 'DE', 'SG', 'AU', 'MY'],
@@ -118,11 +117,11 @@ describe('GroupRankingsPage', () => {
     window.localStorage.clear();
     runtimeState.features = { tasks: false };
     runtimeState.runtimeReady = true;
-    runtimeState.uiSnapshots = { groups: false };
     runtimeState.primaryMarket = 'HK';
     runtimeState.enabledMarkets = ['HK', 'US'];
     runtimeState.supportedMarkets = ['US', 'HK', 'IN', 'JP', 'KR', 'TW', 'CN', 'CA', 'DE', 'SG', 'AU', 'MY'];
     getGroupsBootstrap.mockReset();
+    getGroupsBootstrap.mockRejectedValue(new Error('no snapshot'));
     getCurrentRankings.mockReset();
     getRankMovers.mockReset();
     getGroupDetail.mockReset();
@@ -301,7 +300,8 @@ describe('GroupRankingsPage', () => {
 
     renderGroupRankingsPage();
 
-    const table = (await screen.findByRole('columnheader', { name: 'RS' })).closest('table');
+    await screen.findByText('HK Retail');
+    const table = screen.getByRole('columnheader', { name: 'RS' }).closest('table');
     const rows = within(table).getAllByRole('row');
     const highCells = within(rows[1]).getAllByRole('cell');
     const boundaryCells = within(rows[2]).getAllByRole('cell');
@@ -363,7 +363,8 @@ describe('GroupRankingsPage', () => {
 
     renderGroupRankingsPage();
 
-    const table = (await screen.findByRole('columnheader', { name: 'Top' })).closest('table');
+    await screen.findByText('HK Retail');
+    const table = screen.getByRole('columnheader', { name: 'Top' }).closest('table');
     const user = userEvent.setup();
     await user.click(within(table).getByRole('button', { name: 'Top' }));
 
@@ -376,7 +377,8 @@ describe('GroupRankingsPage', () => {
   ])('opens live group detail from the focused row with $name', async ({ key }) => {
     renderGroupRankingsPage();
 
-    const table = (await screen.findByRole('columnheader', { name: 'Industry Group' })).closest('table');
+    await screen.findByText('HK Internet Services');
+    const table = screen.getByRole('columnheader', { name: 'Industry Group' }).closest('table');
     const row = within(table).getAllByRole('row')[1];
     expect(row).toHaveAttribute('tabindex', '0');
 
@@ -449,7 +451,6 @@ describe('GroupRankingsPage', () => {
   });
 
   it('pins live RRG fallback to the fresh bootstrap ranking date', async () => {
-    runtimeState.uiSnapshots = { groups: true };
     const snapshotRow = {
       ...rankingRowFor('HK'),
       date: '2026-03-16',
@@ -493,7 +494,6 @@ describe('GroupRankingsPage', () => {
 
   it('advances the bootstrap date while the page remains open and pins RRG to it', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
-    runtimeState.uiSnapshots = { groups: true };
     const snapshots = ['2026-04-09', '2026-04-10'].map((snapshotDate) => {
       const row = { ...rankingRowFor('HK'), date: snapshotDate };
       return {
@@ -540,7 +540,6 @@ describe('GroupRankingsPage', () => {
 
   it('refreshes bootstrap before date-pinned queries after a calculation completes', async () => {
     runtimeState.features = { tasks: true };
-    runtimeState.uiSnapshots = { groups: true };
     runtimeState.primaryMarket = 'US';
     runtimeState.enabledMarkets = ['US'];
     const bootstrapFor = (snapshotDate) => {
@@ -596,7 +595,6 @@ describe('GroupRankingsPage', () => {
 
   it('uses the live latest rankings when bootstrap publication stays stale after calculation', async () => {
     runtimeState.features = { tasks: true };
-    runtimeState.uiSnapshots = { groups: true };
     runtimeState.primaryMarket = 'US';
     runtimeState.enabledMarkets = ['US'];
     const staleRow = { ...rankingRowFor('US'), date: '2026-04-09' };
@@ -645,7 +643,6 @@ describe('GroupRankingsPage', () => {
 
   it('returns from live fallback to the snapshot when a later calculation publishes', async () => {
     runtimeState.features = { tasks: true };
-    runtimeState.uiSnapshots = { groups: true };
     runtimeState.primaryMarket = 'US';
     runtimeState.enabledMarkets = ['US'];
     const bootstrapFor = (snapshotDate) => {
@@ -778,14 +775,15 @@ describe('GroupRankingsPage', () => {
     expect(screen.getByText('batch failed')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument();
   });
-});
 
- it('keeps Matrix reachable when rankings fail and RRG is unavailable', async () => {
-  getCurrentRankings.mockRejectedValue(new Error('ranking failure'));
-  getGroupMatrix.mockResolvedValue({available:false, reason:'missing_ibd_mappings'});
-  renderGroupRankingsPage();
-  expect(await screen.findByRole('tab', {name:'Matrix'})).toBeInTheDocument();
-  expect(getGroupMatrix).not.toHaveBeenCalled();
-  fireEvent.click(screen.getByRole('tab', {name:'Matrix'}));
-  expect(await screen.findByText(/IBD classifications are not available/)).toBeInTheDocument();
- });
+  it('keeps Matrix reachable when rankings fail and RRG is unavailable', async () => {
+    getCurrentRankings.mockRejectedValue(new Error('ranking failure'));
+    getGroupMatrix.mockResolvedValue({ available: false, reason: 'missing_ibd_mappings' });
+    renderGroupRankingsPage();
+    expect(await screen.findByText(/Error loading rankings: ranking failure/)).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'Matrix' })).toBeInTheDocument();
+    expect(getGroupMatrix).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('tab', { name: 'Matrix' }));
+    expect(await screen.findByText(/IBD classifications are not available/)).toBeInTheDocument();
+  });
+});

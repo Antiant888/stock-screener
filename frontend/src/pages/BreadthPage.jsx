@@ -35,14 +35,13 @@ import {
 } from '../pageBootstrapQueries';
 
 function BreadthPage() {
-  const { runtimeReady, uiSnapshots } = useRuntime();
+  const { runtimeReady } = useRuntime();
   const queryClient = useQueryClient();
   const { market: selectedMarket } = useMarketForCapability(
     'breadth',
     BREADTH_MARKET_FALLBACKS,
   );
   const [chartTimeRange, setChartTimeRange] = useState('1M');
-  const snapshotEnabled = runtimeReady && Boolean(uiSnapshots?.breadth);
   const chartDateRange = getBreadthDateRange(chartTimeRange);
   const { startDate, endDate } = breadthHistoryWindow();
   const periodMap = { '1M': '1mo', '3M': '3mo', '6M': '6mo', '1Y': '1y' };
@@ -51,11 +50,8 @@ function BreadthPage() {
 
   const breadthBootstrap = useQuery({
     ...breadthBootstrapQuery(queryClient, selectedMarket),
-    enabled: snapshotEnabled,
   });
-  const liveQueriesEnabled = runtimeReady && (
-    !snapshotEnabled || breadthBootstrap.isSuccess || breadthBootstrap.isError
-  );
+  const liveQueriesEnabled = breadthBootstrap.isSuccess || breadthBootstrap.isError;
   const contributorDrilldown = useBreadthContributors({
     market: selectedMarket,
     indexQueryKey: liveQueriesEnabled

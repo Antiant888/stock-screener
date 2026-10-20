@@ -976,7 +976,6 @@ class Settings(BaseSettings):
                 self.social_signals_mode == "live"
                 and self.social_ingest_provider != "disabled"
             ),
-            "ui_snapshots": True,
         }
 
     class Config:

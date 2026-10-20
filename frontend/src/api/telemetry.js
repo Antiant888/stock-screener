@@ -1,28 +1,7 @@
 /**
- * API client for per-market telemetry endpoints (beads asia.10.1 + 10.2).
+ * API client for telemetry alerts and opportunity-evidence open events.
  */
 import apiClient from './client';
-
-/** Latest gauges + today's counters across every supported market. */
-export const fetchMarketSummaries = async () => {
-  const response = await apiClient.get('/v1/telemetry/markets');
-  return response.data;
-};
-
-/** Detailed summary for one market. */
-export const fetchMarketDetail = async (market) => {
-  const response = await apiClient.get(`/v1/telemetry/markets/${encodeURIComponent(market)}`);
-  return response.data;
-};
-
-/** Recent raw events for one (market, metric_key). Capped at 15 days, 1000 rows. */
-export const fetchMetricHistory = async (market, metricKey, { days = 15, limit = 200 } = {}) => {
-  const response = await apiClient.get(
-    `/v1/telemetry/markets/${encodeURIComponent(market)}/${encodeURIComponent(metricKey)}`,
-    { params: { days, limit } },
-  );
-  return response.data;
-};
 
 /**
  * Active alerts (open + acknowledged). When ``evaluate`` is true (default),

@@ -9,9 +9,6 @@ import { renderWithProviders } from '../test/renderWithProviders';
 
 const runtimeState = {
   runtimeReady: false,
-  uiSnapshots: {
-    scan: false,
-  },
   scanDefaults: DEFAULT_SCAN_DEFAULTS,
   universeOptions: null,
   features: {},
@@ -89,7 +86,6 @@ beforeEach(() => {
   window.history.replaceState(null, '', '/scan');
   vi.clearAllMocks();
   runtimeState.runtimeReady = false;
-  runtimeState.uiSnapshots = { scan: false };
   runtimeState.scanDefaults = DEFAULT_SCAN_DEFAULTS;
   runtimeState.universeOptions = null;
   runtimeState.features = {};
@@ -108,7 +104,7 @@ beforeEach(() => {
       markets: [],
     },
   });
-  scanApi.getScanBootstrap.mockResolvedValue(null);
+  scanApi.getScanBootstrap.mockRejectedValue(new Error('no snapshot'));
   scanApi.getScanStatus.mockResolvedValue({ status: 'completed' });
   scanApi.queryScanResults.mockResolvedValue({ total: 0, results: [] });
   scanApi.getFilterOptions.mockResolvedValue({
@@ -188,7 +184,6 @@ describe('ScanPage', () => {
 
     beforeEach(() => {
       runtimeState.runtimeReady = true;
-      runtimeState.uiSnapshots = { scan: true };
     });
 
     it('requests the selected market and seeds its scan history from the snapshot', async () => {
@@ -233,7 +228,6 @@ describe('ScanPage', () => {
 
   it('renders completed scan results flow with filter panel', async () => {
     runtimeState.runtimeReady = true;
-    runtimeState.uiSnapshots = { scan: true };
     scanApi.getScanBootstrap.mockResolvedValue({
       is_stale: false,
       payload: {
@@ -448,7 +442,6 @@ describe('ScanPage', () => {
 
   it('keeps the applied rows and sort indicator atomic when a grouped query fails', async () => {
     runtimeState.runtimeReady = true;
-    runtimeState.uiSnapshots = { scan: true };
     runtimeState.features = { grouped_scan_filters: true };
     scanApi.getScanBootstrap.mockResolvedValue({
       is_stale: false,
@@ -529,7 +522,6 @@ describe('ScanPage', () => {
   it('renders bootstrap stale-tail warning and clears it for a new scan', async () => {
     const user = userEvent.setup();
     runtimeState.runtimeReady = true;
-    runtimeState.uiSnapshots = { scan: true };
     scanApi.getScanBootstrap.mockResolvedValue({
       is_stale: false,
       payload: {

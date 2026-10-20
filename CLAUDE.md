@@ -218,7 +218,7 @@ The Celery task `app.tasks.cache_tasks.cleanup_orphaned_scans` remains the sched
 - **React 18** with Vite
 - **Material-UI** for components
 - **React Query** (TanStack) for data fetching
-- **TanStack Table** for results display
+- **MUI Table** with TanStack Virtual row virtualization for results display
 - Pages in `frontend/src/pages/`: ScanPage, ChatbotPage, ThemesPage, GroupRankingsPage, BreadthPage, SignalsPage
 
 ### Frontend API Client Convention

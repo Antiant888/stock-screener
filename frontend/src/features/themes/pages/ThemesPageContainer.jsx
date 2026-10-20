@@ -96,7 +96,7 @@ function ThemesPage() {
   const [dismissingAlertId, setDismissingAlertId] = useState(null);
   const [selectedEconomicThemeId, setSelectedEconomicThemeId] = useState(null);
 
-  const { runtimeReady, uiSnapshots, features = {} } = useRuntime();
+  const { runtimeReady, features = {} } = useRuntime();
   const { selectedMarket } = useMarket();
   const { isPipelineRunning, startPipeline } = usePipeline();
   const queryClient = useQueryClient();
@@ -124,12 +124,10 @@ function ThemesPage() {
     staleTime: 60_000,
   });
 
-  const snapshotEnabled = runtimeReady && Boolean(uiSnapshots?.themes);
   const bootstrapVariantKey = `${selectedPipeline}:${themeView}`;
   const bootstrapSettled = Boolean(bootstrapSettledVariants[bootstrapVariantKey]);
   const authorityResolved = !economicCatalogQuery.isPending;
-  const liveQueriesEnabled = runtimeReady && authorityResolved && !economicMode
-    && (!snapshotEnabled || bootstrapSettled);
+  const liveQueriesEnabled = runtimeReady && authorityResolved && !economicMode && bootstrapSettled;
 
   const handleSourceTypeToggle = (sourceType) => {
     setSelectedSourceTypes((previous) => {
@@ -213,16 +211,13 @@ function ThemesPage() {
   const themesBootstrapQuery = useQuery({
     queryKey: ['themesBootstrap', selectedPipeline, themeView],
     queryFn: () => getThemesBootstrap({ pipeline: selectedPipeline, themeView }),
-    enabled: authorityResolved && !economicMode && snapshotEnabled && !bootstrapSettled,
+    enabled: authorityResolved && !economicMode && !bootstrapSettled,
     retry: false,
     staleTime: 60_000,
   });
-  const isBootstrappingVariant = snapshotEnabled && !bootstrapSettled && themesBootstrapQuery.isPending;
+  const isBootstrappingVariant = !bootstrapSettled && themesBootstrapQuery.isPending;
 
   useEffect(() => {
-    if (!snapshotEnabled) {
-      return;
-    }
     if (themesBootstrapQuery.isError) {
       setBootstrapSettledVariants((previous) => ({ ...previous, [bootstrapVariantKey]: true }));
       return;
@@ -258,7 +253,6 @@ function ThemesPage() {
     bootstrapVariantKey,
     queryClient,
     selectedPipeline,
-    snapshotEnabled,
     themesBootstrapQuery.data,
     themesBootstrapQuery.isError,
     themesBootstrapQuery.isSuccess,

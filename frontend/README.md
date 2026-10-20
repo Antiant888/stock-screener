@@ -30,7 +30,7 @@ The Vite dev server proxies `/api` to `http://127.0.0.1:8000`, so the backend sh
 | Vite | Dev server and production build |
 | MUI | Component system and icons |
 | TanStack Query | Server state, caching, polling, invalidation |
-| TanStack Table / Virtual | Scan tables and large result lists |
+| TanStack Virtual | Row virtualization for scan tables and large result lists |
 | Recharts | Sparklines, breadth, exposure, and dashboard charts |
 | lightweight-charts | Candlestick and chart-modal views |
 | axios | HTTP client |

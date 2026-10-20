@@ -42,7 +42,7 @@ async function installGroupChartFixtures(page) {
         features: { tasks: false, themes: false, chatbot: false },
         auth: { required: false, authenticated: true }, bootstrap_required: false,
         primary_market: 'US', enabled_markets: ['US'], supported_markets: ['US'],
-        ui_snapshots: { enabled: false, groups: false }, api_base_path: '/api',
+        api_base_path: '/api',
         market_catalog: {
           version: 'test',
           markets: [{ code: 'US', label: 'United States', capabilities: { group_rankings: true, rrg_scopes: [] } }],
@@ -77,6 +77,7 @@ async function installGroupChartFixtures(page) {
       });
     }
     if (pathname.includes('/groups/rrg')) return json(route, { detail: 'not in fixture' }, 503);
+    if (pathname.endsWith('/groups/bootstrap')) return json(route, { detail: 'no snapshot' }, 404);
     unexpected.push(pathname);
     return json(route, { detail: `unexpected ${pathname}` }, 500);
   });

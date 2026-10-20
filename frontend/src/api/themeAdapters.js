@@ -139,37 +139,6 @@ export const adaptMergeHistoryResponse = (raw) => {
   };
 };
 
-const adaptLifecycleTransition = (raw) => {
-  if (!isObject(raw)) throw new Error('Invalid lifecycle transition row');
-  return {
-    id: requireNumber(raw.id, 'lifecycle transition id'),
-    theme_cluster_id: requireNumber(raw.theme_cluster_id, 'theme_cluster_id'),
-    theme_name: requireString(raw.theme_name, 'theme_name'),
-    pipeline: requireString(raw.pipeline, 'pipeline'),
-    from_state: requireString(raw.from_state, 'from_state'),
-    to_state: requireString(raw.to_state, 'to_state'),
-    actor: requireString(raw.actor, 'actor'),
-    job_name: asString(raw.job_name),
-    rule_version: asString(raw.rule_version),
-    reason: asString(raw.reason),
-    transition_metadata: isObject(raw.transition_metadata) ? raw.transition_metadata : {},
-    transitioned_at: asString(raw.transitioned_at),
-    transition_history_path: requireString(raw.transition_history_path, 'transition_history_path'),
-    runbook_url: requireString(raw.runbook_url, 'runbook_url'),
-  };
-};
-
-export const adaptLifecycleTransitionsResponse = (raw) => {
-  if (!isObject(raw)) {
-    throw new Error('Invalid lifecycle transitions response');
-  }
-  const rawTransitions = Array.isArray(raw.transitions) ? raw.transitions : [];
-  return {
-    total: Number.isFinite(Number(raw.total)) ? Number(raw.total) : rawTransitions.length,
-    transitions: rawTransitions.map(adaptLifecycleTransition),
-  };
-};
-
 const adaptCandidateQueueItem = (raw) => {
   if (!isObject(raw)) throw new Error('Invalid candidate queue row');
   return {

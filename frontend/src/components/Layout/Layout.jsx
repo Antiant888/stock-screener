@@ -183,7 +183,6 @@ const loadQuietly = (loader) => loader?.().catch(() => {});
 function useNavPrefetch() {
   const queryClient = useQueryClient();
   const location = useLocation();
-  const { uiSnapshots } = useRuntime();
   const { selectedMarket } = useMarket();
   const { market: groupsMarket } = useMarketForCapability(
     'group_rankings',
@@ -199,10 +198,10 @@ function useNavPrefetch() {
     if (matchPath(path, location.pathname)) return;
     let query = null;
     if (path === '/') query = dailySnapshotQuery(selectedMarket);
-    else if (path === '/scan' && uiSnapshots?.scan) query = scanBootstrapQuery(selectedMarket);
-    else if (path === '/groups' && uiSnapshots?.groups) {
+    else if (path === '/scan') query = scanBootstrapQuery(selectedMarket);
+    else if (path === '/groups') {
       query = groupsBootstrapQuery(queryClient, groupsMarket);
-    } else if (path === '/breadth' && uiSnapshots?.breadth) {
+    } else if (path === '/breadth') {
       query = breadthBootstrapQuery(queryClient, breadthMarket);
     }
     if (!query) return;
@@ -211,7 +210,7 @@ function useNavPrefetch() {
     const state = queryClient.getQueryState(query.queryKey);
     if (state?.status === 'error' && Date.now() - state.errorUpdatedAt < query.staleTime) return;
     queryClient.prefetchQuery(query);
-  }, [breadthMarket, groupsMarket, location.pathname, queryClient, selectedMarket, uiSnapshots]);
+  }, [breadthMarket, groupsMarket, location.pathname, queryClient, selectedMarket]);
 }
 
 function TickerSearch() {

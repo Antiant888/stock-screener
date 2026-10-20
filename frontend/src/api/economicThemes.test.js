@@ -3,7 +3,6 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import apiClient from './client';
 import {
   getEconomicTaxonomyReview,
-  getEconomicTheme,
   getEconomicThemes,
 } from './economicThemes';
 
@@ -24,18 +23,14 @@ describe('Economic Theme API', () => {
     ]);
   });
 
-  it('pins catalog, detail, and review requests to one generation', async () => {
+  it('pins catalog and review requests to one generation', async () => {
     apiClient.get.mockResolvedValue({ data: {} });
 
     await getEconomicThemes({ generationId: 'generation-1' });
-    await getEconomicTheme('theme/1', { generationId: 'generation-1' });
     await getEconomicTaxonomyReview({ generationId: 'generation-1' });
 
     expect(apiClient.get.mock.calls).toEqual([
       ['/v1/economic-themes', { params: { generation_id: 'generation-1' } }],
-      ['/v1/economic-themes/theme%2F1', {
-        params: { generation_id: 'generation-1' },
-      }],
       ['/v1/economic-taxonomy/review', {
         params: { generation_id: 'generation-1' },
       }],

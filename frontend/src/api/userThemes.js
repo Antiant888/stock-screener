@@ -141,17 +141,6 @@ export const addStock = async (subgroupId, stockData) => {
 };
 
 /**
- * Update a stock.
- * @param {number} stockId - The stock ID
- * @param {Object} updates - Fields to update { display_name?, notes?, position?, subgroup_id? }
- * @returns {Promise<Object>} Updated stock
- */
-export const updateStock = async (stockId, updates) => {
-  const response = await apiClient.put(`${BASE_PATH}/stocks/${stockId}`, updates);
-  return response.data;
-};
-
-/**
  * Remove a stock from its subgroup.
  * @param {number} stockId - The stock ID
  * @returns {Promise<Object>} Deletion confirmation

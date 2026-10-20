@@ -50,7 +50,6 @@ export async function installSocialSignalFixtures(page) {
     if (path === '/v1/app-capabilities') return json(route, {
       features: { themes: true, chatbot: false, tasks: false, social_signals: true },
       auth: { required: false, configured: true, authenticated: true, mode: 'session_cookie', message: null },
-      ui_snapshots: { enabled: false, scan: false, breadth: false, groups: false, themes: false },
       bootstrap_required: false, primary_market: 'US',
       enabled_markets: ['US', 'HK', 'CN', 'JP', 'TW'],
       supported_markets: ['US', 'HK', 'CN', 'JP', 'TW'],

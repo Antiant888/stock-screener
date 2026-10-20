@@ -44,21 +44,6 @@ export const addSymbol = async (listName, symbolData) => {
 };
 
 /**
- * Update a symbol in a watchlist.
- * @param {string} listName - The watchlist identifier
- * @param {number} symbolId - The symbol ID to update
- * @param {Object} updates - Fields to update { display_name?, notes?, position? }
- * @returns {Promise<Object>} Updated symbol
- */
-export const updateSymbol = async (listName, symbolId, updates) => {
-  const response = await apiClient.put(
-    `${BASE_PATH}/watchlist/${listName}/${symbolId}`,
-    updates
-  );
-  return response.data;
-};
-
-/**
  * Remove a symbol from a watchlist.
  * @param {string} listName - The watchlist identifier
  * @param {number} symbolId - The symbol ID to remove

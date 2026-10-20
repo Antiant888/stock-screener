@@ -21,17 +21,6 @@ from app.schemas.app_runtime import (
 )
 
 
-class _FakeUISnapshotService:
-    def ui_snapshot_flags(self) -> dict[str, bool]:
-        return {
-            "enabled": True,
-            "scan": True,
-            "breadth": False,
-            "groups": True,
-            "themes": False,
-        }
-
-
 class _FakeDb:
     def __init__(self) -> None:
         self.expire_all_calls = 0
@@ -83,10 +72,6 @@ async def test_app_capabilities_includes_scan_defaults(client, monkeypatch):
         },
     )
     monkeypatch.setattr(
-        "app.wiring.bootstrap.get_ui_snapshot_service",
-        lambda: _FakeUISnapshotService(),
-    )
-    monkeypatch.setattr(
         module, "get_runtime_bootstrap_status", lambda _db: _FakeBootstrapStatus()
     )
     monkeypatch.setattr(module.settings, "enabled_markets", "US,CN,HK")
@@ -101,7 +86,6 @@ async def test_app_capabilities_includes_scan_defaults(client, monkeypatch):
     data = response.json()
     assert data["deployment_markets"] == ["US", "CN", "HK"]
     assert data["scan_defaults"] == get_default_scan_profile("US")
-    assert data["ui_snapshots"] == _FakeUISnapshotService().ui_snapshot_flags()
     assert data["features"] == {
         "themes": True,
         "chatbot": True,
@@ -146,10 +130,6 @@ async def test_app_capabilities_uses_persisted_social_runtime(client, monkeypatc
         },
     )
     monkeypatch.setattr(
-        "app.wiring.bootstrap.get_ui_snapshot_service",
-        lambda: _FakeUISnapshotService(),
-    )
-    monkeypatch.setattr(
         module, "get_runtime_bootstrap_status", lambda _db: _FakeBootstrapStatus()
     )
     app.dependency_overrides[get_db] = lambda: db_session
@@ -190,10 +170,6 @@ async def test_app_capabilities_separates_deployment_flag_from_us_support(
 
     monkeypatch.setattr(module.settings, "options_analytics_enabled", False)
     monkeypatch.setattr(
-        "app.wiring.bootstrap.get_ui_snapshot_service",
-        lambda: _FakeUISnapshotService(),
-    )
-    monkeypatch.setattr(
         module, "get_runtime_bootstrap_status", lambda _db: _FakeBootstrapStatus()
     )
     app.dependency_overrides[get_db] = lambda: _FakeDb()
@@ -231,10 +207,6 @@ async def test_app_capabilities_exposes_catalog_backed_universe_options(
         type(module.settings),
         "capability_flags",
         lambda _self: {"themes": True, "chatbot": True, "tasks": True},
-    )
-    monkeypatch.setattr(
-        "app.wiring.bootstrap.get_ui_snapshot_service",
-        lambda: _FakeUISnapshotService(),
     )
     monkeypatch.setattr(
         module,

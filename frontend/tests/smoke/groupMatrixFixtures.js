@@ -36,7 +36,7 @@ export async function installMatrixFixtures(page, { count = 120, mode = 'live' }
     if (url.pathname.endsWith('/app-capabilities')) return json(route, {
       features:{tasks:false, themes:false, chatbot:false}, auth:{required:false,authenticated:true},
       bootstrap_required:false, primary_market:'US', enabled_markets:['US','HK'], supported_markets:['US','HK'],
-      ui_snapshots:{enabled:false, groups:false}, api_base_path:'/api',
+      api_base_path:'/api',
       market_catalog:{version:'test', markets:[['US','United States'],['HK','Hong Kong']].map(([code,label])=>({code,label,capabilities:{group_rankings:true,rrg_scopes:[]}}))},
     });
     if (url.pathname.endsWith('/runtime/activity')) return json(route, {bootstrap:{state:'ready',app_ready:true,primary_market:'US',enabled_markets:['US','HK']}, summary:{status:'idle',active_markets:[]}, markets:[]});

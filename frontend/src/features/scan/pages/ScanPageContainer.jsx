@@ -103,7 +103,7 @@ function importedSymbolList(value) {
 }
 
 function ScanPage() {
-  const { runtimeReady, uiSnapshots, scanDefaults, universeOptions, features } = useRuntime();
+  const { runtimeReady, scanDefaults, universeOptions, features } = useRuntime();
   const { selectedMarket: globalMarket } = useMarket();
   const { activeProfileDetail } = useStrategyProfileData();
   const scanDefaultsAppliedRef = useRef(null);
@@ -195,8 +195,7 @@ function ScanPage() {
   const [selectedSymbol, setSelectedSymbol] = useState(null);
   const [showFilters, setShowFilters] = useState(false);
 
-  const snapshotEnabled = runtimeReady && Boolean(uiSnapshots?.scan);
-  const initialQueriesEnabled = runtimeReady && (!snapshotEnabled || initialBootstrapSettled);
+  const initialQueriesEnabled = runtimeReady && initialBootstrapSettled;
   const runtimeActivityQuery = useRuntimeActivity({ enabled: runtimeReady });
   const universeSelections = useMemo(
     () => buildRuntimeUniverseSelections(universeOptions, runtimeActivityQuery.data),
@@ -356,13 +355,10 @@ function ScanPage() {
 
   const scanBootstrapQuery = useQuery({
     ...latestScanBootstrapQuery(globalMarket),
-    enabled: snapshotEnabled && !currentScanId && !initialBootstrapSettled,
+    enabled: !currentScanId && !initialBootstrapSettled,
   });
 
   useEffect(() => {
-    if (!snapshotEnabled) {
-      return;
-    }
     if (scanBootstrapQuery.isError) {
       setInitialBootstrapSettled(true);
       return;
@@ -381,7 +377,6 @@ function ScanPage() {
     scanBootstrapQuery.data,
     scanBootstrapQuery.isError,
     scanBootstrapQuery.isSuccess,
-    snapshotEnabled,
   ]);
 
   const handleLoadScan = useCallback(
@@ -407,20 +402,18 @@ function ScanPage() {
       setScanStatus(knownStatus);
       requestPage(1);
 
-      if (snapshotEnabled) {
-        try {
-          const snapshot = await getScanBootstrap(scanId);
-          // The user may have picked another scan while this one loaded.
-          if (currentScanIdRef.current !== scanId) {
-            return;
-          }
-          if (!snapshot?.is_stale) {
-            applyScanBootstrapSnapshot(snapshot, scanId);
-            return;
-          }
-        } catch (error) {
-          console.error('Scan bootstrap unavailable, falling back to live endpoints:', error);
+      try {
+        const snapshot = await getScanBootstrap(scanId);
+        // The user may have picked another scan while this one loaded.
+        if (currentScanIdRef.current !== scanId) {
+          return;
         }
+        if (!snapshot?.is_stale) {
+          applyScanBootstrapSnapshot(snapshot, scanId);
+          return;
+        }
+      } catch (error) {
+        console.error('Scan bootstrap unavailable, falling back to live endpoints:', error);
       }
 
       try {
@@ -438,7 +431,7 @@ function ScanPage() {
         }
       }
     },
-    [applyScanBootstrapSnapshot, queryClient, rememberScanSource, requestPage, snapshotEnabled]
+    [applyScanBootstrapSnapshot, queryClient, rememberScanSource, requestPage]
   );
 
   const handleUserLoadScan = useCallback((scanId) => {
