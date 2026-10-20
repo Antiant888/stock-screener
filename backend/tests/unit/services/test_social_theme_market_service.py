@@ -18,9 +18,12 @@ KEYS = ("basket_rs_vs_benchmark", "avg_rs_rating", "pct_above_50ma")
 def basket(db_session, monkeypatch):
     from app.services.market_calendar_adapters import RawMarketCalendarAdapter
     from app.services.market_calendar_service import MarketCalendarService
+    from app.domain.relative_strength import BALANCED_RS_FORMULA_VERSION
     from app.infra.db.models.feature_store import FeatureRun, FeatureRunPointer, StockFeatureDaily
     monkeypatch.setattr(RawMarketCalendarAdapter, "_session_range_cache_client", lambda self: None)
     calendar = MarketCalendarService()
+    rs_identity = {"rs_formula_version": BALANCED_RS_FORMULA_VERSION, "market_rs_run_id": 42,
+                   "rs_as_of_date": DAY.isoformat(), "rs_universe_size": 5000}
     def seed(count=4, valid=3, *, market="US", duplicate=False, unknown=0, history=50, benchmark=True):
         theme = ThemeCluster(name="Chips", display_name="Chips", canonical_key="chips", pipeline="technical", is_active=True)
         db_session.add(theme)
@@ -30,8 +33,8 @@ def basket(db_session, monkeypatch):
         entries = [{"symbol": s, "company_id": f"issuer-{0 if s == 'DUAL' else i}", "verification_reference": "synthetic:review",
                     "verified_at": "2026-01-01T00:00:00+00:00"} for i, s in enumerate(symbols) if i < count - unknown or s == "DUAL"]
         db_session.add(AppSetting(key="social_company_identities", category="social", value=json.dumps({"version": 1, "policy_version": "admin-attested-company-v1", "entries": entries})))
-        run = FeatureRun(as_of_date=DAY, run_type="daily_snapshot", status="published", config_json={"universe": {"market": market}},
-                         completed_at=NOW, published_at=NOW)
+        run = FeatureRun(as_of_date=DAY, run_type="daily_snapshot", status="published",
+                         config_json={"universe": {"market": market}, **rs_identity}, completed_at=NOW, published_at=NOW)
         db_session.add(run)
         db_session.flush()
         db_session.add(FeatureRunPointer(key=f"latest_published_market:{market}", run_id=run.id))

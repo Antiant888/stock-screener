@@ -411,6 +411,14 @@ def test_bootstrap_current_only_group_task_targets_last_completed_session(monkey
     )
     calendar.last_completed_trading_day.return_value = date(2026, 3, 20)
     monkeypatch.setattr(
+        module,
+        "resolve_bootstrap_publication_date_with_session",
+        lambda *_args, **kwargs: SimpleNamespace(
+            selected_date=kwargs["requested_date"],
+            reason_code="requested_date_ready",
+        ),
+    )
+    monkeypatch.setattr(
         "app.services.runtime_preferences_service.is_market_enabled_now",
         lambda _market: True,
     )

@@ -835,7 +835,7 @@ def test_get_latest_published_run_ignores_market_pointer_for_wrong_market(
     assert run.id == 4
 
 
-def test_export_rejects_formula_override_that_mismatches_feature_run(
+def test_export_rejects_feature_run_with_another_rs_formula(
     service_and_session_factory,
     monkeypatch,
     tmp_path,
@@ -849,7 +849,11 @@ def test_export_rejects_formula_override_that_mismatches_feature_run(
             run_type="daily_snapshot",
             status="published",
             published_at=datetime(2026, 3, 31, 21, 30, 0),
-            config_json={"universe": {"market": "US"}},
+            config_json={
+                "universe": {"market": "US"},
+                "rs_formula_version": "legacy-linear-v1",
+                "rs_as_of_date": "2026-03-31",
+            },
         ),
         pointer_run_id=6,
         pointer_key="latest_published_market:US",
@@ -1259,6 +1263,10 @@ def test_export_scan_bundle_chunks_large_result_sets(service_and_session_factory
             config_json={
                 "market": "US",
                 "materialization_versions": {"opportunity_state": 1},
+                "rs_formula_version": BALANCED_RS_FORMULA_VERSION,
+                "market_rs_run_id": 42,
+                "rs_as_of_date": "2026-03-31",
+                "rs_universe_size": 5000,
             },
             published_at=datetime(2026, 3, 31, 21, 30, 0),
         ),
@@ -1486,7 +1494,13 @@ def test_export_scan_bundle_uses_sg_threshold_for_sg_market(
             as_of_date=date(2026, 3, 31),
             run_type="daily_snapshot",
             status="published",
-            config_json={"market": "SG"},
+            config_json={
+                "market": "SG",
+                "rs_formula_version": BALANCED_RS_FORMULA_VERSION,
+                "market_rs_run_id": 42,
+                "rs_as_of_date": "2026-03-31",
+                "rs_universe_size": 5000,
+            },
             published_at=datetime(2026, 3, 31, 21, 30, 0),
         ),
         pointer_run_id=21,
@@ -1556,7 +1570,13 @@ def test_export_scan_bundle_unknown_market_disables_volume_filter(
             as_of_date=date(2026, 3, 31),
             run_type="daily_snapshot",
             status="published",
-            config_json={"market": "ZZ"},
+            config_json={
+                "market": "ZZ",
+                "rs_formula_version": BALANCED_RS_FORMULA_VERSION,
+                "market_rs_run_id": 42,
+                "rs_as_of_date": "2026-03-31",
+                "rs_universe_size": 5000,
+            },
             published_at=datetime(2026, 3, 31, 21, 30, 0),
         ),
         pointer_run_id=22,
@@ -1622,7 +1642,13 @@ def test_export_scan_bundle_sorts_composite_score_across_scan_modes(
             as_of_date=date(2026, 3, 31),
             run_type="daily_snapshot",
             status="published",
-            config_json={"market": "US"},
+            config_json={
+                "market": "US",
+                "rs_formula_version": BALANCED_RS_FORMULA_VERSION,
+                "market_rs_run_id": 42,
+                "rs_as_of_date": "2026-03-31",
+                "rs_universe_size": 5000,
+            },
             published_at=datetime(2026, 3, 31, 21, 30, 0),
         ),
         pointer_run_id=12,

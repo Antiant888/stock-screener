@@ -12,6 +12,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from app.domain.relative_strength import BALANCED_RS_FORMULA_VERSION
+from app.domain.scanning.ports import CanonicalStockRsSource
 from app.scanners.base_screener import StockData
 from app.scanners.canslim_scanner import CANSLIMScanner
 from app.scanners.minervini_scanner import MinerviniScanner
@@ -53,6 +55,12 @@ def _stock_data(total_bars: int, *, older_spike: float = 1_000.0, older_dip: flo
             "sales_growth_qq": 22.0,
             "sales_growth_yy": 18.0,
         },
+        rs_source=CanonicalStockRsSource(
+            formula_version=BALANCED_RS_FORMULA_VERSION,
+            run_id=1,
+            universe_size=5000,
+            ratings={"rs_rating": 85, "rs_rating_1m": 80, "rs_rating_3m": 82, "rs_rating_12m": 90},
+        ),
     )
 
 
