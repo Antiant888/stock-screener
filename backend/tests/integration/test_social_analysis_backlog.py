@@ -1076,3 +1076,36 @@ def test_enqueue_stores_a_post_with_prepared_evidence_as_json(backlog):
     for field in ("created_at", "observed_at"):
         snapshot[field] = datetime.fromisoformat(snapshot[field])
     assert SocialPostRecord(**snapshot) == value
+
+
+class DuplicateClaimLLM(FakeLLM):
+    async def completion(self, **kwargs):
+        response = await super().completion(**kwargs)
+        payload = json.loads(response.choices[0].message.content)
+        for item in payload["posts"]:
+            if item["post_id"] == "2":
+                item["claims"] = [dict(theme_key="cooling", raw_theme="cooling", company_token="$AAA",
+                    relationship="supplier", excerpt="supplies cooling equipment", support="supported",
+                    duplicate_of_post_ids=["1"])]
+        response.choices[0].message.content = json.dumps(payload)
+        return response
+
+
+def test_saved_result_with_a_duplicate_of_a_batch_peer_decodes(backlog):
+    from app.infra.db.models.social_analysis import SocialExtractionWork
+    from app.services.social_theme_projection_service import _decode
+
+    configure_budget(backlog)
+    llm = DuplicateClaimLLM()
+    from app.services.social_signal_backlog_service import ProcessSocialBacklog
+
+    worker = ProcessSocialBacklog(backlog, llm=llm, batch_size=2)
+    enqueue(backlog, worker, post(1))
+    work_id = enqueue(backlog, worker, post(2))
+
+    asyncio.run(worker.execute(NOW, 2))
+
+    assert llm.calls == 1
+    with backlog() as db:
+        _, result = _decode(db.get(SocialExtractionWork, work_id))
+    assert [claim.duplicate_of_post_ids for claim in result.claims] == [("1",)]

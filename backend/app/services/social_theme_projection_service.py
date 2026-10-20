@@ -119,6 +119,8 @@ def _decode(work):
             SocialExtractionService.source_inputs((post,)),
             json.dumps({"posts": [{**judgments[0], "claims": claim_values}]}),
             strict_claims=True,
+            # A saved row holds one post; its duplicate peers were checked against the original batch.
+            check_duplicate_peers=False,
         )
         result = ExtractionResult(**{**data, "claims": claims, "judgments": parsed_judgments})
         return post, result

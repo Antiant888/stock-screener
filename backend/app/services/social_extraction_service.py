@@ -126,7 +126,7 @@ class SocialExtractionParser:
                         for value in (item.get("post_kind"), item.get("stance")))
         return (kind, stance) if kind in POST_KINDS and stance in POST_STANCES else (None, None)
 
-    def parse_batch(self, posts, content, *, strict_claims=False):
+    def parse_batch(self, posts, content, *, strict_claims=False, check_duplicate_peers=True):
         try:
             data = json.loads(content)
         except (TypeError, ValueError):
@@ -161,7 +161,8 @@ class SocialExtractionParser:
                     rejected_claim = True
                     continue
                 claim = parsed.claim
-                if any(ref not in by_id or ref == post_id for ref in claim.duplicate_of_post_ids):
+                if any(ref == post_id or (check_duplicate_peers and ref not in by_id)
+                       for ref in claim.duplicate_of_post_ids):
                     if strict_claims:
                         raise SocialExtractionError("invalid_duplicate_reference")
                     rejected_claim = True
