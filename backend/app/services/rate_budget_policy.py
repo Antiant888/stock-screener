@@ -35,7 +35,7 @@ _WEIGHTS_STALE_AFTER_S = 14 * 86400
 class RateBudgetPolicy:
     """Centralized per-market × per-provider rate budget lookups.
 
-    All providers (``yfinance``, ``finviz``, ``alpha_vantage``, ``sec_edgar``)
+    All providers (``yfinance``, ``finviz``, ``sec_edgar``)
     share the same lookup pattern so adding a new provider only requires
     settings-side defaults, not policy-code changes.
     """
@@ -50,7 +50,6 @@ class RateBudgetPolicy:
         # handle the failure mode if Yahoo objects.
         "yfinance:batch": 2.0,
         "finviz": 0.5,
-        "alpha_vantage": 3.0,  # 25 req/day → ~3s spacing if batched
         "sec_edgar": 0.15,     # 10 req/sec
         # Verified issuer investor-relations/product pages fetched by
         # company-exposure research: one request per second, shared.

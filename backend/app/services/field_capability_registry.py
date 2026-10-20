@@ -10,7 +10,6 @@ from typing import Any, Dict, Mapping, Tuple
 from ..domain.providers.data_plan import (
     DATASET_FUNDAMENTALS,
     PROVIDER_AKSHARE,
-    PROVIDER_ALPHAVANTAGE,
     PROVIDER_BAOSTOCK,
     PROVIDER_FINVIZ,
     PROVIDER_KRX,
@@ -100,7 +99,6 @@ class FieldCapabilityRegistryService:
         PROVIDER_KRX,
         PROVIDER_OPENDART,
         PROVIDER_YFINANCE,
-        PROVIDER_ALPHAVANTAGE,
         SOURCE_TECHNICALS,
     )
     PROVIDER_ORDER: Tuple[str, ...] = DEFAULT_PROVIDER_ORDER
@@ -186,9 +184,6 @@ class FieldCapabilityRegistryService:
             PROVIDER_YFINANCE: frozenset(
                 fields - finviz_only_fields - technical_fields
             ),
-            # Keep alphavantage fail-closed until field-level support is
-            # explicitly mapped and integrated in pipeline flows.
-            PROVIDER_ALPHAVANTAGE: frozenset(),
             SOURCE_TECHNICALS: frozenset(technical_fields),
         }
 

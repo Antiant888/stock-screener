@@ -632,7 +632,7 @@ class FundamentalsCacheService:
         Graceful fallback: If fetch fails, return None (caller will handle).
 
         ``market`` is consulted by the provider routing policy so US-only
-        providers (finviz, alphavantage) are skipped for HK/JP/TW/CN symbols.
+        providers (finviz) are skipped for HK/JP/TW/CN symbols.
         When omitted, falls back to a single DB lookup.
         """
         try:

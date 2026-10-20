@@ -85,7 +85,6 @@ class Settings(BaseSettings):
     """Application settings loaded from environment variables."""
 
     # API Keys
-    alpha_vantage_api_key: str = ""
     opendart_api_key: str = ""  # Korea FSS OpenDART enrichment (optional but required for full KR launch)
     zai_api_key: str = ""  # For Z.AI GLM models via OpenAI-compatible endpoint
     zai_api_keys: str = ""  # For Z.AI GLM models (multiple keys, comma-separated)
@@ -126,8 +125,6 @@ class Settings(BaseSettings):
     social_llm_max_calls_per_day: int = 80
     social_market_close_grace_minutes: int = 120
     benzinga_api_key: str = ""  # For Benzinga news API (optional)
-    tavily_api_key: str = ""  # For web search (primary)
-    serper_api_key: str = ""  # For web search (fallback)
 
     # Runtime profile
     feature_themes: bool = True
@@ -163,10 +160,8 @@ class Settings(BaseSettings):
 
     # Rate Limiting (global aggregate budgets — divided per market by RateBudgetPolicy)
     yfinance_rate_limit: int = 1  # requests per second (aggregate across all markets)
-    alphavantage_rate_limit: int = 25  # requests per day
     finviz_rate_limit_interval: float = 0.5  # seconds between finviz API calls
     yfinance_batch_rate_limit_interval: float = 2.0  # seconds between yfinance batch downloads
-    yfinance_per_ticker_delay: float = 0.2  # Deprecated: bulk scheduled jobs should not use per-ticker fetches
     universe_source_timeout_seconds: int = 60
     universe_source_timeout_seconds_cn: int | None = 300
     universe_source_user_agent: str = (
@@ -394,8 +389,6 @@ class Settings(BaseSettings):
     yfinance_curl_cffi_impersonate: str = "chrome"
 
     # Scanning
-    default_universe: str = "all"
-    scan_batch_size: int = 20
     cache_ttl_hours: int = 24
     setup_engine_enabled: bool = True  # Feature flag to toggle Setup Engine scanner
 
@@ -407,11 +400,6 @@ class Settings(BaseSettings):
     celery_broker_url: str = "redis://localhost:6379/0"
     celery_result_backend: str = "redis://localhost:6379/1"
     celery_timezone: str = "America/New_York"  # Celery Beat interprets crontab in this tz
-    scan_concurrent_workers: int = 4
-    scan_rate_limit: float = 1.0  # requests per second (legacy, kept for backward compatibility)
-
-    # Phase 2: Bulk Data Fetching Configuration
-    use_bulk_fetching: bool = True  # Use shared yf.download() batch fetching for scheduled jobs
 
     # Scan use-case configuration
     scan_usecase_chunk_size: int = 50  # Larger local-default chunks improve scan throughput on the shared worker
@@ -428,22 +416,8 @@ class Settings(BaseSettings):
     # Cache Configuration
     cache_redis_db: int = 2  # Separate DB for cache data
     cache_ttl_seconds: int = 604800  # 7 days (fundamentals change slowly)
-    # NOTE: cache_recent_days is overridden by screener requirements:
-    # - Volume Breakthrough Scanner: 5 years (1825 days) for 5-year volume high check
-    # - Minervini/CANSLIM: 2 years (730 days) for 200-day MA calculations
-    # Actual retention is set in PriceCacheService.RECENT_DAYS = 1825
-    cache_recent_days: int = 60  # Default for general use (screeners override)
     cache_warmup_enabled: bool = True  # Enable automatic cache warming
-    cache_warmup_symbols: int = 100  # DEPRECATED: All refresh paths now use full universe
     refresh_skip_hours: float = 4.0  # Skip symbols refreshed within this many hours (auto mode)
-    cache_incremental_enabled: bool = True  # Enable incremental updates
-
-    # Differential cache TTLs for different data types
-    # NOTE: price_cache_ttl is used for Redis TTL. PriceCacheService uses 7 days (604800s)
-    # to ensure cached price data survives weekends and market holidays.
-    price_cache_ttl: int = 604800  # 7 days for price cache (survives weekends/holidays)
-    fundamental_cache_ttl: int = 604800  # 7 days for fundamentals (changes weekly)
-    quarterly_cache_ttl: int = 2592000  # 30 days for quarterly data (changes quarterly)
 
     # Scheduled static-site data export. When enabled, Celery Beat rebuilds
     # the per-market JSON bundles (same format as the GitHub Pages export)
@@ -455,10 +429,6 @@ class Settings(BaseSettings):
     static_export_minute: int = 30
 
     # Cache Warming Schedule (Celery Beat)
-    cache_warm_after_close: bool = True  # Warm cache after market close
-    cache_warm_hour: int = 17  # 5 PM ET (after market close) — US default, also legacy fallback
-    cache_warm_minute: int = 30
-    cache_weekly_refresh: bool = True  # Full refresh weekly
     cache_weekly_day: int = 0  # Sunday = 0
     cache_weekly_hour: int = 2  # 2 AM ET
 
@@ -507,18 +477,8 @@ class Settings(BaseSettings):
         return ",".join(normalize_deployment_enabled_markets(v))
 
     # Fundamental Data Caching
-    fundamental_cache_enabled: bool = True  # Enable fundamental data caching
-    fundamental_cache_ttl_days: int = 7  # Refresh weekly (7 days)
-    fundamental_refresh_enabled: bool = True  # Enable weekly scheduled refresh
     fundamental_refresh_day: int = 6  # Saturday = 6 (avoids collision with Friday 5:30PM cache warmup)
     fundamental_refresh_hour: int = 8  # 8 AM ET (IP has recovered overnight from Friday warmup)
-
-    # Theme Discovery Configuration
-    theme_discovery_enabled: bool = True  # Enable theme discovery pipeline
-    theme_ingestion_interval_hours: int = 4  # How often to fetch content
-    theme_extraction_batch_size: int = 50  # Items per extraction batch
-    theme_correlation_threshold: float = 0.5  # Minimum correlation for validation
-    theme_velocity_threshold: float = 1.5  # Minimum velocity for "emerging" status
 
     # IBD Group Rank Gap-Fill Configuration
     group_rank_gapfill_enabled: bool = True  # Enable automatic gap-fill during scheduled / bootstrap runs
@@ -545,7 +505,6 @@ class Settings(BaseSettings):
 
     # Price Cache Batch Fetching Configuration
     price_cache_yfinance_batch_size: int = 50  # Symbols per yfinance batch in get_many()
-    price_cache_yfinance_rate_limit: float = 5.0  # Seconds to wait between batches
     price_refresh_live_batch_size: int = 250  # Symbols persisted per live refresh batch
 
     # Snapshot fundamentals / universe lifecycle cutover
@@ -605,7 +564,6 @@ class Settings(BaseSettings):
     github_weekly_reference_max_age_days: int = 8
     github_daily_price_release_tag: str = "daily-price-data"
     github_daily_price_max_age_days: int = 4
-    github_daily_price_redis_warm_symbols: int = 50
 
     # Hermes / MCP integration
     hermes_api_base: str = "http://127.0.0.1:8642/v1"
@@ -615,20 +573,6 @@ class Settings(BaseSettings):
     mcp_server_name: str = "stockscreen-market-copilot"
     mcp_watchlist_writes_enabled: bool = False
     mcp_http_enabled: bool = True
-
-    @field_validator('cache_warm_hour')
-    @classmethod
-    def validate_cache_warm_hour(cls, v: int) -> int:
-        if not 0 <= v <= 23:
-            raise ValueError(f"cache_warm_hour must be 0-23, got {v}")
-        return v
-
-    @field_validator('cache_warm_minute')
-    @classmethod
-    def validate_cache_warm_minute(cls, v: int) -> int:
-        if not 0 <= v <= 59:
-            raise ValueError(f"cache_warm_minute must be 0-59, got {v}")
-        return v
 
     @field_validator('static_export_hours')
     @classmethod
@@ -859,7 +803,6 @@ class Settings(BaseSettings):
         "github_data_timeout_seconds",
         "github_weekly_reference_max_age_days",
         "github_daily_price_max_age_days",
-        "github_daily_price_redis_warm_symbols",
         "market_rs_bootstrap_benchmark_max_lag_days",
     )
     @classmethod

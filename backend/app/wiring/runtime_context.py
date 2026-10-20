@@ -58,15 +58,6 @@ def clear_runtime_services() -> None:
     _runtime_services_ctx.set(None)
 
 
-def request_runtime_services(request: Request) -> RuntimeServices:
-    runtime = getattr(request.app.state, "runtime_services", None)
-    if runtime is None:
-        raise RuntimeError(
-            "RuntimeServices are not initialized on app.state.runtime_services"
-        )
-    return runtime
-
-
 def resolve_runtime_services(request: Request | None = None) -> RuntimeServices:
     if request is not None:
         request_runtime = getattr(request.app.state, "runtime_services", None)
@@ -92,7 +83,6 @@ __all__ = [
     "clear_runtime_services",
     "current_runtime_services",
     "initialize_process_runtime_services",
-    "request_runtime_services",
     "reset_runtime_services",
     "resolve_runtime_services",
     "set_runtime_services",

@@ -31,18 +31,12 @@ Select a model in the UI as `ollama/<model>`, for example `ollama/deepseek-v4.1-
 
 ## Web Search Keys (Optional)
 
-Enables assistant web research fallback.
+The Hermes assistant sidecar (the `hermes` service in `docker-compose.yml`) reads these. The backend does not read them.
 
 | Provider | Env Var | Get Key |
 |----------|---------|---------|
 | Tavily | `TAVILY_API_KEY` | [tavily.com](https://tavily.com) |
 | Serper | `SERPER_API_KEY` | [serper.dev](https://serper.dev) |
-
-## Data Source Keys
-
-| Source | Env Var | Get Key | Notes |
-|--------|---------|---------|-------|
-| Alpha Vantage | `ALPHA_VANTAGE_API_KEY` | [alphavantage.co](https://www.alphavantage.co/support/#api-key) | Free tier: 25 req/day |
 
 ## Database
 
@@ -116,9 +110,6 @@ For the private override, install the private package locally with
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `PRICE_CACHE_TTL` | `604800` | Price cache TTL in seconds (7 days) |
-| `FUNDAMENTAL_CACHE_TTL` | `604800` | Fundamentals cache TTL (7 days) |
-| `QUARTERLY_CACHE_TTL` | `2592000` | Quarterly data cache TTL (30 days) |
 | `DATA_FETCH_LOCK_WAIT_SECONDS` | `7200` | Max wait for data fetch lock |
 | `SETUP_ENGINE_ENABLED` | `true` | Feature flag for Setup Engine scanner |
 
@@ -126,9 +117,6 @@ For the private override, install the private package locally with
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `DEFAULT_UNIVERSE` | `all` | Default scan universe |
-| `SCAN_BATCH_SIZE` | `20` | Batch size for scan processing |
 | `SCAN_COMPUTE_PROCESSES` | `0` | Processes that compute scan and daily feature-snapshot results. `0` = automatic: the CPUs the worker container may use (cgroup CPU quota aware), capped at 4, and in-process on macOS/Windows. `1` = in-process. `N` = up to `N`. Each process adds memory, and a worker capped below 2 CPUs (every `docker-compose.prod.yml` worker: user-scan workers at `cpus: '0.5'`, market-job workers at `cpus: '1'`) computes in-process; raise that worker's `cpus` and `memory` limits to benefit. |
 | `STATIC_SNAPSHOT_PARALLEL_WORKERS` | `8` | Upper bound on compute processes for static-site and bootstrap cache-only snapshots (also capped at available CPUs) |
 | `YFINANCE_RATE_LIMIT` | `1` | yfinance requests per second |
-| `ALPHAVANTAGE_RATE_LIMIT` | `25` | Alpha Vantage requests per day |

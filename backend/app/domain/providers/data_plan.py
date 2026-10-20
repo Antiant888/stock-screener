@@ -14,10 +14,9 @@ from app.domain.markets.market import SUPPORTED_MARKET_CODES
 
 DATASET_FUNDAMENTALS = "fundamentals"
 DATASET_PRICES = "prices"
-PLAN_VERSION = "2026.10.02.1"
+PLAN_VERSION = "2026.10.20.1"
 
 PROVIDER_AKSHARE = "akshare"
-PROVIDER_ALPHAVANTAGE = "alphavantage"
 PROVIDER_BAOSTOCK = "baostock"
 PROVIDER_FINVIZ = "finviz"
 PROVIDER_KRX = "krx"
@@ -204,7 +203,6 @@ provider_data_plan_registry = ProviderDataPlanRegistry(
         ("US", DATASET_FUNDAMENTALS): (
             ProviderPlanStep(PROVIDER_FINVIZ, batch_size=1, fallback=False),
             _yf(),
-            ProviderPlanStep(PROVIDER_ALPHAVANTAGE, batch_size=1),
         ),
         ("HK", DATASET_FUNDAMENTALS): (_yf(),),
         ("IN", DATASET_FUNDAMENTALS): (_yf(),),

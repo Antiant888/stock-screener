@@ -44,16 +44,11 @@ export const prefetchFundamentalsBatch = async (queryClient, symbols) => {
  * Get stock fundamentals
  * @param {string} symbol - Stock ticker symbol
  * @param {boolean} forceRefresh - Force cache refresh
- * @param {boolean} useAlphaVantage - Use Alpha Vantage API
  * @returns {Promise} Fundamental data
  */
-export const getStockFundamentals = async (
-  symbol,
-  forceRefresh = false,
-  useAlphaVantage = false
-) => {
+export const getStockFundamentals = async (symbol, forceRefresh = false) => {
   const response = await apiClient.get(`/v1/stocks/${symbol}/fundamentals`, {
-    params: { force_refresh: forceRefresh, use_alpha_vantage: useAlphaVantage },
+    params: { force_refresh: forceRefresh },
   });
   return response.data;
 };

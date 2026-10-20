@@ -95,7 +95,6 @@ class TestGetFundamentalsPolicyGate:
         assert result["provider_data_plan"]["providers"] == [
             "finviz",
             "yfinance",
-            "alphavantage",
         ]
 
     def test_korea_market_uses_native_fundamental_providers_before_yfinance(self):

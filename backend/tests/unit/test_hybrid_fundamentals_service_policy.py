@@ -226,7 +226,6 @@ class TestPhase3PolicyFiltering:
         assert result["AAPL"]["provider_data_plan"]["providers"] == [
             "finviz",
             "yfinance",
-            "alphavantage",
         ]
         assert result["0700.HK"]["provider_data_plan"] == {
             "version": PLAN_VERSION,

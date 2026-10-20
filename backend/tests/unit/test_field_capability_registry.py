@@ -86,7 +86,6 @@ def test_registry_is_versioned_and_shape_is_deterministic():
         "krx",
         "opendart",
         "yfinance",
-        "alphavantage",
         "technicals",
     ]
     assert artifact["field_count"] == len(artifact["fields"])

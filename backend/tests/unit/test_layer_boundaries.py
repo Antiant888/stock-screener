@@ -135,7 +135,6 @@ class TestLayerBoundaries:
 
     def test_interface_packages_are_importable(self):
         import app.interfaces
-        import app.interfaces.api
         import app.interfaces.tasks
 
     def test_wiring_package_is_importable(self):

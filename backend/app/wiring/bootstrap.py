@@ -12,7 +12,7 @@ from fastapi import Request
 from sqlalchemy.orm import Session
 
 from app.database import SessionLocal
-from app.domain.scanning.ports import StockDataProvider, TaskDispatcher
+from app.domain.scanning.ports import TaskDispatcher
 from app.services.job_backend import CeleryJobBackend, JobBackend
 from app.services.redis_pool import get_redis_client
 from app.wiring import runtime_context
@@ -57,7 +57,6 @@ if TYPE_CHECKING:
     from app.infra.db.uow import SqlUnitOfWork
     from app.infra.providers.stock_data import DataPrepStockDataProvider
     from app.scanners.scan_orchestrator import ScanOrchestrator
-    from app.services.alphavantage_service import AlphaVantageService
     from app.services.benchmark_cache_service import BenchmarkCacheService
     from app.services.canonical_group_ranking_service import (
         CanonicalGroupRankingService,
@@ -67,11 +66,9 @@ if TYPE_CHECKING:
     from app.services.eps_rating_service import EPSRatingService
     from app.services.finviz_service import FinvizService
     from app.services.fundamentals_cache_service import FundamentalsCacheService
-    from app.services.github_release_sync_service import GitHubReleaseSyncService
     from app.services.group_rank_snapshot_coordinator import (
         GroupRankSnapshotCoordinator,
     )
-    from app.services.group_rank_snapshot_reader import GroupRankSnapshotReader
     from app.services.hybrid_fundamentals_service import HybridFundamentalsService
     from app.services.ibd_group_rank_service import IBDGroupRankService
     from app.services.llm.groq_key_manager import GroqKeyManager
@@ -86,7 +83,6 @@ if TYPE_CHECKING:
     from app.services.provider_snapshot_service import ProviderSnapshotService
     from app.services.rate_limiter import RedisRateLimiter
     from app.services.rrg_service import RRGService
-    from app.services.security_master_service import SecurityMasterResolver
     from app.services.stock_universe_service import StockUniverseService
     from app.services.task_registry_service import TaskRegistryService
     from app.services.ticker_validation_service import TickerValidationService
@@ -131,12 +127,9 @@ class RuntimeServices:
         self._zai_key_manager: ZAIKeyManager | None = None
         self._rate_limiter: RedisRateLimiter | None = None
         self._market_calendar_service: MarketCalendarService | None = None
-        self._github_release_sync_service: GitHubReleaseSyncService | None = None
-        self._security_master_resolver: SecurityMasterResolver | None = None
         self._eps_rating_service: EPSRatingService | None = None
         self._yfinance_service: YFinanceService | None = None
         self._finviz_service: FinvizService | None = None
-        self._alphavantage_service: AlphaVantageService | None = None
         self._data_source_service: DataSourceService | None = None
         self._stock_universe_service: StockUniverseService | None = None
         self._ticker_validation_service: TickerValidationService | None = None
@@ -386,30 +379,8 @@ class RuntimeServices:
     def market_rs_reader(self) -> MarketRsReader:
         return self.market_rs_services().reader
 
-    def group_rank_snapshot_reader(self) -> GroupRankSnapshotReader:
-        return self.canonical_rs_runtime().group_rank_snapshot_reader()
-
     def group_rank_snapshot_coordinator(self) -> GroupRankSnapshotCoordinator:
         return self.canonical_rs_runtime().group_rank_snapshot_coordinator()
-
-    def github_release_sync_service(self) -> GitHubReleaseSyncService:
-        def build():
-            from app.config import settings
-            from app.services.github_release_sync_service import (
-                GitHubReleaseSyncService,
-            )
-
-            return GitHubReleaseSyncService(api_base=settings.github_data_api_base)
-
-        return self._lazy("_github_release_sync_service", build)
-
-    def security_master_resolver(self) -> SecurityMasterResolver:
-        def build():
-            from app.services.security_master_service import security_master_resolver
-
-            return security_master_resolver
-
-        return self._lazy("_security_master_resolver", build)
 
     def eps_rating_service(self) -> EPSRatingService:
         def build():
@@ -437,14 +408,6 @@ class RuntimeServices:
             return FinvizService(rate_limiter=self.rate_limiter())
 
         return self._lazy("_finviz_service", build)
-
-    def alphavantage_service(self) -> AlphaVantageService:
-        def build():
-            from app.services.alphavantage_service import AlphaVantageService
-
-            return AlphaVantageService()
-
-        return self._lazy("_alphavantage_service", build)
 
     def data_source_service(self) -> DataSourceService:
         def build():
@@ -557,12 +520,9 @@ class RuntimeServices:
             self._zai_key_manager = None
             self._rate_limiter = None
             self._market_calendar_service = None
-            self._github_release_sync_service = None
-            self._security_master_resolver = None
             self._eps_rating_service = None
             self._yfinance_service = None
             self._finviz_service = None
-            self._alphavantage_service = None
             self._data_source_service = None
             self._stock_universe_service = None
             self._ticker_validation_service = None
@@ -635,11 +595,6 @@ def clear_runtime_services() -> None:
     runtime_context.clear_runtime_services()
 
 
-def get_runtime_services(request: Request) -> RuntimeServices:
-    """FastAPI dependency getter for process runtime services."""
-    return runtime_context.request_runtime_services(request)
-
-
 def _resolve_runtime_services(request: Request | None = None) -> RuntimeServices:
     return runtime_context.resolve_runtime_services(request)
 
@@ -660,11 +615,6 @@ def get_uow() -> Iterator[SqlUnitOfWork]:
 def get_job_backend() -> JobBackend:
     """Return the configured async job backend."""
     return _resolve_runtime_services().job_backend()
-
-
-def get_task_dispatcher() -> TaskDispatcher:
-    """Return the Celery task dispatcher."""
-    return _resolve_runtime_services().task_dispatcher()
 
 
 def get_ui_snapshot_service() -> UISnapshotService:
@@ -754,24 +704,9 @@ def get_market_rs_activation_executor() -> MarketRsActivationExecutor:
     return _resolve_runtime_services().market_rs_activation_executor()
 
 
-def get_group_rank_snapshot_reader() -> GroupRankSnapshotReader:
-    """Return the exact persisted Group snapshot reader."""
-    return _resolve_runtime_services().group_rank_snapshot_reader()
-
-
 def get_group_rank_snapshot_coordinator() -> GroupRankSnapshotCoordinator:
     """Return the formula-aware Group snapshot coordinator."""
     return _resolve_runtime_services().group_rank_snapshot_coordinator()
-
-
-def get_github_release_sync_service() -> GitHubReleaseSyncService:
-    """Return process-scoped GitHub release sync service."""
-    return _resolve_runtime_services().github_release_sync_service()
-
-
-def get_security_master_resolver() -> SecurityMasterResolver:
-    """Return process-scoped SecurityMaster resolver."""
-    return _resolve_runtime_services().security_master_resolver()
 
 
 def get_eps_rating_service() -> EPSRatingService:
@@ -782,16 +717,6 @@ def get_eps_rating_service() -> EPSRatingService:
 def get_yfinance_service() -> YFinanceService:
     """Return process-scoped yfinance service wrapper."""
     return _resolve_runtime_services().yfinance_service()
-
-
-def get_finviz_service() -> FinvizService:
-    """Return process-scoped finviz service wrapper."""
-    return _resolve_runtime_services().finviz_service()
-
-
-def get_alphavantage_service() -> AlphaVantageService:
-    """Return process-scoped Alpha Vantage service wrapper."""
-    return _resolve_runtime_services().alphavantage_service()
 
 
 def get_data_source_service() -> DataSourceService:
@@ -822,14 +747,6 @@ def get_daily_price_bundle_service() -> DailyPriceBundleService:
 def get_hybrid_fundamentals_service() -> HybridFundamentalsService:
     """Return process-scoped hybrid fundamentals service."""
     return _resolve_runtime_services().hybrid_fundamentals_service()
-
-
-# ── Providers ────────────────────────────────────────────────────────────
-
-
-def get_stock_data_provider() -> StockDataProvider:
-    """Return a process-scoped StockDataProvider (wraps DataPreparationLayer)."""
-    return _resolve_runtime_services().stock_data_provider()
 
 
 # ── Orchestrator ────────────────────────────────────────────────────

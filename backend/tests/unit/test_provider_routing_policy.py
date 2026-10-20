@@ -21,7 +21,6 @@ from app.services.provider_routing_policy import (
     MARKET_TW,
     MARKET_US,
     POLICY_VERSION,
-    PROVIDER_ALPHAVANTAGE,
     PROVIDER_AKSHARE,
     PROVIDER_BAOSTOCK,
     PROVIDER_FINVIZ,
@@ -63,17 +62,16 @@ class TestMatrixShape:
 
 
 class TestUSPolicy:
-    """US preserves the legacy finviz -> yfinance -> alphavantage chain."""
+    """US preserves the legacy finviz -> yfinance chain."""
 
     def test_us_provider_order(self):
         assert providers_for(MARKET_US) == (
             PROVIDER_FINVIZ,
             PROVIDER_YFINANCE,
-            PROVIDER_ALPHAVANTAGE,
         )
 
     def test_us_supports_all_known_providers(self):
-        for provider in (PROVIDER_FINVIZ, PROVIDER_YFINANCE, PROVIDER_ALPHAVANTAGE):
+        for provider in (PROVIDER_FINVIZ, PROVIDER_YFINANCE):
             assert is_supported(MARKET_US, provider) is True
 
 
@@ -87,10 +85,6 @@ class TestAsiaPolicy:
     @pytest.mark.parametrize("market", [MARKET_HK, MARKET_IN, MARKET_JP, MARKET_TW, MARKET_SG, MARKET_MY])
     def test_asia_markets_reject_finviz(self, market):
         assert is_supported(market, PROVIDER_FINVIZ) is False
-
-    @pytest.mark.parametrize("market", [MARKET_HK, MARKET_IN, MARKET_JP, MARKET_TW, MARKET_SG, MARKET_MY])
-    def test_asia_markets_reject_alphavantage(self, market):
-        assert is_supported(market, PROVIDER_ALPHAVANTAGE) is False
 
     @pytest.mark.parametrize("market", [MARKET_HK, MARKET_IN, MARKET_JP, MARKET_TW, MARKET_SG, MARKET_MY])
     def test_asia_markets_allow_yfinance(self, market):
@@ -107,7 +101,7 @@ class TestAsiaPolicy:
     def test_korea_allows_native_providers_and_yfinance_fallback(self, provider):
         assert is_supported(MARKET_KR, provider) is True
 
-    @pytest.mark.parametrize("provider", [PROVIDER_FINVIZ, PROVIDER_ALPHAVANTAGE])
+    @pytest.mark.parametrize("provider", [PROVIDER_FINVIZ])
     def test_korea_rejects_us_only_providers(self, provider):
         assert is_supported(MARKET_KR, provider) is False
 
@@ -122,7 +116,7 @@ class TestAsiaPolicy:
     def test_china_allows_no_key_native_providers_and_yfinance_fallback(self, provider):
         assert is_supported(MARKET_CN, provider) is True
 
-    @pytest.mark.parametrize("provider", [PROVIDER_FINVIZ, PROVIDER_ALPHAVANTAGE])
+    @pytest.mark.parametrize("provider", [PROVIDER_FINVIZ])
     def test_china_rejects_us_only_providers(self, provider):
         assert is_supported(MARKET_CN, provider) is False
 
@@ -175,7 +169,6 @@ class TestFailClosed:
         assert providers_for(None) == (
             PROVIDER_FINVIZ,
             PROVIDER_YFINANCE,
-            PROVIDER_ALPHAVANTAGE,
         )
 
     def test_unknown_non_empty_market_has_no_providers(self):

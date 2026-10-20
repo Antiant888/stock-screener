@@ -67,18 +67,6 @@ def get_db():
         db.close()
 
 
-def init_db():
-    """
-    Initialize database by creating all tables.
-    Should be called on application startup.
-    """
-    # Import all models here to ensure they are registered
-    from . import models
-
-    # Create all tables
-    Base.metadata.create_all(bind=engine)
-
-
 def is_corruption_error(exc: Exception) -> bool:
     """Detect low-level database corruption signatures."""
     msg = str(exc).lower()

@@ -128,7 +128,6 @@ External data sources have rate limits that the backend respects:
 |--------|-------|-------|
 | yfinance | 1 req/sec | Self-imposed |
 | Finviz | Rate-limited | Via wrapper |
-| Alpha Vantage | 25 req/day | Free tier |
 | SEC EDGAR | 10 req/sec | 150ms between requests |
 
 ## Diagnostic Scripts
