@@ -18,6 +18,13 @@ from unittest.mock import MagicMock, patch
 import pandas as pd
 import pytest
 
+from app.domain.relative_strength import (
+    BALANCED_RS_FORMULA_VERSION,
+    BALANCED_RS_PRICE_BASIS,
+    BALANCED_RS_SNAPSHOT_SCHEMA_VERSION,
+)
+from app.domain.scanning.ports import MarketRsResolution
+
 # Import script functions under test
 from scripts.backfill_setup_engine import (
     CURRENT_SCHEMA,
@@ -25,6 +32,23 @@ from scripts.backfill_setup_engine import (
     _truncate_to_date,
     run_backfill,
 )
+
+
+def _resolution(symbols: tuple[str, ...], rating: int = 80) -> MarketRsResolution:
+    ratings = {
+        "rs_rating": rating,
+        "rs_rating_1m": rating,
+        "rs_rating_3m": rating,
+        "rs_rating_12m": rating,
+    }
+    return MarketRsResolution.canonical(
+        market="US",
+        as_of_date=date(2025, 6, 1),
+        formula_version=BALANCED_RS_FORMULA_VERSION,
+        run_id=1,
+        universe_size=len(symbols),
+        ratings_by_symbol={symbol: ratings for symbol in symbols},
+    )
 
 
 # ───────────────────────────────────────────────────────────────────────────
@@ -235,8 +259,12 @@ class TestRunBackfillErrorIsolation:
     @patch("scripts.backfill_setup_engine._fetch_price_data")
     @patch("scripts.backfill_setup_engine.SetupEngineScanner")
     @patch("scripts.backfill_setup_engine.SessionLocal")
+    @patch(
+        "scripts.backfill_setup_engine._resolve_market_rs_by_run",
+        return_value={1: _resolution(("AAPL", "MSFT"))},
+    )
     def test_failed_symbol_continues(
-        self, mock_session_cls, mock_scanner_cls, mock_fetch, mock_get_benchmark_cache,
+        self, _resolve, mock_session_cls, mock_scanner_cls, mock_fetch, mock_get_benchmark_cache,
     ):
         mock_db = MagicMock()
         mock_session_cls.return_value = mock_db
@@ -355,8 +383,12 @@ class TestRunBackfillForceOverwrite:
     @patch("scripts.backfill_setup_engine._fetch_price_data")
     @patch("scripts.backfill_setup_engine.SetupEngineScanner")
     @patch("scripts.backfill_setup_engine.SessionLocal")
+    @patch(
+        "scripts.backfill_setup_engine._resolve_market_rs_by_run",
+        return_value={1: _resolution(("AAPL",))},
+    )
     def test_force_reprocesses_matching_rows(
-        self, mock_session_cls, mock_scanner_cls, mock_fetch, mock_get_benchmark_cache,
+        self, _resolve, mock_session_cls, mock_scanner_cls, mock_fetch, mock_get_benchmark_cache,
     ):
         mock_db = MagicMock()
         mock_session_cls.return_value = mock_db
@@ -427,3 +459,103 @@ class TestRunBackfillForceOverwrite:
 
         assert set(derived_details_columns(None)) <= set(values)
         assert values["hot_fields_stored"] is True
+
+
+# ───────────────────────────────────────────────────────────────────────────
+# Market RS gate: ratings come from the run's publication or the row is skipped
+# ───────────────────────────────────────────────────────────────────────────
+
+
+class TestRunBackfillMarketRsGate:
+    @patch("scripts.backfill_setup_engine.get_benchmark_cache")
+    @patch("scripts.backfill_setup_engine._fetch_price_data")
+    @patch("scripts.backfill_setup_engine.SessionLocal")
+    def test_weak_published_rs_fails_the_gate_and_unrated_rows_are_skipped(
+        self, mock_session_cls, mock_fetch, mock_get_benchmark_cache,
+    ):
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+
+        from app.database import Base
+        from app.infra.db.models.feature_store import FeatureRun, StockFeatureDaily
+        from app.infra.db.models.relative_strength import MarketRsRun, StockRsSnapshot
+
+        engine = create_engine("sqlite:///:memory:")
+        Base.metadata.create_all(engine)
+        Session = sessionmaker(bind=engine)
+        as_of = date(2025, 6, 2)
+        with Session() as db:
+            rs_run = MarketRsRun(
+                market="US",
+                as_of_date=as_of,
+                formula_version=BALANCED_RS_FORMULA_VERSION,
+                status="completed",
+                benchmark_symbol="SPY",
+                benchmark_as_of_date=as_of,
+                universe_hash="hash",
+                expected_symbol_count=2,
+                eligible_symbol_count=1,
+                excluded_symbol_count=1,
+                diagnostics_json={
+                    "price_basis": BALANCED_RS_PRICE_BASIS,
+                    "rs_snapshot_schema_version": BALANCED_RS_SNAPSHOT_SCHEMA_VERSION,
+                },
+            )
+            db.add(rs_run)
+            db.flush()
+            db.add(
+                StockRsSnapshot(
+                    run_id=rs_run.id, symbol="WEAK", overall_rs=10,
+                    rs_1m=10, rs_3m=10, rs_6m=10, rs_9m=10, rs_12m=10,
+                    weighted_composite=0.1, excess_return_1m=-0.1,
+                    excess_return_3m=-0.1, excess_return_6m=-0.1,
+                    excess_return_9m=-0.1, excess_return_12m=-0.1,
+                )
+            )
+            feature_run = FeatureRun(
+                as_of_date=as_of,
+                run_type="daily_snapshot",
+                status="published",
+                config_json={
+                    "market": "US",
+                    "universe": {"market": "US"},
+                    "rs_formula_version": BALANCED_RS_FORMULA_VERSION,
+                    "market_rs_run_id": rs_run.id,
+                    "rs_as_of_date": as_of.isoformat(),
+                    "rs_universe_size": 1,
+                },
+            )
+            db.add(feature_run)
+            db.flush()
+            for symbol in ("WEAK", "NORS"):
+                db.add(
+                    StockFeatureDaily(
+                        run_id=feature_run.id, symbol=symbol, as_of_date=as_of,
+                        details_json=None,
+                    )
+                )
+            db.commit()
+            feature_run_id = feature_run.id
+
+        mock_session_cls.side_effect = Session
+        prices = _make_price_df("2024-03-01", 330)
+        mock_fetch.return_value = prices
+        mock_get_benchmark_cache.return_value = MagicMock(
+            get_spy_data=MagicMock(return_value=prices)
+        )
+
+        summary = run_backfill(_make_args())
+
+        with Session() as db:
+            rows = {
+                row.symbol: row
+                for row in db.query(StockFeatureDaily).filter(
+                    StockFeatureDaily.run_id == feature_run_id
+                )
+            }
+        setup_engine = rows["WEAK"].details_json["setup_engine"]
+        assert setup_engine["rs_rating"] == 10.0
+        assert setup_engine["setup_ready"] is False
+        assert "rs_rating_insufficient" in setup_engine["explain"]["failed_checks"]
+        assert rows["NORS"].details_json is None
+        assert summary == {"processed": 1, "skipped": 0, "skipped_no_rs": 1, "errors": 0}

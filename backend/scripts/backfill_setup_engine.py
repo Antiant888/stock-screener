@@ -5,6 +5,12 @@ lack the ``setup_engine`` key in ``details_json``.  This script computes
 setup_engine payloads using historical price data and surgically merges them
 into existing rows without disturbing other screener data.
 
+Each row's RS rating comes from its Feature run's published Market RS
+snapshot, read through the same reader the scanner uses. A row whose run has
+no resolvable publication, or whose symbol is outside that run's eligible
+universe, is skipped and counted, so the Setup Engine's RS gate is never
+bypassed with a missing rating.
+
 Usage:
     cd backend
     source venv/bin/activate
@@ -46,6 +52,8 @@ import pandas as pd
 
 from app.analysis.patterns.models import SETUP_ENGINE_DEFAULT_SCHEMA_VERSION
 from app.database import SessionLocal
+from app.domain.feature_store.run_metadata import feature_run_market
+from app.domain.scanning.ports import MarketRsResolution
 from app.infra.db.models.feature_store import (
     FeatureRun,
     StockFeatureDaily,
@@ -54,6 +62,10 @@ from app.infra.db.models.feature_store import (
 from app.scanners.base_screener import DataRequirements, StockData
 from app.scanners.setup_engine_scanner import attach_setup_engine
 from app.scanners.setup_engine_screener import SetupEngineScanner
+from app.services.market_rs_reader import (
+    CanonicalMarketRsUnavailable,
+    SqlMarketRsReader,
+)
 from app.wiring.bootstrap import get_benchmark_cache, initialize_process_runtime_services
 
 logging.basicConfig(
@@ -180,6 +192,45 @@ def _build_query(
 
 
 # ───────────────────────────────────────────────────────────────────────────
+# Market RS publication per Feature run
+# ───────────────────────────────────────────────────────────────────────────
+
+def _resolve_market_rs_by_run(
+    db,
+    reader,
+    rows: List[Tuple[int, str, date, Any]],
+) -> Dict[int, Optional[MarketRsResolution]]:
+    """Resolve each run's published Market RS once; None when it cannot be."""
+    symbols_by_run: Dict[int, set] = {}
+    for run_id, symbol, _as_of_date, _details in rows:
+        symbols_by_run.setdefault(run_id, set()).add(symbol)
+    runs = {
+        run.id: run
+        for run in db.query(FeatureRun).filter(FeatureRun.id.in_(symbols_by_run))
+    }
+    resolutions: Dict[int, Optional[MarketRsResolution]] = {}
+    for run_id, symbols in symbols_by_run.items():
+        run = runs[run_id]
+        config = run.config_json if isinstance(run.config_json, dict) else {}
+        market = feature_run_market(run) or config.get("market") or "US"
+        market_rs_run_id = config.get("market_rs_run_id")
+        try:
+            resolutions[run_id] = reader.get(
+                market=market,
+                symbols=sorted(symbols),
+                as_of_date=None if market_rs_run_id is not None else run.as_of_date,
+                run_id=int(market_rs_run_id) if market_rs_run_id is not None else None,
+            )
+        except CanonicalMarketRsUnavailable as exc:
+            logger.warning(
+                "No published Market RS for run %d (%s @ %s): %s",
+                run_id, market, run.as_of_date, exc,
+            )
+            resolutions[run_id] = None
+    return resolutions
+
+
+# ───────────────────────────────────────────────────────────────────────────
 # Spot-check verification
 # ───────────────────────────────────────────────────────────────────────────
 
@@ -230,8 +281,8 @@ def _spot_check(
 # Main backfill logic
 # ───────────────────────────────────────────────────────────────────────────
 
-def run_backfill(args: argparse.Namespace) -> None:
-    """Execute the backfill pipeline."""
+def run_backfill(args: argparse.Namespace) -> Optional[Dict[str, int]]:
+    """Execute the backfill pipeline; return its row counts once it ran."""
     db = SessionLocal()
 
     try:
@@ -296,6 +347,9 @@ def run_backfill(args: argparse.Namespace) -> None:
         symbols_list = sorted(symbol_groups.keys())
         total_symbols = len(symbols_list)
         total_rows = len(rows_needing_backfill)
+        rs_by_run = _resolve_market_rs_by_run(
+            db, SqlMarketRsReader(SessionLocal), rows_needing_backfill
+        )
 
         logger.info(
             "Processing %d rows across %d symbols (chunk_size=%d)",
@@ -315,6 +369,7 @@ def run_backfill(args: argparse.Namespace) -> None:
         scanner = SetupEngineScanner()
         processed = 0
         skipped = 0
+        skipped_no_rs = 0
         errors = 0
         failed_symbols: List[str] = []
         updated_keys: List[Tuple[int, str]] = []  # (run_id, symbol) of written rows
@@ -349,11 +404,22 @@ def run_backfill(args: argparse.Namespace) -> None:
                                 skipped += 1
                                 continue
 
+                            resolution = rs_by_run.get(run_id)
+                            rs_source = (
+                                resolution.stock_source(symbol)
+                                if resolution is not None
+                                else None
+                            )
+                            if rs_source is None or rs_source.ratings is None:
+                                skipped_no_rs += 1
+                                continue
+
                             # Build StockData and run the scanner
                             stock_data = StockData(
                                 symbol=symbol,
                                 price_data=truncated_prices,
                                 benchmark_data=truncated_spy if not truncated_spy.empty else pd.DataFrame(),
+                                rs_source=rs_source,
                             )
                             result = scanner.scan_stock(symbol, stock_data)
 
@@ -411,11 +477,11 @@ def run_backfill(args: argparse.Namespace) -> None:
 
             logger.info(
                 "Progress: %d/%d symbols (%.1f%%) | "
-                "rows: %d processed, %d skipped, %d errors | "
+                "rows: %d processed, %d skipped, %d without Market RS, %d errors | "
                 "%.1f sym/s, ETA %s",
                 symbols_done, total_symbols,
                 100.0 * symbols_done / total_symbols,
-                processed, skipped, errors,
+                processed, skipped, skipped_no_rs, errors,
                 throughput, eta_str,
             )
 
@@ -429,6 +495,7 @@ def run_backfill(args: argparse.Namespace) -> None:
         logger.info("Backfill complete in %.1fs", elapsed)
         logger.info("  Processed: %d rows", processed)
         logger.info("  Skipped:   %d rows", skipped)
+        logger.info("  Skipped (no published Market RS): %d rows", skipped_no_rs)
         logger.info("  Errors:    %d rows", errors)
         if failed_symbols:
             logger.info(
@@ -439,6 +506,12 @@ def run_backfill(args: argparse.Namespace) -> None:
             if len(set(failed_symbols)) > 20:
                 logger.info("    ... and %d more", len(set(failed_symbols)) - 20)
         logger.info("=" * 60)
+        return {
+            "processed": processed,
+            "skipped": skipped,
+            "skipped_no_rs": skipped_no_rs,
+            "errors": errors,
+        }
 
     except Exception:
         logger.exception("Fatal error during backfill")
