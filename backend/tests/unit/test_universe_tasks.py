@@ -493,11 +493,11 @@ def test_refresh_sp500_membership_retries_transient_database_error_from_task_bod
 )
 def test_ingest_official_snapshot_handles_every_allowlisted_market(monkeypatch, market):
     """Drift guard for PR #170 review: every market in
-    ``_OFFICIAL_SOURCE_MARKETS`` must have a matching ``snapshot.market ==
-    "..."`` branch in ``_ingest_official_snapshot``. Otherwise the
-    allowlist lets a refresh through and the dispatcher raises
-    ``ValueError`` in production. Iterating the allowlist guarantees the
-    next added market trips this test instead of failing silently."""
+    ``_OFFICIAL_SOURCE_MARKETS`` must reach ``ingest_snapshot_rows`` with its
+    own market code. Otherwise the allowlist lets a refresh through and the
+    dispatcher raises ``ValueError`` in production. Iterating the allowlist
+    guarantees the next added market trips this test instead of failing
+    silently."""
     import app.tasks.universe_tasks as module
 
     fake_db = MagicMock()
@@ -506,13 +506,9 @@ def test_ingest_official_snapshot_handles_every_allowlisted_market(monkeypatch, 
     ingest_calls: list[str] = []
 
     class FakeUniverseService:
-        def __getattr__(self, name: str):
-            # Record every ``ingest_<market>_snapshot_rows`` call so we can
-            # assert the dispatcher targeted the right method.
-            def _stub(db, **kwargs):
-                ingest_calls.append(name)
-                return {"added": 0, "updated": 0, "total": 0}
-            return _stub
+        def ingest_snapshot_rows(self, db, **kwargs):
+            ingest_calls.append(kwargs["market"])
+            return {"added": 0, "updated": 0, "total": 0}
 
     monkeypatch.setattr(
         module, "get_stock_universe_service", lambda: FakeUniverseService()
@@ -530,17 +526,4 @@ def test_ingest_official_snapshot_handles_every_allowlisted_market(monkeypatch, 
     # Must not raise — every allowlisted market needs a dispatcher branch.
     result = module._ingest_official_snapshot(snapshot)
     assert result["added"] == 0
-    assert ingest_calls == [f"ingest_{market.lower()}_snapshot_rows"]
-
-
-def test_official_snapshot_dispatch_registry_matches_allowlisted_markets():
-    import app.tasks.universe_tasks as module
-
-    assert set(module._OFFICIAL_UNIVERSE_INGEST_METHODS) == module._OFFICIAL_SOURCE_MARKETS
-
-
-def test_official_snapshot_dispatch_registry_includes_au():
-    import app.tasks.universe_tasks as module
-
-    assert "AU" in module._OFFICIAL_SOURCE_MARKETS
-    assert module._OFFICIAL_UNIVERSE_INGEST_METHODS["AU"] == "ingest_au_snapshot_rows"
+    assert ingest_calls == [market]

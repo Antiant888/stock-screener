@@ -105,33 +105,17 @@ def _make_session():
     return TestingSessionLocal
 
 
-@pytest.mark.parametrize(
-    ("market", "method_name"),
-    [
-        ("AU", "ingest_au_snapshot_rows"),
-        ("HK", "ingest_hk_snapshot_rows"),
-        ("JP", "ingest_jp_snapshot_rows"),
-        ("KR", "ingest_kr_snapshot_rows"),
-        ("TW", "ingest_tw_snapshot_rows"),
-        ("CA", "ingest_ca_snapshot_rows"),
-        ("DE", "ingest_de_snapshot_rows"),
-        ("CN", "ingest_cn_snapshot_rows"),
-        ("SG", "ingest_sg_snapshot_rows"),
-        ("MY", "ingest_my_snapshot_rows"),
-    ],
-)
-def test_official_market_ingest_methods_delegate_to_shared_pipeline(
-    market,
-    method_name,
-):
+@pytest.mark.parametrize("market", ["AU", "HK", "JP", "KR", "TW", "CA", "DE", "CN", "SG", "MY"])
+def test_official_market_ingest_methods_delegate_to_shared_pipeline(market):
     TestingSessionLocal = _make_session()
     db = TestingSessionLocal()
     service = StockUniverseService()
     pipeline = _RecordingUniversePipeline()
     service._universe_ingestion_pipeline = pipeline
 
-    result = getattr(service, method_name)(
+    result = service.ingest_snapshot_rows(
         db,
+        market=market,
         rows=[{"symbol": "TEST", "name": "Test"}],
         source_name=f"{market.lower()}_reference_bundle",
         snapshot_id=f"{market.lower()}-snapshot",
@@ -162,7 +146,6 @@ def test_official_market_ingest_methods_delegate_to_shared_pipeline(
 def test_stock_universe_service_wires_au_canonicalizer_in_shared_pipeline():
     service = StockUniverseService()
 
-    assert service._au_ingestion is au_universe_ingestion_adapter
     assert (
         service._universe_ingestion_pipeline._canonicalizers["AU"]
         is au_universe_ingestion_adapter
@@ -176,8 +159,9 @@ def test_in_ingest_delegates_filtered_result_to_shared_pipeline():
     pipeline = _RecordingUniversePipeline()
     service._universe_ingestion_pipeline = pipeline
 
-    result = service.ingest_in_snapshot_rows(
+    result = service.ingest_snapshot_rows(
         db,
+        market="IN",
         rows=[
             {
                 "symbol": "RELIANCE.NS",
@@ -218,8 +202,9 @@ def test_ingest_cn_snapshot_rows_populates_stock_industry_taxonomy():
     db = TestingSessionLocal()
     service = StockUniverseService()
 
-    stats = service.ingest_cn_snapshot_rows(
+    stats = service.ingest_snapshot_rows(
         db,
+        market="CN",
         rows=[
             {
                 "symbol": "600519",
@@ -253,8 +238,9 @@ def test_ingest_sg_snapshot_rows_canonicalizes_sgx_codes():
     db = TestingSessionLocal()
     service = StockUniverseService()
 
-    stats = service.ingest_sg_snapshot_rows(
+    stats = service.ingest_snapshot_rows(
         db,
+        market="SG",
         rows=[
             {
                 "symbol": "D05",
@@ -473,8 +459,9 @@ def test_ingest_hk_snapshot_rows_normalizes_variants_with_zero_padding_and_linea
         ]
     )
 
-    stats = stock_universe_service.ingest_hk_snapshot_rows(
+    stats = stock_universe_service.ingest_snapshot_rows(
         db,
+        market="HK",
         rows=_csv_rows(csv_content),
         source_name="hkex_official",
         snapshot_id="hk-20260412",
@@ -510,8 +497,9 @@ def test_ingest_in_snapshot_rows_rejects_bse_scrip_codes_without_verifying_them(
     fake_fetcher = _FakeBulkFetcher({})
     service._bulk_fetcher = fake_fetcher
 
-    stats = service.ingest_in_snapshot_rows(
+    stats = service.ingest_snapshot_rows(
         db,
+        market="IN",
         rows=[
             {
                 "symbol": "RELIANCE.NS",
@@ -556,8 +544,9 @@ def test_ingest_in_snapshot_rows_prefers_nse_and_keeps_bse_only_symbols():
     )
     service._bulk_fetcher = fake_fetcher
 
-    stats = service.ingest_in_snapshot_rows(
+    stats = service.ingest_snapshot_rows(
         db,
+        market="IN",
         rows=[
             {
                 "symbol": "RELIANCE.NS",
@@ -609,8 +598,9 @@ def test_ingest_in_snapshot_rows_filters_bse_only_symbols_without_price_coverage
         }
     )
 
-    stats = service.ingest_in_snapshot_rows(
+    stats = service.ingest_snapshot_rows(
         db,
+        market="IN",
         rows=[
             {
                 "symbol": "RELIANCE.NS",
@@ -670,8 +660,9 @@ def test_ingest_in_snapshot_rows_deactivates_existing_active_bse_symbol_rejected
     )
     db.commit()
 
-    stats = service.ingest_in_snapshot_rows(
+    stats = service.ingest_snapshot_rows(
         db,
+        market="IN",
         rows=[
             {
                 "symbol": "500002.BO",
@@ -735,8 +726,9 @@ def test_ingest_in_snapshot_rows_filters_bse_only_symbols_with_repeated_yfinance
     )
     db.commit()
 
-    stats = service.ingest_in_snapshot_rows(
+    stats = service.ingest_snapshot_rows(
         db,
+        market="IN",
         rows=[
             {
                 "symbol": "TANFAC.BO",
@@ -810,8 +802,9 @@ def test_ingest_in_snapshot_rows_truncates_combined_rejected_preview():
         for index in range(20)
     ]
 
-    stats = service.ingest_in_snapshot_rows(
+    stats = service.ingest_snapshot_rows(
         db,
+        market="IN",
         rows=[*invalid_rows, *coverage_rows],
         source_name="in_reference_bundle",
         snapshot_id="in-reference-bundle-2026-04-21",
@@ -855,8 +848,9 @@ def test_ingest_hk_snapshot_rows_reactivates_existing_inactive_symbol():
             "700,Tencent,SEHK,Technology,Internet,500B",
         ]
     )
-    stats = stock_universe_service.ingest_hk_snapshot_rows(
+    stats = stock_universe_service.ingest_snapshot_rows(
         db,
+        market="HK",
         rows=_csv_rows(csv_content),
         source_name="sehk_official",
         snapshot_id="hk-20260412",
@@ -873,10 +867,10 @@ def test_ingest_hk_snapshot_rows_reactivates_existing_inactive_symbol():
 
 
 @pytest.mark.parametrize(
-    ("method_name", "source_name", "snapshot_id", "csv_content", "expected_added"),
+    ("market", "source_name", "snapshot_id", "csv_content", "expected_added"),
     [
         (
-            "ingest_hk_snapshot_rows",
+            "HK",
             "sehk_official",
             "hk-20260412",
             "\n".join(
@@ -889,7 +883,7 @@ def test_ingest_hk_snapshot_rows_reactivates_existing_inactive_symbol():
             2,
         ),
         (
-            "ingest_jp_snapshot_rows",
+            "JP",
             "jpx_official",
             "jp-20260412",
             "\n".join(
@@ -902,7 +896,7 @@ def test_ingest_hk_snapshot_rows_reactivates_existing_inactive_symbol():
             2,
         ),
         (
-            "ingest_tw_snapshot_rows",
+            "TW",
             "tw_reference_bundle",
             "tw-20260412",
             "\n".join(
@@ -918,7 +912,7 @@ def test_ingest_hk_snapshot_rows_reactivates_existing_inactive_symbol():
 )
 def test_market_ingest_batches_new_universe_rows_and_status_events(
     monkeypatch,
-    method_name,
+    market,
     source_name,
     snapshot_id,
     csv_content,
@@ -946,8 +940,9 @@ def test_market_ingest_batches_new_universe_rows_and_status_events(
     monkeypatch.setattr(db, "bulk_save_objects", _record_bulk)
     monkeypatch.setattr(db, "add", _guard_add)
 
-    stats = getattr(stock_universe_service, method_name)(
+    stats = stock_universe_service.ingest_snapshot_rows(
         db,
+        market=market,
         rows=_csv_rows(csv_content),
         source_name=source_name,
         snapshot_id=snapshot_id,
@@ -1359,14 +1354,16 @@ def test_reconciliation_runs_are_distinct_per_source_for_same_snapshot_id():
     db = TestingSessionLocal()
     service = StockUniverseService()
 
-    service.ingest_hk_snapshot_rows(
+    service.ingest_snapshot_rows(
         db,
+        market="HK",
         rows=[{"symbol": "700", "exchange": "SEHK", "name": "Tencent"}],
         source_name="hkex_official",
         snapshot_id="shared-snapshot",
     )
-    manual_stats = service.ingest_hk_snapshot_rows(
+    manual_stats = service.ingest_snapshot_rows(
         db,
+        market="HK",
         rows=[{"symbol": "5", "exchange": "SEHK", "name": "HSBC"}],
         source_name="hk_manual_csv",
         snapshot_id="shared-snapshot",
@@ -1394,8 +1391,9 @@ def test_ingest_hk_snapshot_rows_rejects_unapproved_source():
     csv_content = "symbol,name,exchange\n700,Tencent,SEHK\n"
 
     with pytest.raises(ValueError, match="Unapproved HK source"):
-        stock_universe_service.ingest_hk_snapshot_rows(
+        stock_universe_service.ingest_snapshot_rows(
             db,
+            market="HK",
             rows=_csv_rows(csv_content),
             source_name="random_vendor",
             snapshot_id="hk-20260412",
@@ -1414,8 +1412,9 @@ def test_ingest_hk_snapshot_rows_reports_rejected_rows_in_non_strict_mode():
         ]
     )
 
-    stats = stock_universe_service.ingest_hk_snapshot_rows(
+    stats = stock_universe_service.ingest_snapshot_rows(
         db,
+        market="HK",
         rows=_csv_rows(csv_content),
         source_name="sehk_official",
         snapshot_id="hk-20260412",
@@ -1442,8 +1441,9 @@ def test_ingest_jp_snapshot_rows_normalizes_exchange_formats_and_lineage():
         ]
     )
 
-    stats = stock_universe_service.ingest_jp_snapshot_rows(
+    stats = stock_universe_service.ingest_snapshot_rows(
         db,
+        market="JP",
         rows=_csv_rows(csv_content),
         source_name="jpx_official",
         snapshot_id="jp-20260412",
@@ -1496,8 +1496,9 @@ def test_ingest_jp_snapshot_rows_reactivates_existing_inactive_symbol():
             "7203.T,Toyota Motor,TSE,Consumer Cyclical,Auto Manufacturers,300B",
         ]
     )
-    stats = stock_universe_service.ingest_jp_snapshot_rows(
+    stats = stock_universe_service.ingest_snapshot_rows(
         db,
+        market="JP",
         rows=_csv_rows(csv_content),
         source_name="tse_official",
         snapshot_id="jp-20260412",
@@ -1519,8 +1520,9 @@ def test_ingest_jp_snapshot_rows_rejects_unapproved_source():
     csv_content = "symbol,name,exchange\n7203,Toyota,TSE\n"
 
     with pytest.raises(ValueError, match="Unapproved JP source"):
-        stock_universe_service.ingest_jp_snapshot_rows(
+        stock_universe_service.ingest_snapshot_rows(
             db,
+            market="JP",
             rows=_csv_rows(csv_content),
             source_name="random_vendor",
             snapshot_id="jp-20260412",
@@ -1539,8 +1541,9 @@ def test_ingest_jp_snapshot_rows_reports_rejected_rows_in_non_strict_mode():
         ]
     )
 
-    stats = stock_universe_service.ingest_jp_snapshot_rows(
+    stats = stock_universe_service.ingest_snapshot_rows(
         db,
+        market="JP",
         rows=_csv_rows(csv_content),
         source_name="tse_official",
         snapshot_id="jp-20260412",
@@ -1565,8 +1568,9 @@ def test_ingest_jp_snapshot_rows_rejects_zero_prefixed_local_codes():
         ]
     )
 
-    stats = stock_universe_service.ingest_jp_snapshot_rows(
+    stats = stock_universe_service.ingest_snapshot_rows(
         db,
+        market="JP",
         rows=_csv_rows(csv_content),
         source_name="tse_official",
         snapshot_id="jp-20260412",
@@ -1592,8 +1596,9 @@ def test_ingest_jp_snapshot_rows_merges_duplicate_rows_to_keep_richer_metadata()
         ]
     )
 
-    stats = stock_universe_service.ingest_jp_snapshot_rows(
+    stats = stock_universe_service.ingest_snapshot_rows(
         db,
+        market="JP",
         rows=_csv_rows(csv_content),
         source_name="jpx_official",
         snapshot_id="jp-20260412",
@@ -1620,8 +1625,9 @@ def test_ingest_jp_snapshot_rows_truncates_verbose_row_payloads():
         for index in range(30)
     ]
 
-    stats = stock_universe_service.ingest_jp_snapshot_rows(
+    stats = stock_universe_service.ingest_snapshot_rows(
         db,
+        market="JP",
         rows=rows,
         source_name="tse_official",
         snapshot_id="jp-20260412",
@@ -1648,8 +1654,9 @@ def test_ingest_tw_snapshot_rows_normalizes_twse_tpex_variants_and_lineage():
         ]
     )
 
-    stats = stock_universe_service.ingest_tw_snapshot_rows(
+    stats = stock_universe_service.ingest_snapshot_rows(
         db,
+        market="TW",
         rows=_csv_rows(csv_content),
         source_name="tw_reference_bundle",
         snapshot_id="tw-20260412",
@@ -1705,8 +1712,9 @@ def test_ingest_tw_snapshot_rows_reactivates_existing_inactive_symbol():
             "3008,Largan Precision,TPEX,Technology,Electronics,120B",
         ]
     )
-    stats = stock_universe_service.ingest_tw_snapshot_rows(
+    stats = stock_universe_service.ingest_snapshot_rows(
         db,
+        market="TW",
         rows=_csv_rows(csv_content),
         source_name="tpex_official",
         snapshot_id="tw-20260412",
@@ -1733,8 +1741,9 @@ def test_ingest_tw_snapshot_rows_infers_tpex_exchange_from_symbol_when_exchange_
         ]
     )
 
-    stats = stock_universe_service.ingest_tw_snapshot_rows(
+    stats = stock_universe_service.ingest_snapshot_rows(
         db,
+        market="TW",
         rows=_csv_rows(csv_content),
         source_name="tw_reference_bundle",
         snapshot_id="tw-20260412",
@@ -1757,8 +1766,9 @@ def test_ingest_tw_snapshot_rows_rejects_unapproved_source():
     csv_content = "symbol,name,exchange\n2330,TSMC,TWSE\n"
 
     with pytest.raises(ValueError, match="Unapproved TW source"):
-        stock_universe_service.ingest_tw_snapshot_rows(
+        stock_universe_service.ingest_snapshot_rows(
             db,
+            market="TW",
             rows=_csv_rows(csv_content),
             source_name="random_vendor",
             snapshot_id="tw-20260412",
@@ -1777,8 +1787,9 @@ def test_ingest_tw_snapshot_rows_reports_rejected_rows_in_non_strict_mode():
         ]
     )
 
-    stats = stock_universe_service.ingest_tw_snapshot_rows(
+    stats = stock_universe_service.ingest_snapshot_rows(
         db,
+        market="TW",
         rows=_csv_rows(csv_content),
         source_name="twse_official",
         snapshot_id="tw-20260412",
@@ -1803,8 +1814,9 @@ def test_ingest_tw_snapshot_rows_merges_duplicate_rows_to_keep_richer_metadata()
         ]
     )
 
-    stats = stock_universe_service.ingest_tw_snapshot_rows(
+    stats = stock_universe_service.ingest_snapshot_rows(
         db,
+        market="TW",
         rows=_csv_rows(csv_content),
         source_name="twse_official",
         snapshot_id="tw-20260412",
@@ -1831,8 +1843,9 @@ def test_ingest_tw_snapshot_rows_truncates_verbose_row_payloads():
         for index in range(30)
     ]
 
-    stats = stock_universe_service.ingest_tw_snapshot_rows(
+    stats = stock_universe_service.ingest_snapshot_rows(
         db,
+        market="TW",
         rows=rows,
         source_name="twse_official",
         snapshot_id="tw-20260412",
@@ -1863,8 +1876,9 @@ def test_ingest_tw_snapshot_rows_deactivates_other_board_twins():
         )
     db.commit()
 
-    stats = stock_universe_service.ingest_tw_snapshot_rows(
+    stats = stock_universe_service.ingest_snapshot_rows(
         db,
+        market="TW",
         rows=[
             {"symbol": "1240", "exchange": "TPEX", "name": "MORNSUN"},
             {"symbol": "2330", "exchange": "TWSE", "name": "TSMC"},
@@ -1907,8 +1921,9 @@ def test_ingest_hk_snapshot_rows_persists_reconciliation_diff_against_prior_snap
             "industry": "Banks",
         },
     ]
-    first_stats = stock_universe_service.ingest_hk_snapshot_rows(
+    first_stats = stock_universe_service.ingest_snapshot_rows(
         db,
+        market="HK",
         rows=snapshot_one_rows,
         source_name="hkex_official",
         snapshot_id="hk-20260412-a",
@@ -1949,8 +1964,9 @@ def test_ingest_hk_snapshot_rows_persists_reconciliation_diff_against_prior_snap
             "industry": "Property",
         },
     ]
-    second_stats = stock_universe_service.ingest_hk_snapshot_rows(
+    second_stats = stock_universe_service.ingest_snapshot_rows(
         db,
+        market="HK",
         rows=snapshot_two_rows,
         source_name="hkex_official",
         snapshot_id="hk-20260412-b",
@@ -1989,14 +2005,16 @@ def test_ingest_tw_snapshot_rows_reconciliation_is_idempotent_for_same_snapshot(
     ]
     reversed_rows = list(reversed(rows))
 
-    first_stats = stock_universe_service.ingest_tw_snapshot_rows(
+    first_stats = stock_universe_service.ingest_snapshot_rows(
         db,
+        market="TW",
         rows=rows,
         source_name="tw_reference_bundle",
         snapshot_id="tw-20260412-a",
     )
-    second_stats = stock_universe_service.ingest_tw_snapshot_rows(
+    second_stats = stock_universe_service.ingest_snapshot_rows(
         db,
+        market="TW",
         rows=reversed_rows,
         source_name="tw_reference_bundle",
         snapshot_id="tw-20260412-a",
@@ -2031,20 +2049,23 @@ def test_ingest_hk_reconciliation_preserves_existing_snapshot_baseline_on_rerun(
         {"symbol": "700", "exchange": "SEHK", "name": "Tencent Holdings"},
     ]
 
-    first_a = stock_universe_service.ingest_hk_snapshot_rows(
+    first_a = stock_universe_service.ingest_snapshot_rows(
         db,
+        market="HK",
         rows=rows_a,
         source_name="hkex_official",
         snapshot_id="hk-20260412-a",
     )
-    stock_universe_service.ingest_hk_snapshot_rows(
+    stock_universe_service.ingest_snapshot_rows(
         db,
+        market="HK",
         rows=rows_b,
         source_name="hkex_official",
         snapshot_id="hk-20260412-b",
     )
-    second_a = stock_universe_service.ingest_hk_snapshot_rows(
+    second_a = stock_universe_service.ingest_snapshot_rows(
         db,
+        market="HK",
         rows=rows_a,
         source_name="hkex_official",
         snapshot_id="hk-20260412-a",
@@ -2091,26 +2112,30 @@ def test_ingest_hk_reconciliation_preserves_non_null_baseline_on_rerun():
         {"symbol": "16", "exchange": "SEHK", "name": "Sun Hung Kai"},
     ]
 
-    stock_universe_service.ingest_hk_snapshot_rows(
+    stock_universe_service.ingest_snapshot_rows(
         db,
+        market="HK",
         rows=rows_a,
         source_name="hkex_official",
         snapshot_id="hk-20260412-a",
     )
-    first_b = stock_universe_service.ingest_hk_snapshot_rows(
+    first_b = stock_universe_service.ingest_snapshot_rows(
         db,
+        market="HK",
         rows=rows_b,
         source_name="hkex_official",
         snapshot_id="hk-20260412-b",
     )
-    stock_universe_service.ingest_hk_snapshot_rows(
+    stock_universe_service.ingest_snapshot_rows(
         db,
+        market="HK",
         rows=rows_c,
         source_name="hkex_official",
         snapshot_id="hk-20260412-c",
     )
-    second_b = stock_universe_service.ingest_hk_snapshot_rows(
+    second_b = stock_universe_service.ingest_snapshot_rows(
         db,
+        market="HK",
         rows=rows_b,
         source_name="hkex_official",
         snapshot_id="hk-20260412-b",
@@ -2146,8 +2171,9 @@ def test_ingest_hk_snapshot_rows_quarantines_unsafe_deactivation(monkeypatch):
         {"symbol": "5", "exchange": "SEHK", "name": "HSBC"},
         {"symbol": "16", "exchange": "SEHK", "name": "Sun Hung Kai"},
     ]
-    stock_universe_service.ingest_hk_snapshot_rows(
+    stock_universe_service.ingest_snapshot_rows(
         db,
+        market="HK",
         rows=baseline_rows,
         source_name="hkex_official",
         snapshot_id="hk-20260412-a",
@@ -2156,8 +2182,9 @@ def test_ingest_hk_snapshot_rows_quarantines_unsafe_deactivation(monkeypatch):
     reduced_rows = [
         {"symbol": "700", "exchange": "SEHK", "name": "Tencent"},
     ]
-    stats = stock_universe_service.ingest_hk_snapshot_rows(
+    stats = stock_universe_service.ingest_snapshot_rows(
         db,
+        market="HK",
         rows=reduced_rows,
         source_name="hkex_official",
         snapshot_id="hk-20260412-b",
@@ -2194,8 +2221,9 @@ def test_ingest_hk_snapshot_rows_applies_safe_deactivation_when_enabled(monkeypa
         {"symbol": "5", "exchange": "SEHK", "name": "HSBC"},
         {"symbol": "16", "exchange": "SEHK", "name": "Sun Hung Kai"},
     ]
-    stock_universe_service.ingest_hk_snapshot_rows(
+    stock_universe_service.ingest_snapshot_rows(
         db,
+        market="HK",
         rows=baseline_rows,
         source_name="hkex_official",
         snapshot_id="hk-20260413-a",
@@ -2205,8 +2233,9 @@ def test_ingest_hk_snapshot_rows_applies_safe_deactivation_when_enabled(monkeypa
         {"symbol": "700", "exchange": "SEHK", "name": "Tencent"},
         {"symbol": "16", "exchange": "SEHK", "name": "Sun Hung Kai"},
     ]
-    stats = stock_universe_service.ingest_hk_snapshot_rows(
+    stats = stock_universe_service.ingest_snapshot_rows(
         db,
+        market="HK",
         rows=updated_rows,
         source_name="hkex_official",
         snapshot_id="hk-20260413-b",
@@ -2410,8 +2439,9 @@ def test_ingest_hk_snapshot_rows_does_not_emit_status_events_for_unchanged_activ
     db = TestingSessionLocal()
     rows = [{"symbol": "700", "exchange": "SEHK", "name": "Tencent"}]
 
-    stock_universe_service.ingest_hk_snapshot_rows(
+    stock_universe_service.ingest_snapshot_rows(
         db,
+        market="HK",
         rows=rows,
         source_name="hkex_official",
         snapshot_id="hk-20260414-a",
@@ -2420,8 +2450,9 @@ def test_ingest_hk_snapshot_rows_does_not_emit_status_events_for_unchanged_activ
         StockUniverseStatusEvent.symbol == "0700.HK"
     ).count()
 
-    stock_universe_service.ingest_hk_snapshot_rows(
+    stock_universe_service.ingest_snapshot_rows(
         db,
+        market="HK",
         rows=rows,
         source_name="hkex_official",
         snapshot_id="hk-20260414-a",
@@ -2446,8 +2477,9 @@ def test_ingest_hk_snapshot_rows_merges_duplicate_rows_to_keep_richer_metadata()
         ]
     )
 
-    stats = stock_universe_service.ingest_hk_snapshot_rows(
+    stats = stock_universe_service.ingest_snapshot_rows(
         db,
+        market="HK",
         rows=_csv_rows(csv_content),
         source_name="hk_manual_csv",
         snapshot_id="hk-20260414-dup",
@@ -2621,8 +2653,9 @@ def test_ingest_kr_snapshot_rows_deactivates_other_board_twins():
                          is_active=True, status=UNIVERSE_STATUS_ACTIVE))
     db.commit()
 
-    stats = stock_universe_service.ingest_kr_snapshot_rows(
+    stats = stock_universe_service.ingest_snapshot_rows(
         db,
+        market="KR",
         rows=[{"symbol": "000250", "exchange": "KOSDAQ", "name": "Sam Chun Dang"}],
         source_name="krx_official",
         snapshot_id="krx-20261003",
@@ -2655,8 +2688,9 @@ def test_seeded_baseline_lets_an_official_refresh_deactivate_dropped_symbols(mon
         db, market="JP", source_name="jpx_official", row_source="jp_ingest",
         snapshot_id="weekly-seed:rev-1",
     )
-    stats = service.ingest_jp_snapshot_rows(
+    stats = service.ingest_snapshot_rows(
         db,
+        market="JP",
         rows=[{"symbol": "130A", "name": "Veritas"}, {"symbol": "1301", "name": "Kyokuyo"}],
         source_name="jpx_official",
         snapshot_id="jpx-data-j-2026-09-30",
@@ -2685,8 +2719,9 @@ def test_seeded_baseline_ignores_field_drift_in_the_anomaly_gate(monkeypatch):
         db, market="HK", source_name="hkex_official", row_source="hk_ingest",
         snapshot_id="weekly-seed:rev-1",
     )
-    stats = service.ingest_hk_snapshot_rows(
+    stats = service.ingest_snapshot_rows(
         db,
+        market="HK",
         rows=[{"symbol": code, "name": code} for code in ("0001", "0002", "0003")],
         source_name="hkex_official",
         snapshot_id="hkex-2026-10-03",
@@ -2705,8 +2740,9 @@ def test_kr_manual_csv_ingest_leaves_board_twins_alone():
                          is_active=True, status=UNIVERSE_STATUS_ACTIVE))
     db.commit()
 
-    stats = stock_universe_service.ingest_kr_snapshot_rows(
+    stats = stock_universe_service.ingest_snapshot_rows(
         db,
+        market="KR",
         rows=[{"symbol": "000250", "exchange": "KOSDAQ", "name": "Sam Chun Dang"}],
         source_name="kr_manual_csv",
         snapshot_id="kr-csv-20261003",

@@ -419,7 +419,7 @@ def test_build_weekly_reference_bundle_runs_hk_official_path(monkeypatch, tmp_pa
 
     stock_universe_service = SimpleNamespace(
         seed_reconciliation_baseline_from_active_rows=lambda db, **kwargs: None,
-        ingest_hk_snapshot_rows=lambda db, **kwargs: {"added": 1, "updated": 0, "deactivated": 0},
+        ingest_snapshot_rows=lambda db, **kwargs: {"added": 1, "updated": 0, "deactivated": 0},
     )
     monkeypatch.setattr(build_script, "get_stock_universe_service", lambda: stock_universe_service)
 
@@ -536,7 +536,7 @@ def test_build_weekly_reference_bundle_runs_de_official_path(monkeypatch, tmp_pa
     """Mirror of the HK official-path test for the new DE fetcher.
 
     Verifies the build script (1) fetches the DE snapshot via the official
-    source service, (2) routes the snapshot to ``ingest_de_snapshot_rows``
+    source service, (2) routes the snapshot to ``ingest_snapshot_rows(market="DE")``
     rather than raising on ``Unsupported official weekly reference market``,
     and (3) publishes/exports the resulting bundle.
     """
@@ -588,7 +588,7 @@ def test_build_weekly_reference_bundle_runs_de_official_path(monkeypatch, tmp_pa
     ingest_calls: list[dict[str, object]] = []
     stock_universe_service = SimpleNamespace(
         seed_reconciliation_baseline_from_active_rows=lambda db, **kwargs: None,
-        ingest_de_snapshot_rows=lambda db, **kwargs: ingest_calls.append(kwargs)
+        ingest_snapshot_rows=lambda db, **kwargs: ingest_calls.append(kwargs)
         or {"added": 1, "updated": 0, "deactivated": 0},
     )
     monkeypatch.setattr(build_script, "get_stock_universe_service", lambda: stock_universe_service)
@@ -666,6 +666,7 @@ def test_build_weekly_reference_bundle_runs_de_official_path(monkeypatch, tmp_pa
     assert build_script.main() == 0
     assert fetch_calls == ["DE"]
     assert len(ingest_calls) == 1
+    assert ingest_calls[0]["market"] == "DE"
     assert ingest_calls[0]["source_name"] == "dbg_official"
     assert ingest_calls[0]["snapshot_id"] == "dbg-equity-2026-05-09"
     assert export_calls[0]["output_path"] == (
@@ -682,7 +683,7 @@ def test_build_weekly_reference_bundle_runs_sg_official_path(monkeypatch, tmp_pa
     """Mirror of the DE official-path test for the SG fetcher.
 
     Verifies the build script (1) fetches the SG snapshot via the official
-    source service, (2) routes the snapshot to ``ingest_sg_snapshot_rows``
+    source service, (2) routes the snapshot to ``ingest_snapshot_rows(market="SG")``
     rather than raising on ``Unsupported official weekly reference market``,
     and (3) publishes/exports the resulting bundle.
     """
@@ -733,7 +734,7 @@ def test_build_weekly_reference_bundle_runs_sg_official_path(monkeypatch, tmp_pa
     ingest_calls: list[dict[str, object]] = []
     stock_universe_service = SimpleNamespace(
         seed_reconciliation_baseline_from_active_rows=lambda db, **kwargs: None,
-        ingest_sg_snapshot_rows=lambda db, **kwargs: ingest_calls.append(kwargs)
+        ingest_snapshot_rows=lambda db, **kwargs: ingest_calls.append(kwargs)
         or {"added": 1, "updated": 0, "deactivated": 0},
     )
     monkeypatch.setattr(build_script, "get_stock_universe_service", lambda: stock_universe_service)
@@ -811,6 +812,7 @@ def test_build_weekly_reference_bundle_runs_sg_official_path(monkeypatch, tmp_pa
     assert build_script.main() == 0
     assert fetch_calls == ["SG"]
     assert len(ingest_calls) == 1
+    assert ingest_calls[0]["market"] == "SG"
     assert ingest_calls[0]["source_name"] == "sg_manual_csv"
     assert ingest_calls[0]["snapshot_id"] == "sg-csv-fallback-2026-05-17"
     assert export_calls[0]["output_path"] == (
@@ -885,7 +887,7 @@ def test_build_weekly_reference_bundle_runs_au_official_path(monkeypatch, tmp_pa
     ingest_calls: list[dict[str, object]] = []
     stock_universe_service = SimpleNamespace(
         seed_reconciliation_baseline_from_active_rows=lambda db, **kwargs: None,
-        ingest_au_snapshot_rows=lambda db, **kwargs: ingest_calls.append(kwargs)
+        ingest_snapshot_rows=lambda db, **kwargs: ingest_calls.append(kwargs)
         or {"added": 1, "updated": 0, "deactivated": 0},
     )
     monkeypatch.setattr(build_script, "get_stock_universe_service", lambda: stock_universe_service)
@@ -963,6 +965,7 @@ def test_build_weekly_reference_bundle_runs_au_official_path(monkeypatch, tmp_pa
     assert build_script.main() == 0
     assert fetch_calls == ["AU"]
     assert len(ingest_calls) == 1
+    assert ingest_calls[0]["market"] == "AU"
     assert ingest_calls[0]["source_name"] == "asx_official_public_csv"
     assert ingest_calls[0]["snapshot_id"] == "asx-listed-companies-2026-05-30"
     assert export_calls[0]["output_path"] == (
@@ -1047,7 +1050,7 @@ def test_build_weekly_reference_bundle_chunked_deadline_force_publishes(
         "get_stock_universe_service",
         lambda: SimpleNamespace(
             seed_reconciliation_baseline_from_active_rows=lambda db, **kwargs: None,
-            ingest_cn_snapshot_rows=lambda db, **kwargs: {"added": 3, "updated": 0, "deactivated": 0}
+            ingest_snapshot_rows=lambda db, **kwargs: {"added": 3, "updated": 0, "deactivated": 0}
         ),
     )
 
@@ -1224,7 +1227,7 @@ def test_build_weekly_reference_bundle_deadline_blocks_when_partial_disabled(
         "get_stock_universe_service",
         lambda: SimpleNamespace(
             seed_reconciliation_baseline_from_active_rows=lambda db, **kwargs: None,
-            ingest_cn_snapshot_rows=lambda db, **kwargs: {"added": 3, "updated": 0, "deactivated": 0}
+            ingest_snapshot_rows=lambda db, **kwargs: {"added": 3, "updated": 0, "deactivated": 0}
         ),
     )
 
@@ -1354,7 +1357,7 @@ def _patch_cn_dependencies(
         "get_stock_universe_service",
         lambda: SimpleNamespace(
             seed_reconciliation_baseline_from_active_rows=lambda db, **kwargs: None,
-            ingest_cn_snapshot_rows=lambda db, **kwargs: {
+            ingest_snapshot_rows=lambda db, **kwargs: {
                 "added": 0,
                 "updated": 0,
                 "deactivated": 0,
