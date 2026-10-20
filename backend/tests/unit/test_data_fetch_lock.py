@@ -288,25 +288,12 @@ class TestSerializedDataFetchDecorator:
     @pytest.mark.parametrize(
         "task_name",
         [
-            "app.tasks.cache_tasks.daily_cache_warmup",
             "app.tasks.cache_tasks.weekly_full_refresh",
-            "app.tasks.cache_tasks.prewarm_scan_cache",
-            "app.tasks.cache_tasks.prewarm_all_active_symbols",
             "app.tasks.cache_tasks.retry_failed_price_symbols",
             "app.tasks.cache_tasks.force_refresh_stale_intraday",
-            "app.tasks.cache_tasks.auto_refresh_after_close",
             "app.tasks.cache_tasks.smart_refresh_cache",
             "app.tasks.fundamentals_tasks.refresh_all_fundamentals",
-            "app.tasks.fundamentals_tasks.refresh_symbol_fundamentals",
-            "app.tasks.fundamentals_tasks.populate_initial_cache",
-            "app.tasks.fundamentals_tasks.refresh_all_fundamentals_hybrid",
-            "app.tasks.fundamentals_tasks.refresh_symbols_hybrid",
             "app.tasks.universe_tasks.refresh_stock_universe",
-            "app.tasks.universe_tasks.ingest_hk_universe_csv",
-            "app.tasks.universe_tasks.ingest_jp_universe_csv",
-            "app.tasks.universe_tasks.ingest_tw_universe_csv",
-            "app.tasks.universe_tasks.ingest_ca_universe_csv",
-            "app.tasks.universe_tasks.ingest_kr_universe_csv",
             "app.tasks.universe_tasks.refresh_sp500_membership",
         ],
     )
@@ -658,92 +645,6 @@ class TestSerializedDataFetchDecorator:
 # ---------------------------------------------------------------------------
 # _impl Function Tests
 # ---------------------------------------------------------------------------
-
-class TestPrewarmScanCacheImpl:
-    """Tests for _prewarm_scan_cache_impl."""
-
-    def test_impl_with_no_task(self, monkeypatch):
-        """_prewarm_scan_cache_impl works without Celery task context."""
-        import app.tasks.cache_tasks as module
-
-        monkeypatch.setattr(module, "format_market_status", lambda: "closed")
-        _prewarm_scan_cache_impl = module._prewarm_scan_cache_impl
-
-        mock_db = MagicMock()
-        mock_session_local = MagicMock(return_value=mock_db)
-        mock_cache = MagicMock()
-        if hasattr(module, "get_session_factory"):
-            mock_get_session_factory = MagicMock(return_value=mock_session_local)
-            monkeypatch.setattr(module, "get_session_factory", mock_get_session_factory)
-        else:
-            mock_get_session_factory = None
-            monkeypatch.setattr(module, "SessionLocal", mock_session_local)
-
-        if hasattr(module, "get_cache_manager"):
-            mock_get_cache_manager = MagicMock(return_value=mock_cache)
-            monkeypatch.setattr(module, "get_cache_manager", mock_get_cache_manager)
-        else:
-            mock_get_cache_manager = None
-            mock_cache_cls = MagicMock(return_value=mock_cache)
-            monkeypatch.setattr(module, "CacheManager", mock_cache_cls)
-
-        mock_cache.warm_all_caches.return_value = {
-            'warmed': 2, 'failed': 0, 'already_cached': 1
-        }
-
-        result = _prewarm_scan_cache_impl(
-            task=None,
-            symbol_list=["AAPL", "MSFT", "GOOGL"],
-            priority="low"
-        )
-
-        assert result['warmed'] == 2
-        assert result['failed'] == 0
-        assert result['already_cached'] == 1
-        assert result['total'] == 3
-        assert 'completed_at' in result
-        # DB should be opened and closed by impl (owns_db=True)
-        if mock_get_session_factory is not None:
-            mock_get_session_factory.assert_called_once()
-        mock_session_local.assert_called_once()
-        if mock_get_cache_manager is not None:
-            mock_get_cache_manager.assert_called_once_with(db=mock_db)
-        mock_db.close.assert_called_once()
-
-    def test_impl_with_shared_db(self, monkeypatch):
-        """_prewarm_scan_cache_impl uses provided db and does not close it."""
-        import app.tasks.cache_tasks as module
-
-        monkeypatch.setattr(module, "format_market_status", lambda: "closed")
-        _prewarm_scan_cache_impl = module._prewarm_scan_cache_impl
-
-        mock_db = MagicMock()
-        mock_cache = MagicMock()
-        if hasattr(module, "get_cache_manager"):
-            mock_get_cache_manager = MagicMock(return_value=mock_cache)
-            monkeypatch.setattr(module, "get_cache_manager", mock_get_cache_manager)
-        else:
-            mock_get_cache_manager = None
-            mock_cache_cls = MagicMock(return_value=mock_cache)
-            monkeypatch.setattr(module, "CacheManager", mock_cache_cls)
-
-        mock_cache.warm_all_caches.return_value = {
-            'warmed': 1, 'failed': 0, 'already_cached': 0
-        }
-
-        result = _prewarm_scan_cache_impl(
-            task=None,
-            symbol_list=["AAPL"],
-            priority="normal",
-            db=mock_db
-        )
-
-        assert result['warmed'] == 1
-        if mock_get_cache_manager is not None:
-            mock_get_cache_manager.assert_called_once_with(db=mock_db)
-        # DB should NOT be closed — caller owns it
-        mock_db.close.assert_not_called()
-
 
 class TestForceRefreshStaleIntradayImpl:
     """Tests for _force_refresh_stale_intraday_impl."""

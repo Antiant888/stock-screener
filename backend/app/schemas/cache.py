@@ -5,30 +5,6 @@ from typing import List, Literal, Optional
 from pydantic import BaseModel
 
 
-class CacheStatsResponse(BaseModel):
-    """Cache statistics response model."""
-
-    redis_connected: bool
-    market_status: str
-    spy_cache: dict
-    price_cache: dict
-    redis_memory: Optional[dict] = None
-
-
-class CacheWarmRequest(BaseModel):
-    """Request model for cache warming."""
-
-    symbols: Optional[List[str]] = None
-    count: Optional[int] = None
-    force_refresh: bool = False
-
-
-class CacheInvalidateRequest(BaseModel):
-    """Request model for cache invalidation."""
-
-    symbol: Optional[str] = None
-
-
 class DashboardStatsResponse(BaseModel):
     """Dashboard cache statistics response model."""
 

@@ -1,4 +1,4 @@
-from app.tasks.cache_tasks import _active_benchmark_markets, _benchmark_markets_for_symbols
+from app.tasks.cache_tasks import _active_benchmark_markets
 import app.tasks.cache_tasks as cache_tasks
 
 
@@ -33,27 +33,6 @@ def test_active_benchmark_markets_infers_non_us_when_market_blank():
     markets = _active_benchmark_markets(db)
 
     assert markets == ["HK", "JP", "US"]
-
-
-def test_benchmark_markets_for_symbols_infers_market_from_symbol_suffix():
-    db = _FakeDB(
-        [
-            ("", None, "3008.TWO"),
-            ("", None, "2330.TW"),
-        ]
-    )
-
-    markets = _benchmark_markets_for_symbols(db, symbols=["3008.TWO", "2330.TW"])
-
-    assert markets == ["TW"]
-
-
-def test_benchmark_markets_for_symbols_infers_market_when_db_has_no_rows():
-    db = _FakeDB([])
-
-    markets = _benchmark_markets_for_symbols(db, symbols=["0700.HK"])
-
-    assert markets == ["HK"]
 
 
 def test_active_benchmark_markets_always_includes_us():

@@ -103,38 +103,13 @@ def _patch_serialized_coordination(monkeypatch):
     return fake_lock, fake_coordination
 
 
-def test_daily_cache_warmup_delegates_to_smart_refresh(monkeypatch):
-    import app.tasks.cache_tasks as module
-
-    _patch_serialized_coordination(monkeypatch)
-
-    delegated_result = {"status": "completed", "mode": "full"}
-    delegated = MagicMock(return_value=delegated_result)
-    monkeypatch.setattr(module, "smart_refresh_cache", delegated)
-
-    result = module.daily_cache_warmup.run()
-
-    assert result == delegated_result
-    delegated.assert_called_once()
-    assert delegated.call_args.args[0].name == module.daily_cache_warmup.name
-    # After bead 9.1 daily_cache_warmup accepts a `market` kwarg and forwards it
-    # to smart_refresh_cache (None → shared scope by default).
-    assert delegated.call_args.kwargs == {"mode": "full", "market": None}
-
-
-def test_celery_schedule_moves_orphan_cleanup_and_keeps_legacy_manual_routes():
+def test_celery_schedule_moves_orphan_cleanup():
     from app.celery_app import celery_app
 
     orphan_cleanup = celery_app.conf.beat_schedule["weekly-orphaned-scan-cleanup"]["schedule"]
     assert orphan_cleanup._orig_hour == 1
     assert orphan_cleanup._orig_minute == 45
     assert orphan_cleanup._orig_day_of_week == 0
-
-    assert "app.tasks.cache_tasks.daily_cache_warmup" in celery_app.conf.task_routes
-    assert "app.tasks.cache_tasks.auto_refresh_after_close" in celery_app.conf.task_routes
-    assert celery_app.conf.task_routes[
-        "app.tasks.cache_tasks.prewarm_scan_cache"
-    ] == {"queue": "data_fetch_shared"}
 
 
 def test_smart_refresh_cache_uses_runtime_activity_tracked_task_base():

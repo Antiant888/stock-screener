@@ -884,71 +884,6 @@ def infer_theme_relationships(pipeline: str = None, max_merge_suggestions: int =
         db.close()
 
 
-@celery_app.task(name='app.tasks.theme_discovery_tasks.validate_themes')
-@skip_in_economic_authority
-def validate_themes(min_correlation: float = 0.5):
-    """
-    Validate all themes by checking internal correlations.
-
-    A valid theme has high average correlation between constituents.
-    Should be run weekly.
-
-    Args:
-        min_correlation: Minimum correlation threshold for validation
-
-    Returns:
-        Dict with validation results
-    """
-    logger.info("=" * 60)
-    logger.info("TASK: Validate Theme Correlations")
-    logger.info(f"Minimum correlation threshold: {min_correlation}")
-    logger.info("=" * 60)
-
-    from ..services.theme_correlation_service import ThemeCorrelationService
-
-    db = SessionLocal()
-    start_time = time.time()
-
-    try:
-        service = ThemeCorrelationService(db)
-        result = service.run_full_validation(min_correlation)
-
-        duration = time.time() - start_time
-
-        logger.info(f"Theme validation complete in {duration:.2f}s")
-        logger.info(f"  Themes validated: {result['themes_validated']}")
-        logger.info(f"  Valid: {result['themes_valid']}")
-        logger.info(f"  Invalid: {result['themes_invalid']}")
-
-        # Log invalid themes
-        invalid_themes = [d for d in result['details'] if not d['is_valid']]
-        if invalid_themes:
-            logger.warning("Invalid themes (low correlation):")
-            for t in invalid_themes:
-                logger.warning(f"  - {t['theme']}: avg_corr={t['avg_correlation']:.3f}")
-
-        logger.info("=" * 60)
-
-        return {
-            'themes_validated': result['themes_validated'],
-            'themes_valid': result['themes_valid'],
-            'themes_invalid': result['themes_invalid'],
-            'duration_seconds': round(duration, 2),
-            'timestamp': datetime.now().isoformat()
-        }
-
-    except Exception as e:
-        db.rollback()
-        logger.error(f"Error in theme validation task: {e}", exc_info=True)
-        return {
-            'error': str(e),
-            'timestamp': datetime.now().isoformat()
-        }
-
-    finally:
-        db.close()
-
-
 @celery_app.task(name='app.tasks.theme_discovery_tasks.discover_correlation_clusters')
 def discover_correlation_clusters(
     correlation_threshold: float = 0.6,
@@ -1636,55 +1571,6 @@ def run_taxonomy_assignment(pipeline: str = None, dry_run: bool = False):
     except Exception as e:
         db.rollback()
         logger.error(f"Error in taxonomy assignment task: {e}", exc_info=True)
-        return {'error': str(e), 'timestamp': datetime.now().isoformat()}
-    finally:
-        db.close()
-
-
-@celery_app.task(name='app.tasks.theme_discovery_tasks.recompute_l1_centroid_embeddings')
-@skip_in_economic_authority
-def recompute_l1_centroid_embeddings(pipeline: str = None):
-    """
-    Recompute L1 centroid embeddings from children's embeddings.
-
-    Should run after stale L2 embedding refresh. Centroids enable fast
-    classify_new_l2_to_l1() without LLM calls.
-
-    Recommended scheduling: Daily 5:20 AM ET
-    """
-    logger.info("=" * 60)
-    logger.info("TASK: Recompute L1 Centroid Embeddings")
-    logger.info("=" * 60)
-
-    from ..services.theme_taxonomy_service import ThemeTaxonomyService
-
-    db = SessionLocal()
-    start_time = time.time()
-
-    try:
-        pipelines = [pipeline] if pipeline else ["technical", "fundamental"]
-        results = {}
-
-        for p in pipelines:
-            service = ThemeTaxonomyService(db, pipeline=p)
-            result = service.compute_l1_centroid_embeddings()
-            db.commit()
-            results[p] = result
-            logger.info(f"  Pipeline '{p}': {result['updated']} centroids updated, "
-                        f"{result['skipped']} skipped")
-
-        duration = time.time() - start_time
-        logger.info(f"L1 centroid embeddings complete in {duration:.2f}s")
-
-        return {
-            'results': results,
-            'duration_seconds': round(duration, 2),
-            'timestamp': datetime.now().isoformat(),
-        }
-
-    except Exception as e:
-        db.rollback()
-        logger.error(f"Error in L1 centroid embeddings task: {e}", exc_info=True)
         return {'error': str(e), 'timestamp': datetime.now().isoformat()}
     finally:
         db.close()

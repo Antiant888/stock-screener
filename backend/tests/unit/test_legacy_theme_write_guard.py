@@ -54,13 +54,11 @@ GUARDED_TASKS = [
     (theme_discovery_tasks.promote_candidate_themes, ()),
     (theme_discovery_tasks.apply_lifecycle_policies, ()),
     (theme_discovery_tasks.infer_theme_relationships, ()),
-    (theme_discovery_tasks.validate_themes, ()),
     (theme_discovery_tasks.check_alerts, ()),
     (theme_discovery_tasks.run_full_pipeline, ()),
     (theme_discovery_tasks.consolidate_themes, ()),
     (theme_discovery_tasks.compute_l1_metrics, ()),
     (theme_discovery_tasks.run_taxonomy_assignment, ()),
-    (theme_discovery_tasks.recompute_l1_centroid_embeddings, ()),
     (live_attachment_tasks.refresh_attachment_themes, ([],)),
     (theme_intelligence_tasks.refresh_groups, ()),
 ]

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import csv
+import io
 import json
 from datetime import datetime, timedelta
 
@@ -90,6 +92,10 @@ class _RecordingUniversePipeline:
             "reconciliation": {},
             "pipeline": {"market": market},
         }
+
+
+def _csv_rows(csv_content):
+    return list(csv.DictReader(io.StringIO(csv_content)))
 
 
 def _make_session():
@@ -454,106 +460,7 @@ def test_get_active_symbols_mic_filter_matches_legacy_exchange_alias_rows():
     db.close()
 
 
-def test_populate_from_csv_sets_market_identity_fields_from_resolver():
-    TestingSessionLocal = _make_session()
-    db = TestingSessionLocal()
-
-    csv_content = "\n".join(
-        [
-            "symbol,name,exchange,sector,industry,market_cap",
-            "0700.HK,Tencent,SEHK,Technology,Internet,500B",
-        ]
-    )
-    stats = stock_universe_service.populate_from_csv(db, csv_content)
-
-    row = db.query(StockUniverse).filter(StockUniverse.symbol == "0700.HK").one()
-    assert stats["added"] == 1
-    assert row.market == "HK"
-    assert row.currency == "HKD"
-    assert row.timezone == "Asia/Hong_Kong"
-    assert row.local_code == "0700"
-    db.close()
-
-
-def test_populate_from_csv_persists_canonical_symbol_from_security_master():
-    TestingSessionLocal = _make_session()
-    db = TestingSessionLocal()
-
-    csv_content = "\n".join(
-        [
-            "symbol,name,exchange,sector,industry,market_cap",
-            "700,Tencent,SEHK,Technology,Internet,500B",
-        ]
-    )
-    stats = stock_universe_service.populate_from_csv(db, csv_content)
-
-    row = db.query(StockUniverse).filter(StockUniverse.symbol == "700.HK").one()
-    assert stats["added"] == 1
-    assert row.exchange == "SEHK"
-    assert row.market == "HK"
-    assert row.local_code == "700"
-    db.close()
-
-
-def test_populate_from_csv_uses_tpex_two_suffix_for_unsuffixed_symbols():
-    TestingSessionLocal = _make_session()
-    db = TestingSessionLocal()
-
-    csv_content = "\n".join(
-        [
-            "symbol,name,exchange,sector,industry,market_cap",
-            "3008,Largan,TPEX,Technology,Electronics,120B",
-        ]
-    )
-    stock_universe_service.populate_from_csv(db, csv_content)
-
-    row = db.query(StockUniverse).filter(StockUniverse.symbol == "3008.TWO").one()
-    assert row.exchange == "TPEX"
-    assert row.market == "TW"
-    assert row.timezone == "Asia/Taipei"
-    db.close()
-
-
-def test_populate_from_csv_batches_new_universe_rows_and_status_events(monkeypatch):
-    TestingSessionLocal = _make_session()
-    db = TestingSessionLocal()
-    bulk_calls: list[tuple[str, int]] = []
-    original_bulk_save = db.bulk_save_objects
-    original_add = db.add
-
-    def _record_bulk(objects, **kwargs):
-        objects = list(objects)
-        if objects:
-            bulk_calls.append((type(objects[0]).__name__, len(objects)))
-            if isinstance(objects[0], StockUniverse):
-                _assert_bulk_universe_rows_prepopulate_required_defaults(objects)
-        return original_bulk_save(objects, **kwargs)
-
-    def _guard_add(obj):
-        if isinstance(obj, (StockUniverse, StockUniverseStatusEvent)):
-            raise AssertionError("expected StockUniverse inserts to be batched")
-        return original_add(obj)
-
-    monkeypatch.setattr(db, "bulk_save_objects", _record_bulk)
-    monkeypatch.setattr(db, "add", _guard_add)
-
-    csv_content = "\n".join(
-        [
-            "symbol,name,exchange,sector,industry,market_cap",
-            "700,Tencent,SEHK,Technology,Internet,500B",
-            "3008,Largan,TPEX,Technology,Electronics,120B",
-        ]
-    )
-
-    stats = stock_universe_service.populate_from_csv(db, csv_content)
-
-    assert stats["added"] == 2
-    assert ("StockUniverse", 2) in bulk_calls
-    assert ("StockUniverseStatusEvent", 2) in bulk_calls
-    db.close()
-
-
-def test_ingest_hk_from_csv_normalizes_variants_with_zero_padding_and_lineage():
+def test_ingest_hk_snapshot_rows_normalizes_variants_with_zero_padding_and_lineage():
     TestingSessionLocal = _make_session()
     db = TestingSessionLocal()
 
@@ -566,9 +473,9 @@ def test_ingest_hk_from_csv_normalizes_variants_with_zero_padding_and_lineage():
         ]
     )
 
-    stats = stock_universe_service.ingest_hk_from_csv(
+    stats = stock_universe_service.ingest_hk_snapshot_rows(
         db,
-        csv_content,
+        rows=_csv_rows(csv_content),
         source_name="hkex_official",
         snapshot_id="hk-20260412",
     )
@@ -927,7 +834,7 @@ def test_ingest_in_snapshot_rows_truncates_combined_rejected_preview():
     db.close()
 
 
-def test_ingest_hk_from_csv_reactivates_existing_inactive_symbol():
+def test_ingest_hk_snapshot_rows_reactivates_existing_inactive_symbol():
     TestingSessionLocal = _make_session()
     db = TestingSessionLocal()
     db.add(
@@ -948,9 +855,9 @@ def test_ingest_hk_from_csv_reactivates_existing_inactive_symbol():
             "700,Tencent,SEHK,Technology,Internet,500B",
         ]
     )
-    stats = stock_universe_service.ingest_hk_from_csv(
+    stats = stock_universe_service.ingest_hk_snapshot_rows(
         db,
-        csv_content,
+        rows=_csv_rows(csv_content),
         source_name="sehk_official",
         snapshot_id="hk-20260412",
     )
@@ -969,7 +876,7 @@ def test_ingest_hk_from_csv_reactivates_existing_inactive_symbol():
     ("method_name", "source_name", "snapshot_id", "csv_content", "expected_added"),
     [
         (
-            "ingest_hk_from_csv",
+            "ingest_hk_snapshot_rows",
             "sehk_official",
             "hk-20260412",
             "\n".join(
@@ -982,7 +889,7 @@ def test_ingest_hk_from_csv_reactivates_existing_inactive_symbol():
             2,
         ),
         (
-            "ingest_jp_from_csv",
+            "ingest_jp_snapshot_rows",
             "jpx_official",
             "jp-20260412",
             "\n".join(
@@ -995,7 +902,7 @@ def test_ingest_hk_from_csv_reactivates_existing_inactive_symbol():
             2,
         ),
         (
-            "ingest_tw_from_csv",
+            "ingest_tw_snapshot_rows",
             "tw_reference_bundle",
             "tw-20260412",
             "\n".join(
@@ -1041,7 +948,7 @@ def test_market_ingest_batches_new_universe_rows_and_status_events(
 
     stats = getattr(stock_universe_service, method_name)(
         db,
-        csv_content,
+        rows=_csv_rows(csv_content),
         source_name=source_name,
         snapshot_id=snapshot_id,
     )
@@ -1481,22 +1388,22 @@ def test_reconciliation_runs_are_distinct_per_source_for_same_snapshot_id():
     db.close()
 
 
-def test_ingest_hk_from_csv_rejects_unapproved_source():
+def test_ingest_hk_snapshot_rows_rejects_unapproved_source():
     TestingSessionLocal = _make_session()
     db = TestingSessionLocal()
     csv_content = "symbol,name,exchange\n700,Tencent,SEHK\n"
 
     with pytest.raises(ValueError, match="Unapproved HK source"):
-        stock_universe_service.ingest_hk_from_csv(
+        stock_universe_service.ingest_hk_snapshot_rows(
             db,
-            csv_content,
+            rows=_csv_rows(csv_content),
             source_name="random_vendor",
             snapshot_id="hk-20260412",
         )
     db.close()
 
 
-def test_ingest_hk_from_csv_reports_rejected_rows_in_non_strict_mode():
+def test_ingest_hk_snapshot_rows_reports_rejected_rows_in_non_strict_mode():
     TestingSessionLocal = _make_session()
     db = TestingSessionLocal()
     csv_content = "\n".join(
@@ -1507,9 +1414,9 @@ def test_ingest_hk_from_csv_reports_rejected_rows_in_non_strict_mode():
         ]
     )
 
-    stats = stock_universe_service.ingest_hk_from_csv(
+    stats = stock_universe_service.ingest_hk_snapshot_rows(
         db,
-        csv_content,
+        rows=_csv_rows(csv_content),
         source_name="sehk_official",
         snapshot_id="hk-20260412",
         strict=False,
@@ -1522,7 +1429,7 @@ def test_ingest_hk_from_csv_reports_rejected_rows_in_non_strict_mode():
     db.close()
 
 
-def test_ingest_jp_from_csv_normalizes_exchange_formats_and_lineage():
+def test_ingest_jp_snapshot_rows_normalizes_exchange_formats_and_lineage():
     TestingSessionLocal = _make_session()
     db = TestingSessionLocal()
 
@@ -1535,9 +1442,9 @@ def test_ingest_jp_from_csv_normalizes_exchange_formats_and_lineage():
         ]
     )
 
-    stats = stock_universe_service.ingest_jp_from_csv(
+    stats = stock_universe_service.ingest_jp_snapshot_rows(
         db,
-        csv_content,
+        rows=_csv_rows(csv_content),
         source_name="jpx_official",
         snapshot_id="jp-20260412",
     )
@@ -1568,7 +1475,7 @@ def test_ingest_jp_from_csv_normalizes_exchange_formats_and_lineage():
     db.close()
 
 
-def test_ingest_jp_from_csv_reactivates_existing_inactive_symbol():
+def test_ingest_jp_snapshot_rows_reactivates_existing_inactive_symbol():
     TestingSessionLocal = _make_session()
     db = TestingSessionLocal()
     db.add(
@@ -1589,9 +1496,9 @@ def test_ingest_jp_from_csv_reactivates_existing_inactive_symbol():
             "7203.T,Toyota Motor,TSE,Consumer Cyclical,Auto Manufacturers,300B",
         ]
     )
-    stats = stock_universe_service.ingest_jp_from_csv(
+    stats = stock_universe_service.ingest_jp_snapshot_rows(
         db,
-        csv_content,
+        rows=_csv_rows(csv_content),
         source_name="tse_official",
         snapshot_id="jp-20260412",
     )
@@ -1606,22 +1513,22 @@ def test_ingest_jp_from_csv_reactivates_existing_inactive_symbol():
     db.close()
 
 
-def test_ingest_jp_from_csv_rejects_unapproved_source():
+def test_ingest_jp_snapshot_rows_rejects_unapproved_source():
     TestingSessionLocal = _make_session()
     db = TestingSessionLocal()
     csv_content = "symbol,name,exchange\n7203,Toyota,TSE\n"
 
     with pytest.raises(ValueError, match="Unapproved JP source"):
-        stock_universe_service.ingest_jp_from_csv(
+        stock_universe_service.ingest_jp_snapshot_rows(
             db,
-            csv_content,
+            rows=_csv_rows(csv_content),
             source_name="random_vendor",
             snapshot_id="jp-20260412",
         )
     db.close()
 
 
-def test_ingest_jp_from_csv_reports_rejected_rows_in_non_strict_mode():
+def test_ingest_jp_snapshot_rows_reports_rejected_rows_in_non_strict_mode():
     TestingSessionLocal = _make_session()
     db = TestingSessionLocal()
     csv_content = "\n".join(
@@ -1632,9 +1539,9 @@ def test_ingest_jp_from_csv_reports_rejected_rows_in_non_strict_mode():
         ]
     )
 
-    stats = stock_universe_service.ingest_jp_from_csv(
+    stats = stock_universe_service.ingest_jp_snapshot_rows(
         db,
-        csv_content,
+        rows=_csv_rows(csv_content),
         source_name="tse_official",
         snapshot_id="jp-20260412",
         strict=False,
@@ -1647,7 +1554,7 @@ def test_ingest_jp_from_csv_reports_rejected_rows_in_non_strict_mode():
     db.close()
 
 
-def test_ingest_jp_from_csv_rejects_zero_prefixed_local_codes():
+def test_ingest_jp_snapshot_rows_rejects_zero_prefixed_local_codes():
     TestingSessionLocal = _make_session()
     db = TestingSessionLocal()
     csv_content = "\n".join(
@@ -1658,9 +1565,9 @@ def test_ingest_jp_from_csv_rejects_zero_prefixed_local_codes():
         ]
     )
 
-    stats = stock_universe_service.ingest_jp_from_csv(
+    stats = stock_universe_service.ingest_jp_snapshot_rows(
         db,
-        csv_content,
+        rows=_csv_rows(csv_content),
         source_name="tse_official",
         snapshot_id="jp-20260412",
         strict=False,
@@ -1674,7 +1581,7 @@ def test_ingest_jp_from_csv_rejects_zero_prefixed_local_codes():
     db.close()
 
 
-def test_ingest_jp_from_csv_merges_duplicate_rows_to_keep_richer_metadata():
+def test_ingest_jp_snapshot_rows_merges_duplicate_rows_to_keep_richer_metadata():
     TestingSessionLocal = _make_session()
     db = TestingSessionLocal()
     csv_content = "\n".join(
@@ -1685,9 +1592,9 @@ def test_ingest_jp_from_csv_merges_duplicate_rows_to_keep_richer_metadata():
         ]
     )
 
-    stats = stock_universe_service.ingest_jp_from_csv(
+    stats = stock_universe_service.ingest_jp_snapshot_rows(
         db,
-        csv_content,
+        rows=_csv_rows(csv_content),
         source_name="jpx_official",
         snapshot_id="jp-20260412",
     )
@@ -1727,7 +1634,7 @@ def test_ingest_jp_snapshot_rows_truncates_verbose_row_payloads():
     db.close()
 
 
-def test_ingest_tw_from_csv_normalizes_twse_tpex_variants_and_lineage():
+def test_ingest_tw_snapshot_rows_normalizes_twse_tpex_variants_and_lineage():
     TestingSessionLocal = _make_session()
     db = TestingSessionLocal()
 
@@ -1741,9 +1648,9 @@ def test_ingest_tw_from_csv_normalizes_twse_tpex_variants_and_lineage():
         ]
     )
 
-    stats = stock_universe_service.ingest_tw_from_csv(
+    stats = stock_universe_service.ingest_tw_snapshot_rows(
         db,
-        csv_content,
+        rows=_csv_rows(csv_content),
         source_name="tw_reference_bundle",
         snapshot_id="tw-20260412",
     )
@@ -1777,7 +1684,7 @@ def test_ingest_tw_from_csv_normalizes_twse_tpex_variants_and_lineage():
     db.close()
 
 
-def test_ingest_tw_from_csv_reactivates_existing_inactive_symbol():
+def test_ingest_tw_snapshot_rows_reactivates_existing_inactive_symbol():
     TestingSessionLocal = _make_session()
     db = TestingSessionLocal()
     db.add(
@@ -1798,9 +1705,9 @@ def test_ingest_tw_from_csv_reactivates_existing_inactive_symbol():
             "3008,Largan Precision,TPEX,Technology,Electronics,120B",
         ]
     )
-    stats = stock_universe_service.ingest_tw_from_csv(
+    stats = stock_universe_service.ingest_tw_snapshot_rows(
         db,
-        csv_content,
+        rows=_csv_rows(csv_content),
         source_name="tpex_official",
         snapshot_id="tw-20260412",
     )
@@ -1815,7 +1722,7 @@ def test_ingest_tw_from_csv_reactivates_existing_inactive_symbol():
     db.close()
 
 
-def test_ingest_tw_from_csv_infers_tpex_exchange_from_symbol_when_exchange_missing():
+def test_ingest_tw_snapshot_rows_infers_tpex_exchange_from_symbol_when_exchange_missing():
     TestingSessionLocal = _make_session()
     db = TestingSessionLocal()
     csv_content = "\n".join(
@@ -1826,9 +1733,9 @@ def test_ingest_tw_from_csv_infers_tpex_exchange_from_symbol_when_exchange_missi
         ]
     )
 
-    stats = stock_universe_service.ingest_tw_from_csv(
+    stats = stock_universe_service.ingest_tw_snapshot_rows(
         db,
-        csv_content,
+        rows=_csv_rows(csv_content),
         source_name="tw_reference_bundle",
         snapshot_id="tw-20260412",
     )
@@ -1844,22 +1751,22 @@ def test_ingest_tw_from_csv_infers_tpex_exchange_from_symbol_when_exchange_missi
     db.close()
 
 
-def test_ingest_tw_from_csv_rejects_unapproved_source():
+def test_ingest_tw_snapshot_rows_rejects_unapproved_source():
     TestingSessionLocal = _make_session()
     db = TestingSessionLocal()
     csv_content = "symbol,name,exchange\n2330,TSMC,TWSE\n"
 
     with pytest.raises(ValueError, match="Unapproved TW source"):
-        stock_universe_service.ingest_tw_from_csv(
+        stock_universe_service.ingest_tw_snapshot_rows(
             db,
-            csv_content,
+            rows=_csv_rows(csv_content),
             source_name="random_vendor",
             snapshot_id="tw-20260412",
         )
     db.close()
 
 
-def test_ingest_tw_from_csv_reports_rejected_rows_in_non_strict_mode():
+def test_ingest_tw_snapshot_rows_reports_rejected_rows_in_non_strict_mode():
     TestingSessionLocal = _make_session()
     db = TestingSessionLocal()
     csv_content = "\n".join(
@@ -1870,9 +1777,9 @@ def test_ingest_tw_from_csv_reports_rejected_rows_in_non_strict_mode():
         ]
     )
 
-    stats = stock_universe_service.ingest_tw_from_csv(
+    stats = stock_universe_service.ingest_tw_snapshot_rows(
         db,
-        csv_content,
+        rows=_csv_rows(csv_content),
         source_name="twse_official",
         snapshot_id="tw-20260412",
         strict=False,
@@ -1885,7 +1792,7 @@ def test_ingest_tw_from_csv_reports_rejected_rows_in_non_strict_mode():
     db.close()
 
 
-def test_ingest_tw_from_csv_merges_duplicate_rows_to_keep_richer_metadata():
+def test_ingest_tw_snapshot_rows_merges_duplicate_rows_to_keep_richer_metadata():
     TestingSessionLocal = _make_session()
     db = TestingSessionLocal()
     csv_content = "\n".join(
@@ -1896,9 +1803,9 @@ def test_ingest_tw_from_csv_merges_duplicate_rows_to_keep_richer_metadata():
         ]
     )
 
-    stats = stock_universe_service.ingest_tw_from_csv(
+    stats = stock_universe_service.ingest_tw_snapshot_rows(
         db,
-        csv_content,
+        rows=_csv_rows(csv_content),
         source_name="twse_official",
         snapshot_id="tw-20260412",
     )
@@ -2498,30 +2405,6 @@ def test_get_stats_includes_market_audit_summary(monkeypatch):
     db.close()
 
 
-def test_ingest_from_csv_auto_snapshot_ids_are_collision_resistant():
-    TestingSessionLocal = _make_session()
-    db = TestingSessionLocal()
-
-    hk_csv = "symbol,name,exchange,sector,industry,market_cap\n0700,Tencent,SEHK,Technology,Internet,500B\n"
-    jp_csv = "symbol,name,exchange,sector,industry,market_cap\n7203,Toyota,TSE,Consumer,Auto,250B\n"
-    tw_csv = "symbol,name,exchange,sector,industry,market_cap\n2330,TSMC,TWSE,Technology,Semiconductors,650B\n"
-
-    hk_first = stock_universe_service.ingest_hk_from_csv(db, hk_csv, source_name="hk_manual_csv")
-    hk_second = stock_universe_service.ingest_hk_from_csv(db, hk_csv, source_name="hk_manual_csv")
-    jp_first = stock_universe_service.ingest_jp_from_csv(db, jp_csv, source_name="jp_manual_csv")
-    jp_second = stock_universe_service.ingest_jp_from_csv(db, jp_csv, source_name="jp_manual_csv")
-    tw_first = stock_universe_service.ingest_tw_from_csv(db, tw_csv, source_name="tw_manual_csv")
-    tw_second = stock_universe_service.ingest_tw_from_csv(db, tw_csv, source_name="tw_manual_csv")
-
-    assert hk_first["snapshot_id"] != hk_second["snapshot_id"]
-    assert jp_first["snapshot_id"] != jp_second["snapshot_id"]
-    assert tw_first["snapshot_id"] != tw_second["snapshot_id"]
-    assert hk_first["snapshot_id"].startswith("hk:")
-    assert jp_first["snapshot_id"].startswith("jp:")
-    assert tw_first["snapshot_id"].startswith("tw:")
-    db.close()
-
-
 def test_ingest_hk_snapshot_rows_does_not_emit_status_events_for_unchanged_active_rows():
     TestingSessionLocal = _make_session()
     db = TestingSessionLocal()
@@ -2552,7 +2435,7 @@ def test_ingest_hk_snapshot_rows_does_not_emit_status_events_for_unchanged_activ
     db.close()
 
 
-def test_ingest_hk_from_csv_merges_duplicate_rows_to_keep_richer_metadata():
+def test_ingest_hk_snapshot_rows_merges_duplicate_rows_to_keep_richer_metadata():
     TestingSessionLocal = _make_session()
     db = TestingSessionLocal()
     csv_content = "\n".join(
@@ -2563,9 +2446,9 @@ def test_ingest_hk_from_csv_merges_duplicate_rows_to_keep_richer_metadata():
         ]
     )
 
-    stats = stock_universe_service.ingest_hk_from_csv(
+    stats = stock_universe_service.ingest_hk_snapshot_rows(
         db,
-        csv_content,
+        rows=_csv_rows(csv_content),
         source_name="hk_manual_csv",
         snapshot_id="hk-20260414-dup",
     )

@@ -15,7 +15,6 @@ from .benchmark_registry_service import benchmark_registry
 from .cache.market_cache_policy import market_cache_policy
 from .price_cache_service import PriceCacheService
 from .redis_pool import get_redis_client, is_redis_enabled
-from ..config import settings
 from ..utils.market_hours import is_market_open, format_market_status
 
 logger = logging.getLogger(__name__)
@@ -243,66 +242,6 @@ class CacheManager:
 
         return stats
 
-    def warm_all_caches(
-        self,
-        symbols: List[str],
-        force_refresh: bool = True,
-        benchmark_markets: Optional[List[str]] = None,
-        warm_benchmarks: bool = True,
-    ) -> Dict:
-        """
-        Warm all caches (benchmarks + stock prices).
-
-        Args:
-            symbols: List of stock symbols
-            force_refresh: Force fetch even if cached (default True)
-            benchmark_markets: Optional explicit markets to warm benchmark for
-            warm_benchmarks: Whether benchmark warmup should run in this call
-
-        Returns:
-            Combined statistics with warmed, failed, already_cached counts
-        """
-        logger.info("=" * 60)
-        logger.info("WARMING ALL CACHES")
-        logger.info("=" * 60)
-
-        start_time = time.time()
-
-        # 1. Warm benchmark cache for requested markets
-        benchmark_results: Dict[str, bool] = {}
-        if warm_benchmarks:
-            markets_to_warm = benchmark_markets or ["US"]
-            for market in markets_to_warm:
-                benchmark_results[market] = self.warm_benchmark_cache(market=market)
-
-        # 2. Warm price cache for all symbols
-        price_stats = self.warm_price_cache(
-            symbols,
-            rate_limit=settings.yfinance_batch_rate_limit_interval,
-            force_refresh=force_refresh
-        )
-
-        total_time = time.time() - start_time
-
-        logger.info("=" * 60)
-        logger.info(
-            f"✓ All caches warmed in {total_time:.1f}s"
-        )
-        logger.info("=" * 60)
-
-        # Return summary in format expected by prewarm_scan_cache task
-        return {
-            'warmed': price_stats['successful'],
-            'failed': price_stats['failed'],
-            'already_cached': price_stats['skipped'],
-            'benchmarks_warmed': benchmark_results,
-            'benchmark_warmed': all(benchmark_results.values()) if benchmark_results else False,
-            # Backward compatibility for older consumers expecting this field.
-            'spy_warmed': benchmark_results.get("US", False),
-            'total_time': total_time,
-            'details': price_stats
-        }
-
     def get_cache_stats(self) -> Dict:
         """
         Get comprehensive cache statistics.
@@ -418,91 +357,3 @@ class CacheManager:
             logger.warning(f"Error getting cache stats: {e}")
 
         return stats
-
-    def invalidate_all_caches(self) -> Dict:
-        """
-        Invalidate all caches (use with caution!).
-
-        Returns:
-            Dict with deletion statistics
-        """
-        if not self.redis_client:
-            logger.warning("Redis not available for cache invalidation")
-            return {'deleted': 0}
-
-        try:
-            logger.warning("Invalidating ALL caches...")
-
-            # Get all cache keys
-            benchmark_keys = self.redis_client.keys("benchmark:*")
-            price_keys = self.redis_client.keys("price:*")
-
-            total_keys = len(benchmark_keys) + len(price_keys)
-
-            if total_keys > 0:
-                # Delete all keys
-                if benchmark_keys:
-                    self.redis_client.delete(*benchmark_keys)
-                if price_keys:
-                    self.redis_client.delete(*price_keys)
-
-                logger.warning(f"✓ Invalidated {total_keys} cache keys")
-
-            return {
-                'deleted': total_keys,
-                'benchmark_keys': len(benchmark_keys),
-                'price_keys': len(price_keys)
-            }
-
-        except Exception as e:
-            logger.error(f"Error invalidating caches: {e}", exc_info=True)
-            return {'deleted': 0, 'error': str(e)}
-
-    def invalidate_symbol_cache(self, symbol: str) -> bool:
-        """
-        Invalidate cache for a specific symbol.
-
-        Args:
-            symbol: Stock symbol to invalidate
-
-        Returns:
-            True if successful
-        """
-        try:
-            self.price_cache.invalidate_cache(symbol)
-            logger.info(f"✓ Invalidated cache for {symbol}")
-            return True
-        except Exception as e:
-            logger.error(f"Error invalidating {symbol} cache: {e}")
-            return False
-
-    def get_cache_hit_rate(self, window_minutes: int = 60) -> Optional[float]:
-        """
-        Calculate cache hit rate from Redis stats.
-
-        Args:
-            window_minutes: Time window to analyze
-
-        Returns:
-            Hit rate percentage (0-100) or None if unavailable
-        """
-        if not self.redis_client:
-            return None
-
-        try:
-            info = self.redis_client.info('stats')
-
-            keyspace_hits = info.get('keyspace_hits', 0)
-            keyspace_misses = info.get('keyspace_misses', 0)
-
-            total_requests = keyspace_hits + keyspace_misses
-
-            if total_requests == 0:
-                return None
-
-            hit_rate = (keyspace_hits / total_requests) * 100
-            return round(hit_rate, 2)
-
-        except Exception as e:
-            logger.warning(f"Error calculating hit rate: {e}")
-            return None

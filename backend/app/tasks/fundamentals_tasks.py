@@ -2,16 +2,14 @@
 Celery tasks for fundamental data updates.
 
 Provides background tasks for:
-- Weekly fundamental refresh for all stocks (standard and hybrid modes)
-- On-demand fundamental refresh
-- Initial cache population
+- Weekly fundamental refresh for all stocks
 
 All data-fetching tasks use the @serialized_data_fetch_task decorator
 to ensure only one task fetches external data at a time.
 """
 import logging
 from dataclasses import dataclass, field
-from typing import Any, Dict, Optional, List
+from typing import Any, Dict, Optional
 from datetime import datetime
 import time
 
@@ -24,10 +22,8 @@ from ..wiring.bootstrap import (
     get_eps_rating_service,
     get_fundamentals_cache,
     get_provider_snapshot_service,
-    get_stock_universe_service,
     get_ticker_validation_service,
 )
-from ..services.hybrid_fundamentals_service import HybridFundamentalsService
 from ..services.market_activity_service import (
     mark_market_activity_completed,
     mark_market_activity_failed,
@@ -35,7 +31,6 @@ from ..services.market_activity_service import (
     mark_market_activity_started,
 )
 from ..services.ticker_validation_service import TickerValidationService
-from ..config import settings
 from .data_fetch_lock import serialized_data_fetch_task
 from .transient_database import raise_if_transient_database_error
 
@@ -194,22 +189,6 @@ def _sync_weekly_bundles(
     return results[effective_market], pending
 
 
-def _us_only_refresh_scope(
-    scoped_market: str | None,
-    enabled_markets: frozenset[str] | None,
-) -> bool:
-    """Whether a refresh covers US alone, so the US-only snapshot pipeline may complete it.
-
-    The snapshot pipeline builds and hydrates only the US Finviz universe and
-    snapshot, so it must never stand in for a scope that includes another
-    market. Scoped runs use their market; unscoped runs use the enabled set.
-    Unreadable preferences (None) keep the pre-#414 behaviour.
-    """
-    if scoped_market is not None:
-        return scoped_market == "US"
-    return enabled_markets is None or enabled_markets == frozenset({"US"})
-
-
 def _load_active_universe_stocks(
     db,
     *,
@@ -223,59 +202,6 @@ def _load_active_universe_stocks(
     elif enabled_markets is not None:
         query = query.filter(StockUniverse.market.in_(sorted(enabled_markets)))
     return query.all()
-
-
-def _resolve_snapshot_progress_total(result: Dict, fallback_total: int) -> int:
-    snapshot = result.get("snapshot") or {}
-    coverage = snapshot.get("coverage") or {}
-    universe = result.get("universe") or {}
-    hydrate = result.get("hydrate") or {}
-    for candidate in (
-        universe.get("active_symbols"),
-        coverage.get("active_symbols"),
-        hydrate.get("symbols_hydrated"),
-        fallback_total,
-    ):
-        if candidate is None:
-            continue
-        try:
-            resolved = int(candidate)
-        except (TypeError, ValueError):
-            continue
-        if resolved >= 0:
-            return resolved
-    return max(int(fallback_total or 0), 0)
-
-
-def _run_snapshot_pipeline(db, *, publish: bool) -> Dict:
-    """
-    Execute the snapshot-backed fundamentals refresh flow.
-
-    Preview mode stores only snapshot artifacts. Publish mode also refreshes
-    the universe first, hydrates stock_fundamentals/cache, and returns the
-    published revision metadata.
-    """
-    stock_universe_service = get_stock_universe_service()
-    provider_snapshot_service = get_provider_snapshot_service()
-    universe_stats = None
-    if publish:
-        universe_stats = stock_universe_service.populate_universe(db)
-
-    snapshot_stats = provider_snapshot_service.create_snapshot_run(
-        db,
-        run_mode="publish" if publish else "preview",
-        publish=publish,
-    )
-    hydrate_stats = None
-    if publish and snapshot_stats.get("published"):
-        hydrate_stats = provider_snapshot_service.hydrate_published_snapshot(db)
-
-    return {
-        "mode": "snapshot_publish" if publish else "snapshot_preview",
-        "universe": universe_stats,
-        "snapshot": snapshot_stats,
-        "hydrate": hydrate_stats,
-    }
 
 
 def _resolve_refresh_scope(market: str | None) -> tuple[frozenset[str] | None, str, str | None]:
@@ -307,7 +233,7 @@ def _disabled_market_response(effective_market: str) -> Dict:
 
 @dataclass
 class _RefreshActivity:
-    """Market-activity bookkeeping shared by the weekly fundamentals refreshes."""
+    """Market-activity bookkeeping for the weekly fundamentals refresh."""
 
     db: Any
     market: str
@@ -368,8 +294,6 @@ def _complete_from_github_bundle(
     scoped_market: str | None,
     enabled_markets: frozenset[str] | None,
     start_time: float,
-    extra_fields: Optional[Dict] = None,
-    with_minutes: bool = False,
 ) -> Dict:
     """Finish a refresh whose every in-scope market was synced from its GitHub bundle."""
     total_stocks = len(_load_active_universe_stocks(
@@ -384,55 +308,17 @@ def _complete_from_github_bundle(
         total_stocks or None,
         message="Fundamentals refresh completed from GitHub bundle",
     )
-    response = {
+    return {
         "status": "success",
         "source": "github",
         "github_sync_status": github_sync.get("status"),
         "market": activity.market,
         "source_revision": github_sync.get("source_revision"),
         "import": github_sync.get("import"),
-        **(extra_fields or {}),
         "eps_rating_task_id": eps_task.id,
         "duration_seconds": round(duration, 2),
         "timestamp": datetime.now().isoformat(),
     }
-    if with_minutes:
-        response["duration_minutes"] = round(duration / 60, 1)
-    return response
-
-
-def _refresh_from_snapshot(
-    activity: _RefreshActivity,
-    *,
-    scoped_market: str | None,
-    enabled_markets: frozenset[str] | None,
-    publish: bool,
-    start_time: float,
-    extra_fields: Optional[Dict] = None,
-    with_minutes: bool = False,
-) -> Dict:
-    """Refresh US fundamentals through the provider snapshot pipeline."""
-    total_stocks = len(_load_active_universe_stocks(
-        activity.db, market=scoped_market, enabled_markets=enabled_markets
-    ))
-    activity.progress(0, total_stocks, force=True)
-    result = _run_snapshot_pipeline(activity.db, publish=publish)
-    total_stocks = _resolve_snapshot_progress_total(result, total_stocks)
-    activity.progress(total_stocks, total_stocks, force=True)
-    duration = time.time() - start_time
-    response = {
-        **result,
-        **(extra_fields or {}),
-        "duration_seconds": round(duration, 2),
-        "timestamp": datetime.now().isoformat(),
-    }
-    if with_minutes:
-        response["duration_minutes"] = round(duration / 60, 1)
-    if publish and result.get("snapshot", {}).get("published"):
-        eps_task = calculate_eps_rating_percentiles.delay()
-        response["eps_rating_task_id"] = eps_task.id
-    activity.completed(total_stocks or None, total_stocks or None)
-    return response
 
 
 def _log_refresh_summary(title: str, total_stocks: int, stats: Dict, duration: float) -> None:
@@ -522,18 +408,6 @@ def refresh_all_fundamentals(
         if scoped_market is None and enabled_markets is not None:
             # Markets refreshed from their GitHub bundle are done; continue with the rest.
             enabled_markets = pending_markets
-        if settings.provider_snapshot_cutover_enabled and _us_only_refresh_scope(scoped_market, enabled_markets):
-            logger.info(
-                "Provider snapshot cutover enabled - using snapshot publish pipeline",
-                extra=_log_extra,
-            )
-            return _refresh_from_snapshot(
-                activity,
-                scoped_market=scoped_market,
-                enabled_markets=enabled_markets,
-                publish=True,
-                start_time=start_time,
-            )
 
         # Get all active stocks from universe (market-filtered when scoped)
         universe_stocks = _load_active_universe_stocks(
@@ -668,630 +542,6 @@ def refresh_all_fundamentals(
 
     finally:
         db.close()
-
-
-@serialized_data_fetch_task(
-    celery_app,
-    "refresh_symbol_fundamentals",
-    name="app.tasks.fundamentals_tasks.refresh_symbol_fundamentals",
-)
-def refresh_symbol_fundamentals(self, symbol: str):
-    """
-    On-demand task to refresh fundamentals for a single stock.
-
-    Args:
-        symbol: Stock ticker symbol
-
-    Returns:
-        Dict with fundamental data or error
-    """
-    logger.info(f"TASK: Refresh Fundamentals for {symbol}")
-
-    try:
-        cache = get_fundamentals_cache()
-        data = cache.get_fundamentals(symbol.upper(), force_refresh=True)
-
-        if data:
-            logger.info(f"✓ Successfully refreshed fundamentals for {symbol}")
-            # Count populated fields
-            populated_fields = len([v for v in data.values() if v is not None])
-            return {
-                'symbol': symbol,
-                'success': True,
-                'populated_fields': populated_fields,
-                'timestamp': datetime.now().isoformat()
-            }
-        else:
-            logger.warning(f"⚠ No data returned for {symbol}")
-            return {
-                'symbol': symbol,
-                'success': False,
-                'error': 'No data returned',
-                'timestamp': datetime.now().isoformat()
-            }
-
-    except Exception as e:
-        raise_if_transient_database_error(e)
-        logger.error(f"✗ Error refreshing {symbol}: {e}", exc_info=True)
-        return {
-            'symbol': symbol,
-            'success': False,
-            'error': str(e),
-            'timestamp': datetime.now().isoformat()
-        }
-
-
-@serialized_data_fetch_task(
-    celery_app,
-    "populate_initial_cache",
-    name="app.tasks.fundamentals_tasks.populate_initial_cache",
-)
-def populate_initial_cache(self, limit: Optional[int] = None):
-    """
-    One-time task to populate fundamental cache immediately after deployment.
-
-    This is the same logic as refresh_all_fundamentals() but with different logging
-    to indicate it's an initial population rather than a scheduled refresh.
-
-    Args:
-        limit: Optional limit on number of stocks to populate (for testing)
-
-    Returns:
-        Dict with population statistics
-    """
-    logger.info("=" * 60)
-    logger.info("TASK: Initial Fundamental Cache Population")
-    logger.info(f"Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    if limit:
-        logger.info(f"Limit: {limit} stocks (testing mode)")
-    logger.info("=" * 60)
-
-    db = SessionLocal()
-    start_time = time.time()
-    ticker_validation_service = get_ticker_validation_service()
-
-    try:
-        # Get all active stocks in runtime-enabled markets
-        query = db.query(StockUniverse).filter(StockUniverse.is_active)
-        scope = _runtime_market_scope()
-        if scope is not None:
-            query = query.filter(StockUniverse.market.in_(sorted(scope[1])))
-
-        if limit:
-            query = query.limit(limit)
-
-        universe_stocks = query.all()
-
-        if not universe_stocks:
-            logger.warning("No active stocks found in universe")
-            return {
-                'error': 'No active stocks found',
-                'timestamp': datetime.now().isoformat()
-            }
-
-        total_stocks = len(universe_stocks)
-        logger.info(f"Populating cache for {total_stocks} active stocks")
-        logger.info(f"Estimated time: {total_stocks * 0.5 / 3600:.1f} hours (at 0.5s per stock)")
-
-        # Initialize cache service
-        cache = get_fundamentals_cache()
-
-        # Statistics
-        stats = {
-            'updated': 0,
-            'failed': 0,
-            'skipped': 0,
-            'failed_symbols': []
-        }
-
-        # Process each stock with rate limiting (2 seconds between calls)
-        for i, stock in enumerate(universe_stocks):
-            try:
-                symbol = stock.symbol
-
-                # Log progress every 100 stocks for initial population
-                if (i + 1) % 100 == 0:
-                    elapsed = time.time() - start_time
-                    remaining = (elapsed / (i + 1)) * (total_stocks - i - 1)
-                    logger.info(
-                        f"Progress: {i + 1}/{total_stocks} ({(i+1)/total_stocks*100:.1f}%) | "
-                        f"Elapsed: {elapsed/60:.1f}m | ETA: {remaining/60:.1f}m"
-                    )
-
-                # Fetch fundamental data (force_refresh=True to populate fresh data).
-                # Pass market to avoid a per-symbol DB lookup in the cache service.
-                fundamental_data = cache.get_fundamentals(
-                    symbol,
-                    force_refresh=True,
-                    market=stock.market,
-                )
-
-                if fundamental_data:
-                    stats['updated'] += 1
-                    logger.debug(f"✓ Populated fundamentals for {symbol}")
-                else:
-                    stats['skipped'] += 1
-                    stats['failed_symbols'].append(symbol)
-                    logger.warning(f"⚠ No data returned for {symbol}")
-                    # Log validation failure for reporting
-                    ticker_validation_service.log_validation_failure(
-                        db=db,
-                        symbol=symbol,
-                        error_type=TickerValidationService.ERROR_NO_DATA,
-                        error_message='No data returned from fundamentals API',
-                        data_source=TickerValidationService.SOURCE_YFINANCE,
-                        triggered_by=TickerValidationService.TRIGGER_CACHE_WARMUP,
-                        task_id=self.request.id if self.request else None,
-                    )
-
-                # Rate limiting handled internally by cache.get_fundamentals()
-                # → DataSourceService → finviz_service / yfinance_service
-                # (each uses Redis-backed distributed rate limiter)
-
-            except Exception as e:
-                raise_if_transient_database_error(e)
-                stats['failed'] += 1
-                stats['failed_symbols'].append(symbol)
-                logger.error(f"✗ Error populating {symbol}: {e}")
-                # Log validation failure with exception details
-                error_type, error_msg = ticker_validation_service.classify_error(exception=e)
-                ticker_validation_service.log_validation_failure(
-                    db=db,
-                    symbol=symbol,
-                    error_type=error_type,
-                    error_message=error_msg,
-                    data_source=TickerValidationService.SOURCE_YFINANCE,
-                    triggered_by=TickerValidationService.TRIGGER_CACHE_WARMUP,
-                    task_id=self.request.id if self.request else None,
-                )
-                continue
-
-        duration = time.time() - start_time
-
-        logger.info("=" * 60)
-        logger.info("Initial Cache Population Complete!")
-        logger.info(f"Total stocks: {total_stocks}")
-        logger.info(f"Updated: {stats['updated']}")
-        logger.info(f"Failed: {stats['failed']}")
-        logger.info(f"Skipped: {stats['skipped']}")
-        logger.info(f"Duration: {duration:.2f}s ({duration/60:.1f} minutes / {duration/3600:.2f} hours)")
-        logger.info(f"Average: {duration/total_stocks:.2f}s per stock")
-        if stats['failed_symbols'][:5]:
-            logger.info(f"Failed symbols (first 5): {', '.join(stats['failed_symbols'][:5])}")
-        logger.info("=" * 60)
-
-        # Chain EPS rating percentiles calculation after initial cache population
-        logger.info("Queuing EPS Rating Percentiles calculation...")
-        eps_task = calculate_eps_rating_percentiles.delay()
-        logger.info(f"EPS Rating Percentiles task queued: {eps_task.id}")
-
-        return {
-            'total_stocks': total_stocks,
-            'updated': stats['updated'],
-            'failed': stats['failed'],
-            'skipped': stats['skipped'],
-            'failed_symbols': stats['failed_symbols'][:20],  # Return first 20
-            'duration_seconds': round(duration, 2),
-            'duration_minutes': round(duration / 60, 1),
-            'duration_hours': round(duration / 3600, 2),
-            'timestamp': datetime.now().isoformat(),
-            'eps_rating_task_id': eps_task.id
-        }
-
-    except Exception as e:
-        raise_if_transient_database_error(e)
-        logger.error(f"Fatal error in initial cache population: {e}", exc_info=True)
-        return {
-            'error': str(e),
-            'timestamp': datetime.now().isoformat()
-        }
-
-    finally:
-        db.close()
-
-
-@celery_app.task(name='app.tasks.fundamentals_tasks.get_cache_stats')
-def get_cache_stats(symbols: Optional[List[str]] = None):
-    """
-    Get cache statistics for fundamental data.
-
-    Args:
-        symbols: Optional list of symbols to check (defaults to all active stocks)
-
-    Returns:
-        Dict with cache statistics
-    """
-    logger.info("TASK: Get Fundamental Cache Statistics")
-
-    db = SessionLocal()
-
-    try:
-        # Get symbols to check
-        if symbols is None:
-            universe_stocks = db.query(StockUniverse).filter(
-                StockUniverse.is_active
-            ).limit(100).all()  # Check first 100 for quick stats
-            symbols = [s.symbol for s in universe_stocks]
-
-        cache = get_fundamentals_cache()
-
-        # Collect stats
-        total = len(symbols)
-        redis_cached = 0
-        db_cached = 0
-        fresh = 0
-        stale = 0
-
-        for symbol in symbols:
-            stats = cache.get_cache_stats(symbol)
-
-            if stats['redis_cached']:
-                redis_cached += 1
-            if stats['db_cached']:
-                db_cached += 1
-            if stats['age_days'] is not None:
-                if stats['age_days'] <= 7:
-                    fresh += 1
-                else:
-                    stale += 1
-
-        return {
-            'total_checked': total,
-            'redis_cached': redis_cached,
-            'db_cached': db_cached,
-            'fresh': fresh,
-            'stale': stale,
-            'redis_hit_rate': round(redis_cached / total * 100, 1) if total > 0 else 0,
-            'db_hit_rate': round(db_cached / total * 100, 1) if total > 0 else 0,
-            'timestamp': datetime.now().isoformat()
-        }
-
-    except Exception as e:
-        logger.error(f"Error getting cache stats: {e}", exc_info=True)
-        return {
-            'error': str(e),
-            'timestamp': datetime.now().isoformat()
-        }
-
-    finally:
-        db.close()
-
-
-@serialized_data_fetch_task(
-    celery_app,
-    "refresh_all_fundamentals_hybrid",
-    name="app.tasks.fundamentals_tasks.refresh_all_fundamentals_hybrid",
-)
-def refresh_all_fundamentals_hybrid(
-    self,
-    include_finviz: bool = True,
-    yfinance_batch_size: int = 50,
-    market: str | None = None,
-    activity_lifecycle: str | None = None,
-):
-    """
-    HYBRID fundamental refresh - optimized for speed.
-
-    Uses hybrid approach:
-    1. yfinance batch fetching (50 symbols at a time) - ~25 min
-    2. Technical calculations from cached price data - ~10 min
-    3. finviz-only fields (short interest, etc.) - ~1-1.5 hours
-
-    Target: ~1.5-2 hours vs ~4 hours for traditional approach.
-
-    Args:
-        include_finviz: Whether to fetch finviz-only fields (default True)
-        yfinance_batch_size: Symbols per yfinance batch (default 50)
-
-    Returns:
-        Dict with refresh statistics
-    """
-    from .market_queues import market_tag, log_extra
-    _log_extra = log_extra(market)
-    logger.info("=" * 60)
-    logger.info(
-        "TASK: Hybrid Fundamental Data Refresh (Optimized) %s", market_tag(market),
-        extra=_log_extra,
-    )
-    logger.info("Timestamp: %s", datetime.now().strftime('%Y-%m-%d %H:%M:%S'), extra=_log_extra)
-    logger.info("Include finviz: %s", include_finviz, extra=_log_extra)
-    logger.info("yfinance batch size: %s", yfinance_batch_size, extra=_log_extra)
-    logger.info("=" * 60)
-
-    enabled_markets, effective_market, scoped_market = _resolve_refresh_scope(market)
-    if market is not None and not _market_enabled(effective_market, enabled_markets):
-        logger.info("Skipping hybrid fundamentals refresh for disabled market %s", market, extra=_log_extra)
-        return _disabled_market_response(effective_market)
-
-    db = SessionLocal()
-    start_time = time.time()
-    ticker_validation_service = get_ticker_validation_service()
-    activity = _RefreshActivity(
-        db=db,
-        market=effective_market,
-        lifecycle=activity_lifecycle or "weekly_refresh",
-        task_name=getattr(self, "name", "refresh_all_fundamentals_hybrid"),
-        task_id=getattr(getattr(self, "request", None), "id", None),
-    )
-    total_stocks = 0
-
-    try:
-        activity.started()
-        github_sync, pending_markets = _sync_weekly_bundles(
-            db,
-            effective_market=effective_market,
-            scoped_market=scoped_market,
-            enabled_markets=enabled_markets,
-        )
-        if not pending_markets:
-            return _complete_from_github_bundle(
-                activity,
-                github_sync,
-                scoped_market=scoped_market,
-                enabled_markets=enabled_markets,
-                start_time=start_time,
-                extra_fields={"include_finviz": include_finviz},
-                with_minutes=True,
-            )
-        if scoped_market is None and enabled_markets is not None:
-            # Markets refreshed from their GitHub bundle are done; continue with the rest.
-            enabled_markets = pending_markets
-        if (
-            settings.provider_snapshot_cutover_enabled
-            or settings.provider_snapshot_ingestion_enabled
-        ) and _us_only_refresh_scope(scoped_market, enabled_markets):
-            publish = settings.provider_snapshot_cutover_enabled
-            logger.info(
-                "Provider snapshot pipeline enabled (publish=%s) - bypassing legacy hybrid fetch",
-                publish,
-            )
-            return _refresh_from_snapshot(
-                activity,
-                scoped_market=scoped_market,
-                enabled_markets=enabled_markets,
-                publish=publish,
-                start_time=start_time,
-                extra_fields={"include_finviz": include_finviz},
-                with_minutes=True,
-            )
-
-        # Get all active stocks from universe (market-filtered when scoped)
-        universe_stocks = _load_active_universe_stocks(
-            db, market=scoped_market, enabled_markets=enabled_markets
-        )
-
-        if not universe_stocks:
-            logger.warning("No active stocks found in universe", extra=_log_extra)
-            activity.failed_safely("No active stocks found")
-            return {
-                'error': 'No active stocks found',
-                'timestamp': datetime.now().isoformat()
-            }
-
-        symbols = [s.symbol for s in universe_stocks]
-        # Build {symbol: market} map so HybridFundamentalsService can apply
-        # the provider routing policy (finviz is US-only — HK/JP/TW skip it).
-        market_by_symbol = {s.symbol: s.market for s in universe_stocks}
-        total_stocks = len(symbols)
-        logger.info(f"Found {total_stocks} active stocks to refresh")
-
-        # Estimate time
-        if include_finviz:
-            est_time = (total_stocks / 50 * 10) / 60 + 10 + (total_stocks * 2) / 60  # yf + tech + finviz
-            logger.info(f"Estimated time: ~{est_time:.0f} minutes (hybrid with finviz)")
-        else:
-            est_time = (total_stocks / 50 * 10) / 60 + 10  # yf + tech only
-            logger.info(f"Estimated time: ~{est_time:.0f} minutes (yfinance + technicals only)")
-
-        # Initialize hybrid service
-        hybrid_service = HybridFundamentalsService(
-            include_finviz=include_finviz,
-            yfinance_batch_size=yfinance_batch_size
-        )
-
-        # Initialize cache for storage
-        cache = get_fundamentals_cache()
-
-        def progress_callback(current, total):
-            """Log progress updates."""
-            pct = current / total * 100 if total > 0 else 0
-            elapsed = time.time() - start_time
-            if current > 0:
-                eta = (elapsed / current) * (total - current) / 60
-                logger.info(f"Hybrid progress: {current}/{total} ({pct:.1f}%), ETA: {eta:.1f} min")
-            activity.progress(current, total)
-
-        # Fetch all fundamentals using hybrid approach
-        all_data = hybrid_service.fetch_fundamentals_batch(
-            symbols,
-            include_technicals=True,
-            include_finviz=include_finviz,
-            progress_callback=progress_callback,
-            market_by_symbol=market_by_symbol,
-        )
-
-        # Store in all caches (fundamentals + quarterly for CANSLIM compatibility)
-        logger.info("Storing results in cache...")
-        storage_stats = hybrid_service.store_all_caches(
-            all_data,
-            cache,
-            session_factory=SessionLocal,
-            include_quarterly=True,
-            market_by_symbol=market_by_symbol,
-        )
-
-        stats = {
-            'updated': storage_stats['fundamentals_stored'],
-            'quarterly_stored': storage_stats['quarterly_stored'],
-            'failed': storage_stats['failed'],
-            'skipped': len([d for d in all_data.values() if not d or d.get('has_error')]),
-            'failed_symbols': [s for s, d in all_data.items() if not d or d.get('has_error')]
-        }
-
-        # Log validation failures for failed symbols
-        for symbol in stats['failed_symbols']:
-            data = all_data.get(symbol, {})
-            error_msg = data.get('error', 'No data returned') if data else 'No data returned'
-            ticker_validation_service.log_validation_failure(
-                db=db,
-                symbol=symbol,
-                error_type=TickerValidationService.ERROR_NO_DATA,
-                error_message=error_msg,
-                data_source=TickerValidationService.SOURCE_BOTH if include_finviz else TickerValidationService.SOURCE_YFINANCE,
-                triggered_by=TickerValidationService.TRIGGER_FUNDAMENTALS_REFRESH,
-                task_id=self.request.id if self.request else None,
-            )
-
-        duration = time.time() - start_time
-        _log_refresh_summary("Hybrid Fundamental Refresh Complete!", total_stocks, stats, duration)
-
-        # Chain EPS rating percentiles calculation after fundamentals refresh
-        logger.info("Queuing EPS Rating Percentiles calculation...")
-        eps_task = calculate_eps_rating_percentiles.delay()
-        logger.info(f"EPS Rating Percentiles task queued: {eps_task.id}")
-        activity.progress(total_stocks, total_stocks, force=True)
-        activity.completed(total_stocks, total_stocks)
-
-        return {
-            'mode': 'hybrid',
-            'include_finviz': include_finviz,
-            'total_stocks': total_stocks,
-            'updated': stats['updated'],
-            'quarterly_stored': stats.get('quarterly_stored', 0),
-            'failed': stats['failed'],
-            'skipped': stats['skipped'],
-            'failed_symbols': stats['failed_symbols'][:10],
-            'duration_seconds': round(duration, 2),
-            'duration_minutes': round(duration / 60, 1),
-            'timestamp': datetime.now().isoformat(),
-            'eps_rating_task_id': eps_task.id
-        }
-
-    except Exception as e:
-        raise_if_transient_database_error(e)
-        logger.error(f"Fatal error in hybrid fundamental refresh: {e}", exc_info=True)
-        db.rollback()
-        activity.failed_safely(
-            str(e),
-            current=int(activity.progress_state.get("last_current") or 0),
-            total=total_stocks,
-        )
-        return {
-            'error': str(e),
-            'timestamp': datetime.now().isoformat()
-        }
-
-    finally:
-        db.close()
-
-
-@celery_app.task(name='app.tasks.fundamentals_tasks.refresh_fundamentals_yfinance_only')
-def refresh_fundamentals_yfinance_only(yfinance_batch_size: int = 50):
-    """
-    Fast fundamental refresh using ONLY yfinance + technical calculations.
-
-    Skips finviz entirely for maximum speed (~30-40 minutes).
-    Use when finviz-only fields (short interest, etc.) aren't needed.
-
-    Args:
-        yfinance_batch_size: Symbols per batch (default 50)
-
-    Returns:
-        Dict with refresh statistics
-    """
-    logger.info("=" * 60)
-    logger.info("TASK: Fast Fundamental Refresh (yfinance + technicals only)")
-    logger.info(f"Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    logger.info("=" * 60)
-
-    # Use hybrid task with finviz disabled
-    return refresh_all_fundamentals_hybrid(
-        include_finviz=False,
-        yfinance_batch_size=yfinance_batch_size
-    )
-
-
-@serialized_data_fetch_task(
-    celery_app,
-    "refresh_symbols_hybrid",
-    name="app.tasks.fundamentals_tasks.refresh_symbols_hybrid",
-)
-def refresh_symbols_hybrid(
-    self,
-    symbols: List[str],
-    include_finviz: bool = True
-):
-    """
-    Refresh fundamentals for a specific list of symbols using hybrid approach.
-
-    Useful for:
-    - Refreshing a watchlist
-    - Updating specific sectors
-    - Testing the hybrid approach on a subset
-
-    Args:
-        symbols: List of stock ticker symbols
-        include_finviz: Whether to include finviz-only fields
-
-    Returns:
-        Dict with refresh statistics
-    """
-    logger.info(f"TASK: Hybrid refresh for {len(symbols)} symbols")
-    start_time = time.time()
-
-    try:
-        hybrid_service = HybridFundamentalsService(include_finviz=include_finviz)
-        cache = get_fundamentals_cache()
-
-        # Batch-resolve markets in a single query so fetch and store are
-        # market-aware without N+1 DB lookups later.
-        db = SessionLocal()
-        try:
-            rows = (
-                db.query(StockUniverse.symbol, StockUniverse.market)
-                .filter(StockUniverse.symbol.in_(symbols))
-                .all()
-            )
-            market_by_symbol = {sym: mkt for sym, mkt in rows}
-        finally:
-            db.close()
-
-        # Fetch fundamentals
-        all_data = hybrid_service.fetch_fundamentals_batch(
-            symbols,
-            include_technicals=True,
-            include_finviz=include_finviz,
-            market_by_symbol=market_by_symbol,
-        )
-
-        # Store in all caches (fundamentals + quarterly for CANSLIM compatibility)
-        storage_stats = hybrid_service.store_all_caches(
-            all_data,
-            cache,
-            session_factory=SessionLocal,
-            include_quarterly=True,
-            market_by_symbol=market_by_symbol,
-        )
-
-        duration = time.time() - start_time
-
-        return {
-            'mode': 'hybrid',
-            'symbols_requested': len(symbols),
-            'updated': storage_stats['fundamentals_stored'],
-            'quarterly_stored': storage_stats['quarterly_stored'],
-            'failed': storage_stats['failed'],
-            'duration_seconds': round(duration, 2),
-            'timestamp': datetime.now().isoformat()
-        }
-
-    except Exception as e:
-        raise_if_transient_database_error(e)
-        logger.error(f"Error in hybrid refresh: {e}", exc_info=True)
-        return {
-            'error': str(e),
-            'timestamp': datetime.now().isoformat()
-        }
 
 
 @celery_app.task(bind=True, name='app.tasks.fundamentals_tasks.calculate_eps_rating_percentiles')

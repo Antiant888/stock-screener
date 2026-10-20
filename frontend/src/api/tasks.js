@@ -16,7 +16,7 @@ export const getScheduledTasks = async () => {
 /**
  * Manually trigger a scheduled task.
  *
- * @param {string} taskName - Name of the task to trigger (e.g., 'daily-cache-warmup')
+ * @param {string} taskName - Name of the task to trigger (e.g., 'weekly-full-refresh')
  * @returns {Promise<Object>} Trigger response with task_id, status, message
  */
 export const triggerTask = async (taskName) => {
