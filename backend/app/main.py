@@ -98,8 +98,8 @@ def initialize_runtime() -> None:
             "cors_origins": settings.cors_origins_list,
         },
     )
-    action = migrate_database_to_head(engine)
-    logger.info("Database schema ready", extra={"migration_action": action})
+    migrate_database_to_head(engine)
+    logger.info("Database schema ready")
     from .services.social_source_admin_service import SocialSourceAdminService
 
     with SessionLocal() as db:

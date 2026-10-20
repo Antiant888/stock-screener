@@ -82,32 +82,25 @@ def _stub_engine(dialect_name: str, calls: list[str]):
     )
 
 
-def test_migrate_database_to_head_reconciles_existing_schema_without_alembic_version():
+def test_migrate_database_to_head_refuses_schema_without_alembic_version():
     calls: list[str] = []
     engine = _stub_engine("postgresql", calls)
-    config = object()
 
     with patch("app.infra.db.migrations._has_alembic_version_table", return_value=False), patch(
         "app.infra.db.migrations._has_user_tables", return_value=True
-    ), patch("app.infra.db.migrations._alembic_config", return_value=config), patch(
-        "app.infra.db.migrations.reconcile_legacy_runtime_schema",
-        side_effect=lambda _engine: calls.append("reconcile"),
-    ) as reconcile, patch(
-        "app.infra.db.migrations.command.stamp",
-        side_effect=lambda _config, _revision: calls.append("stamp"),
-    ) as stamp, patch(
-        "app.infra.db.migrations.command.upgrade",
-        side_effect=lambda _config, _revision: calls.append("upgrade"),
-    ) as upgrade:
-        action = migrate_database_to_head(engine)
+    ), patch("app.infra.db.migrations._alembic_config", return_value=object()), patch(
+        "app.infra.db.migrations.command.upgrade"
+    ) as upgrade, pytest.raises(RuntimeError) as refused:
+        migrate_database_to_head(engine)
 
-    assert action == "reconciled"
-    # Advisory lock must bracket the entire reconcile/stamp/upgrade sequence
-    # so concurrent uvicorn workers cannot interleave DDL.
-    assert calls == ["lock", "reconcile", "stamp", "upgrade", "unlock"]
-    reconcile.assert_called_once_with(engine)
-    stamp.assert_called_once_with(config, "20260408_0001")
-    upgrade.assert_called_once()
+    assert str(refused.value) == (
+        "Database has tables but no alembic_version table, so it predates Alembic baseline "
+        "20260408_0001. Start release v1.6.0 once against this database, then upgrade; see "
+        "'Legacy Pre-Alembic Upgrade Path' in docs/INSTALL_DOCKER.md. If this app never used "
+        "this database, point DATABASE_URL at an empty one."
+    )
+    assert calls == ["lock", "unlock"]
+    upgrade.assert_not_called()
 
 
 def test_migrate_database_to_head_upgrades_new_schema():
@@ -117,13 +110,11 @@ def test_migrate_database_to_head_upgrades_new_schema():
     with patch("app.infra.db.migrations._has_alembic_version_table", return_value=False), patch(
         "app.infra.db.migrations._has_user_tables", return_value=False
     ), patch("app.infra.db.migrations._alembic_config", return_value=object()), patch(
-        "app.infra.db.migrations.command.stamp"
-    ) as stamp, patch("app.infra.db.migrations.command.upgrade") as upgrade:
-        action = migrate_database_to_head(engine)
+        "app.infra.db.migrations.command.upgrade"
+    ) as upgrade:
+        migrate_database_to_head(engine)
 
-    assert action == "upgraded"
     assert calls == []
-    stamp.assert_not_called()
     upgrade.assert_called_once()
 
 

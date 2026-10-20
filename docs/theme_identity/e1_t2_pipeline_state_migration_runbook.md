@@ -20,28 +20,7 @@ Related ADR:
 
 ## Migration Execution
 
-The migration runs automatically at API startup via:
-
-- `backend/app/main.py` -> `run_theme_pipeline_state_migration()`
-
-Manual verification command:
-
-```bash
-cd backend
-source venv/bin/activate
-python scripts/verify_theme_pipeline_state_migration.py --json
-```
-
-Expected success:
-
-- output field `ok` is `true`
-- process exits with code `0`
-
-If you need to apply migration first in a non-startup context:
-
-```bash
-python scripts/verify_theme_pipeline_state_migration.py --apply-migration --json
-```
+Alembic baseline revision `20260408_0001` creates the table, and API startup applies it through `backend/app/infra/db/migrations.py`. Verify the result with the SQL checks below.
 
 ## SQL Verification Checks
 
@@ -157,8 +136,8 @@ Expected: `invalid_status_rows = 0`
 
 Rollback investigation should be initiated if any of the following occur:
 
-1. Table creation fails and startup migration emits warnings repeatedly.
-2. Verification script returns `ok=false`.
+1. The backend fails to start because the Alembic upgrade that creates the table raises an error.
+2. A SQL verification check fails.
 3. Duplicate `(content_item_id, pipeline)` rows are detected.
 4. Extraction workers show widespread SQL errors targeting `content_item_pipeline_state`.
 5. Queue growth/regressions indicate scheduler queries are not using expected indexes.
@@ -170,7 +149,7 @@ Because this migration is additive (new table + indexes), prefer controlled disa
 1. Stop rollout and keep existing global-flag orchestration path active.
 2. Keep table intact for forensic analysis.
 3. Fix migration logic and redeploy.
-4. Re-run verification script until `ok=true`.
+4. Re-run the SQL verification checks until they all pass.
 
 Avoid dropping `content_item_pipeline_state` in production unless explicitly required by an incident commander.
 Dropping the table can remove forensic state useful for recovery.

@@ -70,10 +70,6 @@ def table_exists(bind_or_conn: BindLike, table_name: str) -> bool:
     return inspector(bind_or_conn).has_table(table_name)
 
 
-def table_names(bind_or_conn: BindLike) -> set[str]:
-    return set(inspector(bind_or_conn).get_table_names())
-
-
 def column_names(bind_or_conn: BindLike, table_name: str) -> set[str]:
     if not table_exists(bind_or_conn, table_name):
         return set()
@@ -89,44 +85,10 @@ def column_not_null_map(bind_or_conn: BindLike, table_name: str) -> dict[str, bo
     }
 
 
-def index_defs(bind_or_conn: BindLike, table_name: str) -> list[dict[str, Any]]:
-    if not table_exists(bind_or_conn, table_name):
-        return []
-    insp = inspector(bind_or_conn)
-    indexes = [
-        {
-            "name": index["name"],
-            "unique": bool(index.get("unique")),
-            "columns": list(index.get("column_names") or []),
-        }
-        for index in insp.get_indexes(table_name)
-    ]
-    indexes.extend(
-        {
-            "name": constraint["name"],
-            "unique": True,
-            "columns": list(constraint.get("column_names") or []),
-        }
-        for constraint in insp.get_unique_constraints(table_name)
-        if constraint.get("name")
-    )
-    return indexes
-
-
-def index_names(bind_or_conn: BindLike, table_name: str) -> set[str]:
-    return {index["name"] for index in index_defs(bind_or_conn, table_name) if index["name"]}
-
-
 def foreign_keys(bind_or_conn: BindLike, table_name: str) -> list[dict[str, Any]]:
     if not table_exists(bind_or_conn, table_name):
         return []
     return list(inspector(bind_or_conn).get_foreign_keys(table_name))
-
-
-def check_constraints(bind_or_conn: BindLike, table_name: str) -> list[dict[str, Any]]:
-    if not table_exists(bind_or_conn, table_name):
-        return []
-    return list(inspector(bind_or_conn).get_check_constraints(table_name))
 
 
 def trigger_names(bind_or_conn: BindLike, table_name: str) -> set[str]:

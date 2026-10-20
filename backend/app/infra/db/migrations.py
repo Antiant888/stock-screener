@@ -12,8 +12,6 @@ from alembic.config import Config
 from sqlalchemy import inspect, text
 from sqlalchemy.engine import Connection, Engine
 
-from .legacy_runtime_migrations import reconcile_legacy_runtime_schema
-
 logger = logging.getLogger(__name__)
 
 _BACKEND_ROOT = Path(__file__).resolve().parents[3]
@@ -72,8 +70,8 @@ def _migration_lock(conn: Connection):
         )
 
 
-def migrate_database_to_head(engine: Engine, revision: str = "head") -> str:
-    """Upgrade new databases and reconcile pre-Alembic schemas before upgrade.
+def migrate_database_to_head(engine: Engine, revision: str = "head") -> None:
+    """Upgrade the database to ``revision``, refusing a pre-Alembic schema.
 
     One AUTOCOMMIT connection serves the lock and the schema inspection.
     AUTOCOMMIT matters: pg_advisory_lock is session-level, and without it the
@@ -88,14 +86,12 @@ def migrate_database_to_head(engine: Engine, revision: str = "head") -> str:
         has_user_tables = _has_user_tables(conn)
 
         if has_user_tables and not has_version_table:
-            logger.info("Reconciling legacy pre-Alembic schema before upgrade to %s", revision)
-            reconcile_legacy_runtime_schema(engine)
-            logger.info("Stamping baseline revision %s for reconciled legacy schema", _BASELINE_REVISION)
-            command.stamp(config, _BASELINE_REVISION)
-            logger.info("Legacy schema reconciliation completed; running Alembic upgrade to %s", revision)
-            command.upgrade(config, revision)
-            return "reconciled"
+            raise RuntimeError(
+                "Database has tables but no alembic_version table, so it predates Alembic baseline "
+                f"{_BASELINE_REVISION}. Start release v1.6.0 once against this database, then "
+                "upgrade; see 'Legacy Pre-Alembic Upgrade Path' in docs/INSTALL_DOCKER.md. "
+                "If this app never used this database, point DATABASE_URL at an empty one."
+            )
 
         logger.info("Running Alembic upgrade to revision %s", revision)
         command.upgrade(config, revision)
-        return "upgraded"

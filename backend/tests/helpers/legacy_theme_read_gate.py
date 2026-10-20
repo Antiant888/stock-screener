@@ -182,8 +182,6 @@ class Index:
         )
         for path in root.rglob("*.py"):
             parts = path.relative_to(root.parent).with_suffix("").parts
-            if "db_migrations" in parts:
-                continue  # historical schema migrations
             name = ".".join(parts[:-1] if parts[-1] == "__init__" else parts)
             self._load(name, path, is_package=parts[-1] == "__init__")
         self._module_scopes: dict[str, dict[str, str]] = {}
