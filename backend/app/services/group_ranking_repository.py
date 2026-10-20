@@ -9,7 +9,7 @@ from sqlalchemy import and_, desc
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
-from app.domain.relative_strength import GROUP_AVG_RS_FIELDS, LEGACY_RS_FORMULA_VERSION
+from app.domain.relative_strength import GROUP_AVG_RS_FIELDS, BALANCED_RS_FORMULA_VERSION
 
 from ..models.industry import IBDGroupRank
 from .group_rank_history_policy import (
@@ -91,7 +91,7 @@ class GroupRankingRepository:
         start_date: date,
         end_date: date,
         market: str,
-        formula_version: str = LEGACY_RS_FORMULA_VERSION,
+        formula_version: str = BALANCED_RS_FORMULA_VERSION,
     ) -> int:
         normalized_market = (market or "US").upper()
         return (
@@ -114,7 +114,7 @@ class GroupRankingRepository:
         calculation_date: date,
         rankings: Sequence[GroupRanking],
         market: str,
-        formula_version: str = LEGACY_RS_FORMULA_VERSION,
+        formula_version: str = BALANCED_RS_FORMULA_VERSION,
     ) -> int:
         normalized_market = (market or "US").upper()
         deleted = (
@@ -141,7 +141,7 @@ class GroupRankingRepository:
         limit: int,
         market: str,
         calculation_date: date | None,
-        formula_version: str = LEGACY_RS_FORMULA_VERSION,
+        formula_version: str = BALANCED_RS_FORMULA_VERSION,
     ) -> list[IBDGroupRank]:
         normalized_market = (market or "US").upper()
         if calculation_date is not None:
@@ -179,7 +179,7 @@ class GroupRankingRepository:
         start_date: date,
         end_date: date,
         market: str,
-        formula_version: str = LEGACY_RS_FORMULA_VERSION,
+        formula_version: str = BALANCED_RS_FORMULA_VERSION,
     ) -> frozenset[date]:
         rows = (
             db.query(IBDGroupRank.date)
@@ -204,7 +204,7 @@ class GroupRankingRepository:
         current_date: date,
         period_days: Mapping[str, int],
         market: str,
-        formula_version: str = LEGACY_RS_FORMULA_VERSION,
+        formula_version: str = BALANCED_RS_FORMULA_VERSION,
     ) -> dict[tuple[str, str], int]:
         if not group_names or not period_days:
             return {}
@@ -282,7 +282,7 @@ class GroupRankingRepository:
         industry_group: str,
         start_date: date,
         market: str,
-        formula_version: str = LEGACY_RS_FORMULA_VERSION,
+        formula_version: str = BALANCED_RS_FORMULA_VERSION,
     ) -> list[IBDGroupRank]:
         return (
             db.query(IBDGroupRank)

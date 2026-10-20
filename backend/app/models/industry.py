@@ -14,6 +14,7 @@ from sqlalchemy import (
 from sqlalchemy.sql import func
 
 from ..database import Base
+from ..domain.relative_strength import BALANCED_RS_FORMULA_VERSION
 
 
 class Industry(Base):
@@ -218,7 +219,9 @@ class IBDGroupRank(Base):
     top_rs_rating = Column(Float)
 
     # Metadata
-    rs_formula_version = Column(String(64), nullable=False, default="legacy-linear-v1")
+    rs_formula_version = Column(
+        String(64), nullable=False, default=BALANCED_RS_FORMULA_VERSION
+    )
     market_rs_run_id = Column(
         Integer, ForeignKey("market_rs_runs.id", ondelete="SET NULL")
     )

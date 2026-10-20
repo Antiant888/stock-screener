@@ -10,28 +10,15 @@ from typing import Any, Callable
 
 from sqlalchemy.orm import Session
 
-from app.domain.relative_strength import BALANCED_RS_FORMULA_VERSION
-
-from .derived_data_execution_policy import (
-    DerivedDataExecutionPolicy,
-    DerivedDataValidationProfile,
-)
-from .group_rank_cache_policy import GroupRankCacheRequirement
+from .derived_data_execution_policy import DerivedDataExecutionPolicy
 from .group_rank_models import (
     GroupRankPrefetchStats,
     GroupRanking,
-)
-from .group_rank_warmup_policy import (
-    evaluate_same_day_group_rank_warmup,
 )
 from .ibd_group_rank_service import IBDGroupRankService
 
 
 logger = logging.getLogger(__name__)
-
-
-class GroupRankWarmupIncomplete(RuntimeError):
-    """Raised when same-day warmup metadata is not ready."""
 
 
 class NoGroupRankingsCalculated(RuntimeError):
@@ -107,13 +94,11 @@ def run_daily_group_rankings(
 ) -> DailyGroupRankOutcome:
     """Calculate, persist, and publish one daily group-ranking result."""
     started_at = time.perf_counter()
-    cache_requirement = _cache_requirement(db, request, dependencies)
     calculation = dependencies.service.calculate_group_rankings(
         db,
         request.calculation_date,
         market=request.market,
         policy=request.policy,
-        cache_requirement=cache_requirement,
     )
     duration_seconds = time.perf_counter() - started_at
     rankings = calculation.rankings
@@ -166,40 +151,3 @@ def run_daily_group_rankings(
         duration_seconds=duration_seconds,
         metadata_repair=repair_stats,
     )
-
-
-def _cache_requirement(
-    db: Session,
-    request: DailyGroupRankRequest,
-    dependencies: DailyGroupRankDependencies,
-) -> GroupRankCacheRequirement:
-    formula_version = (
-        dependencies.service.market_rs_repository.active_formula(
-            db,
-            market=request.market,
-        )
-    )
-    if formula_version == BALANCED_RS_FORMULA_VERSION:
-        return GroupRankCacheRequirement.disabled()
-    validation_profile = request.policy.validation_profile
-    if (
-        validation_profile
-        is DerivedDataValidationProfile.STRICT_WITH_WARMUP
-    ):
-        decision = evaluate_same_day_group_rank_warmup(
-            dependencies.service.price_cache,
-            market=request.market,
-        )
-        if decision.error:
-            raise GroupRankWarmupIncomplete(decision.error)
-        return decision.cache_requirement
-    if (
-        validation_profile
-        is DerivedDataValidationProfile.STRICT_WITHOUT_WARMUP
-    ):
-        logger.info(
-            "Bypassing same-day group ranking warmup metadata gate for "
-            "in-process static export"
-        )
-        return GroupRankCacheRequirement.strict()
-    return GroupRankCacheRequirement.disabled()

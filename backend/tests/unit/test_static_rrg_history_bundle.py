@@ -3,9 +3,7 @@ from __future__ import annotations
 import gzip
 import json
 from datetime import date, timedelta
-from unittest.mock import Mock
 
-import pandas as pd
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -15,33 +13,9 @@ from app.domain.relative_strength import (
     BALANCED_RS_FORMULA_VERSION,
     BALANCED_RS_PRICE_BASIS,
     BALANCED_RS_SNAPSHOT_SCHEMA_VERSION,
-    LEGACY_RS_FORMULA_VERSION,
 )
 from app.infra.db.models.relative_strength import MarketRsRun
 from app.models.industry import IBDGroupRank
-from app.scanners.criteria.relative_strength import (
-    RelativeStrengthCalculator,
-)
-from app.services.group_rank_historical_calculator import (
-    GroupRankHistoricalCalculator,
-)
-from app.services.group_rank_history_backfill_service import (
-    GroupRankHistoryBackfillService,
-)
-from app.services.group_rank_input_loader import GroupRankInputLoader
-from app.services.group_rank_legacy_adapter import (
-    LegacyGroupRankPrefetchAdapter,
-)
-from app.services.group_rank_snapshot_coordinator import GroupRankSnapshotCoordinator
-from app.services.group_rank_snapshot_reader import GroupRankSnapshotReader
-from app.services.group_ranking_calculator import (
-    GroupRankingCalculator,
-)
-from app.services.group_ranking_repository import (
-    GroupRankingRepository,
-)
-from app.services.ibd_group_rank_service import IBDGroupRankService
-from app.services.market_calendar_service import MarketCalendarService
 from app.services.rrg_service import DEFAULT_LOOKBACK_DAYS, MIN_TAIL_WEEKS, RRGService
 from app.services.static_rrg_history_bundle import (
     StaticRRGHistoryBundleService,
@@ -54,6 +28,10 @@ from app.services.static_rrg_history_contract import (
     StaticRRGHistoryState,
     StaticRRGWeek,
 )
+
+
+# Rows the database still holds from before the single-formula cutover.
+STORED_LEGACY_FORMULA = "legacy-linear-v1"
 
 
 def test_static_rrg_history_readiness_requires_min_tail_weeks():
@@ -142,7 +120,7 @@ def _rank(
     row_date: date,
     rank: int,
     avg_rs: float,
-    formula_version: str = LEGACY_RS_FORMULA_VERSION,
+    formula_version: str = STORED_LEGACY_FORMULA,
     market_rs_run_id: int | None = None,
 ):
     return IBDGroupRank(
@@ -167,7 +145,7 @@ def _seed_weeks(
     latest: date,
     weeks: int,
     market: str = "HK",
-    formula_version: str = LEGACY_RS_FORMULA_VERSION,
+    formula_version: str = STORED_LEGACY_FORMULA,
 ) -> None:
     for week in range(weeks):
         row_date = latest - timedelta(weeks=weeks - week - 1)
@@ -194,155 +172,6 @@ def _seed_weeks(
     db.commit()
 
 
-def test_first_static_build_bootstraps_via_production_gap_fill(
-    tmp_path, monkeypatch
-):
-    engine, factory = _session_factory()
-    latest = date(2026, 3, 20)
-    groups = {
-        "Semiconductors": ["CHIP1", "CHIP2", "CHIP3"],
-        "Banks": ["BANK1", "BANK2", "BANK3"],
-    }
-    symbols = [symbol for members in groups.values() for symbol in members]
-
-    def _prices(daily_return: float) -> pd.DataFrame:
-        dates = pd.bdate_range(end=latest, periods=420)
-        closes = [100 * ((1 + daily_return) ** index) for index in range(len(dates))]
-        return pd.DataFrame({"Close": closes}, index=dates)
-
-    benchmark_prices = _prices(0.0003)
-    prices_by_symbol = {
-        symbol: _prices(0.0008 + index * 0.0001)
-        for index, symbol in enumerate(symbols)
-    }
-
-    class _BenchmarkCache:
-        @staticmethod
-        def get_benchmark_symbol(market):
-            assert market == "HK"
-            return "^HSI"
-
-        @staticmethod
-        def get_benchmark_data(*, market, period):
-            assert (market, period) == ("HK", "2y")
-            return benchmark_prices
-
-    class _PriceCache:
-        @staticmethod
-        def get_many(requested_symbols, *, period):
-            assert period == "2y"
-            return {symbol: prices_by_symbol[symbol] for symbol in requested_symbols}
-
-    class _UniverseSource:
-        @staticmethod
-        def active_symbols(_db, market):
-            assert market == "HK"
-            return frozenset(symbols)
-
-    class _TaxonomySource:
-        @staticmethod
-        def groups(_db, market):
-            return tuple(groups) if market == "HK" else ()
-
-        @staticmethod
-        def symbols_for_group(_db, group, market):
-            return tuple(groups[group]) if market == "HK" else ()
-
-    class _MarketCapSource:
-        @staticmethod
-        def market_caps(_db, requested_symbols):
-            return {
-                symbol: 1_000_000_000
-                for symbol in requested_symbols
-            }
-
-    input_loader = GroupRankInputLoader(
-        price_cache=_PriceCache(),
-        benchmark_cache=_BenchmarkCache(),
-        universe_source=_UniverseSource(),
-        taxonomy_source=_TaxonomySource(),
-        market_cap_source=_MarketCapSource(),
-    )
-    ranking_calculator = GroupRankingCalculator(
-        RelativeStrengthCalculator()
-    )
-    ranking_repository = GroupRankingRepository()
-    legacy_adapter = LegacyGroupRankPrefetchAdapter()
-    historical_calculator = GroupRankHistoricalCalculator(
-        input_loader=input_loader,
-        ranking_calculator=ranking_calculator,
-        repository=ranking_repository,
-        calendar_service=MarketCalendarService(),
-        legacy_adapter=legacy_adapter,
-    )
-    market_rs_repository = Mock()
-    market_rs_repository.active_formula.return_value = LEGACY_RS_FORMULA_VERSION
-    group_rank_service = IBDGroupRankService(
-        price_cache=_PriceCache(),
-        benchmark_cache=_BenchmarkCache(),
-        canonical_group_service=Mock(),
-        market_rs_repository=market_rs_repository,
-        market_rs_snapshot_service=Mock(),
-        input_loader=input_loader,
-        ranking_calculator=ranking_calculator,
-        ranking_repository=ranking_repository,
-        historical_calculator=historical_calculator,
-        legacy_prefetch_adapter=legacy_adapter,
-    )
-
-    class _Taxonomy:
-        @staticmethod
-        def sector_map_for_market(_market):
-            return {"Semiconductors": "Technology", "Banks": "Financials"}
-
-    try:
-        backfill = GroupRankHistoryBackfillService(
-            session_factory=factory,
-            calendar_service=MarketCalendarService(),
-            group_snapshot_coordinator=GroupRankSnapshotCoordinator(
-                reader=GroupRankSnapshotReader(),
-                market_rs_snapshot_service=Mock(),
-                canonical_group_service=Mock(),
-                legacy_group_service=group_rank_service,
-            ),
-        ).backfill(
-            as_of_date=latest,
-            market="HK",
-            formula_version=LEGACY_RS_FORMULA_VERSION,
-        )
-        with factory() as db:
-            preparation = StaticRRGHistoryBundleService().prepare(
-                db,
-                market="HK",
-                through_date=latest,
-                directory=tmp_path,
-                formula_version=LEGACY_RS_FORMULA_VERSION,
-            )
-            assert preparation.state is not None
-            payload = RRGService(
-                history_provider=StaticRRGHistoryProvider(preparation.state),
-                taxonomy_service=_Taxonomy(),
-            ).get_rrg_scopes(
-                db,
-                market="HK",
-                scopes=("groups", "sectors"),
-                as_of_date=latest,
-            )
-        persisted = StaticRRGHistoryBundleService().persist(
-            preparation,
-            exported_as_of_date=latest,
-        )
-
-        assert backfill.status.value == "completed"
-        assert backfill.processed == backfill.missing_dates
-        assert len(preparation.state.weeks) >= MIN_TAIL_WEEKS
-        assert len(payload["groups"]["groups"]) == 2
-        assert persisted is not None
-        assert preparation.plan.output_path.exists()
-    finally:
-        engine.dispose()
-
-
 def test_weekly_state_round_trips_only_rrg_inputs(tmp_path):
     engine, factory = _session_factory()
     latest = date(2026, 7, 10)
@@ -354,7 +183,7 @@ def test_weekly_state_round_trips_only_rrg_inputs(tmp_path):
                 db,
                 market="HK",
                 through_date=latest,
-                formula_version=LEGACY_RS_FORMULA_VERSION,
+                formula_version=STORED_LEGACY_FORMULA,
             )
         stats = StaticRRGHistoryBundleService().write(state, path)
         restored = StaticRRGHistoryBundleService().load(path, expected_market="HK")
@@ -365,7 +194,7 @@ def test_weekly_state_round_trips_only_rrg_inputs(tmp_path):
             payload = json.load(handle)
         assert payload["schema_version"] == STATIC_RRG_HISTORY_SCHEMA_VERSION
         assert payload["schema_version"] == "static-rrg-history-v4"
-        assert payload["rs_formula_version"] == LEGACY_RS_FORMULA_VERSION
+        assert payload["rs_formula_version"] == STORED_LEGACY_FORMULA
         assert set(payload) == {
             "schema_version",
             "market",
@@ -394,7 +223,7 @@ def test_merge_keeps_prior_weeks_without_mutating_database(tmp_path):
                 db,
                 market="HK",
                 through_date=latest - timedelta(weeks=1),
-                formula_version=LEGACY_RS_FORMULA_VERSION,
+                formula_version=STORED_LEGACY_FORMULA,
             )
         with target_factory() as db:
             db.add(_rank(market="HK", group="Semiconductors", row_date=latest, rank=1, avg_rs=91))
@@ -404,7 +233,7 @@ def test_merge_keeps_prior_weeks_without_mutating_database(tmp_path):
                 market="HK",
                 through_date=latest,
                 previous=previous,
-                formula_version=LEGACY_RS_FORMULA_VERSION,
+                formula_version=STORED_LEGACY_FORMULA,
             )
             database_groups = [row.industry_group for row in db.query(IBDGroupRank).all()]
 
@@ -428,7 +257,7 @@ def test_merge_discards_restored_weeks_after_requested_export_date():
                 db,
                 market="HK",
                 through_date=future,
-                formula_version=LEGACY_RS_FORMULA_VERSION,
+                formula_version=STORED_LEGACY_FORMULA,
             )
         with target_factory() as db:
             db.add(
@@ -446,7 +275,7 @@ def test_merge_discards_restored_weeks_after_requested_export_date():
                 market="HK",
                 through_date=latest,
                 previous=previous,
-                formula_version=LEGACY_RS_FORMULA_VERSION,
+                formula_version=STORED_LEGACY_FORMULA,
             )
 
         assert merged.weeks[-1].source_date == latest
@@ -467,7 +296,7 @@ def test_merge_rejects_a_previous_bundle_from_another_formula():
                 db,
                 market="HK",
                 through_date=latest - timedelta(weeks=1),
-                formula_version=LEGACY_RS_FORMULA_VERSION,
+                formula_version=STORED_LEGACY_FORMULA,
             )
         with target_factory() as db:
             db.add(
@@ -506,7 +335,7 @@ def test_prepare_rebuilds_when_prior_bundle_uses_another_formula(tmp_path):
                 db,
                 market="HK",
                 through_date=latest - timedelta(weeks=1),
-                formula_version=LEGACY_RS_FORMULA_VERSION,
+                formula_version=STORED_LEGACY_FORMULA,
             )
         service.write(previous, tmp_path / "rrg-history-hk.json.gz")
 
@@ -576,7 +405,7 @@ def test_invalid_row_is_normalized_to_bundle_error(tmp_path):
             {
                 "schema_version": STATIC_RRG_HISTORY_SCHEMA_VERSION,
                 "market": "HK",
-                "rs_formula_version": LEGACY_RS_FORMULA_VERSION,
+                "rs_formula_version": STORED_LEGACY_FORMULA,
                 "weeks": [
                     {
                         "source_date": "2026-07-10",
@@ -623,7 +452,7 @@ def test_history_contract_rejects_unversioned_and_unknown_fields(tmp_path, mutat
     payload = {
         "schema_version": STATIC_RRG_HISTORY_SCHEMA_VERSION,
         "market": "HK",
-        "rs_formula_version": LEGACY_RS_FORMULA_VERSION,
+        "rs_formula_version": STORED_LEGACY_FORMULA,
         "weeks": [
             {
                 "source_date": "2026-07-10",
@@ -659,7 +488,7 @@ def test_prepare_bootstraps_invalid_prior_state_and_persists_current_state(tmp_p
                 market="HK",
                 through_date=latest,
                 directory=tmp_path,
-                formula_version=LEGACY_RS_FORMULA_VERSION,
+                formula_version=STORED_LEGACY_FORMULA,
             )
 
         assert preparation.state is not None
@@ -692,7 +521,7 @@ def test_weekly_state_computes_non_us_group_and_sector_rrg():
                 db,
                 market="HK",
                 through_date=latest,
-                formula_version=LEGACY_RS_FORMULA_VERSION,
+                formula_version=STORED_LEGACY_FORMULA,
             )
             payload = RRGService(
                 history_provider=StaticRRGHistoryProvider(state),

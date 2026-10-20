@@ -36,7 +36,7 @@ from app.services.market_activity_service import (
     mark_market_activity_started,
 )
 from app.services.point_in_time_universe_service import PointInTimeUniverseService
-from app.services.rrg_history_provider import build_rrg_history_provider
+from app.services.rrg_history_provider import StoredGroupRankHistoryProvider
 from app.services.runtime_preferences_service import get_runtime_preferences
 from app.services.ui_snapshot_service import safe_publish_groups_bootstrap
 from app.tasks.market_queues import (
@@ -45,7 +45,7 @@ from app.tasks.market_queues import (
     normalize_market,
 )
 from app.tasks.workload_coordination import serialized_market_workload
-from app.wiring.bootstrap import get_group_rank_service, get_market_calendar_service
+from app.wiring.bootstrap import get_market_calendar_service
 
 _PRE_BOOTSTRAP_SEED_IMPORT_SOURCE = "group_history_reconciliation"
 
@@ -55,20 +55,15 @@ def _build_group_history_components():
 
     calendar = get_market_calendar_service()
     repository = MarketRsRunRepository()
-    group_rank_service = get_group_rank_service()
     universe_resolver = GroupHistoryUniverseResolver(
         point_in_time_universe=PointInTimeUniverseService(market_calendar=calendar)
     )
     coordinator = build_group_history_snapshot_coordinator(
         universe_resolver=universe_resolver,
-        legacy_group_service=group_rank_service,
         calendar_service=calendar,
         market_rs_repository=repository,
     )
-    history_provider = build_rrg_history_provider(
-        group_rank_service=group_rank_service,
-        market_rs_repository=repository,
-    )
+    history_provider = StoredGroupRankHistoryProvider()
     readiness = GroupHistoryReadinessService(
         calendar_service=calendar,
         snapshot_reader=coordinator.reader,

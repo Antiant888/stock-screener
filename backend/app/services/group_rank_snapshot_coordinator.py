@@ -8,7 +8,6 @@ from sqlalchemy.orm import Session
 
 from app.domain.relative_strength import (
     BALANCED_RS_FORMULA_VERSION,
-    LEGACY_RS_FORMULA_VERSION,
     GroupSnapshotIdentity,
 )
 
@@ -56,19 +55,16 @@ class GroupRankSnapshotCoordinator:
         reader,
         market_rs_snapshot_service,
         canonical_group_service,
-        legacy_group_service,
     ) -> None:
         self.reader = reader
         self.market_rs_snapshot_service = market_rs_snapshot_service
         self.canonical_group_service = canonical_group_service
-        self.legacy_group_service = legacy_group_service
 
     def ensure_snapshot(
         self,
         db: Session,
         *,
         identity: GroupSnapshotIdentity,
-        universe_symbols: Iterable[str] | None = None,
     ) -> GroupSnapshotResult:
         existing = self.reader.load_exact(
             db,
@@ -103,19 +99,6 @@ class GroupRankSnapshotCoordinator:
                 raise RuntimeError(
                     "Group snapshot does not reference the exact Market RS run"
                 )
-        elif identity.formula_version == LEGACY_RS_FORMULA_VERSION:
-            self.legacy_group_service.calculate_group_rankings(
-                db,
-                identity.as_of_date,
-                market=identity.market,
-                formula_version=LEGACY_RS_FORMULA_VERSION,
-                **self._legacy_universe_kwargs(universe_symbols),
-            )
-            rows = self.reader.load_exact(
-                db,
-                identity=identity,
-                include_top_symbol_names=False,
-            )
         else:
             raise ValueError(
                 f"Unsupported Group RS formula: {identity.formula_version}"
@@ -129,7 +112,6 @@ class GroupRankSnapshotCoordinator:
         db: Session,
         *,
         identity: GroupSnapshotIdentity,
-        universe_symbols: Iterable[str] | None = None,
     ) -> GroupSnapshotResult:
         """Recalculate one integrity-invalid snapshot identity in place."""
         if identity.formula_version == BALANCED_RS_FORMULA_VERSION:
@@ -156,28 +138,6 @@ class GroupRankSnapshotCoordinator:
                 raise RuntimeError(
                     "Repaired Group snapshot does not reference the exact Market RS run"
                 )
-        elif identity.formula_version == LEGACY_RS_FORMULA_VERSION:
-            self.legacy_group_service.ranking_repository.delete_range(
-                db,
-                start_date=identity.as_of_date,
-                end_date=identity.as_of_date,
-                market=identity.market,
-                formula_version=LEGACY_RS_FORMULA_VERSION,
-            )
-            calculation = self.legacy_group_service.calculate_group_rankings(
-                db,
-                identity.as_of_date,
-                market=identity.market,
-                formula_version=LEGACY_RS_FORMULA_VERSION,
-                **self._legacy_universe_kwargs(universe_symbols),
-            )
-            if not calculation.rankings:
-                raise RuntimeError("Legacy Group repair produced no rankings")
-            rows = self.reader.load_exact(
-                db,
-                identity=identity,
-                include_top_symbol_names=False,
-            )
         else:
             raise ValueError(
                 f"Unsupported Group RS formula: {identity.formula_version}"
@@ -212,14 +172,6 @@ class GroupRankSnapshotCoordinator:
                     )
                 )
         return GroupBackfillReport(results=tuple(results))
-
-    @staticmethod
-    def _legacy_universe_kwargs(
-        universe_symbols: Iterable[str] | None,
-    ) -> dict[str, tuple[str, ...]]:
-        if universe_symbols is None:
-            return {}
-        return {"universe_symbols": tuple(universe_symbols)}
 
     @staticmethod
     def _result(identity, status, rows) -> GroupSnapshotResult:

@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 from app.domain.feature_store.run_metadata import (
     feature_run_market as _feature_run_market,
 )
-from app.domain.relative_strength import GROUP_AVG_RS_FIELDS, LEGACY_RS_FORMULA_VERSION
+from app.domain.relative_strength import GROUP_AVG_RS_FIELDS, BALANCED_RS_FORMULA_VERSION
 from app.infra.db.models.feature_store import FeatureRun
 from app.schemas.groups import GroupDetailResponse, HistoricalDataPoint
 from app.services.group_detail_payloads import (
@@ -231,7 +231,7 @@ def build_group_detail_payload_from_parts(
         top_symbol=ranking.get("top_symbol"),
         top_symbol_name=ranking.get("top_symbol_name"),
         top_rs_rating=ranking.get("top_rs_rating"),
-        rs_formula_version=ranking.get("rs_formula_version", LEGACY_RS_FORMULA_VERSION),
+        rs_formula_version=ranking.get("rs_formula_version", BALANCED_RS_FORMULA_VERSION),
         market_rs_run_id=ranking.get("market_rs_run_id"),
         rank_change_1w=ranking.get("rank_change_1w"),
         rank_change_1m=ranking.get("rank_change_1m"),

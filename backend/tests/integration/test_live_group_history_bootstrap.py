@@ -276,15 +276,10 @@ async def test_live_repair_populates_rank_changes_movers_and_rrg_without_data_lo
     )
     coordinator = build_group_history_snapshot_coordinator(
         universe_resolver=universe_resolver,
-        legacy_group_service=object(),
         calendar_service=calendar,
         market_rs_repository=repository,
     )
-    provider = StoredGroupRankHistoryProvider(
-        object(),
-        repository,
-        snapshot_reader=GroupRankSnapshotReader(),
-    )
+    provider = StoredGroupRankHistoryProvider(snapshot_reader=GroupRankSnapshotReader())
     readiness = GroupHistoryReadinessService(
         calendar_service=calendar,
         snapshot_reader=coordinator.reader,

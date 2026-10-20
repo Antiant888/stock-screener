@@ -3,27 +3,19 @@ from unittest.mock import MagicMock, Mock
 
 import pytest
 
-from app.domain.relative_strength import BALANCED_RS_FORMULA_VERSION
 from app.services.daily_group_rank_runner import (
     DailyGroupRankDependencies,
     DailyGroupRankRequest,
-    GroupRankWarmupIncomplete,
     NoGroupRankingsCalculated,
     run_daily_group_rankings,
 )
 from app.services.derived_data_execution_policy import (
     resolve_derived_data_execution_policy,
 )
-from app.services.group_rank_cache_policy import (
-    GroupRankCacheRequirement,
-)
 from app.services.group_rank_models import (
     GroupRankCalculationResult,
     GroupRankPrefetchStats,
     GroupRanking,
-)
-from app.services.group_rank_warmup_policy import (
-    SameDayGroupRankWarmupDecision,
 )
 
 
@@ -125,58 +117,6 @@ def test_runner_returns_compatible_success_outcome():
     dependencies.bump_epoch.assert_called_once_with("US")
     dependencies.publish_snapshot.assert_called_once_with()
     dependencies.repair_current_us_metadata.assert_called_once_with(DAY)
-
-
-def test_strict_warmup_failure_prevents_calculation(monkeypatch):
-    import app.services.daily_group_rank_runner as module
-
-    service = Mock()
-    dependencies = _dependencies(service=service)
-    monkeypatch.setattr(
-        module,
-        "evaluate_same_day_group_rank_warmup",
-        lambda *_args, **_kwargs: SameDayGroupRankWarmupDecision(
-            error="warmup incomplete",
-            cache_requirement=GroupRankCacheRequirement.disabled(),
-        ),
-    )
-
-    with pytest.raises(
-        GroupRankWarmupIncomplete,
-        match="warmup incomplete",
-    ):
-        run_daily_group_rankings(
-            MagicMock(),
-            _request(policy=_policy("auto")),
-            dependencies,
-        )
-
-    service.calculate_group_rankings.assert_not_called()
-    dependencies.bump_epoch.assert_not_called()
-
-
-def test_balanced_publication_bypasses_legacy_cache_warmup(monkeypatch):
-    import app.services.daily_group_rank_runner as module
-
-    service = Mock()
-    service.market_rs_repository.active_formula.return_value = (
-        BALANCED_RS_FORMULA_VERSION
-    )
-    dependencies = _dependencies(service=service)
-    warmup = Mock(side_effect=AssertionError("legacy warmup used"))
-    monkeypatch.setattr(module, "evaluate_same_day_group_rank_warmup", warmup)
-
-    run_daily_group_rankings(
-        MagicMock(),
-        _request(policy=_policy("auto")),
-        dependencies,
-    )
-
-    warmup.assert_not_called()
-    assert (
-        service.calculate_group_rankings.call_args.kwargs["cache_requirement"]
-        == GroupRankCacheRequirement.disabled()
-    )
 
 
 def test_no_groups_failure_carries_prefetch_stats():

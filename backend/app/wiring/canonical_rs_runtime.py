@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from threading import RLock
 
 from app.domain.scanning.ports import MarketRsReader
@@ -28,11 +27,9 @@ class CanonicalRsRuntime:
         *,
         session_factory,
         market_calendar: MarketCalendarService,
-        legacy_group_service_provider: Callable[[], object],
     ) -> None:
         self._session_factory = session_factory
         self._market_calendar = market_calendar
-        self._legacy_group_service_provider = legacy_group_service_provider
         self._lock = RLock()
         self._point_in_time_universe: PointInTimeUniverseService | None = None
         self._services: MarketRsServices | None = None
@@ -135,6 +132,5 @@ class CanonicalRsRuntime:
                         reader=self.group_rank_snapshot_reader(),
                         market_rs_snapshot_service=self.snapshot_service(),
                         canonical_group_service=self.canonical_group_service(),
-                        legacy_group_service=self._legacy_group_service_provider(),
                     )
         return self._snapshot_coordinator

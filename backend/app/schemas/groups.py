@@ -4,7 +4,7 @@ from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field, field_validator
 
-from ..domain.relative_strength import LEGACY_RS_FORMULA_VERSION
+from ..domain.relative_strength import BALANCED_RS_FORMULA_VERSION
 from ..infra.serialization import sanitize_sparkline
 from .scope import ScopedResponseMixin
 
@@ -59,7 +59,7 @@ class GroupRankResponse(BaseModel):
     )
     top_rs_rating: Optional[float] = Field(None, description="RS rating of top stock")
     rs_formula_version: str = Field(
-        LEGACY_RS_FORMULA_VERSION,
+        BALANCED_RS_FORMULA_VERSION,
         description="Canonical RS formula version",
     )
     market_rs_run_id: Optional[int] = Field(
@@ -205,7 +205,7 @@ class GroupDetailResponse(ScopedResponseMixin):
     )
     top_rs_rating: Optional[float] = Field(None, description="RS of top stock")
     rs_formula_version: str = Field(
-        LEGACY_RS_FORMULA_VERSION,
+        BALANCED_RS_FORMULA_VERSION,
         description="Canonical RS formula version",
     )
     market_rs_run_id: Optional[int] = Field(
@@ -334,7 +334,7 @@ class CalculationStatusResponse(BaseModel):
         None,
         description=(
             "Machine-readable failure category when status='failed'. "
-            "Known codes: warmup_incomplete, missing_ibd_mappings, "
+            "Known codes: missing_ibd_mappings, "
             "invalid_date, no_groups_ranked, unknown."
         ),
     )

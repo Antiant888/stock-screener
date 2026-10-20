@@ -16,17 +16,13 @@ from ..services.bootstrap_publication_date import (
 from ..services.daily_group_rank_runner import (
     DailyGroupRankDependencies,
     DailyGroupRankRequest,
-    GroupRankWarmupIncomplete,
     NoGroupRankingsCalculated,
     run_daily_group_rankings,
 )
 from ..services.derived_data_execution_policy import (
     resolve_derived_data_execution_policy,
 )
-from ..services.ibd_group_rank_service import (
-    IncompleteGroupRankingCacheError,
-    MissingIBDIndustryMappingsError,
-)
+from ..services.ibd_group_rank_service import MissingIBDIndustryMappingsError
 from ..services.market_activity_service import (
     mark_market_activity_completed,
     mark_market_activity_failed,
@@ -50,7 +46,6 @@ TAXONOMY_UNAVAILABLE_EXCEPTIONS = (
 
 class GroupRankReasonCode:
     INVALID_DATE = "invalid_date"
-    WARMUP_INCOMPLETE = "warmup_incomplete"
     MISSING_IBD_MAPPINGS = "missing_ibd_mappings"
     NO_GROUPS_RANKED = "no_groups_ranked"
     UNKNOWN = "unknown"
@@ -160,25 +155,6 @@ def _run_daily_group_rankings_response(
             request,
             dependencies,
         )
-    except GroupRankWarmupIncomplete as exc:
-        result = {
-            "error": str(exc),
-            "reason_code": GroupRankReasonCode.WARMUP_INCOMPLETE,
-            "date": request.calculation_date.isoformat(),
-            "timestamp": datetime.now().isoformat(),
-            "cache_only": True,
-        }
-        return policy.annotate_response(result)
-    except IncompleteGroupRankingCacheError as exc:
-        result = {
-            "error": str(exc),
-            "reason_code": GroupRankReasonCode.WARMUP_INCOMPLETE,
-            "date": request.calculation_date.isoformat(),
-            "timestamp": datetime.now().isoformat(),
-            "cache_only": True,
-            "prefetch_stats": exc.stats.to_dict(),
-        }
-        return policy.annotate_response(result)
     except MissingIBDIndustryMappingsError as exc:
         result = {
             "error": str(exc),

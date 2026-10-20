@@ -12,14 +12,6 @@ from app.services.market_rs_snapshot_service import MarketRsSnapshotService
 from app.services.static_rrg_bootstrap_universe import StaticRRGBootstrapUniverse
 
 
-_UNSUPPORTED_FORMULA_ERROR = "Static group bootstrap only supports canonical Market RS"
-
-
-class _UnsupportedBootstrapLegacyGroupService:
-    def calculate_group_rankings(self, *_args, **_kwargs):
-        raise ValueError(_UNSUPPORTED_FORMULA_ERROR)
-
-
 def build_static_group_snapshot_coordinator(
     *,
     calendar_service: MarketCalendarService | None = None,
@@ -39,7 +31,6 @@ def build_static_group_snapshot_coordinator(
         reader=GroupRankSnapshotReader(),
         market_rs_snapshot_service=snapshot_service,
         canonical_group_service=CanonicalGroupRankingService(repository=repository),
-        legacy_group_service=_UnsupportedBootstrapLegacyGroupService(),
     )
 
 
