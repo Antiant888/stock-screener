@@ -69,9 +69,9 @@ Health endpoints:
 
 Primary route groups:
 
-- Core market data: `stocks`, `technical`, `fundamentals`, `universe`, `ticker-validation`
+- Core market data: `stocks`, `fundamentals`, `universe`, `ticker-validation`
 - Scanning: `scans`, `features`, `filter-presets`, `strategy-profiles`
-- Daily/market views: `market-scan`, `breadth`, `groups`, `validation`, `digest`
+- Daily/market views: `market-scan`, `breadth`, `groups`, `validation`
 - User data: `user-watchlists`, `user-themes` when themes are enabled
 - Operations: `cache`, `data-fetch`, `tasks`, `operations`, `telemetry`
 - Feature-gated: `themes`, `assistant`, `tasks`, `config`

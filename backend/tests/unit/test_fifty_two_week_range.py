@@ -102,24 +102,6 @@ def test_minervini_range_is_independent_of_history_length():
     assert {k: two_year_details[k] for k in keys} == {k: five_year_details[k] for k in keys}
 
 
-def test_52_week_position_endpoint_uses_newest_252_bars(monkeypatch):
-    from app.api.v1 import technical
-
-    price_data = _stock_data(504).price_data
-
-    class _StubYFinance:
-        def get_historical_data(self, symbol, period):
-            return price_data
-
-    monkeypatch.setattr(technical, "get_yfinance_service", lambda: _StubYFinance())
-
-    response = technical.get_52w_position("test")
-
-    assert response["high_52w"] == pytest.approx(RECENT_HIGH)
-    assert response["low_52w"] == pytest.approx(RECENT_LOW)
-    assert response["meets_low_criteria"] is True
-
-
 def test_short_history_uses_all_available_bars():
     close = np.linspace(50.0, 80.0, 120)
     data = StockData(symbol="IPO", price_data=_frame(close), benchmark_data=_frame(close))

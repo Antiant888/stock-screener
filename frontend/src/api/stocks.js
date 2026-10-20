@@ -106,69 +106,6 @@ export const getStockIndustry = async (symbol) => {
 };
 
 /**
- * Get Minervini template scan for a stock
- * @param {string} symbol - Stock ticker symbol
- * @param {boolean} includeVCP - Include VCP pattern detection
- * @returns {Promise} Minervini scan results
- */
-export const getMinerviniScan = async (symbol, includeVCP = true) => {
-  const response = await apiClient.get(`/v1/technical/${symbol}/minervini`, {
-    params: { include_vcp: includeVCP },
-  });
-  return response.data;
-};
-
-/**
- * Get Relative Strength (RS) rating for a stock
- * @param {string} symbol - Stock ticker symbol
- * @returns {Promise} RS rating data
- */
-export const getRSRating = async (symbol) => {
-  const response = await apiClient.get(`/v1/technical/${symbol}/rs-rating`);
-  return response.data;
-};
-
-/**
- * Get Weinstein Stage Analysis for a stock
- * @param {string} symbol - Stock ticker symbol
- * @returns {Promise} Stage analysis data
- */
-export const getStageAnalysis = async (symbol) => {
-  const response = await apiClient.get(`/v1/technical/${symbol}/stage`);
-  return response.data;
-};
-
-/**
- * Get Moving Average analysis for a stock
- * @param {string} symbol - Stock ticker symbol
- * @returns {Promise} MA analysis data
- */
-export const getMAAnalysis = async (symbol) => {
-  const response = await apiClient.get(`/v1/technical/${symbol}/ma-analysis`);
-  return response.data;
-};
-
-/**
- * Get VCP pattern detection for a stock
- * @param {string} symbol - Stock ticker symbol
- * @returns {Promise} VCP detection data
- */
-export const getVCPDetection = async (symbol) => {
-  const response = await apiClient.get(`/v1/technical/${symbol}/vcp`);
-  return response.data;
-};
-
-/**
- * Get 52-week position analysis for a stock
- * @param {string} symbol - Stock ticker symbol
- * @returns {Promise} 52-week position data
- */
-export const get52WeekPosition = async (symbol) => {
-  const response = await apiClient.get(`/v1/technical/${symbol}/52-week-position`);
-  return response.data;
-};
-
-/**
  * Get historical price data for a stock
  * @param {string} symbol - Stock ticker symbol
  * @param {string} period - Time period (1mo, 3mo, 6mo, 1y, 2y, 5y)

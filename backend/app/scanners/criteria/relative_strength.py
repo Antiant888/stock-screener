@@ -166,26 +166,6 @@ class RelativeStrengthCalculator:
             "percentile_rank": percentile,
         }
 
-    def calculate_period_returns(
-        self,
-        prices: pd.Series
-    ) -> Dict[int, Optional[float]]:
-        """
-        Calculate returns for all standard periods.
-
-        Args:
-            prices: Price series
-
-        Returns:
-            Dict mapping period to return percentage
-        """
-        returns = {}
-        for period in self.PERIODS.keys():
-            ret = self.calculate_return(prices, period)
-            returns[period] = round(ret * 100, 2) if ret is not None else None
-
-        return returns
-
     def calculate_period_rs_rating(
         self,
         period: int,
