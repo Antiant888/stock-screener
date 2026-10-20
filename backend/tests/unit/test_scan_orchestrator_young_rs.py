@@ -7,8 +7,10 @@ from datetime import date
 import numpy as np
 import pandas as pd
 
+from app.analysis.patterns.policy import SetupEngineDataRequirements
 from app.config import settings
 from app.domain.relative_strength import BALANCED_RS_FORMULA_VERSION
+from app.domain.scanning.defaults import get_default_scan_profile
 from app.domain.scanning.ports import MarketRsResolution
 from app.scanners.base_screener import StockData
 from app.scanners.canslim_scanner import CANSLIMScanner
@@ -25,8 +27,8 @@ NEWIPO_PLACED = {"rs_rating_1m": 66, "rs_rating_3m": 1}
 NO_VCP = {"include_vcp": False}
 
 
-def _stock(symbol: str, bars: int) -> StockData:
-    dates = pd.bdate_range(end="2026-10-16", periods=bars)
+def _stock(symbol: str, bars: int, end: str = "2026-10-16") -> StockData:
+    dates = pd.bdate_range(end=end, periods=bars)
     close = np.linspace(20.0, 60.0, bars)
     bench = np.linspace(500.0, 540.0, bars)
 
@@ -175,7 +177,7 @@ def test_setup_engine_runs_without_the_overall_rating(monkeypatch):
     short = _scan("NEWIPO", 150, ["setup_engine"])
 
     assert short["unavailable_screeners"] == ["setup_engine"]
-    assert "insufficient_daily_bars" in short["reason"]
+    assert short["reason"] == "Insufficient price history"
     assert _rs_fields(short) == (None, 66, 1, None)
 
 
@@ -204,4 +206,65 @@ def test_an_eligible_stock_keeps_its_full_ratings():
     assert result["result_status"] == "ok"
     assert result["scan_mode"] == "full"
     assert result["screeners_run"] == ["minervini", "ipo"]
+    assert _rs_fields(result) == (80, 70, 75, 90)
+
+
+def test_the_default_profile_scores_a_young_listing_with_ipo(monkeypatch):
+    monkeypatch.setattr(settings, "setup_engine_enabled", True)
+    profile = get_default_scan_profile("US")
+
+    for bars in (150, 245):
+        result = _scan("NEWIPO", bars, profile["screeners"], profile["criteria"])
+
+        assert result["result_status"] == "ok"
+        assert result["screeners_run"] == ["ipo"]
+        assert result["ipo_score"] == 78
+        assert result["unavailable_screeners"] == [
+            "minervini",
+            "canslim",
+            "custom",
+            "volume_breakthrough",
+            "setup_engine",
+        ]
+        assert _rs_fields(result) == (None, 66, 1, None)
+
+
+def _setup_engine_bar_failures(bars: int, end: str) -> list[str]:
+    result = SetupEngineScanner().scan_stock("SE", _stock("SE", bars, end))
+    reason = str(result.details.get("reason") or "")
+    return [
+        check
+        for check in ("insufficient_daily_bars", "insufficient_weekly_bars")
+        if check in reason
+    ]
+
+
+def test_setup_engines_partition_minimum_always_meets_its_bar_policy():
+    minimum = SetupEngineDataRequirements().min_history_bars
+
+    assert minimum == 260
+    for end in ("2026-10-12", "2026-10-13", "2026-10-14", "2026-10-15", "2026-10-16"):
+        assert _setup_engine_bar_failures(minimum, end) == []
+    # A Thursday close leaves four bars in the excluded current week.
+    assert _setup_engine_bar_failures(minimum - 1, "2026-10-15") == ["insufficient_weekly_bars"]
+    assert _setup_engine_bar_failures(minimum - 1, "2026-10-16") == []
+
+
+def test_an_eligible_stock_short_of_setup_engines_weekly_history_keeps_its_other_screeners(
+    monkeypatch,
+):
+    monkeypatch.setattr(settings, "setup_engine_enabled", True)
+    profile = get_default_scan_profile("US")
+
+    result = _scan("AAA", 255, profile["screeners"], profile["criteria"])
+
+    assert result["result_status"] == "ok"
+    assert result["screeners_run"] == [
+        "minervini",
+        "canslim",
+        "ipo",
+        "custom",
+        "volume_breakthrough",
+    ]
+    assert result["unavailable_screeners"] == ["setup_engine"]
     assert _rs_fields(result) == (80, 70, 75, 90)

@@ -32,6 +32,16 @@ class SetupEngineDataRequirements:
     allow_degraded_without_benchmark: bool = True
     allow_incomplete_current_week: bool = False
 
+    @property
+    def min_history_bars(self) -> int:
+        """Fewest contiguous daily bars that always meet both bar minimums.
+
+        A week holds at most five sessions and the excluded current week up to
+        four, so five bars per required week always leave ``min_weekly_bars``
+        completed weeks, whichever weekday the history ends on.
+        """
+        return max(self.min_daily_bars, 5 * self.min_weekly_bars)
+
 
 def validate_data_requirements(requirements: SetupEngineDataRequirements) -> list[str]:
     """Return validation errors for data requirement values."""

@@ -13,6 +13,7 @@ from typing import Dict, List, Optional
 from app.analysis.patterns.config import (
     build_setup_engine_parameters,
 )
+from app.analysis.patterns.policy import SetupEngineDataRequirements
 from app.analysis.patterns.rs_line import (
     DEFAULT_BLUE_DOT_RECENT_DAYS,
     DEFAULT_LOOKBACK,
@@ -66,7 +67,7 @@ IPO_BONUS_MAX = 15.0
 _DEFAULT_SCREENER_MIN_BARS = 100
 _SCREENER_MIN_BARS: dict[str, int] = {
     "ipo": 30,
-    "setup_engine": 100,
+    "setup_engine": SetupEngineDataRequirements().min_history_bars,
     "custom": 200,
     "minervini": 240,
     "canslim": 240,

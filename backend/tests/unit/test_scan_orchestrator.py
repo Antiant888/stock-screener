@@ -602,7 +602,7 @@ class TestScanOrchestratorErrorPaths:
         assert result["composite_score"] == 55.0
 
     def test_ipo_weighted_screener_insufficient_data_degrades_symbol(self):
-        stock_data = _make_stock_data("TEST", n_days=120)
+        stock_data = _make_stock_data("TEST", n_days=210)
         provider = FakeDataProvider({"TEST": stock_data})
         registry = ScreenerRegistry()
 
@@ -610,21 +610,21 @@ class TestScanOrchestratorErrorPaths:
             def __init__(self) -> None:
                 super().__init__(name="ipo", score=80.0, passes=True, rating="Strong Buy")
 
-        class FakeSetupEngine(RecordingScreener):
+        class FakeCustom(RecordingScreener):
             def __init__(self) -> None:
                 super().__init__(
-                    name="setup_engine",
+                    name="custom",
                     score=0.0,
                     passes=False,
                     rating="Insufficient Data",
-                    details={"reason": "missing_benchmark_history"},
+                    details={"reason": "missing_fundamentals"},
                 )
 
         registry.register(FakeIPO)
-        registry.register(FakeSetupEngine)
+        registry.register(FakeCustom)
         orch = ScanOrchestrator(data_provider=provider, registry=registry)
 
-        result = orch.scan_stock_multi("TEST", ["ipo", "setup_engine"], composite_method="weighted_average")
+        result = orch.scan_stock_multi("TEST", ["ipo", "custom"], composite_method="weighted_average")
 
         assert result["result_status"] == "insufficient_history"
         assert result["rating"] == "Insufficient Data"
@@ -632,8 +632,10 @@ class TestScanOrchestratorErrorPaths:
         assert result["scan_mode"] == "ipo_weighted"
         assert result["is_scannable"] is False
         assert result["applicable_screeners"] == ["ipo"]
-        assert result["unavailable_screeners"] == ["setup_engine"]
-        assert "setup_engine" in result["reason"]
+        assert result["unavailable_screeners"] == ["custom"]
+        assert result["reason"] == (
+            "Insufficient data from runnable screeners: custom (missing_fundamentals)"
+        )
 
     def test_mid_history_non_scannable_rows_keep_ipo_weighted_band(self):
         stock_data = _make_stock_data("TEST", n_days=120)
