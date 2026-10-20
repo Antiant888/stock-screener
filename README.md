@@ -105,7 +105,7 @@ Scanning and all core features work with **no API keys**. The AI chatbot require
 | Minimax | `MINIMAX_API_KEY` | No | Primary theme-extraction provider |
 | Z.AI | `ZAI_API_KEY` | No | Optional alternate provider |
 
-Optional web-search keys (`TAVILY_API_KEY`, `SERPER_API_KEY`) enable the chatbot's research mode. Full reference: **[Environment Variables](docs/ENVIRONMENT.md)**.
+Optional web-search keys (`TAVILY_API_KEY`, `SERPER_API_KEY`) are read by the Hermes assistant sidecar; the backend does not read them. Full reference: **[Environment Variables](docs/ENVIRONMENT.md)**.
 
 ## Application pages
 
@@ -127,7 +127,7 @@ Optional web-search keys (`TAVILY_API_KEY`, `SERPER_API_KEY`) enable the chatbot
 
 **Backend:** FastAPI, SQLAlchemy, Alembic, Celery, Redis, PostgreSQL
 **Frontend:** React 18, Vite, Material-UI, TanStack Query / Table, Recharts
-**Data:** yfinance, Finviz, Alpha Vantage, SEC EDGAR, official X API (optional)
+**Data:** yfinance, Finviz, SEC EDGAR, official X API (optional)
 
 ## Documentation
 

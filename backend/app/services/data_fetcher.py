@@ -1,35 +1,29 @@
 """
-Unified data fetching service that coordinates between yfinance and Alpha Vantage.
-Handles caching and rate limiting.
+Data fetching service that reads technicals and industry data from yfinance.
+Handles caching; yfinance_service handles rate limiting.
 """
 from typing import TYPE_CHECKING, Optional, Dict, Any
 from datetime import datetime, timedelta
 import logging
 from sqlalchemy.orm import Session
 
-from ..utils.rate_limiter import alphavantage_limiter, alphavantage_quota
-from ..models.stock import StockFundamental, StockTechnical, StockIndustry, StockPrice
+from ..models.stock import StockTechnical, StockIndustry, StockPrice
 from ..config import settings
 
 if TYPE_CHECKING:
-    from .alphavantage_service import AlphaVantageService
     from .yfinance_service import YFinanceService
 
 logger = logging.getLogger(__name__)
 
 
 class DataFetcher:
-    """
-    Unified data fetcher that coordinates between data sources.
-    Implements caching and respects rate limits.
-    """
+    """Fetches technicals and industry classification, cached in the database."""
 
     def __init__(
         self,
         db: Optional[Session] = None,
         *,
         yfinance_service: "YFinanceService | None" = None,
-        alphavantage_service: "AlphaVantageService | None" = None,
     ):
         """
         Initialize data fetcher.
@@ -37,13 +31,9 @@ class DataFetcher:
         Args:
             db: Database session for caching (optional)
             yfinance_service: Optional injected yfinance service dependency.
-            alphavantage_service: Optional injected Alpha Vantage dependency.
         """
         self.db = db
         self._yfinance_service = yfinance_service or self._build_default_yfinance_service()
-        self._alphavantage_service = (
-            alphavantage_service or self._build_default_alphavantage_service()
-        )
 
     @staticmethod
     def _build_default_yfinance_service() -> "YFinanceService":
@@ -52,79 +42,6 @@ class DataFetcher:
         from .yfinance_service import YFinanceService
 
         return YFinanceService()
-
-    @staticmethod
-    def _build_default_alphavantage_service() -> "AlphaVantageService":
-        from .alphavantage_service import AlphaVantageService
-
-        return AlphaVantageService()
-
-    def get_stock_fundamentals(
-        self,
-        symbol: str,
-        use_alpha_vantage: bool = False,
-        force_refresh: bool = False
-    ) -> Optional[Dict[str, Any]]:
-        """
-        Get stock fundamental data with caching.
-
-        Args:
-            symbol: Stock ticker symbol
-            use_alpha_vantage: Whether to use Alpha Vantage (saves quota)
-            force_refresh: Force data refresh (ignore cache)
-
-        Returns:
-            Dict with fundamental data or None if error
-        """
-        # Check cache first if database available
-        if self.db and not force_refresh:
-            cached = self._get_cached_fundamentals(symbol)
-            if cached:
-                logger.debug(f"Using cached fundamentals for {symbol}")
-                return cached
-
-        # Fetch from appropriate source
-        if use_alpha_vantage and alphavantage_quota.can_make_request():
-            logger.info(f"Fetching fundamentals from Alpha Vantage for {symbol}")
-            alphavantage_limiter.wait_if_needed()
-
-            # Get overview data
-            overview = self._alphavantage_service.get_company_overview(symbol)
-            if overview:
-                alphavantage_quota.record_request()
-
-            # Get earnings data
-            earnings = None
-            if alphavantage_quota.can_make_request():
-                alphavantage_limiter.wait_if_needed()
-                earnings = self._alphavantage_service.get_earnings(symbol)
-                if earnings:
-                    alphavantage_quota.record_request()
-
-            # Combine data
-            if overview:
-                data = {**overview}
-                if earnings:
-                    data.update({
-                        "eps_current": earnings.get("eps_current"),
-                        "eps_growth_quarterly": earnings.get("eps_growth_quarterly"),
-                        "eps_growth_annual": earnings.get("eps_growth_annual"),
-                    })
-
-                # Cache the result
-                if self.db:
-                    self._cache_fundamentals(symbol, data)
-
-                return data
-
-        # Fallback to yfinance (rate limiting handled inside yfinance_service)
-        logger.info(f"Fetching fundamentals from yfinance for {symbol}")
-        data = self._yfinance_service.get_fundamentals(symbol)
-
-        if data and self.db:
-            self._cache_fundamentals(symbol, data)
-
-        return data
 
     def get_stock_technicals(
         self,
@@ -219,62 +136,6 @@ class DataFetcher:
         return classification
 
     # Cache helper methods
-
-    def _get_cached_fundamentals(self, symbol: str) -> Optional[Dict[str, Any]]:
-        """Get cached fundamental data."""
-        try:
-            cached = self.db.query(StockFundamental).filter(
-                StockFundamental.symbol == symbol
-            ).first()
-
-            if not cached:
-                return None
-
-            # Check if cache is stale (7 days for fundamentals)
-            cache_age = datetime.now() - cached.updated_at.replace(tzinfo=None)
-            if cache_age > timedelta(days=7):
-                logger.debug(f"Cache stale for {symbol} ({cache_age.days} days old)")
-                return None
-
-            return {
-                "symbol": cached.symbol,
-                "market_cap": cached.market_cap,
-                "pe_ratio": cached.pe_ratio,
-                "peg_ratio": cached.peg_ratio,
-                "eps_current": cached.eps_current,
-                "eps_growth_quarterly": cached.eps_growth_quarterly,
-                "eps_growth_annual": cached.eps_growth_annual,
-                # Add other fields as needed
-            }
-
-        except Exception as e:
-            logger.error(f"Error reading cache for {symbol}: {e}")
-            return None
-
-    def _cache_fundamentals(self, symbol: str, data: Dict[str, Any]):
-        """Cache fundamental data."""
-        try:
-            # Upsert fundamental data
-            fundamental = self.db.query(StockFundamental).filter(
-                StockFundamental.symbol == symbol
-            ).first()
-
-            if fundamental:
-                # Update existing
-                for key, value in data.items():
-                    if hasattr(fundamental, key):
-                        setattr(fundamental, key, value)
-            else:
-                # Create new
-                fundamental = StockFundamental(**data)
-                self.db.add(fundamental)
-
-            self.db.commit()
-            logger.debug(f"Cached fundamentals for {symbol}")
-
-        except Exception as e:
-            logger.error(f"Error caching fundamentals for {symbol}: {e}")
-            self.db.rollback()
 
     def _get_cached_technicals(self, symbol: str) -> Optional[Dict[str, Any]]:
         """Get cached technical data."""

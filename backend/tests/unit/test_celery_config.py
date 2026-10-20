@@ -150,7 +150,7 @@ class TestRedisBackendRetryConfig:
 
 
 # ---------------------------------------------------------------------------
-# Settings validators for cache_warm_hour / cache_warm_minute
+# Settings validators for schedule fields
 # ---------------------------------------------------------------------------
 
 class TestSettingsValidators:
@@ -162,39 +162,9 @@ class TestSettingsValidators:
 
         defaults = {
             "database_url": "sqlite:///test.db",
-            "cache_warm_hour": 17,
-            "cache_warm_minute": 30,
         }
         defaults.update(overrides)
         return Settings(**defaults)
-
-    def test_valid_hour_boundaries(self):
-        s = self._make_settings(cache_warm_hour=0)
-        assert s.cache_warm_hour == 0
-        s = self._make_settings(cache_warm_hour=23)
-        assert s.cache_warm_hour == 23
-
-    def test_valid_minute_boundaries(self):
-        s = self._make_settings(cache_warm_minute=0)
-        assert s.cache_warm_minute == 0
-        s = self._make_settings(cache_warm_minute=59)
-        assert s.cache_warm_minute == 59
-
-    def test_invalid_hour_too_high(self):
-        with pytest.raises(ValidationError, match="cache_warm_hour must be 0-23"):
-            self._make_settings(cache_warm_hour=24)
-
-    def test_invalid_hour_negative(self):
-        with pytest.raises(ValidationError, match="cache_warm_hour must be 0-23"):
-            self._make_settings(cache_warm_hour=-1)
-
-    def test_invalid_minute_too_high(self):
-        with pytest.raises(ValidationError, match="cache_warm_minute must be 0-59"):
-            self._make_settings(cache_warm_minute=60)
-
-    def test_invalid_minute_negative(self):
-        with pytest.raises(ValidationError, match="cache_warm_minute must be 0-59"):
-            self._make_settings(cache_warm_minute=-1)
 
     def test_invalid_celery_timezone_rejects_malformed_key(self):
         with pytest.raises(ValidationError, match="Invalid celery_timezone"):

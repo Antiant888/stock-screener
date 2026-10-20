@@ -146,7 +146,7 @@ The detailed producer/store/consumer view lives in [data-pipeline.html](../docs/
 
 - Assistant: `services/assistant_gateway_service.py` calls the Hermes sidecar (`HERMES_API_BASE`, optional `HERMES_API_KEY`).
 - Theme discovery: LLM provider adapters live under `services/llm/` and related theme services/tasks.
-- Web research: optional Tavily/Serper keys.
+- Web research: optional `TAVILY_API_KEY` / `SERPER_API_KEY`, read by the Hermes sidecar, not the backend.
 
 Feature gates are controlled by `FEATURE_THEMES`, `FEATURE_CHATBOT`, and `FEATURE_TASKS`.
 

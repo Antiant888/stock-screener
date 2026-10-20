@@ -456,7 +456,7 @@ LLM-backed research assistant (Groq by default) using an agent + tool-executor p
 *Assistant — conversational research over live app data*
 
 - **Tools** — market overview, daily digest, breadth snapshot, find candidates, explain symbol, stock lookup/snapshot, group rankings, theme state, watchlist snapshot/add, compare feature runs, task status.
-- **Research mode** — optional web search (Tavily / Serper) with citations.
+- **Web sources** — the assistant prompt tells Hermes to search the web only when app data is missing or stale; links in its reply show as citations. Web search keys (`TAVILY_API_KEY` / `SERPER_API_KEY`) go to Hermes, not the backend.
 - **Persistence** — conversation history with folders.
 - **Watchlist actions** — add-to-watchlist with a preview of addable/existing/invalid symbols.
 

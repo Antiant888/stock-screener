@@ -15,7 +15,6 @@ from app.domain.providers.data_plan import (
     provider_data_plan_registry,
 )
 from app.services.provider_routing_policy import (
-    PROVIDER_ALPHAVANTAGE,
     PROVIDER_FINVIZ,
     PROVIDER_YFINANCE,
 )
@@ -31,7 +30,6 @@ def test_default_fundamentals_plan_preserves_us_provider_order() -> None:
     assert plan.providers == (
         PROVIDER_FINVIZ,
         PROVIDER_YFINANCE,
-        PROVIDER_ALPHAVANTAGE,
     )
     assert plan.step_for(PROVIDER_YFINANCE).batch_size == 50
 

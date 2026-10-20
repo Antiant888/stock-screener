@@ -209,10 +209,9 @@ The Celery task `app.tasks.cache_tasks.cleanup_orphaned_scans` remains the sched
   - Fundamentals cache: 7d TTL with DB fallback on Redis miss
   - Benchmark (SPY): 24h TTL with distributed locking to prevent thundering herd
 
-**LLM Integration** (`services/chatbot/`):
+**LLM Integration** (`services/llm/`):
 - Supported provider path: Groq for chatbot/research, Minimax for primary theme extraction/merge, Z.AI fallback for extraction/merge
-- Agent orchestrator with tool executor pattern
-- Research mode with web search (Tavily, Serper)
+- The assistant (`services/assistant_gateway_service.py`) proxies chat to the Hermes sidecar. Hermes reads `TAVILY_API_KEY` and `SERPER_API_KEY`; the backend reads neither
 
 ### Frontend Structure
 - **React 18** with Vite
@@ -252,7 +251,6 @@ const BASE_PATH = '/api/v1/user-themes';
 ## Data Sources & Rate Limits
 - **yfinance**: 1 req/sec (self-imposed)
 - **Finviz**: Rate-limited via wrapper
-- **Alpha Vantage**: 25 req/day free tier
 - **SEC EDGAR**: 10 req/sec (150ms between requests)
 
 ## Market Hours Awareness
@@ -277,11 +275,8 @@ When designing a feature that reads or writes prices, state what it does mid-ses
 - `MINIMAX_API_KEY` - Minimax (primary theme extraction)
 - `ZAI_API_KEY`, `ZAI_API_KEYS` - Z.AI (theme extraction/merge fallback)
 
-**Web search** (enables research mode):
+**Web search** (read by the Hermes assistant sidecar, not the backend):
 - `TAVILY_API_KEY`, `SERPER_API_KEY`
-
-**Data sources**:
-- `ALPHA_VANTAGE_API_KEY` - Fundamental data (25 req/day free tier)
 
 **Infrastructure**:
 - `DATABASE_URL` - PostgreSQL connection string (e.g., `postgresql://user:pass@localhost/stockscanner`)

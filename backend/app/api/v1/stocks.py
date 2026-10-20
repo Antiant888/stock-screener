@@ -40,7 +40,6 @@ from ...services.symbol_format import require_valid_symbol
 from ...services.validation_service import ValidationService
 from ...use_cases.scanning.explain_stock import ExplainStockUseCase
 from ...wiring.bootstrap import (
-    get_alphavantage_service,
     get_fundamentals_cache,
     get_price_cache,
     get_uow,
@@ -71,11 +70,7 @@ def _get_yfinance_service():
 def _build_data_fetcher(db: Session):
     from ...services.data_fetcher import DataFetcher
 
-    return DataFetcher(
-        db,
-        yfinance_service=get_yfinance_service(),
-        alphavantage_service=get_alphavantage_service(),
-    )
+    return DataFetcher(db, yfinance_service=get_yfinance_service())
 
 
 def _get_latest_feature_run_for_symbol(uow, db: Session, symbol: str):

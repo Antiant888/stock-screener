@@ -9,8 +9,6 @@ Context
 Fundamentals providers have different geographic coverage:
 
 - ``finviz``       : US-only (NYSE/NASDAQ/AMEX screener only).
-- ``alphavantage`` : US-only free tier; overseas coverage is paid/limited and
-  is not currently wired up in the hot path.
 - ``yfinance``     : Global — supports local-suffix symbols (``.HK``, ``.T``,
   ``.TW``/``.TWO``, ``.TO``/``.V``, ``.KL``) via the canonical symbols produced by
   ``SecurityMasterService``.
@@ -61,7 +59,6 @@ from app.domain.providers.data_plan import (
     DATASET_FUNDAMENTALS,
     PLAN_VERSION,
     PROVIDER_AKSHARE,
-    PROVIDER_ALPHAVANTAGE,
     PROVIDER_BAOSTOCK,
     PROVIDER_FINVIZ,
     PROVIDER_KRX,
@@ -89,7 +86,6 @@ KNOWN_PROVIDERS: FrozenSet[str] = frozenset(
         PROVIDER_KRX,
         PROVIDER_OPENDART,
         PROVIDER_YFINANCE,
-        PROVIDER_ALPHAVANTAGE,
         PROVIDER_AKSHARE,
         PROVIDER_BAOSTOCK,
     }
@@ -118,7 +114,7 @@ DEFAULT_MARKET = MARKET_US
 
 Defaulting to US preserves legacy behaviour for call sites that have not yet
 been threaded with market context — they continue to see the existing
-finviz -> yfinance -> alphavantage chain.
+finviz -> yfinance chain.
 """
 
 
