@@ -19,7 +19,6 @@ import app.tasks.universe_tasks as universe_tasks
 from app.domain.markets import market_registry
 from app.domain.relative_strength import (
     BALANCED_RS_FORMULA_VERSION,
-    LEGACY_RS_FORMULA_VERSION,
 )
 from app.interfaces.tasks import feature_store_tasks
 from app.services.group_rank_history_backfill_service import (
@@ -78,7 +77,7 @@ def _stub_ready_group_rank_history(monkeypatch) -> None:
     monkeypatch.setattr(
         export_script,
         "_ensure_group_rank_history",
-        lambda *, as_of_date, market, formula_version: _backfill_result(
+        lambda *, as_of_date, market: _backfill_result(
             status=GroupRankHistoryBackfillStatus.SKIPPED,
             market=market,
             as_of_date=as_of_date,
@@ -208,76 +207,6 @@ def test_ensure_group_rank_history_uses_static_bootstrap_coordinator(
     result = export_script._ensure_group_rank_history(
         as_of_date=as_of_date,
         market="US",
-        formula_version=BALANCED_RS_FORMULA_VERSION,
-    )
-
-    assert result is expected
-
-
-def test_ensure_group_rank_history_preserves_runtime_coordinator_for_legacy(
-    monkeypatch,
-):
-    monkeypatch.setattr(
-        export_script,
-        "_ensure_group_rank_history",
-        _REAL_ENSURE_GROUP_RANK_HISTORY,
-    )
-    as_of_date = date(2026, 7, 24)
-    runtime_coordinator = object()
-    expected_calendar_service = object()
-    expected = _backfill_result(
-        status=GroupRankHistoryBackfillStatus.COMPLETED,
-        market="US",
-        as_of_date=as_of_date,
-    )
-
-    monkeypatch.setattr(
-        export_script,
-        "build_static_group_snapshot_coordinator",
-        lambda **_kwargs: (_ for _ in ()).throw(
-            AssertionError("legacy history must use the runtime coordinator")
-        ),
-    )
-    monkeypatch.setattr(
-        export_script,
-        "get_group_rank_snapshot_coordinator",
-        lambda: runtime_coordinator,
-        raising=False,
-    )
-    monkeypatch.setattr(
-        export_script,
-        "get_market_calendar_service",
-        lambda: expected_calendar_service,
-    )
-
-    class RecordingBackfillService:
-        def __init__(
-            self,
-            *,
-            session_factory,
-            calendar_service,
-            group_snapshot_coordinator,
-        ):
-            assert session_factory is export_script.SessionLocal
-            assert calendar_service is expected_calendar_service
-            assert group_snapshot_coordinator is runtime_coordinator
-
-        def backfill(self, *, as_of_date, market, formula_version):
-            assert as_of_date == date(2026, 7, 24)
-            assert market == "US"
-            assert formula_version == LEGACY_RS_FORMULA_VERSION
-            return expected
-
-    monkeypatch.setattr(
-        export_script,
-        "GroupRankHistoryBackfillService",
-        RecordingBackfillService,
-    )
-
-    result = export_script._ensure_group_rank_history(
-        as_of_date=as_of_date,
-        market="US",
-        formula_version=LEGACY_RS_FORMULA_VERSION,
     )
 
     assert result is expected
@@ -302,7 +231,7 @@ def _stub_balanced_static_rs_preparation(monkeypatch):
     monkeypatch.setattr(
         export_script,
         "_ensure_group_rank_history",
-        lambda *, as_of_date, market, formula_version: _backfill_result(
+        lambda *, as_of_date, market: _backfill_result(
             status=GroupRankHistoryBackfillStatus.SKIPPED,
             market=market,
             as_of_date=as_of_date,
@@ -433,7 +362,7 @@ def test_run_daily_refresh_activates_balanced_rs_before_static_consumers(
     monkeypatch.setattr(
         export_script,
         "_ensure_group_rank_history",
-        lambda *, as_of_date, market, formula_version: events.append("group_history")
+        lambda *, as_of_date, market: events.append("group_history")
         or _backfill_result(
             status=GroupRankHistoryBackfillStatus.COMPLETED,
             market=market,
@@ -1040,8 +969,8 @@ def test_run_daily_refresh_skips_snapshot_when_market_rs_benchmark_anchor_missin
     )
     monkeypatch.setattr(
         export_script,
-        "_prepare_static_rs_formula",
-        lambda *, market, as_of_date, formula_version: calls.append(f"market-rs:{market}")
+        "_prepare_balanced_static_rs",
+        lambda *, market, as_of_date, formula_version=BALANCED_RS_FORMULA_VERSION: calls.append(f"market-rs:{market}")
         or {
             "status": "failed",
             "market": market,
@@ -1160,7 +1089,7 @@ def test_run_daily_refresh_continues_eligible_market_when_peer_market_rs_is_not_
         or {"status": "completed"},
     )
 
-    def prepare_market_rs(*, market, as_of_date, formula_version):
+    def prepare_market_rs(*, market, as_of_date, formula_version=BALANCED_RS_FORMULA_VERSION):
         calls.append(f"market-rs:{market}")
         if market == "DE":
             return {
@@ -1183,7 +1112,7 @@ def test_run_daily_refresh_continues_eligible_market_when_peer_market_rs_is_not_
             "market_rs_run_id": 42,
         }
 
-    monkeypatch.setattr(export_script, "_prepare_static_rs_formula", prepare_market_rs)
+    monkeypatch.setattr(export_script, "_prepare_balanced_static_rs", prepare_market_rs)
 
     def compute_exposure(*, as_of_date, market):
         if market == "DE":
@@ -1201,7 +1130,7 @@ def test_run_daily_refresh_continues_eligible_market_when_peer_market_rs_is_not_
         ),
     )
 
-    def ensure_group_history(*, as_of_date, market, formula_version):
+    def ensure_group_history(*, as_of_date, market):
         if market == "DE":
             raise AssertionError("DE group-rank history must be skipped")
         calls.append(f"group:{market}")
@@ -1271,8 +1200,8 @@ def test_run_daily_refresh_raises_hard_market_rs_failure(
     )
     monkeypatch.setattr(
         export_script,
-        "_prepare_static_rs_formula",
-        lambda *, market, as_of_date, formula_version: {
+        "_prepare_balanced_static_rs",
+        lambda *, market, as_of_date, formula_version=BALANCED_RS_FORMULA_VERSION: {
             "status": "failed",
             "market": market,
             "as_of_date": as_of_date.isoformat(),
@@ -1327,8 +1256,8 @@ def test_run_daily_refresh_reports_every_hard_market_rs_failure(
     )
     monkeypatch.setattr(
         export_script,
-        "_prepare_static_rs_formula",
-        lambda *, market, as_of_date, formula_version: {
+        "_prepare_balanced_static_rs",
+        lambda *, market, as_of_date, formula_version=BALANCED_RS_FORMULA_VERSION: {
             "status": "failed",
             "market": market,
             "as_of_date": as_of_date.isoformat(),
@@ -1359,135 +1288,6 @@ def test_run_daily_refresh_reports_every_hard_market_rs_failure(
     message = str(exc_info.value)
     assert "Static Market RS failed hard for DE on 2026-07-24" in message
     assert "Static Market RS failed hard for HK on 2026-07-24" in message
-
-
-def test_run_daily_refresh_treats_explicit_legacy_rs_selection_as_ready(
-    monkeypatch,
-):
-    calls: list[str] = []
-
-    monkeypatch.setattr(
-        export_script,
-        "_resolve_latest_completed_trading_date",
-        lambda _market: date(2026, 7, 24),
-    )
-    monkeypatch.setattr(
-        export_script,
-        "_refresh_static_daily_prices",
-        lambda *, as_of_date, market=None, **_kwargs: calls.append(f"price:{market}")
-        or {"status": "completed"},
-    )
-    monkeypatch.setattr(
-        export_script,
-        "_prepare_static_rs_formula",
-        lambda *, market, as_of_date, formula_version: calls.append(f"market-rs:{market}")
-        or {
-            "status": "selected",
-            "market": market,
-            "as_of_date": as_of_date.isoformat(),
-            "formula_version": formula_version,
-            "market_rs_run_id": None,
-        },
-    )
-    monkeypatch.setattr(
-        export_script,
-        "_ensure_group_rank_history",
-        lambda *, as_of_date, market, formula_version: calls.append(f"group:{market}")
-        or _backfill_result(
-            status=GroupRankHistoryBackfillStatus.COMPLETED,
-            market=market,
-            as_of_date=as_of_date,
-        ),
-    )
-    monkeypatch.setattr(
-        export_script,
-        "_compute_static_market_exposure",
-        lambda *, as_of_date, market: calls.append(f"exposure:{market}")
-        or {"status": "completed"},
-    )
-    monkeypatch.setattr(
-        feature_store_tasks,
-        "build_daily_snapshot",
-        SimpleNamespace(
-            run=lambda **kwargs: calls.append(f"snapshot:{kwargs['market']}")
-            or {"status": "published", "run_id": 77}
-        ),
-    )
-    monkeypatch.setattr(
-        feature_store_tasks,
-        "_enrich_feature_run_with_ibd_metadata",
-        lambda **_kwargs: {"status": "completed"},
-    )
-    monkeypatch.setattr(
-        export_script.IBDIndustryService,
-        "load_from_csv",
-        lambda _db, csv_path=None: 1,
-    )
-    monkeypatch.setattr(export_script, "_upsert_feature_run_pointer", lambda **_kwargs: None)
-
-    results, warnings = export_script._run_daily_refresh(
-        market="US",
-        skip_universe_refresh=True,
-        skip_fundamentals_refresh=True,
-        rs_formula_version=LEGACY_RS_FORMULA_VERSION,
-    )
-
-    assert warnings == []
-    assert calls == [
-        "price:US",
-        "market-rs:US",
-        "exposure:US",
-        "snapshot:US",
-        "group:US",
-    ]
-    assert results["feature_snapshots"]["US"]["run_id"] == 77
-
-
-def test_prepare_static_rs_formula_supports_explicit_legacy_rollback(monkeypatch):
-    events: list[str] = []
-
-    @contextmanager
-    def fake_session():
-        yield SimpleNamespace(commit=lambda: events.append("formula_commit"))
-
-    class FakeMarketRsRepository:
-        def activate_formula(self, _db, *, market, formula_version):
-            events.append(f"activate:{market}:{formula_version}")
-
-    monkeypatch.setattr(export_script, "SessionLocal", fake_session)
-    monkeypatch.setattr(
-        export_script,
-        "MarketRsRunRepository",
-        FakeMarketRsRepository,
-        raising=False,
-    )
-    monkeypatch.setattr(
-        market_rs_tasks,
-        "calculate_market_rs_snapshot",
-        SimpleNamespace(
-            run=lambda **_kwargs: (_ for _ in ()).throw(
-                AssertionError("legacy static rollback must not calculate balanced RS")
-            )
-        ),
-    )
-
-    result = export_script._prepare_static_rs_formula(
-        market="US",
-        as_of_date=date(2026, 7, 17),
-        formula_version=LEGACY_RS_FORMULA_VERSION,
-    )
-
-    assert events == [
-        f"activate:US:{LEGACY_RS_FORMULA_VERSION}",
-        "formula_commit",
-    ]
-    assert result == {
-        "status": "selected",
-        "market": "US",
-        "as_of_date": "2026-07-17",
-        "formula_version": LEGACY_RS_FORMULA_VERSION,
-        "market_rs_run_id": None,
-    }
 
 
 def test_run_daily_refresh_bootstraps_universe_before_other_tasks(monkeypatch):
@@ -2359,12 +2159,11 @@ def test_run_daily_refresh_builds_snapshot_before_group_rank_backfill_and_reenri
 
     group_rank_calls: list[dict] = []
 
-    def fake_ensure_group_rank_history(*, as_of_date, market, formula_version):
+    def fake_ensure_group_rank_history(*, as_of_date, market):
         events.append(f"group_rank:{market}")
         group_rank_calls.append({
             "as_of_date": as_of_date,
             "market": market,
-            "formula_version": formula_version,
         })
         return _backfill_result(
             status=GroupRankHistoryBackfillStatus.COMPLETED,
@@ -2427,7 +2226,6 @@ def test_run_daily_refresh_builds_snapshot_before_group_rank_backfill_and_reenri
     assert group_rank_calls == [{
         "as_of_date": date(2026, 4, 2),
         "market": "US",
-        "formula_version": BALANCED_RS_FORMULA_VERSION,
     }]
     assert enrich_calls == [{"feature_run_id": 77, "ranking_date": date(2026, 4, 2)}]
     assert results["ibd_metadata_refresh"]["US"] == {
@@ -2477,7 +2275,7 @@ def test_run_daily_refresh_skips_reenrich_when_group_rank_backfill_errored(monke
     monkeypatch.setattr(
         export_script,
         "_ensure_group_rank_history",
-        lambda *, as_of_date, market, formula_version: _backfill_result(
+        lambda *, as_of_date, market: _backfill_result(
             status=GroupRankHistoryBackfillStatus.ERRORED,
             market=market,
             as_of_date=as_of_date,
@@ -2554,7 +2352,7 @@ def test_run_daily_refresh_quarantines_fresh_deferred_snapshot_when_group_rank_b
     monkeypatch.setattr(
         export_script,
         "_ensure_group_rank_history",
-        lambda *, as_of_date, market, formula_version: _backfill_result(
+        lambda *, as_of_date, market: _backfill_result(
             status=GroupRankHistoryBackfillStatus.ERRORED,
             market=market,
             as_of_date=as_of_date,
@@ -2626,7 +2424,7 @@ def test_run_daily_refresh_skips_reenrich_when_snapshot_not_ready(monkeypatch):
     monkeypatch.setattr(
         export_script,
         "_ensure_group_rank_history",
-        lambda *, as_of_date, market, formula_version: _backfill_result(
+        lambda *, as_of_date, market: _backfill_result(
             status=GroupRankHistoryBackfillStatus.COMPLETED,
             market=market,
             as_of_date=as_of_date,
@@ -2823,7 +2621,7 @@ def test_main_requires_single_market_and_restore_status_for_breadth_metadata(tmp
 
 
 def test_main_passes_fallback_artifacts_dir_to_combine(monkeypatch, tmp_path):
-    combine_calls: list[tuple[object, object, object, bool, object, object, object]] = []
+    combine_calls: list[tuple[object, object, object, bool, object, object]] = []
     output_dir = tmp_path / "out"
     artifacts_dir = tmp_path / "artifacts"
     fallback_dir = tmp_path / "fallback"
@@ -2832,16 +2630,13 @@ def test_main_passes_fallback_artifacts_dir_to_combine(monkeypatch, tmp_path):
         export_script.StaticSiteExportService,
         "combine_market_artifacts",
         lambda artifacts_dir, output_dir, *, fallback_artifacts_dir=None, clean=True,
-        rs_formula_version_overrides=None,
-        fallback_rs_formula_version_overrides=None,
-        optional_markets=(): combine_calls.append(
+        required_markets=(), optional_markets=(): combine_calls.append(
             (
                 artifacts_dir,
                 output_dir,
                 fallback_artifacts_dir,
                 clean,
-                rs_formula_version_overrides,
-                fallback_rs_formula_version_overrides,
+                required_markets,
                 optional_markets,
             )
         )
@@ -2875,11 +2670,7 @@ def test_main_passes_fallback_artifacts_dir_to_combine(monkeypatch, tmp_path):
         output_dir,
         fallback_dir,
         False,
-        {
-            market: BALANCED_RS_FORMULA_VERSION
-            for market in export_script.STATIC_EXPORT_MARKETS
-        },
-        {},
+        export_script.REQUIRED_STATIC_MARKETS,
         export_script.OPTIONAL_STATIC_MARKETS,
     )]
 
@@ -3040,109 +2831,3 @@ def test_static_options_refresh_runs_in_process_and_reports_failure(monkeypatch)
     assert failed["reason_codes"] == ["options_refresh_failed"]
 
 
-def test_main_combines_with_independent_per_market_rs_formula_policy(
-    monkeypatch,
-    tmp_path,
-):
-    captured: list[dict[str, object]] = []
-    output_dir = tmp_path / "out"
-
-    monkeypatch.setattr(
-        export_script.StaticSiteExportService,
-        "combine_market_artifacts",
-        lambda _artifacts_dir, _output_dir, **kwargs: captured.append(kwargs)
-        or SimpleNamespace(
-            output_dir=output_dir,
-            generated_at="2026-04-05T22:00:00Z",
-            as_of_date="2026-04-05",
-            warnings=(),
-            manifest={},
-        ),
-    )
-    monkeypatch.setattr(
-        sys,
-        "argv",
-        [
-            "export_static_site.py",
-            "--output-dir",
-            str(output_dir),
-            "--combine-artifacts-dir",
-            str(tmp_path / "artifacts"),
-            "--rs-formula-overrides-json",
-            '{"HK":"legacy-linear-v1"}',
-        ],
-    )
-
-    assert export_script.main() == 0
-    current_policy = captured[0]["rs_formula_version_overrides"]
-    assert isinstance(current_policy, dict)
-    assert current_policy["HK"] == LEGACY_RS_FORMULA_VERSION
-    assert current_policy["US"] == BALANCED_RS_FORMULA_VERSION
-    assert captured[0]["fallback_rs_formula_version_overrides"] == {
-        "HK": LEGACY_RS_FORMULA_VERSION
-    }
-
-
-def test_main_rejects_global_rs_formula_override_when_combining(
-    monkeypatch,
-    tmp_path,
-):
-    monkeypatch.setattr(
-        sys,
-        "argv",
-        [
-            "export_static_site.py",
-            "--output-dir",
-            str(tmp_path / "out"),
-            "--combine-artifacts-dir",
-            str(tmp_path / "artifacts"),
-            "--rs-formula-version",
-            LEGACY_RS_FORMULA_VERSION,
-        ],
-    )
-
-    with pytest.raises(SystemExit, match="single-market exports"):
-        export_script.main()
-
-
-def test_main_passes_formula_override_to_direct_market_export(
-    monkeypatch,
-    tmp_path,
-):
-    captured: dict[str, object] = {}
-
-    class FakeExportService:
-        def __init__(self, *_args, **_kwargs):
-            pass
-
-        def export(self, output_dir, **kwargs):
-            captured.update(kwargs)
-            return SimpleNamespace(
-                output_dir=output_dir,
-                generated_at="2026-04-05T22:00:00Z",
-                as_of_date="2026-04-05",
-                warnings=(),
-            )
-
-    monkeypatch.setattr(export_script, "prepare_runtime", lambda: None)
-    monkeypatch.setattr(export_script, "StaticSiteExportService", FakeExportService)
-
-    result = export_script.main(
-        [
-            "--output-dir",
-            str(tmp_path / "out"),
-            "--market",
-            "HK",
-            "--rs-formula-version",
-            LEGACY_RS_FORMULA_VERSION,
-        ]
-    )
-
-    assert result == 0
-    assert captured["rs_formula_version_overrides"] == {
-        **{
-            market: BALANCED_RS_FORMULA_VERSION
-            for market in export_script.STATIC_EXPORT_MARKETS
-        },
-        "HK": LEGACY_RS_FORMULA_VERSION,
-    }

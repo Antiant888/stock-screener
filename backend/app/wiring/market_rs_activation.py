@@ -57,7 +57,6 @@ def export_static_v3(
         static_staging_dir,
         clean=True,
         markets=(market,),
-        rs_formula_version_overrides={market: BALANCED_RS_FORMULA_VERSION},
         feature_run_ids_by_market={market: feature_run_id},
     )
 

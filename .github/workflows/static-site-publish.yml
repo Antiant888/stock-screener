@@ -4,10 +4,9 @@ name: Static Site Publish
 # market, found by name, so wake-ups may be lost, duplicated or coalesced and
 # the next run converges. Producers in static-site.yml wake it; no schedule.
 on:
-  # No inputs: a publish-time RS override could not stick (the next wake-up
-  # republishes the newest artifacts). An RS rollback is a static-site.yml
-  # export run with rs_formula_overrides; its legacy artifact becomes the
-  # newest one and is published like any other.
+  # No inputs: the next wake-up republishes the newest artifacts, so anything
+  # a publish-time input changed would not stick. Choose what to publish in
+  # the static-site.yml export run.
   workflow_dispatch:
   # Build-only rehearsal for PRs that change the publisher; never deploys.
   pull_request:

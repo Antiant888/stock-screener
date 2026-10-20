@@ -571,7 +571,7 @@ def test_static_site_fallback_downloader_keeps_newest_candidate_for_current_mark
     assert "exit 7. Details: stderr: download denied for HK" in result.stdout
 
 
-def test_static_site_fallback_downloader_keeps_formula_compatible_candidate(
+def test_static_site_fallback_downloader_keeps_newest_balanced_candidate(
     tmp_path,
 ) -> None:
     current_dir = tmp_path / "current"
@@ -641,8 +641,6 @@ def test_static_site_fallback_downloader_keeps_formula_compatible_candidate(
             str(current_dir),
             "--fallback-dir",
             str(fallback_dir),
-            "--fallback-rs-formula-overrides-json",
-            '{"US":"legacy-linear-v1"}',
         ],
         check=True,
         capture_output=True,
@@ -656,10 +654,7 @@ def test_static_site_fallback_downloader_keeps_formula_compatible_candidate(
         json.loads(line)
         for line in downloads_log.read_text(encoding="utf-8").splitlines()
     ]
-    assert downloads == [
-        {"run": "333", "artifact": "static-market-US"},
-        {"run": "222", "artifact": "static-market-US"},
-    ]
+    assert downloads == [{"run": "333", "artifact": "static-market-US"}]
     manifest = json.loads(
         (
             fallback_dir
@@ -669,7 +664,7 @@ def test_static_site_fallback_downloader_keeps_formula_compatible_candidate(
             / "manifest.market.json"
         ).read_text(encoding="utf-8")
     )
-    assert manifest["entry"]["rs_formula_version"] == "legacy-linear-v1"
+    assert manifest["entry"]["rs_formula_version"] == "balanced-horizon-percentile-v2"
 
 
 def test_static_site_fallback_downloader_skips_damaged_advertised_assets(
@@ -998,24 +993,21 @@ def _write_selected_market(root: Path, market: str, formula: str) -> None:
     )
 
 
-def test_publisher_combine_arguments_accept_last_good_legacy_artifacts(
+def test_publisher_combine_arguments_omit_last_good_legacy_artifacts(
     tmp_path, monkeypatch
 ) -> None:
     """Run the publisher's own combine arguments end to end.
 
-    The publisher selects stored artifacts, so they must get the last-good
-    policy: an RS rollback (legacy formula) still publishes instead of failing
-    every market's publish.
+    The publisher selects stored artifacts. A stored artifact from the retired
+    legacy formula is left out of the bundle instead of failing every market's
+    publish or mixing formulas.
     """
-    from app.domain.relative_strength import (
-        BALANCED_RS_FORMULA_VERSION,
-        LEGACY_RS_FORMULA_VERSION,
-    )
+    from app.domain.relative_strength import BALANCED_RS_FORMULA_VERSION
     from app.scripts import export_static_site as export_script
 
     selection = tmp_path / "selection"
     _write_selected_market(selection, "US", BALANCED_RS_FORMULA_VERSION)
-    _write_selected_market(selection, "HK", LEGACY_RS_FORMULA_VERSION)
+    _write_selected_market(selection, "HK", "legacy-linear-v1")
     paths = {
         "/tmp/static-market-artifacts": selection,
         "/tmp/static-empty": tmp_path / "empty",
@@ -1038,10 +1030,8 @@ def test_publisher_combine_arguments_accept_last_good_legacy_artifacts(
     assert export_script.main() == 0
 
     manifest = json.loads((tmp_path / "out" / "manifest.json").read_text(encoding="utf-8"))
-    assert manifest["supported_markets"] == ["US", "HK"]
-    assert manifest["markets"]["HK"]["rs_formula_version"] == LEGACY_RS_FORMULA_VERSION
-    scan_path = manifest["markets"]["HK"]["pages"]["scan"]["path"]
-    assert (tmp_path / "out" / manifest["data_root"] / scan_path).is_file()
+    assert manifest["supported_markets"] == ["US"]
+    assert "HK" in manifest["unavailable_markets"]
 
 
 @pytest.mark.parametrize(

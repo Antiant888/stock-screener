@@ -15,7 +15,10 @@ from sqlalchemy.orm import Session, sessionmaker
 from app.domain.common.query import SortOrder, SortSpec
 from app.domain.feature_store.run_metadata import feature_run_market
 from app.domain.markets.catalog import get_market_catalog
-from app.domain.relative_strength import GroupSnapshotIdentity
+from app.domain.relative_strength import (
+    BALANCED_RS_FORMULA_VERSION,
+    GroupSnapshotIdentity,
+)
 from app.domain.scanning.default_filters import (
     DEFAULT_SCAN_FILTERS_BY_MARKET,
     DEFAULT_SCAN_FILTERS_FALLBACK,
@@ -26,7 +29,6 @@ from app.domain.scanning.materialization import (
 )
 from app.infra.db.models.feature_store import FeatureRun, FeatureRunPointer
 from app.infra.db.repositories.feature_store_repo import SqlFeatureStoreRepository
-from app.infra.db.repositories.market_rs_repo import MarketRsRunRepository
 from app.services.feature_run_rs_identity import resolve_feature_run_rs_identity
 from app.services.group_rank_snapshot_reader import GroupRankSnapshotReader
 from app.services.key_market_history import build_key_market_entries
@@ -163,7 +165,6 @@ class StaticSiteExportService:
             )
         )
         self._ui_snapshot_service = UISnapshotService(session_factory)
-        self._market_rs_repository = MarketRsRunRepository()
         self._price_cache = (
             price_cache if price_cache is not None else get_price_cache()
         )
@@ -215,7 +216,6 @@ class StaticSiteExportService:
         clean: bool = True,
         markets: tuple[str, ...] | None = None,
         write_manifest: bool = True,
-        rs_formula_version_overrides: Mapping[str, str] | None = None,
         feature_run_ids_by_market: Mapping[str, int] | None = None,
         options_fallback_dir: Path | None = None,
         cot_fallback_dir: Path | None = None,
@@ -237,10 +237,6 @@ class StaticSiteExportService:
                 str(market).strip().upper()
                 for market in (markets or STATIC_SUPPORTED_MARKETS)
             )
-            formula_overrides = {
-                str(market).strip().upper(): str(formula).strip()
-                for market, formula in (rs_formula_version_overrides or {}).items()
-            }
             run_overrides = {
                 str(market).strip().upper(): int(run_id)
                 for market, run_id in (feature_run_ids_by_market or {}).items()
@@ -275,7 +271,6 @@ class StaticSiteExportService:
                     market=market,
                     generated_at=generated_at,
                     warnings=warnings,
-                    formula_version_override=formula_overrides.get(market),
                     feature_run_id=run_overrides.get(market),
                 )
                 self._write_market_metadata(
@@ -339,8 +334,7 @@ class StaticSiteExportService:
         *,
         fallback_artifacts_dir: Path | None = None,
         clean: bool = True,
-        rs_formula_version_overrides: Mapping[str, str] | None = None,
-        fallback_rs_formula_version_overrides: Mapping[str, str] | None = None,
+        required_markets: Iterable[str] = (),
         optional_markets: Iterable[str] = (),
         options_artifacts_dir: Path | None = None,
         fallback_options_artifacts_dir: Path | None = None,
@@ -361,12 +355,10 @@ class StaticSiteExportService:
                 else None
             ),
             output_dir=Path(output_dir),
-            required_formula_by_market=rs_formula_version_overrides or {},
-            fallback_required_formula_by_market=(
-                fallback_rs_formula_version_overrides
-                if fallback_rs_formula_version_overrides is not None
-                else None
-            ),
+            required_formula_by_market={
+                market: BALANCED_RS_FORMULA_VERSION
+                for market in (*required_markets, *optional_markets)
+            },
             optional_markets=optional_markets,
             clean=clean,
         )
@@ -420,7 +412,6 @@ class StaticSiteExportService:
         market: str,
         generated_at: str,
         warnings: list[str],
-        formula_version_override: str | None = None,
         feature_run_id: int | None = None,
     ) -> dict[str, Any]:
         latest_run = self._resolve_static_feature_run(
@@ -437,11 +428,7 @@ class StaticSiteExportService:
             latest_run.config_json
         )
 
-        formula_version = (
-            str(formula_version_override).strip()
-            if formula_version_override is not None
-            else self._market_rs_repository.active_formula(db, market=market)
-        )
+        formula_version = BALANCED_RS_FORMULA_VERSION
         feature_formula_version = resolve_feature_run_rs_identity(
             latest_run,
             ranking_date=latest_run.as_of_date,

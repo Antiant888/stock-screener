@@ -113,8 +113,8 @@ def test_static_daily_refresh_ensures_market_breadth_before_exposure(monkeypatch
     )
     monkeypatch.setattr(
         export_static_site,
-        "_prepare_static_rs_formula",
-        lambda *, market, as_of_date, formula_version: {
+        "_prepare_balanced_static_rs",
+        lambda *, market, as_of_date, formula_version=BALANCED_RS_FORMULA_VERSION: {
             "status": "completed",
             "market": market,
             "as_of_date": as_of_date.isoformat(),
@@ -173,7 +173,6 @@ def test_static_daily_refresh_ensures_market_breadth_before_exposure(monkeypatch
         market="HK",
         skip_universe_refresh=True,
         skip_fundamentals_refresh=True,
-        rs_formula_version=BALANCED_RS_FORMULA_VERSION,
     )
 
     assert warnings == []
@@ -270,7 +269,7 @@ def test_static_daily_refresh_rewinds_a_session_when_market_rs_is_not_current(
         lambda *, as_of_date, market, **_kwargs: {"status": "completed", "market": market},
     )
 
-    def prepare_static_rs(*, market, as_of_date, formula_version):
+    def prepare_static_rs(*, market, as_of_date, formula_version=BALANCED_RS_FORMULA_VERSION):
         prepare_calls.append(as_of_date)
         if as_of_date == date(2026, 8, 3):
             return {
@@ -289,7 +288,7 @@ def test_static_daily_refresh_rewinds_a_session_when_market_rs_is_not_current(
             "market_rs_run_id": 42,
         }
 
-    monkeypatch.setattr(export_static_site, "_prepare_static_rs_formula", prepare_static_rs)
+    monkeypatch.setattr(export_static_site, "_prepare_balanced_static_rs", prepare_static_rs)
     monkeypatch.setattr(
         export_static_site, "get_market_calendar_service", _PreviousSessionCalendar
     )
@@ -343,7 +342,6 @@ def test_static_daily_refresh_rewinds_a_session_when_market_rs_is_not_current(
         market="DE",
         skip_universe_refresh=True,
         skip_fundamentals_refresh=True,
-        rs_formula_version=BALANCED_RS_FORMULA_VERSION,
     )
 
     assert prepare_calls == [date(2026, 8, 3), date(2026, 7, 31)]
@@ -376,8 +374,8 @@ def test_static_daily_refresh_skips_exposure_when_breadth_history_errors(monkeyp
     )
     monkeypatch.setattr(
         export_static_site,
-        "_prepare_static_rs_formula",
-        lambda *, market, as_of_date, formula_version: {
+        "_prepare_balanced_static_rs",
+        lambda *, market, as_of_date, formula_version=BALANCED_RS_FORMULA_VERSION: {
             "status": "completed",
             "market": market,
             "as_of_date": as_of_date.isoformat(),
@@ -435,7 +433,6 @@ def test_static_daily_refresh_skips_exposure_when_breadth_history_errors(monkeyp
         market="US",
         skip_universe_refresh=True,
         skip_fundamentals_refresh=True,
-        rs_formula_version=BALANCED_RS_FORMULA_VERSION,
     )
 
     assert results["market_exposure"]["US"]["error"] == "market_breadth_not_ready"
@@ -451,7 +448,6 @@ def test_static_daily_refresh_skips_exposure_when_breadth_history_errors(monkeyp
         skip_universe_refresh=True,
         skip_fundamentals_refresh=True,
         skip_cot_refresh=True,
-        rs_formula_version=BALANCED_RS_FORMULA_VERSION,
     )
     assert "cot" not in market_only_results
 
@@ -479,8 +475,8 @@ def test_static_daily_refresh_quarantines_breadth_history_exceptions(monkeypatch
     )
     monkeypatch.setattr(
         export_static_site,
-        "_prepare_static_rs_formula",
-        lambda *, market, as_of_date, formula_version: {
+        "_prepare_balanced_static_rs",
+        lambda *, market, as_of_date, formula_version=BALANCED_RS_FORMULA_VERSION: {
             "status": "completed",
             "market": market,
             "as_of_date": as_of_date.isoformat(),
@@ -527,7 +523,6 @@ def test_static_daily_refresh_quarantines_breadth_history_exceptions(monkeypatch
         market="HK",
         skip_universe_refresh=True,
         skip_fundamentals_refresh=True,
-        rs_formula_version=BALANCED_RS_FORMULA_VERSION,
     )
 
     assert results["breadth_history"]["HK"] == {

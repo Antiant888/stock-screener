@@ -8,7 +8,7 @@ import os
 import shutil
 import subprocess
 import tempfile
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from functools import partial
@@ -201,48 +201,6 @@ def downloaded_market_has_advertised_assets(
     return True
 
 
-def downloaded_market_matches_required_formula(
-    target_dir: Path,
-    *,
-    market: str,
-    artifact_name: str,
-    run_id: int,
-    required_formula_by_market: Mapping[str, str],
-) -> bool:
-    expected_formula = required_formula_by_market.get(market)
-    if expected_formula is None:
-        return True
-    metadata_paths = sorted(target_dir.rglob(STATIC_MARKET_METADATA_FILENAME))
-    if len(metadata_paths) != 1:
-        warn(
-            f"{artifact_name} from run {run_id} has no unique "
-            f"{STATIC_MARKET_METADATA_FILENAME} for formula validation."
-        )
-        return False
-    metadata_path = metadata_paths[0]
-    try:
-        metadata = read_static_market_manifest(metadata_path, expected_market=market)
-        StaticArtifactCombiner._validate_formula(
-            market=market,
-            source_label="fallback",
-            metadata=metadata,
-            market_dir=metadata_path.parent,
-            expected_formula=expected_formula,
-        )
-    except (
-        OSError,
-        json.JSONDecodeError,
-        TypeError,
-        RuntimeError,
-        StaticMarketArtifactContractError,
-        StaticArtifactFormulaError,
-    ) as exc:
-        warn(
-            f"{artifact_name} from run {run_id} does not match the requested "
-            f"RS formula {expected_formula!r} for {market} ({exc})."
-        )
-        return False
-    return True
 
 
 def _coerce_manifest_date(value: object) -> date | None:
@@ -404,7 +362,6 @@ def _find_compatible_market_candidate(
     market: str,
     artifact_name: str,
     run_id: int,
-    formula_requirements: Mapping[str, str],
 ) -> Path | None:
     if not downloaded_market_is_compatible(
         wrapper,
@@ -418,14 +375,6 @@ def _find_compatible_market_candidate(
         market=market,
         artifact_name=artifact_name,
         run_id=run_id,
-    ):
-        return None
-    if not downloaded_market_matches_required_formula(
-        wrapper,
-        market=market,
-        artifact_name=artifact_name,
-        run_id=run_id,
-        required_formula_by_market=formula_requirements,
     ):
         return None
     return wrapper
@@ -523,18 +472,12 @@ def download_fallback_artifacts(
     branch_name: str,
     current_dir: Path,
     fallback_dir: Path,
-    required_formula_by_market: Mapping[str, str] | None = None,
     current_options_dir: Path | None = None,
     fallback_options_dir: Path | None = None,
     current_cot_dir: Path | None = None,
     fallback_cot_dir: Path | None = None,
 ) -> set[str]:
     fallback_dir.mkdir(parents=True, exist_ok=True)
-    formula_requirements = {
-        str(market).strip().upper(): str(formula).strip()
-        for market, formula in (required_formula_by_market or {}).items()
-        if str(market).strip() and str(formula).strip()
-    }
     current_markets = collect_current_markets(current_dir)
     fallback_markets: set[str] = set()
     fallback_dates_by_market: dict[str, date | None] = {}
@@ -634,7 +577,6 @@ def download_fallback_artifacts(
                     market=market,
                     artifact_name=artifact_name,
                     run_id=run_id,
-                    formula_requirements=formula_requirements,
                 ),
                 date_reader=downloaded_market_as_of_date,
             )
@@ -679,20 +621,6 @@ def download_fallback_artifacts(
     return fallback_markets
 
 
-def parse_formula_requirements(raw: str) -> dict[str, str]:
-    try:
-        payload = json.loads(raw or "{}")
-    except json.JSONDecodeError as exc:
-        raise argparse.ArgumentTypeError(f"invalid JSON: {exc}") from exc
-    if not isinstance(payload, dict):
-        raise argparse.ArgumentTypeError("expected a JSON object keyed by market")
-    return {
-        str(market).strip().upper(): str(formula).strip()
-        for market, formula in payload.items()
-        if str(market).strip() and str(formula).strip()
-    }
-
-
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--current-dir", type=Path, required=True)
@@ -702,11 +630,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--current-run-id", default=os.environ.get("CURRENT_RUN_ID", "0")
     )
     parser.add_argument("--branch", default=os.environ.get("BRANCH_NAME", "main"))
-    parser.add_argument(
-        "--fallback-rs-formula-overrides-json",
-        type=parse_formula_requirements,
-        default={},
-    )
     parser.add_argument("--current-options-dir", type=Path)
     parser.add_argument("--fallback-options-dir", type=Path)
     parser.add_argument("--current-cot-dir", type=Path)
@@ -722,7 +645,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         branch_name=args.branch,
         current_dir=args.current_dir,
         fallback_dir=args.fallback_dir,
-        required_formula_by_market=args.fallback_rs_formula_overrides_json,
         current_options_dir=args.current_options_dir,
         fallback_options_dir=args.fallback_options_dir,
         current_cot_dir=args.current_cot_dir,
