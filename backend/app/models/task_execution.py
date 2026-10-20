@@ -10,8 +10,8 @@ class TaskExecutionHistory(Base):
     __tablename__ = "task_execution_history"
 
     id = Column(Integer, primary_key=True, index=True)
-    task_name = Column(String(100), nullable=False, index=True)  # e.g., "daily-cache-warmup"
-    task_function = Column(String(200))  # e.g., "app.tasks.cache_tasks.daily_cache_warmup"
+    task_name = Column(String(100), nullable=False, index=True)  # e.g., "weekly-full-refresh"
+    task_function = Column(String(200))  # e.g., "app.tasks.cache_tasks.weekly_full_refresh"
     task_id = Column(String(100), nullable=True)  # Celery task ID
 
     # Execution details

@@ -395,22 +395,12 @@ from .tasks.market_queues import (
 )
 
 _MARKET_SCOPED_DATA_FETCH_TASKS = (
-    'app.tasks.cache_tasks.prewarm_scan_cache',
-    'app.tasks.cache_tasks.prewarm_all_active_symbols',
     'app.tasks.cache_tasks.weekly_full_refresh',
     'app.tasks.cache_tasks.warm_spy_cache',
-    'app.tasks.cache_tasks.warm_top_symbols',
     'app.tasks.cache_tasks.force_refresh_stale_intraday',
     'app.tasks.cache_tasks.smart_refresh_cache',
     'app.tasks.cache_tasks.retry_failed_price_symbols',
-    'app.tasks.cache_tasks.daily_cache_warmup',
-    'app.tasks.cache_tasks.auto_refresh_after_close',
     'app.tasks.fundamentals_tasks.refresh_all_fundamentals',
-    'app.tasks.fundamentals_tasks.refresh_all_fundamentals_hybrid',
-    'app.tasks.fundamentals_tasks.refresh_symbol_fundamentals',
-    'app.tasks.fundamentals_tasks.populate_initial_cache',
-    'app.tasks.fundamentals_tasks.refresh_fundamentals_yfinance_only',
-    'app.tasks.fundamentals_tasks.refresh_symbols_hybrid',
     'app.tasks.universe_tasks.refresh_stock_universe',
     'app.tasks.universe_tasks.refresh_official_market_universe',
     'app.tasks.universe_tasks.refresh_sp500_membership',

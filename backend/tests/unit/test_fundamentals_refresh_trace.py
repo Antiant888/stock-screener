@@ -1,8 +1,8 @@
-"""Golden traces of the two weekly fundamentals refresh tasks (#429).
+"""Golden traces of the weekly fundamentals refresh task (#429).
 
 Every activity and progress call, plus the response, for each path of
-``refresh_all_fundamentals`` and ``refresh_all_fundamentals_hybrid``. Keeps
-the shared-step extraction behaviour-preserving. Regenerate deliberately with
+``refresh_all_fundamentals``. Keeps the shared-step extraction
+behaviour-preserving. Regenerate deliberately with
 ``UPDATE_FUNDAMENTALS_TRACES=1``.
 """
 
@@ -15,7 +15,6 @@ from pathlib import Path
 import pytest
 
 from tests.unit.test_fundamentals_tasks import (
-    _hybrid_recording_stub,
     _prepare_refresh,
     _recording_cache,
     _runtime_markets,
@@ -23,8 +22,7 @@ from tests.unit.test_fundamentals_tasks import (
 
 GOLDEN = Path(__file__).parent / "golden" / "fundamentals_refresh_traces.json"
 _VOLATILE = {"timestamp", "duration_seconds", "duration_minutes", "progress_state", "task_id"}
-_TASKS = ("refresh_all_fundamentals", "refresh_all_fundamentals_hybrid")
-_PATHS = ("github", "snapshot", "fetch", "empty", "fatal")
+_PATHS = ("github", "fetch", "empty", "fatal")
 
 
 def _clean(value):
@@ -35,24 +33,11 @@ def _clean(value):
     return value
 
 
-def _snapshot_result(*_args, **_kwargs):
-    return {
-        "mode": "snapshot_publish",
-        "universe": {"active_symbols": 1},
-        "snapshot": {"published": True},
-        "hydrate": None,
-    }
-
-
-def _run_path(monkeypatch, module, task_name, path):
+def _run_path(monkeypatch, module, path):
     run_market = "US"
     if path == "github":
         _runtime_markets(monkeypatch, "US")
         _prepare_refresh(monkeypatch, module, github_statuses={"US": "success"})
-    elif path == "snapshot":
-        _runtime_markets(monkeypatch, "US")
-        _prepare_refresh(monkeypatch, module, cutover=True)
-        monkeypatch.setattr(module, "_run_snapshot_pipeline", _snapshot_result)
     elif path == "fetch":
         _runtime_markets(monkeypatch, "US", "HK")
         _prepare_refresh(monkeypatch, module)
@@ -72,7 +57,6 @@ def _run_path(monkeypatch, module, task_name, path):
 
     fetched: list[str] = []
     monkeypatch.setattr(module, "get_fundamentals_cache", lambda: _recording_cache(fetched))
-    monkeypatch.setattr(module, "HybridFundamentalsService", _hybrid_recording_stub(fetched))
 
     calls = []
 
@@ -89,20 +73,16 @@ def _run_path(monkeypatch, module, task_name, path):
     # Record progress at the throttle's entry: what it publishes depends on the clock.
     monkeypatch.setattr(module, "_maybe_publish_fundamentals_progress", recorder("progress"))
 
-    kwargs = {"market": run_market}
-    if task_name.endswith("hybrid"):
-        kwargs["include_finviz"] = False
-    result = getattr(module, task_name).run(**kwargs)
+    result = module.refresh_all_fundamentals.run(market=run_market)
     return {"calls": calls, "fetched": sorted(fetched), "result": _clean(result)}
 
 
 @pytest.mark.parametrize("path", _PATHS)
-@pytest.mark.parametrize("task_name", _TASKS)
-def test_refresh_trace_matches_golden(monkeypatch, task_name, path):
+def test_refresh_trace_matches_golden(monkeypatch, path):
     import app.tasks.fundamentals_tasks as module
 
-    trace = json.loads(json.dumps(_run_path(monkeypatch, module, task_name, path), default=str))
-    key = f"{task_name}:{path}"
+    trace = json.loads(json.dumps(_run_path(monkeypatch, module, path), default=str))
+    key = f"refresh_all_fundamentals:{path}"
 
     if os.environ.get("UPDATE_FUNDAMENTALS_TRACES") == "1":
         golden = json.loads(GOLDEN.read_text()) if GOLDEN.exists() else {}

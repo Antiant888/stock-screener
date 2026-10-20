@@ -34,7 +34,6 @@ from ..models.stock_universe import (
 )
 from ..models.stock import StockIndustry
 from ..models.ticker_validation import TickerValidationLog
-from .universe_classification import prefer_meaningful
 from ..schemas.universe import IndexName
 from ..config import settings
 from ..domain.markets.catalog import get_market_catalog
@@ -163,13 +162,6 @@ class StockUniverseService:
         if raw_status:
             return raw_status
         return UNIVERSE_STATUS_ACTIVE if active_flag else UNIVERSE_STATUS_INACTIVE_MANUAL
-
-    def _resolved_identity(self, stock_data: Dict[str, Any]):
-        return self._security_master.resolve_identity(
-            symbol=stock_data.get("symbol", ""),
-            market=stock_data.get("market"),
-            exchange=stock_data.get("exchange"),
-        )
 
     @staticmethod
     def _auto_snapshot_id(prefix: str) -> str:
@@ -749,70 +741,6 @@ class StockUniverseService:
                 continue
 
         return stocks
-
-    def import_from_csv(self, csv_content: str) -> List[Dict]:
-        """
-        Import stocks from CSV file content.
-
-        CSV format: symbol,name,exchange,sector,industry,market_cap
-        Header row is optional. Minimum required: symbol
-
-        Args:
-            csv_content: CSV file content as string
-
-        Returns:
-            List of stock data dicts
-        """
-        try:
-            logger.info("Importing stocks from CSV")
-            stocks = []
-
-            # Parse CSV
-            csv_file = io.StringIO(csv_content)
-            reader = csv.DictReader(csv_file)
-
-            # Check if header exists, if not, assume first row is data
-            fieldnames = reader.fieldnames
-            if not fieldnames or 'symbol' not in [f.lower() for f in fieldnames]:
-                # No header or wrong header, use default fieldnames
-                csv_file.seek(0)
-                fieldnames = ['symbol', 'name', 'exchange', 'sector', 'industry', 'market_cap']
-                reader = csv.DictReader(csv_file, fieldnames=fieldnames)
-
-            for row in reader:
-                try:
-                    # Normalize keys to lowercase
-                    row_lower = {k.lower(): v for k, v in row.items() if k}
-
-                    symbol = row_lower.get('symbol', '').strip().upper()
-                    if not symbol or symbol == 'SYMBOL':  # Skip header if present
-                        continue
-
-                    # Parse market cap if provided
-                    market_cap_str = row_lower.get('market_cap', '') or row_lower.get('marketcap', '')
-                    market_cap = self._parse_market_cap(market_cap_str) if market_cap_str else None
-
-                    stock_data = {
-                        'symbol': symbol,
-                        'name': row_lower.get('name', '').strip() or row_lower.get('company', '').strip() or '',
-                        'exchange': row_lower.get('exchange', 'NASDAQ').strip().upper(),
-                        'sector': row_lower.get('sector', '').strip() or '',
-                        'industry': row_lower.get('industry', '').strip() or '',
-                        'market_cap': market_cap,
-                    }
-
-                    stocks.append(stock_data)
-
-                except Exception as e:
-                    logger.warning(f"Error parsing CSV row: {e}, row: {row}")
-                    continue
-
-            logger.info(f"Successfully imported {len(stocks)} stocks from CSV")
-            return stocks
-
-        except Exception as e:
-            logger.error(f"Error importing from CSV: {e}", exc_info=True)
-            return []
 
     @staticmethod
     def _stable_json(payload: Any) -> str:
@@ -1819,34 +1747,6 @@ class StockUniverseService:
             strict=strict,
         )
 
-    @staticmethod
-    def _parse_hk_csv_rows(csv_content: str) -> list[dict[str, Any]]:
-        """Parse HK ingestion CSV into normalized lowercase-key row dicts."""
-        csv_file = io.StringIO(csv_content)
-        reader = csv.DictReader(csv_file)
-        fieldnames = reader.fieldnames or []
-        normalized_fields = [str(name).strip().lower() for name in fieldnames if name]
-        has_symbol_field = any(name in {"symbol", "local_code", "ticker"} for name in normalized_fields)
-        if not fieldnames or not has_symbol_field:
-            csv_file.seek(0)
-            reader = csv.DictReader(
-                csv_file,
-                fieldnames=["symbol", "name", "exchange", "sector", "industry", "market_cap"],
-            )
-
-        rows: list[dict[str, Any]] = []
-        for row in reader:
-            row_lower = {str(k).strip().lower(): v for k, v in row.items() if k}
-            source_symbol = (
-                str(row_lower.get("symbol") or row_lower.get("local_code") or row_lower.get("ticker") or "")
-                .strip()
-                .upper()
-            )
-            if not source_symbol or source_symbol in {"SYMBOL", "LOCAL_CODE", "TICKER"}:
-                continue
-            rows.append(row_lower)
-        return rows
-
     def ingest_hk_snapshot_rows(
         self,
         db: Session,
@@ -1869,58 +1769,6 @@ class StockUniverseService:
             source_metadata=source_metadata,
             strict=strict,
         )
-
-    def ingest_hk_from_csv(
-        self,
-        db: Session,
-        csv_content: str,
-        *,
-        source_name: str,
-        snapshot_id: str | None = None,
-        snapshot_as_of: str | None = None,
-        source_metadata: Optional[dict[str, Any]] = None,
-        strict: bool = True,
-    ) -> Dict[str, Any]:
-        """Ingest HK universe rows from CSV content."""
-        rows = self._parse_hk_csv_rows(csv_content)
-        resolved_snapshot_id = snapshot_id or self._auto_snapshot_id("hk")
-        return self.ingest_hk_snapshot_rows(
-            db,
-            rows=rows,
-            source_name=source_name,
-            snapshot_id=resolved_snapshot_id,
-            snapshot_as_of=snapshot_as_of,
-            source_metadata=source_metadata,
-            strict=strict,
-        )
-
-    @staticmethod
-    def _parse_jp_csv_rows(csv_content: str) -> list[dict[str, Any]]:
-        """Parse JP ingestion CSV into normalized lowercase-key row dicts."""
-        csv_file = io.StringIO(csv_content)
-        reader = csv.DictReader(csv_file)
-        fieldnames = reader.fieldnames or []
-        normalized_fields = [str(name).strip().lower() for name in fieldnames if name]
-        has_symbol_field = any(name in {"symbol", "local_code", "ticker"} for name in normalized_fields)
-        if not fieldnames or not has_symbol_field:
-            csv_file.seek(0)
-            reader = csv.DictReader(
-                csv_file,
-                fieldnames=["symbol", "name", "exchange", "sector", "industry", "market_cap"],
-            )
-
-        rows: list[dict[str, Any]] = []
-        for row in reader:
-            row_lower = {str(k).strip().lower(): v for k, v in row.items() if k}
-            source_symbol = (
-                str(row_lower.get("symbol") or row_lower.get("local_code") or row_lower.get("ticker") or "")
-                .strip()
-                .upper()
-            )
-            if not source_symbol or source_symbol in {"SYMBOL", "LOCAL_CODE", "TICKER"}:
-                continue
-            rows.append(row_lower)
-        return rows
 
     def ingest_jp_snapshot_rows(
         self,
@@ -1945,58 +1793,6 @@ class StockUniverseService:
             strict=strict,
         )
 
-    def ingest_jp_from_csv(
-        self,
-        db: Session,
-        csv_content: str,
-        *,
-        source_name: str,
-        snapshot_id: str | None = None,
-        snapshot_as_of: str | None = None,
-        source_metadata: Optional[dict[str, Any]] = None,
-        strict: bool = True,
-    ) -> Dict[str, Any]:
-        """Ingest JP universe rows from CSV content."""
-        rows = self._parse_jp_csv_rows(csv_content)
-        resolved_snapshot_id = snapshot_id or self._auto_snapshot_id("jp")
-        return self.ingest_jp_snapshot_rows(
-            db,
-            rows=rows,
-            source_name=source_name,
-            snapshot_id=resolved_snapshot_id,
-            snapshot_as_of=snapshot_as_of,
-            source_metadata=source_metadata,
-            strict=strict,
-        )
-
-    @staticmethod
-    def _parse_kr_csv_rows(csv_content: str) -> list[dict[str, Any]]:
-        """Parse KR ingestion CSV into normalized lowercase-key row dicts."""
-        csv_file = io.StringIO(csv_content)
-        reader = csv.DictReader(csv_file)
-        fieldnames = reader.fieldnames or []
-        normalized_fields = [str(name).strip().lower() for name in fieldnames if name]
-        has_symbol_field = any(name in {"symbol", "local_code", "ticker"} for name in normalized_fields)
-        if not fieldnames or not has_symbol_field:
-            csv_file.seek(0)
-            reader = csv.DictReader(
-                csv_file,
-                fieldnames=["symbol", "name", "exchange", "sector", "industry", "market_cap"],
-            )
-
-        rows: list[dict[str, Any]] = []
-        for row in reader:
-            row_lower = {str(k).strip().lower(): v for k, v in row.items() if k}
-            source_symbol = (
-                str(row_lower.get("symbol") or row_lower.get("local_code") or row_lower.get("ticker") or "")
-                .strip()
-                .upper()
-            )
-            if not source_symbol or source_symbol in {"SYMBOL", "LOCAL_CODE", "TICKER"}:
-                continue
-            rows.append(row_lower)
-        return rows
-
     def ingest_kr_snapshot_rows(
         self,
         db: Session,
@@ -2019,73 +1815,6 @@ class StockUniverseService:
             source_metadata=source_metadata,
             strict=strict,
         )
-
-    def ingest_kr_from_csv(
-        self,
-        db: Session,
-        csv_content: str,
-        *,
-        source_name: str,
-        snapshot_id: str | None = None,
-        snapshot_as_of: str | None = None,
-        source_metadata: Optional[dict[str, Any]] = None,
-        strict: bool = True,
-    ) -> Dict[str, Any]:
-        """Ingest KR universe rows from CSV content."""
-        rows = self._parse_kr_csv_rows(csv_content)
-        resolved_snapshot_id = snapshot_id or self._auto_snapshot_id("kr")
-        return self.ingest_kr_snapshot_rows(
-            db,
-            rows=rows,
-            source_name=source_name,
-            snapshot_id=resolved_snapshot_id,
-            snapshot_as_of=snapshot_as_of,
-            source_metadata=source_metadata,
-            strict=strict,
-        )
-
-    @staticmethod
-    def _parse_cn_csv_rows(csv_content: str) -> list[dict[str, Any]]:
-        """Parse CN ingestion CSV into normalized lowercase-key row dicts."""
-        csv_file = io.StringIO(csv_content)
-        reader = csv.DictReader(csv_file)
-        fieldnames = reader.fieldnames or []
-        normalized_fields = [str(name).strip().lower() for name in fieldnames if name]
-        has_symbol_field = any(name in {"symbol", "local_code", "ticker", "code"} for name in normalized_fields)
-        if not fieldnames or not has_symbol_field:
-            csv_file.seek(0)
-            reader = csv.DictReader(
-                csv_file,
-                fieldnames=[
-                    "symbol",
-                    "name",
-                    "exchange",
-                    "sector",
-                    "industry_group",
-                    "industry",
-                    "sub_industry",
-                    "market_cap",
-                ],
-            )
-
-        rows: list[dict[str, Any]] = []
-        for row in reader:
-            row_lower = {str(k).strip().lower(): v for k, v in row.items() if k}
-            source_symbol = (
-                str(
-                    row_lower.get("symbol")
-                    or row_lower.get("local_code")
-                    or row_lower.get("ticker")
-                    or row_lower.get("code")
-                    or ""
-                )
-                .strip()
-                .upper()
-            )
-            if not source_symbol or source_symbol in {"SYMBOL", "LOCAL_CODE", "TICKER", "CODE"}:
-                continue
-            rows.append(row_lower)
-        return rows
 
     def _upsert_cn_stock_industry_rows(
         self,
@@ -2180,58 +1909,6 @@ class StockUniverseService:
             strict=strict,
         )
 
-    def ingest_cn_from_csv(
-        self,
-        db: Session,
-        csv_content: str,
-        *,
-        source_name: str,
-        snapshot_id: str | None = None,
-        snapshot_as_of: str | None = None,
-        source_metadata: Optional[dict[str, Any]] = None,
-        strict: bool = True,
-    ) -> Dict[str, Any]:
-        """Ingest CN universe rows from CSV content."""
-        rows = self._parse_cn_csv_rows(csv_content)
-        resolved_snapshot_id = snapshot_id or self._auto_snapshot_id("cn")
-        return self.ingest_cn_snapshot_rows(
-            db,
-            rows=rows,
-            source_name=source_name,
-            snapshot_id=resolved_snapshot_id,
-            snapshot_as_of=snapshot_as_of,
-            source_metadata=source_metadata,
-            strict=strict,
-        )
-
-    @staticmethod
-    def _parse_tw_csv_rows(csv_content: str) -> list[dict[str, Any]]:
-        """Parse TW ingestion CSV into normalized lowercase-key row dicts."""
-        csv_file = io.StringIO(csv_content)
-        reader = csv.DictReader(csv_file)
-        fieldnames = reader.fieldnames or []
-        normalized_fields = [str(name).strip().lower() for name in fieldnames if name]
-        has_symbol_field = any(name in {"symbol", "local_code", "ticker"} for name in normalized_fields)
-        if not fieldnames or not has_symbol_field:
-            csv_file.seek(0)
-            reader = csv.DictReader(
-                csv_file,
-                fieldnames=["symbol", "name", "exchange", "sector", "industry", "market_cap"],
-            )
-
-        rows: list[dict[str, Any]] = []
-        for row in reader:
-            row_lower = {str(k).strip().lower(): v for k, v in row.items() if k}
-            source_symbol = (
-                str(row_lower.get("symbol") or row_lower.get("local_code") or row_lower.get("ticker") or "")
-                .strip()
-                .upper()
-            )
-            if not source_symbol or source_symbol in {"SYMBOL", "LOCAL_CODE", "TICKER"}:
-                continue
-            rows.append(row_lower)
-        return rows
-
     def ingest_tw_snapshot_rows(
         self,
         db: Session,
@@ -2255,58 +1932,6 @@ class StockUniverseService:
             strict=strict,
         )
 
-    def ingest_tw_from_csv(
-        self,
-        db: Session,
-        csv_content: str,
-        *,
-        source_name: str,
-        snapshot_id: str | None = None,
-        snapshot_as_of: str | None = None,
-        source_metadata: Optional[dict[str, Any]] = None,
-        strict: bool = True,
-    ) -> Dict[str, Any]:
-        """Ingest TW universe rows from CSV content."""
-        rows = self._parse_tw_csv_rows(csv_content)
-        resolved_snapshot_id = snapshot_id or self._auto_snapshot_id("tw")
-        return self.ingest_tw_snapshot_rows(
-            db,
-            rows=rows,
-            source_name=source_name,
-            snapshot_id=resolved_snapshot_id,
-            snapshot_as_of=snapshot_as_of,
-            source_metadata=source_metadata,
-            strict=strict,
-        )
-
-    @staticmethod
-    def _parse_ca_csv_rows(csv_content: str) -> list[dict[str, Any]]:
-        """Parse CA ingestion CSV into normalized lowercase-key row dicts."""
-        csv_file = io.StringIO(csv_content)
-        reader = csv.DictReader(csv_file)
-        fieldnames = reader.fieldnames or []
-        normalized_fields = [str(name).strip().lower() for name in fieldnames if name]
-        has_symbol_field = any(name in {"symbol", "local_code", "ticker"} for name in normalized_fields)
-        if not fieldnames or not has_symbol_field:
-            csv_file.seek(0)
-            reader = csv.DictReader(
-                csv_file,
-                fieldnames=["symbol", "name", "exchange", "sector", "industry", "market_cap"],
-            )
-
-        rows: list[dict[str, Any]] = []
-        for row in reader:
-            row_lower = {str(k).strip().lower(): v for k, v in row.items() if k}
-            source_symbol = (
-                str(row_lower.get("symbol") or row_lower.get("local_code") or row_lower.get("ticker") or "")
-                .strip()
-                .upper()
-            )
-            if not source_symbol or source_symbol in {"SYMBOL", "LOCAL_CODE", "TICKER"}:
-                continue
-            rows.append(row_lower)
-        return rows
-
     def ingest_ca_snapshot_rows(
         self,
         db: Session,
@@ -2325,30 +1950,6 @@ class StockUniverseService:
             rows=rows,
             source_name=source_name,
             snapshot_id=snapshot_id,
-            snapshot_as_of=snapshot_as_of,
-            source_metadata=source_metadata,
-            strict=strict,
-        )
-
-    def ingest_ca_from_csv(
-        self,
-        db: Session,
-        csv_content: str,
-        *,
-        source_name: str,
-        snapshot_id: str | None = None,
-        snapshot_as_of: str | None = None,
-        source_metadata: Optional[dict[str, Any]] = None,
-        strict: bool = True,
-    ) -> Dict[str, Any]:
-        """Ingest CA universe rows from CSV content."""
-        rows = self._parse_ca_csv_rows(csv_content)
-        resolved_snapshot_id = snapshot_id or self._auto_snapshot_id("ca")
-        return self.ingest_ca_snapshot_rows(
-            db,
-            rows=rows,
-            source_name=source_name,
-            snapshot_id=resolved_snapshot_id,
             snapshot_as_of=snapshot_as_of,
             source_metadata=source_metadata,
             strict=strict,
@@ -2474,126 +2075,6 @@ class StockUniverseService:
             source_metadata=source_metadata,
             strict=strict,
         )
-
-    def populate_from_csv(self, db: Session, csv_content: str) -> Dict:
-        """
-        Populate stock_universe table from CSV file.
-
-        Args:
-            db: Database session
-            csv_content: CSV file content as string
-
-        Returns:
-            Dict with stats: {added: int, updated: int, total: int}
-        """
-        try:
-            # Import stocks from CSV
-            stocks = self.import_from_csv(csv_content)
-
-            if not stocks:
-                logger.warning("No stocks imported from CSV")
-                return {'added': 0, 'updated': 0, 'total': 0}
-
-            added_count = 0
-            updated_count = 0
-            now = datetime.utcnow()
-            new_rows: list[StockUniverse] = []
-            new_events: list[StockUniverseStatusEvent] = []
-            resolved_rows: list[tuple[dict[str, Any], Any, str, str]] = []
-            lookup_symbols: set[str] = set()
-            for stock_data in stocks:
-                identity = self._resolved_identity(stock_data)
-                source_symbol = stock_data["symbol"]
-                canonical_symbol = identity.canonical_symbol
-                resolved_rows.append((stock_data, identity, source_symbol, canonical_symbol))
-                lookup_symbols.add(source_symbol)
-                lookup_symbols.add(canonical_symbol)
-
-            stock_map = {
-                stock.symbol: stock
-                for stock in db.query(StockUniverse).filter(
-                    StockUniverse.symbol.in_(list(lookup_symbols))
-                ).all()
-            }
-
-            for stock_data, identity, source_symbol, canonical_symbol in resolved_rows:
-                existing = stock_map.get(canonical_symbol) or stock_map.get(source_symbol)
-                if existing and existing.symbol != canonical_symbol and canonical_symbol not in stock_map:
-                    stock_map.pop(existing.symbol, None)
-                    existing.symbol = canonical_symbol
-                    stock_map[canonical_symbol] = existing
-
-                if existing:
-                    existing.name = stock_data["name"] or existing.name
-                    existing.exchange = identity.exchange or existing.exchange
-                    existing.market = identity.market
-                    existing.currency = identity.currency
-                    existing.timezone = identity.timezone
-                    existing.local_code = identity.local_code or existing.local_code
-                    existing.is_common_stock = True
-                    existing.sector = prefer_meaningful(stock_data["sector"], existing.sector)
-                    existing.industry = prefer_meaningful(stock_data["industry"], existing.industry)
-                    existing.market_cap = stock_data["market_cap"] or existing.market_cap
-                    self._apply_status_transition(
-                        db,
-                        existing,
-                        new_status=UNIVERSE_STATUS_ACTIVE,
-                        trigger_source="csv_import",
-                        reason="Imported from CSV",
-                        now=now,
-                        payload={"source": "csv"},
-                        source="csv",
-                        clear_failures=True,
-                    )
-                    updated_count += 1
-                else:
-                    new_rows.append(StockUniverse(
-                        symbol=canonical_symbol,
-                        name=stock_data["name"],
-                        market=identity.market,
-                        exchange=identity.exchange,
-                        currency=identity.currency,
-                        timezone=identity.timezone,
-                        local_code=identity.local_code,
-                        sector=stock_data["sector"],
-                        industry=stock_data["industry"],
-                        market_cap=stock_data["market_cap"],
-                        is_active=True,
-                        status=UNIVERSE_STATUS_ACTIVE,
-                        status_reason="Imported from CSV",
-                        is_common_stock=True,
-                        source="csv",
-                        consecutive_fetch_failures=0,
-                        added_at=now,
-                        first_seen_at=now,
-                        updated_at=now,
-                    ))
-                    new_events.append(self._build_status_event_record(
-                        symbol=canonical_symbol,
-                        old_status=None,
-                        new_status=UNIVERSE_STATUS_ACTIVE,
-                        trigger_source="csv_import",
-                        reason="Imported from CSV",
-                        payload={"source": "csv"},
-                    ))
-                    added_count += 1
-
-            self._bulk_insert_records(db, new_rows)
-            self._bulk_insert_records(db, new_events)
-            db.commit()
-
-            logger.info(f"CSV import completed: {added_count} added, {updated_count} updated")
-
-            return {
-                'added': added_count,
-                'updated': updated_count,
-                'total': len(stocks),
-            }
-
-        except Exception as e:
-            logger.error(f"Error populating from CSV: {e}", exc_info=True)
-            db.rollback()
-            raise
 
     def _parse_market_cap(self, market_cap_str: str) -> Optional[float]:
         """

@@ -549,8 +549,6 @@ class Settings(BaseSettings):
     price_refresh_live_batch_size: int = 250  # Symbols persisted per live refresh batch
 
     # Snapshot fundamentals / universe lifecycle cutover
-    provider_snapshot_ingestion_enabled: bool = False
-    provider_snapshot_cutover_enabled: bool = False
     provider_snapshot_on_demand_fallback_enabled: bool = True
     provider_snapshot_min_active_coverage_us: float = 0.98
     provider_snapshot_min_active_coverage_hk: float = 0.70

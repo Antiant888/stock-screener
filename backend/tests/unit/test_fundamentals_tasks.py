@@ -48,7 +48,6 @@ def test_refresh_all_fundamentals_retries_transient_outer_failures(monkeypatch):
     fake_db.query.return_value = fake_query
     monkeypatch.setattr(module, "SessionLocal", lambda: fake_db)
     _patch_serialized_lock(monkeypatch)
-    monkeypatch.setattr(module.settings, "provider_snapshot_cutover_enabled", False)
     monkeypatch.setattr(module, "get_fundamentals_cache", lambda: (_ for _ in ()).throw(ConnectionError("provider down")))
 
     retry_calls = []
@@ -85,7 +84,6 @@ def test_refresh_all_fundamentals_retry_survives_activity_publish_failure(monkey
     fake_db.query.return_value = fake_query
     monkeypatch.setattr(module, "SessionLocal", lambda: fake_db)
     _patch_serialized_lock(monkeypatch)
-    monkeypatch.setattr(module.settings, "provider_snapshot_cutover_enabled", False)
     monkeypatch.setattr(module, "get_fundamentals_cache", lambda: (_ for _ in ()).throw(ConnectionError("provider down")))
     monkeypatch.setattr(
         module,
@@ -124,7 +122,6 @@ def test_refresh_all_fundamentals_reraises_soft_time_limit(monkeypatch):
     fake_db.query.return_value = fake_query
     monkeypatch.setattr(module, "SessionLocal", lambda: fake_db)
     _patch_serialized_lock(monkeypatch)
-    monkeypatch.setattr(module.settings, "provider_snapshot_cutover_enabled", False)
     monkeypatch.setattr(module, "get_fundamentals_cache", lambda: (_ for _ in ()).throw(SoftTimeLimitExceeded()))
 
     with pytest.raises(SoftTimeLimitExceeded):
@@ -148,7 +145,6 @@ def test_refresh_all_fundamentals_reraises_nested_soft_time_limit(monkeypatch):
     fake_db.query.return_value = fake_query
     monkeypatch.setattr(module, "SessionLocal", lambda: fake_db)
     _patch_serialized_lock(monkeypatch)
-    monkeypatch.setattr(module.settings, "provider_snapshot_cutover_enabled", False)
 
     fake_cache = MagicMock()
     fake_cache.get_fundamentals.side_effect = SoftTimeLimitExceeded()
@@ -158,99 +154,6 @@ def test_refresh_all_fundamentals_reraises_nested_soft_time_limit(monkeypatch):
         module.refresh_all_fundamentals.run()
 
     fake_db.rollback.assert_called_once()
-
-
-def test_refresh_all_fundamentals_hybrid_passes_session_factory(monkeypatch):
-    import app.tasks.fundamentals_tasks as module
-
-    fake_db = MagicMock()
-    fake_query = MagicMock()
-    fake_query.filter.return_value.all.return_value = [
-        SimpleNamespace(symbol="AAPL", market="US")
-    ]
-    # Unscoped runs add an enabled-markets filter (#414).
-    fake_query.filter.return_value.filter.return_value.all.return_value = [
-        SimpleNamespace(symbol="AAPL", market="US")
-    ]
-    fake_db.query.return_value = fake_query
-
-    _patch_serialized_lock(monkeypatch)
-    monkeypatch.setattr(module, "SessionLocal", lambda: fake_db)
-    monkeypatch.setattr(module.settings, "provider_snapshot_cutover_enabled", False)
-    monkeypatch.setattr(module.settings, "provider_snapshot_ingestion_enabled", False)
-    monkeypatch.setattr(module, "get_fundamentals_cache", lambda: MagicMock())
-    monkeypatch.setattr(
-        module.calculate_eps_rating_percentiles,
-        "delay",
-        lambda: SimpleNamespace(id="eps-task-id"),
-    )
-
-    captured: dict = {}
-
-    class _HybridStub:
-        def __init__(self, *args, **kwargs):
-            return None
-
-        @staticmethod
-        def fetch_fundamentals_batch(*args, **kwargs):
-            return {"AAPL": {"symbol": "AAPL"}}
-
-        @staticmethod
-        def store_all_caches(*args, **kwargs):
-            captured["kwargs"] = kwargs
-            return {
-                "fundamentals_stored": 1,
-                "quarterly_stored": 1,
-                "failed": 0,
-            }
-
-    monkeypatch.setattr(module, "HybridFundamentalsService", _HybridStub)
-
-    result = module.refresh_all_fundamentals_hybrid.run(include_finviz=False)
-
-    assert result["updated"] == 1
-    assert captured["kwargs"]["session_factory"] is module.SessionLocal
-
-
-def test_refresh_symbols_hybrid_passes_session_factory(monkeypatch):
-    import app.tasks.fundamentals_tasks as module
-
-    _patch_serialized_lock(monkeypatch)
-    monkeypatch.setattr(module, "get_fundamentals_cache", lambda: MagicMock())
-
-    # The task now batch-resolves markets before fetch; stub SessionLocal
-    # so the query doesn't try to hit a real Postgres.
-    fake_db = MagicMock()
-    fake_db.query.return_value.filter.return_value.all.return_value = [
-        ("AAPL", "US"),
-    ]
-    monkeypatch.setattr(module, "SessionLocal", lambda: fake_db)
-
-    captured: dict = {}
-
-    class _HybridStub:
-        def __init__(self, *args, **kwargs):
-            return None
-
-        @staticmethod
-        def fetch_fundamentals_batch(*args, **kwargs):
-            return {"AAPL": {"symbol": "AAPL"}}
-
-        @staticmethod
-        def store_all_caches(*args, **kwargs):
-            captured["kwargs"] = kwargs
-            return {
-                "fundamentals_stored": 1,
-                "quarterly_stored": 1,
-                "failed": 0,
-            }
-
-    monkeypatch.setattr(module, "HybridFundamentalsService", _HybridStub)
-
-    result = module.refresh_symbols_hybrid.run(symbols=["AAPL"], include_finviz=False)
-
-    assert result["updated"] == 1
-    assert captured["kwargs"]["session_factory"] is module.SessionLocal
 
 
 def test_refresh_all_fundamentals_publishes_market_activity(monkeypatch):
@@ -271,7 +174,6 @@ def test_refresh_all_fundamentals_publishes_market_activity(monkeypatch):
     fake_db.query.return_value = fake_query
     monkeypatch.setattr(module, "SessionLocal", lambda: fake_db)
     _patch_serialized_lock(monkeypatch)
-    monkeypatch.setattr(module.settings, "provider_snapshot_cutover_enabled", False)
     monkeypatch.setattr(
         module,
         "get_fundamentals_cache",
@@ -313,7 +215,6 @@ def test_refresh_all_fundamentals_prefers_github_weekly_bundle(monkeypatch):
     fake_db.query.return_value = fake_query
     monkeypatch.setattr(module, "SessionLocal", lambda: fake_db)
     _patch_serialized_lock(monkeypatch)
-    monkeypatch.setattr(module.settings, "provider_snapshot_cutover_enabled", False)
     monkeypatch.setattr(
         module,
         "get_provider_snapshot_service",
@@ -352,66 +253,6 @@ def test_refresh_all_fundamentals_prefers_github_weekly_bundle(monkeypatch):
     assert completed[0]["stage_key"] == "fundamentals"
 
 
-def test_refresh_all_fundamentals_hybrid_prefers_github_weekly_bundle(monkeypatch):
-    import app.tasks.fundamentals_tasks as module
-
-    fake_db = MagicMock()
-    fake_query = MagicMock()
-    fake_query.filter.return_value.all.return_value = [
-        SimpleNamespace(symbol="AAPL", market="US")
-    ]
-    # Unscoped runs add an enabled-markets filter (#414).
-    fake_query.filter.return_value.filter.return_value.all.return_value = [
-        SimpleNamespace(symbol="AAPL", market="US")
-    ]
-    fake_db.query.return_value = fake_query
-    monkeypatch.setattr(module, "SessionLocal", lambda: fake_db)
-    _patch_serialized_lock(monkeypatch)
-    monkeypatch.setattr(module.settings, "provider_snapshot_cutover_enabled", False)
-    monkeypatch.setattr(module.settings, "provider_snapshot_ingestion_enabled", False)
-    monkeypatch.setattr(
-        module,
-        "get_provider_snapshot_service",
-        lambda: SimpleNamespace(
-            sync_weekly_reference_from_github=lambda db, market, hydrate_cache, hydrate_mode: {
-                "status": "success",
-                "source": "github",
-                "market": market,
-                "source_revision": "fundamentals_v1_us:20260418120000",
-                "import": {"rows": 1, "hydrated_symbols": 1},
-            }
-        ),
-    )
-    monkeypatch.setattr(
-        module.calculate_eps_rating_percentiles,
-        "delay",
-        lambda: SimpleNamespace(id="eps-task-id"),
-    )
-    monkeypatch.setattr(
-        module,
-        "HybridFundamentalsService",
-        lambda *args, **kwargs: (_ for _ in ()).throw(
-            AssertionError("legacy hybrid fetch should not run")
-        ),
-    )
-
-    started = []
-    completed = []
-    monkeypatch.setattr(module, "mark_market_activity_started", lambda *args, **kwargs: started.append(kwargs))
-    monkeypatch.setattr(module, "mark_market_activity_completed", lambda *args, **kwargs: completed.append(kwargs))
-
-    result = module.refresh_all_fundamentals_hybrid.run(
-        include_finviz=False,
-        market="US",
-    )
-
-    assert result["status"] == "success"
-    assert result["source"] == "github"
-    assert result["eps_rating_task_id"] == "eps-task-id"
-    assert started[0]["stage_key"] == "fundamentals"
-    assert completed[0]["stage_key"] == "fundamentals"
-
-
 def test_refresh_all_fundamentals_publishes_running_progress(monkeypatch):
     import app.tasks.fundamentals_tasks as module
 
@@ -423,7 +264,6 @@ def test_refresh_all_fundamentals_publishes_running_progress(monkeypatch):
     fake_db.query.return_value = fake_query
     monkeypatch.setattr(module, "SessionLocal", lambda: fake_db)
     _patch_serialized_lock(monkeypatch)
-    monkeypatch.setattr(module.settings, "provider_snapshot_cutover_enabled", False)
     monkeypatch.setattr(
         module,
         "get_fundamentals_cache",
@@ -450,196 +290,6 @@ def test_refresh_all_fundamentals_publishes_running_progress(monkeypatch):
     assert any(update["percent"] > 0 for update in progress_updates)
 
 
-def test_refresh_all_fundamentals_snapshot_cutover_publishes_progress(monkeypatch):
-    import app.tasks.fundamentals_tasks as module
-
-    fake_db = MagicMock()
-    fake_query = MagicMock()
-    fake_query.filter.return_value.filter.return_value.all.return_value = [
-        SimpleNamespace(symbol="AAPL", market="US"),
-        SimpleNamespace(symbol="MSFT", market="US"),
-    ]
-    fake_query.filter.return_value.all.return_value = [
-        SimpleNamespace(symbol="AAPL", market="US"),
-        SimpleNamespace(symbol="MSFT", market="US"),
-    ]
-    fake_db.query.return_value = fake_query
-    monkeypatch.setattr(module, "SessionLocal", lambda: fake_db)
-    _patch_serialized_lock(monkeypatch)
-    monkeypatch.setattr(module.settings, "provider_snapshot_cutover_enabled", True)
-    monkeypatch.setattr(
-        module,
-        "_run_snapshot_pipeline",
-        lambda db, publish: {
-            "snapshot": {"published": True},
-            "universe": {"active_symbols": 2},
-            "hydrate": {"symbols_hydrated": 2},
-        },
-    )
-    monkeypatch.setattr(
-        module.calculate_eps_rating_percentiles,
-        "delay",
-        lambda: SimpleNamespace(id="eps-task-id"),
-    )
-
-    progress_updates = []
-    completed = []
-    monkeypatch.setattr(module, "mark_market_activity_progress", lambda *args, **kwargs: progress_updates.append(kwargs))
-    monkeypatch.setattr(module, "mark_market_activity_completed", lambda *args, **kwargs: completed.append(kwargs))
-
-    result = module.refresh_all_fundamentals.run(market="US", activity_lifecycle="bootstrap")
-
-    assert result["snapshot"]["published"] is True
-    assert progress_updates[0]["current"] == 0
-    assert progress_updates[0]["total"] == 2
-    assert progress_updates[0]["percent"] == 0
-    assert completed[0]["current"] == 2
-    assert completed[0]["total"] == 2
-
-
-def test_refresh_all_fundamentals_hybrid_snapshot_cutover_publishes_progress(monkeypatch):
-    import app.tasks.fundamentals_tasks as module
-
-    fake_db = MagicMock()
-    fake_query = MagicMock()
-    fake_query.filter.return_value.filter.return_value.all.return_value = [
-        SimpleNamespace(symbol="AAPL", market="US"),
-        SimpleNamespace(symbol="MSFT", market="US"),
-    ]
-    fake_query.filter.return_value.all.return_value = [
-        SimpleNamespace(symbol="AAPL", market="US"),
-        SimpleNamespace(symbol="MSFT", market="US"),
-    ]
-    fake_db.query.return_value = fake_query
-    monkeypatch.setattr(module, "SessionLocal", lambda: fake_db)
-    _patch_serialized_lock(monkeypatch)
-    monkeypatch.setattr(module.settings, "provider_snapshot_cutover_enabled", True)
-    monkeypatch.setattr(module.settings, "provider_snapshot_ingestion_enabled", False)
-    monkeypatch.setattr(
-        module,
-        "_run_snapshot_pipeline",
-        lambda db, publish: {
-            "snapshot": {
-                "published": True,
-                "coverage": {"active_symbols": 2},
-            },
-            "hydrate": {"symbols_hydrated": 2},
-        },
-    )
-    monkeypatch.setattr(
-        module.calculate_eps_rating_percentiles,
-        "delay",
-        lambda: SimpleNamespace(id="eps-task-id"),
-    )
-
-    progress_updates = []
-    completed = []
-    monkeypatch.setattr(module, "mark_market_activity_progress", lambda *args, **kwargs: progress_updates.append(kwargs))
-    monkeypatch.setattr(module, "mark_market_activity_completed", lambda *args, **kwargs: completed.append(kwargs))
-
-    result = module.refresh_all_fundamentals_hybrid.run(
-        include_finviz=False,
-        market="US",
-        activity_lifecycle="bootstrap",
-    )
-
-    assert result["snapshot"]["published"] is True
-    assert progress_updates[0]["current"] == 0
-    assert progress_updates[0]["total"] == 2
-    assert progress_updates[0]["percent"] == 0
-    assert completed[0]["current"] == 2
-    assert completed[0]["total"] == 2
-
-
-def test_refresh_all_fundamentals_hybrid_publishes_running_progress(monkeypatch):
-    import app.tasks.fundamentals_tasks as module
-
-    fake_db = MagicMock()
-    stocks = [
-        SimpleNamespace(symbol="AAPL", market="US"),
-        SimpleNamespace(symbol="MSFT", market="US"),
-    ]
-    fake_query = MagicMock()
-    fake_query.filter.return_value.filter.return_value.all.return_value = stocks
-    fake_query.filter.return_value.all.return_value = stocks
-    fake_db.query.return_value = fake_query
-
-    _patch_serialized_lock(monkeypatch)
-    monkeypatch.setattr(module, "SessionLocal", lambda: fake_db)
-    monkeypatch.setattr(module.settings, "provider_snapshot_cutover_enabled", False)
-    monkeypatch.setattr(module.settings, "provider_snapshot_ingestion_enabled", False)
-    monkeypatch.setattr(module, "get_fundamentals_cache", lambda: MagicMock())
-    monkeypatch.setattr(module, "get_ticker_validation_service", lambda: MagicMock())
-    monkeypatch.setattr(
-        module.calculate_eps_rating_percentiles,
-        "delay",
-        lambda: SimpleNamespace(id="eps-task-id"),
-    )
-
-    progress_updates = []
-    monkeypatch.setattr(module, "mark_market_activity_progress", lambda *args, **kwargs: progress_updates.append(kwargs))
-
-    class _HybridStub:
-        def __init__(self, *args, **kwargs):
-            return None
-
-        @staticmethod
-        def fetch_fundamentals_batch(symbols, **kwargs):
-            kwargs["progress_callback"](1, 2)
-            return {symbol: {"symbol": symbol} for symbol in symbols}
-
-        @staticmethod
-        def store_all_caches(*args, **kwargs):
-            return {
-                "fundamentals_stored": 2,
-                "quarterly_stored": 2,
-                "failed": 0,
-            }
-
-    monkeypatch.setattr(module, "HybridFundamentalsService", _HybridStub)
-
-    result = module.refresh_all_fundamentals_hybrid.run(include_finviz=False, market="US")
-
-    assert result["updated"] == 2
-    assert progress_updates
-    assert progress_updates[0]["market"] == "US"
-    assert progress_updates[0]["stage_key"] == "fundamentals"
-    assert progress_updates[0]["current"] == 1
-    assert progress_updates[0]["total"] == 2
-    assert progress_updates[0]["percent"] == pytest.approx(50.0)
-
-
-def test_refresh_all_fundamentals_hybrid_rolls_back_before_failure_publish(monkeypatch):
-    import app.tasks.fundamentals_tasks as module
-
-    fake_db = MagicMock()
-    stocks = [SimpleNamespace(symbol="AAPL", market="US")]
-    fake_query = MagicMock()
-    fake_query.filter.return_value.filter.return_value.all.return_value = stocks
-    fake_query.filter.return_value.all.return_value = stocks
-    fake_db.query.return_value = fake_query
-
-    _patch_serialized_lock(monkeypatch)
-    monkeypatch.setattr(module, "SessionLocal", lambda: fake_db)
-    monkeypatch.setattr(module.settings, "provider_snapshot_cutover_enabled", False)
-    monkeypatch.setattr(module.settings, "provider_snapshot_ingestion_enabled", False)
-
-    class _HybridBoom:
-        def __init__(self, *args, **kwargs):
-            return None
-
-        @staticmethod
-        def fetch_fundamentals_batch(*args, **kwargs):
-            raise RuntimeError("hybrid fetch failed")
-
-    monkeypatch.setattr(module, "HybridFundamentalsService", _HybridBoom)
-
-    result = module.refresh_all_fundamentals_hybrid.run(include_finviz=False, market="US")
-
-    fake_db.rollback.assert_called_once()
-    assert result["error"] == "hybrid fetch failed"
-
-
 def test_refresh_all_fundamentals_progress_counts_failed_iterations(monkeypatch):
     import app.tasks.fundamentals_tasks as module
 
@@ -651,7 +301,6 @@ def test_refresh_all_fundamentals_progress_counts_failed_iterations(monkeypatch)
     fake_db.query.return_value = fake_query
     monkeypatch.setattr(module, "SessionLocal", lambda: fake_db)
     _patch_serialized_lock(monkeypatch)
-    monkeypatch.setattr(module.settings, "provider_snapshot_cutover_enabled", False)
 
     fake_cache = MagicMock()
     fake_cache.get_fundamentals.side_effect = RuntimeError("provider unavailable")
@@ -717,11 +366,9 @@ def _runtime_markets(monkeypatch, *enabled, primary="US"):
     )
 
 
-def _prepare_refresh(monkeypatch, module, *, cutover=False, github_markets=None, github_statuses=None):
+def _prepare_refresh(monkeypatch, module, *, github_markets=None, github_statuses=None):
     _patch_serialized_lock(monkeypatch)
     monkeypatch.setattr(module, "SessionLocal", _universe_session_factory())
-    monkeypatch.setattr(module.settings, "provider_snapshot_cutover_enabled", cutover)
-    monkeypatch.setattr(module.settings, "provider_snapshot_ingestion_enabled", False)
     monkeypatch.setattr(module, "get_ticker_validation_service", lambda: MagicMock())
     monkeypatch.setattr(
         module.calculate_eps_rating_percentiles, "delay", lambda: SimpleNamespace(id="eps")
@@ -767,53 +414,7 @@ def test_unscoped_fundamentals_refresh_skips_disabled_markets(monkeypatch):
     assert result["total_stocks"] == 2
 
 
-def test_unscoped_hybrid_refresh_skips_disabled_markets(monkeypatch):
-    import app.tasks.fundamentals_tasks as module
-
-    _runtime_markets(monkeypatch, "US", "HK")
-    _prepare_refresh(monkeypatch, module)
-    monkeypatch.setattr(module, "get_fundamentals_cache", lambda: MagicMock())
-    requested: list[str] = []
-
-    class _HybridStub:
-        def __init__(self, *args, **kwargs):
-            pass
-
-        @staticmethod
-        def fetch_fundamentals_batch(symbols, *args, **kwargs):
-            requested.extend(symbols)
-            return {symbol: {"symbol": symbol} for symbol in symbols}
-
-        @staticmethod
-        def store_all_caches(*args, **kwargs):
-            return {"fundamentals_stored": 2, "quarterly_stored": 2, "failed": 0}
-
-    monkeypatch.setattr(module, "HybridFundamentalsService", _HybridStub)
-
-    module.refresh_all_fundamentals_hybrid.run(include_finviz=False)
-
-    assert sorted(requested) == ["0700.HK", "AAPL"]
-
-
-def test_hybrid_refresh_skips_disabled_market(monkeypatch):
-    import app.tasks.fundamentals_tasks as module
-
-    _runtime_markets(monkeypatch, "US", "HK")
-    _prepare_refresh(monkeypatch, module)
-
-    def _must_not_fetch(*args, **kwargs):
-        pytest.fail("a disabled market must not be fetched")
-
-    monkeypatch.setattr(module, "HybridFundamentalsService", _must_not_fetch)
-
-    result = module.refresh_all_fundamentals_hybrid.run(market="JP", include_finviz=False)
-
-    assert result["status"] == "skipped"
-    assert result["market"] == "JP"
-
-
-@pytest.mark.parametrize("task_name", ["refresh_all_fundamentals", "refresh_all_fundamentals_hybrid"])
-def test_scoped_refresh_fails_open_when_preferences_unreadable(monkeypatch, task_name):
+def test_scoped_refresh_fails_open_when_preferences_unreadable(monkeypatch):
     """An unreadable preference must not abort a scoped refresh (documented fail-open)."""
     import app.services.runtime_preferences_service as prefs
     import app.tasks.fundamentals_tasks as module
@@ -827,91 +428,11 @@ def test_scoped_refresh_fails_open_when_preferences_unreadable(monkeypatch, task
     fetched: list[str] = []
     monkeypatch.setattr(module, "get_fundamentals_cache", lambda: _recording_cache(fetched))
 
-    class _HybridStub:
-        def __init__(self, *args, **kwargs):
-            pass
-
-        @staticmethod
-        def fetch_fundamentals_batch(symbols, *args, **kwargs):
-            fetched.extend(symbols)
-            return {symbol: {"symbol": symbol} for symbol in symbols}
-
-        @staticmethod
-        def store_all_caches(*args, **kwargs):
-            return {"fundamentals_stored": 1, "quarterly_stored": 1, "failed": 0}
-
-    monkeypatch.setattr(module, "HybridFundamentalsService", _HybridStub)
-    task = getattr(module, task_name)
-    kwargs = {"include_finviz": False} if task_name.endswith("hybrid") else {}
-
-    task.run(market="HK", **kwargs)
+    module.refresh_all_fundamentals.run(market="HK")
 
     assert fetched == ["0700.HK"]
 
 
-@pytest.mark.parametrize("task_name", ["refresh_all_fundamentals", "refresh_all_fundamentals_hybrid"])
-@pytest.mark.parametrize(
-    "run_market, expected",
-    [
-        (None, ["0700.HK", "AAPL"]),  # unscoped: every enabled market, not just US
-        ("HK", ["0700.HK"]),          # scoped to HK while US is also enabled
-    ],
-)
-def test_us_snapshot_does_not_stand_in_for_non_us_scope(monkeypatch, task_name, run_market, expected):
-    """The US-only snapshot must never complete a refresh whose scope includes a non-US market."""
-    import app.tasks.fundamentals_tasks as module
-
-    _runtime_markets(monkeypatch, "HK", "US", primary="HK")
-    _prepare_refresh(monkeypatch, module, cutover=True)
-
-    def _must_not_run(*args, **kwargs):
-        pytest.fail("the US-only snapshot pipeline must not complete a non-US refresh scope")
-
-    monkeypatch.setattr(module, "_run_snapshot_pipeline", _must_not_run)
-    fetched: list[str] = []
-    monkeypatch.setattr(module, "get_fundamentals_cache", lambda: _recording_cache(fetched))
-
-    class _HybridStub:
-        def __init__(self, *args, **kwargs):
-            pass
-
-        @staticmethod
-        def fetch_fundamentals_batch(symbols, *args, **kwargs):
-            fetched.extend(symbols)
-            return {symbol: {"symbol": symbol} for symbol in symbols}
-
-        @staticmethod
-        def store_all_caches(*args, **kwargs):
-            return {"fundamentals_stored": 1, "quarterly_stored": 1, "failed": 0}
-
-    monkeypatch.setattr(module, "HybridFundamentalsService", _HybridStub)
-    kwargs = {"include_finviz": False} if task_name.endswith("hybrid") else {}
-    if run_market is not None:
-        kwargs["market"] = run_market
-
-    getattr(module, task_name).run(**kwargs)
-
-    assert sorted(fetched) == expected
-
-
-def _hybrid_recording_stub(fetched):
-    class _HybridStub:
-        def __init__(self, *args, **kwargs):
-            pass
-
-        @staticmethod
-        def fetch_fundamentals_batch(symbols, *args, **kwargs):
-            fetched.extend(symbols)
-            return {symbol: {"symbol": symbol} for symbol in symbols}
-
-        @staticmethod
-        def store_all_caches(*args, **kwargs):
-            return {"fundamentals_stored": 1, "quarterly_stored": 1, "failed": 0}
-
-    return _HybridStub
-
-
-@pytest.mark.parametrize("task_name", ["refresh_all_fundamentals", "refresh_all_fundamentals_hybrid"])
 @pytest.mark.parametrize(
     "statuses, expected_fetch",
     [
@@ -919,9 +440,7 @@ def _hybrid_recording_stub(fetched):
         ({"HK": "success", "US": "missing"}, ["AAPL"]),    # only the unsynced market is fetched
     ],
 )
-def test_unscoped_github_sync_covers_every_enabled_market(
-    monkeypatch, task_name, statuses, expected_fetch
-):
+def test_unscoped_github_sync_covers_every_enabled_market(monkeypatch, statuses, expected_fetch):
     """The GitHub fast path must not complete an unscoped refresh after syncing only the primary market."""
     import app.tasks.fundamentals_tasks as module
 
@@ -930,40 +449,20 @@ def test_unscoped_github_sync_covers_every_enabled_market(
     _prepare_refresh(monkeypatch, module, github_markets=synced, github_statuses=statuses)
     fetched: list[str] = []
     monkeypatch.setattr(module, "get_fundamentals_cache", lambda: _recording_cache(fetched))
-    monkeypatch.setattr(module, "HybridFundamentalsService", _hybrid_recording_stub(fetched))
-    kwargs = {"include_finviz": False} if task_name.endswith("hybrid") else {}
 
-    getattr(module, task_name).run(**kwargs)
+    module.refresh_all_fundamentals.run()
 
     assert sorted(synced) == ["HK", "US"]
     assert sorted(fetched) == expected_fetch
 
 
-def test_populate_initial_cache_skips_disabled_markets(monkeypatch):
-    import app.tasks.fundamentals_tasks as module
-
-    _runtime_markets(monkeypatch, "US", "HK")
-    _prepare_refresh(monkeypatch, module)
-    fetched: list[str] = []
-    monkeypatch.setattr(module, "get_fundamentals_cache", lambda: _recording_cache(fetched))
-
-    module.populate_initial_cache.run()
-
-    assert sorted(fetched) == ["0700.HK", "AAPL"]
-
-
 def test_unscoped_refresh_uses_primary_market_when_us_disabled(monkeypatch):
-    """A non-US install must not sync US reference data or run the US-only snapshot pipeline."""
+    """A non-US install must not sync US reference data."""
     import app.tasks.fundamentals_tasks as module
 
     _runtime_markets(monkeypatch, "HK", primary="HK")
     synced: list[str] = []
-    _prepare_refresh(monkeypatch, module, cutover=True, github_markets=synced)
-
-    def _must_not_run(*args, **kwargs):
-        pytest.fail("the US-only snapshot pipeline must not run when US is disabled")
-
-    monkeypatch.setattr(module, "_run_snapshot_pipeline", _must_not_run)
+    _prepare_refresh(monkeypatch, module, github_markets=synced)
     fetched: list[str] = []
     monkeypatch.setattr(module, "get_fundamentals_cache", lambda: _recording_cache(fetched))
 

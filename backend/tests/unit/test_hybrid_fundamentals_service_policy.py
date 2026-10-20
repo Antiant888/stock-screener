@@ -283,40 +283,6 @@ class TestPhase3PolicyFiltering:
         assert all(isinstance(current, int) for current, _total in progress_calls)
         assert all(current >= 1 for current, _total in progress_calls)
 
-    def test_parallel_hybrid_forwards_market_map_to_parallel_growth_extractor(self):
-        svc = _make_service()
-        svc.bulk_fetcher.fetch_fundamentals_parallel.return_value = {}
-        symbols = ["0700.HK", "AAPL"]
-        market_by_symbol = {"0700.HK": "HK", "AAPL": "US"}
-
-        svc.fetch_fundamentals_with_parallel_finviz(
-            symbols,
-            include_technicals=False,
-            finviz_workers=1,
-            market_by_symbol=market_by_symbol,
-        )
-
-        assert svc.bulk_fetcher.fetch_fundamentals_parallel.call_count == 1
-        kwargs = svc.bulk_fetcher.fetch_fundamentals_parallel.call_args.kwargs
-        assert kwargs.get("market_by_symbol") == market_by_symbol
-
-    def test_parallel_cn_suffix_without_market_map_skips_yfinance_and_finviz(self):
-        svc = _make_service()
-        svc._data_source_service = _make_cn_data_source()
-        svc.bulk_fetcher.fetch_fundamentals_parallel.return_value = {}
-
-        result = svc.fetch_fundamentals_with_parallel_finviz(
-            ["920118.BJ"],
-            include_technicals=False,
-            finviz_workers=1,
-            market_by_symbol=None,
-        )
-
-        svc.bulk_fetcher.fetch_fundamentals_parallel.assert_not_called()
-        svc.finviz_service.get_finviz_only_fields_batch.assert_not_called()
-        assert result["920118.BJ"]["market"] == "CN"
-
-
 def test_deadline_stops_native_first_fetches_mid_batch(monkeypatch):
     # #522: a slow CN batch must not run past the weekly job's soft deadline.
     import app.services.hybrid_fundamentals_service as hybrid_module

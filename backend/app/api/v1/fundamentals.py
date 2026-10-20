@@ -3,21 +3,13 @@ Fundamentals data management API endpoints.
 
 Provides endpoints for:
 - Triggering fundamental data refresh for all stocks
-- Triggering fundamental data refresh for specific symbols
-- Initial cache population
 - Viewing fundamentals cache statistics
 """
-from fastapi import APIRouter, HTTPException, Query
-from typing import Optional
+from fastapi import APIRouter, HTTPException
 
 from ...schemas.common import TaskResponse
 from ...schemas.fundamentals import FundamentalsCacheStats
-from ...tasks.fundamentals_tasks import (
-    refresh_all_fundamentals,
-    refresh_symbol_fundamentals,
-    populate_initial_cache,
-    get_cache_stats as get_fundamentals_cache_stats
-)
+from ...tasks.fundamentals_tasks import refresh_all_fundamentals
 
 router = APIRouter(prefix="/fundamentals", tags=["fundamentals"])
 
@@ -50,105 +42,6 @@ async def trigger_full_fundamentals_refresh():
         raise HTTPException(
             status_code=500,
             detail=f"Error queuing fundamentals refresh: {str(e)}"
-        )
-
-
-@router.post("/refresh/symbol/{symbol}")
-async def trigger_symbol_fundamentals_refresh(symbol: str):
-    """
-    Trigger fundamental data refresh for a specific stock symbol.
-
-    This is useful for on-demand updates when you need fresh data for
-    a particular stock without waiting for the weekly refresh.
-
-    Args:
-        symbol: Stock ticker symbol (e.g., "AAPL", "TSLA")
-
-    Returns:
-        Task information including task_id for tracking progress
-    """
-    try:
-        # Validate symbol format (basic check)
-        symbol = symbol.upper().strip()
-        if not symbol or len(symbol) > 20:
-            raise HTTPException(
-                status_code=400,
-                detail="Invalid symbol format"
-            )
-
-        # Queue the task
-        task = refresh_symbol_fundamentals.delay(symbol)
-
-        return TaskResponse(
-            task_id=task.id,
-            message=f"Fundamentals refresh task queued for {symbol}",
-            status="queued"
-        )
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error queuing fundamentals refresh for {symbol}: {str(e)}"
-        )
-
-
-@router.post("/populate")
-async def trigger_initial_cache_population(
-    limit: Optional[int] = Query(None, description="Limit number of stocks to populate (for testing)"),
-    use_hybrid: bool = Query(True, description="Use optimized hybrid fetching")
-):
-    """
-    Trigger initial cache population for fundamental data.
-
-    This is typically run once immediately after deployment to populate
-    the cache with fundamental data for all active stocks.
-
-    **Hybrid mode (default)**: ~1 hour for full universe
-    **Legacy mode**: ~1 hour for full universe (at 0.5s rate limit)
-
-    Args:
-        limit: Optional limit on number of stocks to populate (useful for testing)
-        use_hybrid: Use optimized hybrid fetching (default True)
-
-    Returns:
-        Task information including task_id and estimated duration
-    """
-    try:
-        estimated_stocks = limit if limit else 7000
-
-        if use_hybrid:
-            # Use hybrid task for initial population
-            if limit:
-                task = refresh_symbols_hybrid.delay(
-                    symbols=None,  # Will need to fetch symbols in task
-                    include_finviz=True
-                )
-            else:
-                task = refresh_all_fundamentals_hybrid.delay(include_finviz=True)
-            estimated_minutes = round(estimated_stocks * 0.5 / 60 + 35, 0)  # ~35 min base + finviz time
-        else:
-            # Use legacy task
-            task = populate_initial_cache.delay(limit=limit)
-            estimated_minutes = round(estimated_stocks * 0.5 / 60, 0)  # 0.5 seconds per stock
-
-        message = f"Initial cache population task queued"
-        if limit:
-            message += f" (testing mode: {limit} stocks, ~{estimated_minutes} minutes)"
-        else:
-            message += f" (~{estimated_stocks} stocks, ~{estimated_minutes} minutes)"
-
-        return TaskResponse(
-            task_id=task.id,
-            message=message,
-            status="queued"
-        )
-
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error queuing initial cache population: {str(e)}"
         )
 
 

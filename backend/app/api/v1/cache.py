@@ -2,10 +2,7 @@
 Cache management API endpoints.
 
 Provides endpoints for:
-- Viewing cache statistics
 - Triggering cache warming
-- Invalidating caches
-- Monitoring cache performance
 - Cache health status (new unified endpoint)
 - Smart refresh (new unified endpoint)
 """
@@ -13,9 +10,6 @@ from fastapi import APIRouter, HTTPException, BackgroundTasks
 
 from ...schemas.cache import (
     CacheHealthResponse,
-    CacheInvalidateRequest,
-    CacheStatsResponse,
-    CacheWarmRequest,
     DashboardStatsResponse,
     ForceRefreshRequest,
     SmartRefreshRequest,
@@ -26,9 +20,6 @@ from ...schemas.common import TaskResponse
 from ...services.cache_manager import CacheManager
 from ...tasks.cache_tasks import (
     warm_spy_cache,
-    warm_top_symbols,
-    invalidate_cache as invalidate_cache_task,
-    get_cache_stats as get_cache_stats_task,
     force_refresh_stale_intraday,
     smart_refresh_cache
 )
@@ -102,42 +93,6 @@ def _queue_manual_smart_refresh(mode: str, market: str | None = None) -> SmartRe
     )
 
 
-# Endpoints
-@router.get("/stats", response_model=CacheStatsResponse)
-async def get_cache_statistics():
-    """
-    Get comprehensive cache statistics.
-
-    Returns:
-        Cache statistics including Redis status, benchmark cache, price cache, and memory usage
-    """
-    try:
-        cache_manager = CacheManager()
-        stats = cache_manager.get_cache_stats()
-        return stats
-
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error fetching cache stats: {str(e)}"
-        )
-
-
-@router.get("/market-status")
-async def get_market_status():
-    """
-    Get current market status and hours.
-
-    Returns:
-        Market status information
-    """
-    return {
-        "status": format_market_status(),
-        "is_open": is_market_open(),
-        "timestamp": "now"
-    }
-
-
 @router.post("/warm/spy")
 async def warm_spy_benchmark_cache(background_tasks: BackgroundTasks):
     """
@@ -165,49 +120,6 @@ async def warm_spy_benchmark_cache(background_tasks: BackgroundTasks):
         )
 
 
-@router.post("/warm/symbols")
-async def warm_symbol_cache(
-    request: CacheWarmRequest,
-    background_tasks: BackgroundTasks
-):
-    """
-    Warm cache for specific symbols.
-
-    Args:
-        request: Cache warming request with symbols or count
-
-    Returns:
-        Task information
-    """
-    try:
-        # Run task in background
-        task = warm_top_symbols.delay(
-            symbols=request.symbols,
-            count=request.count
-        )
-
-        # Determine message based on parameters
-        if request.symbols:
-            symbol_count = len(request.symbols)
-            message = f"Symbol cache warming task queued for {symbol_count} symbols"
-        elif request.count:
-            message = f"Symbol cache warming task queued for top {request.count} symbols"
-        else:
-            message = "Symbol cache warming task queued for ALL active stocks in universe"
-
-        return TaskResponse(
-            task_id=task.id,
-            message=message,
-            status="queued"
-        )
-
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error queuing symbol cache warming: {str(e)}"
-        )
-
-
 @router.post("/warm/all")
 async def warm_all_caches(background_tasks: BackgroundTasks):
     """
@@ -231,61 +143,6 @@ async def warm_all_caches(background_tasks: BackgroundTasks):
         raise HTTPException(
             status_code=500,
             detail=f"Error queuing full cache warming: {str(e)}"
-        )
-
-
-@router.delete("/invalidate")
-async def invalidate_caches(request: CacheInvalidateRequest):
-    """
-    Invalidate cache for a symbol or all caches.
-
-    Args:
-        request: Invalidation request with optional symbol
-
-    Returns:
-        Invalidation result
-    """
-    try:
-        # Run invalidation task
-        task = invalidate_cache_task.delay(symbol=request.symbol)
-
-        message = f"Cache invalidation queued for {request.symbol}" if request.symbol else "All caches invalidation queued"
-
-        return TaskResponse(
-            task_id=task.id,
-            message=message,
-            status="queued"
-        )
-
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error invalidating cache: {str(e)}"
-        )
-
-
-@router.get("/hit-rate")
-async def get_cache_hit_rate():
-    """
-    Get cache hit rate statistics.
-
-    Returns:
-        Cache hit rate percentage
-    """
-    try:
-        cache_manager = CacheManager()
-        hit_rate = cache_manager.get_cache_hit_rate()
-
-        return {
-            "hit_rate": hit_rate,
-            "hit_rate_str": f"{hit_rate:.1f}%" if hit_rate is not None else "N/A",
-            "available": hit_rate is not None
-        }
-
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error calculating hit rate: {str(e)}"
         )
 
 
@@ -378,30 +235,6 @@ async def force_refresh_stale_data(
         raise HTTPException(
             status_code=500,
             detail=f"Error queuing force refresh: {str(e)}"
-        )
-
-
-@router.get("/symbol/{symbol}")
-async def get_symbol_cache_info(symbol: str):
-    """
-    Get cache information for a specific symbol.
-
-    Args:
-        symbol: Stock symbol
-
-    Returns:
-        Cache information for the symbol
-    """
-    try:
-        cache_manager = CacheManager()
-        stats = cache_manager.price_cache.get_cache_stats(symbol)
-
-        return stats
-
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error fetching cache info for {symbol}: {str(e)}"
         )
 
 
