@@ -783,12 +783,6 @@ class AssistantGatewayService:
             return "/themes"
         if source_str == "market_breadth":
             return "/breadth"
-        if source_str == "user_watchlists":
-            return "/market-scan"
-        if source_str == "digest":
-            return "/digest"
-        if source_str == "task_execution":
-            return "/"
         return "/"
 
     def _extract_content_references(self, content: str) -> list[dict[str, Any]]:

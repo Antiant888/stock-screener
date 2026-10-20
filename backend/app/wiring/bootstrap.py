@@ -754,11 +754,6 @@ def get_market_rs_activation_executor() -> MarketRsActivationExecutor:
     return _resolve_runtime_services().market_rs_activation_executor()
 
 
-def get_market_rs_reader() -> MarketRsReader:
-    """Return the process-scoped canonical Market RS reader."""
-    return _resolve_runtime_services().market_rs_reader()
-
-
 def get_group_rank_snapshot_reader() -> GroupRankSnapshotReader:
     """Return the exact persisted Group snapshot reader."""
     return _resolve_runtime_services().group_rank_snapshot_reader()

@@ -364,7 +364,7 @@ def _seed_digest_data(session):
     session.commit()
 
 
-def test_digest_service_builds_daily_digest_and_markdown(session):
+def test_digest_service_builds_daily_digest(session):
     _seed_digest_data(session)
     fake_validation_service = _FakeValidationService()
     service = DigestService(validation_service=fake_validation_service)
@@ -391,12 +391,6 @@ def test_digest_service_builds_daily_digest_and_markdown(session):
     assert payload.freshness.latest_theme_alert_at == "2026-04-05T01:30:00+00:00"
     assert "theme_alert_missing_price_cache" in payload.degraded_reasons
     assert any(risk.kind == "theme_alert_validation" for risk in payload.risks)
-
-    markdown = service.render_markdown(payload)
-    assert "# Daily Digest (2026-04-04)" in markdown
-    assert "## Leaders" in markdown
-    assert "**NVDA**" in markdown
-    assert "## Validation Snapshot" in markdown
 
 
 def test_digest_service_applies_profile_specific_leader_selection(session):

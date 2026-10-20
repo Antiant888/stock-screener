@@ -64,7 +64,7 @@ class _ThemeSectionResult:
 
 
 class DigestService:
-    """Build JSON and markdown daily digests from cached application state."""
+    """Build the daily digest from cached application state."""
 
     def __init__(
         self,
@@ -157,90 +157,6 @@ class DigestService:
             risks=risks,
             degraded_reasons=_dedupe(degraded_reasons),
         )
-
-    def render_markdown(self, payload: DailyDigestResponse) -> str:
-        """Render a markdown view from the normalized digest payload."""
-
-        lines: list[str] = [
-            f"# Daily Digest ({payload.as_of_date})",
-            "",
-            f"## Market Stance: {payload.market.stance.title()}",
-            payload.market.summary,
-            "",
-            "## Leaders",
-        ]
-
-        if payload.leaders:
-            for leader in payload.leaders:
-                score = f"{leader.composite_score:.1f}" if leader.composite_score is not None else "-"
-                rating = leader.rating or "-"
-                industry = leader.industry_group or "Unknown group"
-                lines.append(
-                    f"- **{leader.symbol}** ({leader.name or 'Unknown'}) | Score {score} | {rating} | {industry} | {leader.reason_summary}"
-                )
-        else:
-            lines.append("- No leader candidates are available.")
-
-        lines.extend(["", "## Themes", "### Leaders"])
-        if payload.themes.leaders:
-            for theme in payload.themes.leaders:
-                momentum = f"{theme.momentum_score:.1f}" if theme.momentum_score is not None else "-"
-                lines.append(f"- **{theme.display_name}** | Momentum {momentum} | {theme.status or 'unclassified'}")
-        else:
-            lines.append("- No ranked themes are available.")
-
-        lines.extend(["", "### Laggards"])
-        if payload.themes.laggards:
-            for theme in payload.themes.laggards:
-                momentum = f"{theme.momentum_score:.1f}" if theme.momentum_score is not None else "-"
-                lines.append(f"- **{theme.display_name}** | Momentum {momentum} | {theme.status or 'unclassified'}")
-        else:
-            lines.append("- No theme laggards are available.")
-
-        lines.extend(["", "### Recent Theme Alerts"])
-        if payload.themes.recent_alerts:
-            for alert in payload.themes.recent_alerts:
-                tickers = ", ".join(alert.related_tickers) if alert.related_tickers else "No tickers"
-                lines.append(
-                    f"- **{alert.title}** ({alert.alert_type}, {alert.severity or 'info'}) | {alert.theme or 'Unknown theme'} | {tickers}"
-                )
-        else:
-            lines.append("- No recent theme alerts are available.")
-
-        lines.extend(["", "## Validation Snapshot"])
-        for snapshot in (payload.validation.scan_pick, payload.validation.theme_alert):
-            lines.append(f"### {snapshot.source_kind.value.replace('_', ' ').title()}")
-            for horizon in snapshot.horizons:
-                avg_return = _format_percent(horizon.avg_return_pct)
-                positive_rate = _format_ratio(horizon.positive_rate)
-                lines.append(
-                    f"- {horizon.horizon_sessions} session: sample {horizon.sample_size}, positive {positive_rate}, avg return {avg_return}"
-                )
-            if snapshot.degraded_reasons:
-                lines.append(f"- Degraded: {', '.join(snapshot.degraded_reasons)}")
-
-        lines.extend(["", "## Watchlist Highlights"])
-        if payload.watchlists:
-            for watchlist in payload.watchlists:
-                matched = ", ".join(watchlist.matched_symbols) if watchlist.matched_symbols else "none"
-                alerted = ", ".join(watchlist.alert_symbols) if watchlist.alert_symbols else "none"
-                lines.append(
-                    f"- **{watchlist.watchlist_name}** | leaders: {matched} | alerts: {alerted} | {watchlist.notes}"
-                )
-        else:
-            lines.append("- No watchlist highlights are available.")
-
-        lines.extend(["", "## Risks"])
-        if payload.risks:
-            for risk in payload.risks:
-                lines.append(f"- **{risk.kind}** ({risk.severity}): {risk.message}")
-        else:
-            lines.append("- No material risk notes.")
-
-        if payload.degraded_reasons:
-            lines.extend(["", "## Degraded Signals", f"- {', '.join(payload.degraded_reasons)}"])
-
-        return "\n".join(lines).strip() + "\n"
 
     def _resolve_as_of_date(
         self,
@@ -908,18 +824,6 @@ def _format_float(value: float | None) -> str:
     if value is None:
         return "-"
     return f"{value:.2f}"
-
-
-def _format_percent(value: float | None) -> str:
-    if value is None:
-        return "-"
-    return f"{value:.1f}%"
-
-
-def _format_ratio(value: float | None) -> str:
-    if value is None:
-        return "-"
-    return f"{value * 100:.0f}%"
 
 
 def _round_or_none(value: float | None, digits: int = 4) -> float | None:

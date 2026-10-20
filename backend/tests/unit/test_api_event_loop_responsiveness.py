@@ -21,10 +21,8 @@ import pytest_asyncio
 from app.api.v1 import cache as cache_module
 from app.api.v1 import scans as scans_module
 from app.api.v1 import stocks as stocks_module
-from app.api.v1 import technical as technical_module
 from app.main import app
 from app.services import server_auth
-from app.wiring import bootstrap
 from app.wiring.runtime_context import current_runtime_services
 
 pytestmark = pytest.mark.integration
@@ -89,18 +87,6 @@ class _YFinance:
     def get_stock_info(self, symbol):
         self.gate.block()
 
-    def get_historical_data(self, symbol, period="2y"):
-        self.gate.block()
-
-
-class _Orchestrator:
-    def __init__(self, gate: _Gate) -> None:
-        self.gate = gate
-
-    def scan_stock_multi(self, **kwargs):
-        self.gate.block()
-        return {"minervini_score": 1.0}
-
 
 class _SnapshotService:
     def __init__(self, gate: _Gate) -> None:
@@ -120,14 +106,6 @@ def _patch_fundamentals(monkeypatch, gate):
 
 def _patch_stock_yfinance(monkeypatch, gate):
     monkeypatch.setattr(stocks_module, "_get_yfinance_service", lambda: _YFinance(gate))
-
-
-def _patch_technical_yfinance(monkeypatch, gate):
-    monkeypatch.setattr(technical_module, "get_yfinance_service", lambda: _YFinance(gate))
-
-
-def _patch_orchestrator(monkeypatch, gate):
-    monkeypatch.setattr(bootstrap, "get_scan_orchestrator", lambda: _Orchestrator(gate))
 
 
 def _patch_snapshot(monkeypatch, gate):
@@ -160,18 +138,6 @@ _CASES = [
         "POST",
         "/api/v1/stocks/fundamentals/batch",
         {"symbols": ["AAPL"]},
-        200,
-    ),
-    ("minervini", _patch_orchestrator, "GET", "/api/v1/technical/AAPL/minervini", None, 200),
-    ("stage", _patch_technical_yfinance, "GET", "/api/v1/technical/AAPL/stage", None, 200),
-    ("ma-analysis", _patch_technical_yfinance, "GET", "/api/v1/technical/AAPL/ma-analysis", None, 200),
-    ("vcp", _patch_technical_yfinance, "GET", "/api/v1/technical/AAPL/vcp", None, 200),
-    (
-        "52-week-position",
-        _patch_technical_yfinance,
-        "GET",
-        "/api/v1/technical/AAPL/52-week-position",
-        None,
         200,
     ),
     ("scan-bootstrap", _patch_snapshot, "GET", "/api/v1/scans/bootstrap", None, 404),
@@ -238,7 +204,7 @@ async def test_blocking_endpoint_does_not_stall_other_requests(
 
 def test_route_modules_have_no_async_endpoints():
     """New handlers in these modules call synchronous services; keep them `def`."""
-    for module in (stocks_module, technical_module, scans_module):
+    for module in (stocks_module, scans_module):
         offenders = [
             route.path
             for route in module.router.routes
