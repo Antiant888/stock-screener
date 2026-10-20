@@ -11,12 +11,13 @@ not through method parameters.
 from __future__ import annotations
 
 import abc
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 from typing import Callable, ContextManager, Mapping, Protocol, Sequence
 
 from app.domain.relative_strength import (
     BALANCED_RS_FORMULA_VERSION,
+    SCAN_ROW_RS_FIELDS,
 )
 
 from app.domain.common.query import PageSpec, SortSpec
@@ -296,7 +297,11 @@ class CanonicalStockRsSource:
     formula_version: str
     run_id: int
     universe_size: int
+    # Eligible stock: every scan-row field with a whole-number "rs_rating".
     ratings: Mapping[str, int] | None
+    # Young listing: horizon scanner fields only, never "rs_rating"; {} when
+    # only 1d/1w are rated. Exclusive with `ratings`. None for an unrated stock.
+    placed_ratings: Mapping[str, int] | None = None
 
     def __post_init__(self) -> None:
         if self.formula_version != BALANCED_RS_FORMULA_VERSION:
@@ -305,8 +310,21 @@ class CanonicalStockRsSource:
             raise ValueError("canonical stock RS run_id must be positive")
         if self.universe_size <= 0:
             raise ValueError("canonical stock RS universe_size must be positive")
+        if self.ratings is not None and self.placed_ratings is not None:
+            raise ValueError("canonical stock RS source cannot be both eligible and placed")
         if self.ratings is not None:
+            if self.ratings.get("rs_rating") is None:
+                raise ValueError("canonical ratings require an overall rating")
             object.__setattr__(self, "ratings", dict(self.ratings))
+        if self.placed_ratings is not None:
+            if "rs_rating" in self.placed_ratings:
+                raise ValueError("placed ratings never carry an overall rating")
+            object.__setattr__(self, "placed_ratings", dict(self.placed_ratings))
+
+    def scan_row_fields(self) -> dict[str, int | None]:
+        """Every scan-row RS field, None where this run holds no rating."""
+        present = self.ratings if self.ratings is not None else (self.placed_ratings or {})
+        return {field: present.get(field) for field in SCAN_ROW_RS_FIELDS}
 
     def audit_fields(self) -> dict[str, object]:
         return {
@@ -322,6 +340,7 @@ class CanonicalMarketRsSource:
     run_id: int
     universe_size: int
     ratings_by_symbol: Mapping[str, Mapping[str, int]]
+    placed_ratings_by_symbol: Mapping[str, Mapping[str, int]] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if self.formula_version != BALANCED_RS_FORMULA_VERSION:
@@ -338,6 +357,17 @@ class CanonicalMarketRsSource:
                 for symbol, ratings in self.ratings_by_symbol.items()
             },
         )
+        object.__setattr__(
+            self,
+            "placed_ratings_by_symbol",
+            {
+                str(symbol).strip().upper(): dict(ratings)
+                for symbol, ratings in self.placed_ratings_by_symbol.items()
+            },
+        )
+        overlap = sorted(set(self.ratings_by_symbol) & set(self.placed_ratings_by_symbol))
+        if overlap:
+            raise ValueError(f"symbols are both eligible and placed: {', '.join(overlap)}")
 
 
 @dataclass(frozen=True)
@@ -362,6 +392,7 @@ class MarketRsResolution:
         run_id: int,
         universe_size: int,
         ratings_by_symbol: Mapping[str, Mapping[str, int]],
+        placed_ratings_by_symbol: Mapping[str, Mapping[str, int]] | None = None,
     ) -> "MarketRsResolution":
         return cls(
             market=market,
@@ -371,6 +402,7 @@ class MarketRsResolution:
                 run_id=run_id,
                 universe_size=universe_size,
                 ratings_by_symbol=ratings_by_symbol,
+                placed_ratings_by_symbol=placed_ratings_by_symbol or {},
             ),
         )
 
@@ -391,11 +423,13 @@ class MarketRsResolution:
         return self.source.ratings_by_symbol
 
     def stock_source(self, symbol: str) -> CanonicalStockRsSource:
+        normalized = symbol.strip().upper()
         return CanonicalStockRsSource(
             formula_version=self.source.formula_version,
             run_id=self.source.run_id,
             universe_size=self.source.universe_size,
-            ratings=self.source.ratings_by_symbol.get(symbol.strip().upper()),
+            ratings=self.source.ratings_by_symbol.get(normalized),
+            placed_ratings=self.source.placed_ratings_by_symbol.get(normalized),
         )
 
 
