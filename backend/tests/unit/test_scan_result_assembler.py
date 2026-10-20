@@ -2,6 +2,8 @@
 
 import pandas as pd
 
+from app.domain.relative_strength import BALANCED_RS_FORMULA_VERSION
+from app.domain.scanning.ports import CanonicalStockRsSource
 from app.scanners.base_screener import ScreenerResult, StockData
 from app.scanners.scan_result_assembler import (
     ScanResultAssembler,
@@ -23,6 +25,12 @@ def test_assembler_preserves_result_contract_and_projects_opportunity_state():
             "avg_volume": 2_000_000,
             "dividend_yield": 0.6,
         },
+        rs_source=CanonicalStockRsSource(
+            formula_version=BALANCED_RS_FORMULA_VERSION,
+            run_id=7,
+            universe_size=5000,
+            ratings={"rs_rating": 95, "rs_rating_1m": 91, "rs_rating_3m": 93, "rs_rating_12m": 97},
+        ),
     )
     screener_results = {
         "minervini": ScreenerResult(
@@ -30,7 +38,7 @@ def test_assembler_preserves_result_contract_and_projects_opportunity_state():
             passes=True,
             rating="Buy",
             breakdown={"trend": 40.0},
-            details={"rs_rating": 95.0, "stage": 2},
+            details={"stage": 2},
             screener_name="minervini",
         )
     }
@@ -65,9 +73,11 @@ def test_assembler_preserves_result_contract_and_projects_opportunity_state():
 
     assert result["symbol"] == "NVDA"
     assert result["composite_score"] == 88.0
-    assert result["rs_rating"] == 95.0
+    assert result["rs_rating"] == 95
     assert result["market_cap"] == 4_000_000_000_000
     assert result["avg_dollar_volume"] == 240_000_000
     assert result["dividend_yield"] == 0.6
     assert result["opportunity_state"]["schema_version"] == 1
     assert projection_calls[0][1] is stock_data
+    assert projection_calls[0][0]["rs_rating_1m"] == 91
+    assert projection_calls[0][0]["rs_rating_3m"] == 93

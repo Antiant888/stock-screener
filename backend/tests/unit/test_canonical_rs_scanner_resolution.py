@@ -18,7 +18,6 @@ from app.scanners.criteria.rs_resolution import (
 )
 from app.scanners.minervini_scanner import MinerviniScanner
 from app.scanners.data_preparation import DataPreparationLayer
-from app.scanners.partial_history_metrics import partial_history_metrics
 from app.scanners.scan_orchestrator import _build_precomputed_scan_context
 from app.scanners.scan_orchestrator import ScanOrchestrator
 from app.scanners.screener_registry import ScreenerRegistry
@@ -229,25 +228,6 @@ def test_setup_engine_without_resolution_has_no_rs_rating():
     assert result.details["setup_engine"]["rs_rating"] is None
 
 
-def test_partial_history_uses_all_canonical_rating_fields():
-    metrics = partial_history_metrics(_canonical_stock_data())
-
-    assert metrics["rs_rating"] == 87
-    assert metrics["rs_rating_1m"] == 42
-    assert metrics["rs_rating_3m"] == 91
-    assert metrics["rs_rating_12m"] == 98
-
-
-def test_partial_history_without_resolution_leaves_every_rating_empty():
-    metrics = partial_history_metrics(_stock_data())
-
-    assert metrics["rs_rating"] is None
-    assert metrics["rs_rating_1m"] is None
-    assert metrics["rs_rating_3m"] is None
-    assert metrics["rs_rating_12m"] is None
-    assert metrics["rs_sparkline_data"] is not None
-
-
 class _DirectProvider:
     def __init__(self, data: StockData) -> None:
         self.data = data
@@ -397,7 +377,12 @@ def test_canonical_rs_row_fields_cover_every_source_state():
         "rs_rating_12m": None,
     }
     assert canonical_rs_row_fields(_canonical_stock_data()) == RATINGS
-    assert canonical_rs_row_fields(_stock_data()) == {}
+    assert canonical_rs_row_fields(_stock_data()) == {
+        "rs_rating": None,
+        "rs_rating_1m": None,
+        "rs_rating_3m": None,
+        "rs_rating_12m": None,
+    }
 
 
 def test_precomputed_context_holds_no_ratings_for_a_placed_stock():
@@ -405,15 +390,6 @@ def test_precomputed_context_holds_no_ratings_for_a_placed_stock():
 
     assert context is not None
     assert context.rs_ratings is None
-
-
-def test_partial_history_carries_placed_horizons_without_an_overall():
-    metrics = partial_history_metrics(_placed_stock_data())
-
-    assert metrics["rs_rating"] is None
-    assert metrics["rs_rating_1m"] == 66
-    assert metrics["rs_rating_3m"] == 1
-    assert metrics["rs_rating_12m"] is None
 
 
 def test_setup_engine_direct_path_fails_closed_for_a_placed_stock():

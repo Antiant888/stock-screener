@@ -145,6 +145,14 @@ def test_a_young_listing_with_only_gated_screeners_keeps_its_placed_horizons():
     assert _rs_fields(result) == (None, 66, 1, None)
 
 
+def test_an_eligible_stock_too_short_for_its_screeners_keeps_its_ratings():
+    result = _scan("AAA", 100, ["minervini"], NO_VCP)
+
+    assert result["rating"] == "Insufficient Data"
+    assert result["unavailable_screeners"] == ["minervini"]
+    assert _rs_fields(result) == (80, 70, 75, 90)
+
+
 def test_exactly_252_bars_without_the_252_anchor_still_shows_the_horizons():
     result = _scan("NEWIPO", 252, ["ipo", "minervini"], NO_VCP)
 
@@ -264,3 +272,23 @@ def test_an_eligible_stock_short_of_setup_engines_weekly_history_keeps_its_other
     ]
     assert result["unavailable_screeners"] == ["setup_engine"]
     assert _rs_fields(result) == (80, 70, 75, 90)
+
+
+def _evidence_rs(result: dict) -> tuple:
+    metrics = result["opportunity_state"]["metrics"]
+    return metrics["rs_rating_1m"], metrics["rs_rating_3m"]
+
+
+def test_a_young_listings_opportunity_evidence_reads_its_placed_horizons():
+    result = _scan("NEWIPO", 150, ["ipo"])
+
+    assert _rs_fields(result) == (None, 66, 1, None)
+    assert _evidence_rs(result) == (66.0, 1.0)
+
+
+def test_an_eligible_stock_scanned_without_minervini_carries_its_ratings():
+    result = _scan("AAA", 300, ["ipo"])
+
+    assert result["screeners_run"] == ["ipo"]
+    assert _rs_fields(result) == (80, 70, 75, 90)
+    assert _evidence_rs(result) == (70.0, 75.0)

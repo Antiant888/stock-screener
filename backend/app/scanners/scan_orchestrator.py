@@ -730,8 +730,6 @@ class ScanOrchestrator:
         if data_status == "insufficient_history":
             for key, value in partial_history_metrics(stock_data).items():
                 result.setdefault(key, value)
-        for key, value in canonical_rs_row_fields(stock_data).items():
-            result.setdefault(key, value)
         return result
 
     def _error_result(self, symbol: str, error: str) -> Dict:
@@ -786,6 +784,7 @@ class ScanOrchestrator:
             "composite_reason": None,
             "ipo_bonus": 0.0,
             **market_rs_audit_fields(stock_data),
+            **canonical_rs_row_fields(stock_data),
             "details": {
                 "screeners": {},
                 "data_errors": stock_data.fetch_errors

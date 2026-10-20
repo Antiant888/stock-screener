@@ -15,7 +15,11 @@ from datetime import date
 
 import pandas as pd
 from app.domain.relative_strength import BALANCED_RS_FORMULA_VERSION
-from app.domain.scanning.ports import MarketRsResolution, StockDataProvider
+from app.domain.scanning.ports import (
+    CanonicalStockRsSource,
+    MarketRsResolution,
+    StockDataProvider,
+)
 from app.scanners.base_screener import (
     BaseStockScreener,
     DataRequirements,
@@ -728,6 +732,12 @@ class TestScanOrchestratorDataFlow:
             "avg_volume": 2_000_000,
         }
         stock_data.event_calendar_available = True
+        stock_data.rs_source = CanonicalStockRsSource(
+            formula_version=BALANCED_RS_FORMULA_VERSION,
+            run_id=1,
+            universe_size=5000,
+            ratings={"rs_rating": 90, "rs_rating_1m": 90, "rs_rating_3m": 85, "rs_rating_12m": 90},
+        )
         provider = FakeDataProvider({"TEST": stock_data})
         registry = ScreenerRegistry()
 
@@ -738,8 +748,6 @@ class TestScanOrchestratorDataFlow:
                     score=90.0,
                     passes=True,
                     details={
-                        "rs_rating_1m": 90.0,
-                        "rs_rating_3m": 85.0,
                         "stage": 2,
                         "ma_alignment": True,
                     },

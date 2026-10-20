@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-from app.domain.relative_strength import BALANCED_RS_FORMULA_VERSION
+from app.domain.relative_strength import (
+    BALANCED_RS_FORMULA_VERSION,
+    SCAN_ROW_RS_FIELDS,
+)
 from app.scanners.base_screener import StockData
 
 
@@ -48,6 +51,6 @@ def resolve_optional_stock_rs(stock_data: StockData) -> dict[str, float | int] |
 
 
 def canonical_rs_row_fields(stock_data: StockData) -> dict[str, int | None]:
-    """The scan row's RS fields; empty when no Market RS resolution is attached."""
+    """The scan row's RS fields; all None when no Market RS resolution is attached."""
     source = stock_data.rs_source
-    return source.scan_row_fields() if source is not None else {}
+    return source.scan_row_fields() if source is not None else dict.fromkeys(SCAN_ROW_RS_FIELDS)
