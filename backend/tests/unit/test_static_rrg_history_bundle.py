@@ -120,7 +120,7 @@ def _rank(
     row_date: date,
     rank: int,
     avg_rs: float,
-    formula_version: str = STORED_LEGACY_FORMULA,
+    formula_version: str = BALANCED_RS_FORMULA_VERSION,
     market_rs_run_id: int | None = None,
 ):
     return IBDGroupRank(
@@ -139,16 +139,38 @@ def _rank(
     )
 
 
+def _balanced_run(db, *, market: str, row_date: date) -> int:
+    run = MarketRsRun(
+        market=market,
+        as_of_date=row_date,
+        formula_version=BALANCED_RS_FORMULA_VERSION,
+        status="completed",
+        benchmark_symbol="^HSI",
+        benchmark_as_of_date=row_date,
+        universe_hash=f"balanced-{row_date.isoformat()}",
+        expected_symbol_count=12,
+        eligible_symbol_count=12,
+        excluded_symbol_count=0,
+        diagnostics_json={
+            "price_basis": BALANCED_RS_PRICE_BASIS,
+            "rs_snapshot_schema_version": BALANCED_RS_SNAPSHOT_SCHEMA_VERSION,
+        },
+    )
+    db.add(run)
+    db.flush()
+    return run.id
+
+
 def _seed_weeks(
     db,
     *,
     latest: date,
     weeks: int,
     market: str = "HK",
-    formula_version: str = STORED_LEGACY_FORMULA,
 ) -> None:
     for week in range(weeks):
         row_date = latest - timedelta(weeks=weeks - week - 1)
+        run_id = _balanced_run(db, market=market, row_date=row_date)
         db.add_all(
             [
                 _rank(
@@ -157,7 +179,7 @@ def _seed_weeks(
                     row_date=row_date,
                     rank=1,
                     avg_rs=60 + week * 1.5,
-                    formula_version=formula_version,
+                    market_rs_run_id=run_id,
                 ),
                 _rank(
                     market=market,
@@ -165,7 +187,7 @@ def _seed_weeks(
                     row_date=row_date,
                     rank=2,
                     avg_rs=85 - week,
-                    formula_version=formula_version,
+                    market_rs_run_id=run_id,
                 ),
             ]
         )
@@ -183,7 +205,7 @@ def test_weekly_state_round_trips_only_rrg_inputs(tmp_path):
                 db,
                 market="HK",
                 through_date=latest,
-                formula_version=STORED_LEGACY_FORMULA,
+                formula_version=BALANCED_RS_FORMULA_VERSION,
             )
         stats = StaticRRGHistoryBundleService().write(state, path)
         restored = StaticRRGHistoryBundleService().load(path, expected_market="HK")
@@ -194,7 +216,7 @@ def test_weekly_state_round_trips_only_rrg_inputs(tmp_path):
             payload = json.load(handle)
         assert payload["schema_version"] == STATIC_RRG_HISTORY_SCHEMA_VERSION
         assert payload["schema_version"] == "static-rrg-history-v4"
-        assert payload["rs_formula_version"] == STORED_LEGACY_FORMULA
+        assert payload["rs_formula_version"] == BALANCED_RS_FORMULA_VERSION
         assert set(payload) == {
             "schema_version",
             "market",
@@ -223,17 +245,18 @@ def test_merge_keeps_prior_weeks_without_mutating_database(tmp_path):
                 db,
                 market="HK",
                 through_date=latest - timedelta(weeks=1),
-                formula_version=STORED_LEGACY_FORMULA,
+                formula_version=BALANCED_RS_FORMULA_VERSION,
             )
         with target_factory() as db:
-            db.add(_rank(market="HK", group="Semiconductors", row_date=latest, rank=1, avg_rs=91))
+            run_id = _balanced_run(db, market="HK", row_date=latest)
+            db.add(_rank(market="HK", group="Semiconductors", row_date=latest, rank=1, avg_rs=91, market_rs_run_id=run_id))
             db.commit()
             merged = StaticRRGHistoryBundleService().build(
                 db,
                 market="HK",
                 through_date=latest,
                 previous=previous,
-                formula_version=STORED_LEGACY_FORMULA,
+                formula_version=BALANCED_RS_FORMULA_VERSION,
             )
             database_groups = [row.industry_group for row in db.query(IBDGroupRank).all()]
 
@@ -257,9 +280,10 @@ def test_merge_discards_restored_weeks_after_requested_export_date():
                 db,
                 market="HK",
                 through_date=future,
-                formula_version=STORED_LEGACY_FORMULA,
+                formula_version=BALANCED_RS_FORMULA_VERSION,
             )
         with target_factory() as db:
+            run_id = _balanced_run(db, market="HK", row_date=latest)
             db.add(
                 _rank(
                     market="HK",
@@ -267,6 +291,7 @@ def test_merge_discards_restored_weeks_after_requested_export_date():
                     row_date=latest,
                     rank=1,
                     avg_rs=91,
+                    market_rs_run_id=run_id,
                 )
             )
             db.commit()
@@ -275,7 +300,7 @@ def test_merge_discards_restored_weeks_after_requested_export_date():
                 market="HK",
                 through_date=latest,
                 previous=previous,
-                formula_version=STORED_LEGACY_FORMULA,
+                formula_version=BALANCED_RS_FORMULA_VERSION,
             )
 
         assert merged.weeks[-1].source_date == latest
@@ -296,9 +321,10 @@ def test_merge_rejects_a_previous_bundle_from_another_formula():
                 db,
                 market="HK",
                 through_date=latest - timedelta(weeks=1),
-                formula_version=STORED_LEGACY_FORMULA,
-            )
+                formula_version=BALANCED_RS_FORMULA_VERSION,
+            ).model_copy(update={"rs_formula_version": STORED_LEGACY_FORMULA})
         with target_factory() as db:
+            run_id = _balanced_run(db, market="HK", row_date=latest)
             db.add(
                 _rank(
                     market="HK",
@@ -306,7 +332,7 @@ def test_merge_rejects_a_previous_bundle_from_another_formula():
                     row_date=latest,
                     rank=1,
                     avg_rs=91,
-                    formula_version=BALANCED_RS_FORMULA_VERSION,
+                    market_rs_run_id=run_id,
                 )
             )
             db.commit()
@@ -335,8 +361,8 @@ def test_prepare_rebuilds_when_prior_bundle_uses_another_formula(tmp_path):
                 db,
                 market="HK",
                 through_date=latest - timedelta(weeks=1),
-                formula_version=STORED_LEGACY_FORMULA,
-            )
+                formula_version=BALANCED_RS_FORMULA_VERSION,
+            ).model_copy(update={"rs_formula_version": STORED_LEGACY_FORMULA})
         service.write(previous, tmp_path / "rrg-history-hk.json.gz")
 
         with target_factory() as db:
@@ -488,7 +514,7 @@ def test_prepare_bootstraps_invalid_prior_state_and_persists_current_state(tmp_p
                 market="HK",
                 through_date=latest,
                 directory=tmp_path,
-                formula_version=STORED_LEGACY_FORMULA,
+                formula_version=BALANCED_RS_FORMULA_VERSION,
             )
 
         assert preparation.state is not None
@@ -521,7 +547,7 @@ def test_weekly_state_computes_non_us_group_and_sector_rrg():
                 db,
                 market="HK",
                 through_date=latest,
-                formula_version=STORED_LEGACY_FORMULA,
+                formula_version=BALANCED_RS_FORMULA_VERSION,
             )
             payload = RRGService(
                 history_provider=StaticRRGHistoryProvider(state),
