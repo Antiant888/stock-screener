@@ -281,8 +281,6 @@ def _stub_market_rs_snapshot_task(monkeypatch, run) -> None:
     )
 
 
-
-
 def test_run_daily_refresh_prepares_balanced_rs_before_static_consumers(
     monkeypatch,
     _stub_balanced_static_rs_preparation,

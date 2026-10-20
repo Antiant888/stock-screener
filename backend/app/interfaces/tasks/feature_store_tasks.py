@@ -650,7 +650,7 @@ def build_daily_snapshot(
         )
         if resolution.selected_date != as_of:
             logger.info(
-                "Using active Market RS bootstrap publication date for feature "
+                "Using the balanced Market RS bootstrap publication date for feature "
                 "snapshot (market=%s requested=%s selected=%s reason=%s)",
                 effective_market,
                 as_of,

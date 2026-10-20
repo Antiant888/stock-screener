@@ -119,7 +119,7 @@ def _resolve_bootstrap_group_rank_date(
     )
     if resolution.selected_date != requested_date:
         logger.info(
-            "Using active Market RS bootstrap publication date for group "
+            "Using the balanced Market RS bootstrap publication date for group "
             "rankings (market=%s requested=%s selected=%s reason=%s)",
             market,
             requested_date,

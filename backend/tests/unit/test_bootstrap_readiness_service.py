@@ -40,7 +40,6 @@ from app.services.bootstrap_readiness_service import (
 STORED_LEGACY_FORMULA = "legacy-linear-v1"
 
 
-
 class FakeBootstrapReadinessService(BootstrapReadinessService):
     def __init__(
         self,
@@ -278,8 +277,6 @@ def test_sql_service_ignores_inactive_universe_rows_for_core_readiness(readiness
     assert result.missing_markets == ["US"]
     assert result.market_results["US"].core_ready is False
     assert result.market_results["US"].scan_ready is True
-
-
 
 
 def test_pristine_installation_rejects_inactive_universe_rows(readiness_db) -> None:

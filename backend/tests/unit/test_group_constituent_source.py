@@ -238,10 +238,6 @@ def test_feature_run_from_another_market_is_not_a_constituent_source():
         db.close()
 
 
-
-
-
-
 def test_balanced_constituents_use_exact_publication_not_latest_market_run():
     db = _make_session()
     group = "Software"

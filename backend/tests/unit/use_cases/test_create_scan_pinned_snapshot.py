@@ -31,7 +31,6 @@ PROFILE = dict(screeners=["minervini", "canslim"], composite_method="weighted_av
 STORED_LEGACY_FORMULA = "legacy-linear-v1"
 
 
-
 def _row(symbol: str, *, passes: bool, price: float = 100.0) -> FeatureRowWrite:
     return FeatureRowWrite(
         symbol=symbol,

@@ -239,12 +239,6 @@ def test_failed_restart_clears_partial_rows_but_completed_run_is_idempotent(
     assert len(completed.rows) == 2
 
 
-
-
-
-
-
-
 def test_two_sessions_share_one_completed_winner_and_never_read_partial_rows(
     db_session,
 ):

@@ -443,7 +443,6 @@ class CustomScanner(BaseStockScreener):
             details={
                 "rs_rating": rs_rating,
                 "rs_min": rs_min,
-                "relative_performance": rs_result.get("relative_performance")
             }
         )
 

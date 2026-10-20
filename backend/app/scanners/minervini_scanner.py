@@ -320,11 +320,7 @@ class MinerviniScanner(BaseStockScreener):
                 else resolve_stock_rs(data)
             )
 
-            rs_result = {
-                'rs_rating': rs_ratings['rs_rating'],
-                'relative_performance': rs_ratings.get('relative_performance'),
-                'percentile_rank': rs_ratings.get('percentile_rank'),
-            }
+            rs_result = {'rs_rating': rs_ratings['rs_rating']}
 
             # Calculate Beta and Beta-Adjusted RS metrics
             beta_metrics = self.beta_calc.calculate_all_beta_metrics(

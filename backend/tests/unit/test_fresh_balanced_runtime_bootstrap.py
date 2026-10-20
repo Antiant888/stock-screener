@@ -386,7 +386,7 @@ def test_fresh_bootstrap_signature_routes_activation_to_market_queue() -> None:
         ),
     ],
 )
-def test_fresh_bootstrap_completion_rejects_legacy_formula_pointer(
+def test_fresh_bootstrap_completion_fails_until_the_balanced_publication_commits(
     monkeypatch,
     completion_task_name,
     task_kwargs,

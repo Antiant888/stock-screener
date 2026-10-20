@@ -118,8 +118,6 @@ def test_bootstrap_publication_date_counts_lag_in_market_sessions() -> None:
     assert resolution.reason_code == "balanced_run_selected"
 
 
-
-
 def test_bootstrap_publication_date_rejects_stale_balanced_run() -> None:
     repository = SimpleNamespace(
         list_completed_runs=lambda _db, **_kwargs: (),

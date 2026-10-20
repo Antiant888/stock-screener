@@ -34,7 +34,6 @@ pytestmark = pytest.mark.integration
 STORED_LEGACY_FORMULA = "legacy-linear-v1"
 
 
-
 @pytest.fixture
 def session():
     """Create an isolated in-memory DB with full schema."""

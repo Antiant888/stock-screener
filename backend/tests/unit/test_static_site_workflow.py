@@ -323,9 +323,9 @@ def test_market_fallback_prefers_newer_session_over_newer_upload(
 
 
 def test_same_session_reruns_resolve_to_the_latest_upload(tmp_path, monkeypatch) -> None:
-    # A corrected rerun or an RS rollback re-exports the same session on the
-    # same day. The API order is not a contract, so the listing arrives
-    # oldest-first here; the later upload must still win.
+    # A corrected rerun re-exports the same session on the same day. The API
+    # order is not a contract, so the listing arrives oldest-first here; the
+    # later upload must still win.
     listings = {
         "static-market-US": [
             _artifact(500, "2026-09-05T09:00:00Z"),

@@ -49,7 +49,6 @@ from app.services.server_auth import require_server_session
 STORED_LEGACY_FORMULA = "legacy-linear-v1"
 
 
-
 class _WeekdayCalendar:
     @staticmethod
     def trading_days(_market: str, start: date, end: date) -> list[date]:

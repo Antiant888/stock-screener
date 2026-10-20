@@ -501,7 +501,7 @@ def list_artifact_runs(
         ):
             continue
         runs.append(_ArtifactRun(run_id, _parse_timestamp(artifact.get("created_at"))))
-    # Full upload time, not the date: a same-session rerun or RS rollback on
+    # Full upload time, not the date: a corrected rerun of the same session on
     # the same day must sort first, because the first candidate of a session
     # wins (later ones need a strictly newer session).
     runs.sort(

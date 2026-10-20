@@ -18,8 +18,6 @@ def test_runtime_services_reset_for_tests_clears_github_bootstrap_services():
     assert runtime.daily_price_bundle_service() is not daily_price_bundle
 
 
-
-
 def test_runtime_daily_price_bundle_service_keeps_price_cache_dependency_explicit():
     runtime = build_runtime_services()
 

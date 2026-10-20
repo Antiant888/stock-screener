@@ -517,8 +517,6 @@ def reset_runtime_services(token: Token[RuntimeServices | None]) -> None:
     runtime_context.reset_runtime_services(token)
 
 
-
-
 def initialize_process_runtime_services(
     *,
     session_factory: SessionFactory = SessionLocal,

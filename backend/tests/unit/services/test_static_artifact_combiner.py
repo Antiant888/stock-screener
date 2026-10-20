@@ -21,8 +21,7 @@ from app.services.static_site_export_service import (
 
 
 # An artifact built before the single-formula cutover.
-STALE_FORMULA = "legacy-linear-v1"
-
+STORED_LEGACY_FORMULA = "legacy-linear-v1"
 
 
 def write_market_artifact(
@@ -148,7 +147,7 @@ def test_combiner_accepts_downloaded_market_artifact_layout(tmp_path):
 
 def test_combiner_rejects_wrong_formula_current_without_using_fallback(tmp_path):
     current = write_market_artifact(
-        tmp_path / "current", market="US", formula=STALE_FORMULA
+        tmp_path / "current", market="US", formula=STORED_LEGACY_FORMULA
     )
     fallback = write_market_artifact(
         tmp_path / "fallback", market="US", formula=BALANCED_RS_FORMULA_VERSION
@@ -170,7 +169,7 @@ def test_combiner_rejects_wrong_formula_current_without_using_fallback(tmp_path)
 
 def test_combiner_rejects_wrong_formula_fallback_and_says_why(tmp_path):
     fallback = write_market_artifact(
-        tmp_path / "fallback", market="HK", formula=STALE_FORMULA
+        tmp_path / "fallback", market="HK", formula=STORED_LEGACY_FORMULA
     )
     with pytest.raises(NoPublishedStaticMarketArtifact) as exc_info:
         combiner().combine(
@@ -184,8 +183,8 @@ def test_combiner_rejects_wrong_formula_fallback_and_says_why(tmp_path):
     assert str(exc_info.value) == (
         "No published compatible static artifact is available for required "
         "Markets: HK. Rejected: HK fallback artifact uses incompatible RS "
-        f"formula: Scan chunk chunk-0001.json={STALE_FORMULA!r}, "
-        f"Scan manifest={STALE_FORMULA!r}, market entry={STALE_FORMULA!r}; "
+        f"formula: Scan chunk chunk-0001.json={STORED_LEGACY_FORMULA!r}, "
+        f"Scan manifest={STORED_LEGACY_FORMULA!r}, market entry={STORED_LEGACY_FORMULA!r}; "
         f"expected {BALANCED_RS_FORMULA_VERSION!r}."
     )
 
@@ -195,7 +194,7 @@ def test_combiner_omits_an_optional_market_whose_only_artifact_is_stale(tmp_path
     selection = write_market_artifact(
         tmp_path / "selection", market="US", formula=BALANCED_RS_FORMULA_VERSION
     )
-    write_market_artifact(selection, market="HK", formula=STALE_FORMULA)
+    write_market_artifact(selection, market="HK", formula=STORED_LEGACY_FORMULA)
 
     result = combiner().combine(
         artifacts_dir=tmp_path / "empty",
@@ -210,8 +209,8 @@ def test_combiner_omits_an_optional_market_whose_only_artifact_is_stale(tmp_path
     assert "HK" in result.manifest["unavailable_markets"]
     assert result.warnings[0] == (
         "Ignored static market artifact: HK fallback artifact uses incompatible "
-        f"RS formula: Scan chunk chunk-0001.json={STALE_FORMULA!r}, "
-        f"Scan manifest={STALE_FORMULA!r}, market entry={STALE_FORMULA!r}; "
+        f"RS formula: Scan chunk chunk-0001.json={STORED_LEGACY_FORMULA!r}, "
+        f"Scan manifest={STORED_LEGACY_FORMULA!r}, market entry={STORED_LEGACY_FORMULA!r}; "
         f"expected {BALANCED_RS_FORMULA_VERSION!r}"
     )
 
@@ -317,7 +316,7 @@ def test_combiner_validates_optional_market_formula_when_artifact_exists(tmp_pat
     current = write_market_artifact(
         tmp_path / "current",
         market="CN",
-        formula=STALE_FORMULA,
+        formula=STORED_LEGACY_FORMULA,
     )
 
     with pytest.raises(StaticArtifactFormulaError, match="CN current"):
@@ -336,7 +335,7 @@ def test_combiner_rejects_wrong_scan_manifest_formula(tmp_path):
         tmp_path / "current",
         market="US",
         formula=BALANCED_RS_FORMULA_VERSION,
-        scan_formula=STALE_FORMULA,
+        scan_formula=STORED_LEGACY_FORMULA,
     )
 
     with pytest.raises(
@@ -357,7 +356,7 @@ def test_combiner_rejects_wrong_scan_chunk_formula(tmp_path):
         tmp_path / "current",
         market="US",
         formula=BALANCED_RS_FORMULA_VERSION,
-        chunk_formula=STALE_FORMULA,
+        chunk_formula=STORED_LEGACY_FORMULA,
     )
 
     with pytest.raises(

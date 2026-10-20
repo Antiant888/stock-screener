@@ -1116,8 +1116,6 @@ def test_guard_market_rs_blocks_failed_result():
         )
 
 
-
-
 def test_guard_market_rs_accepts_exact_completed_balanced_run():
     from app.domain.relative_strength import BALANCED_RS_FORMULA_VERSION
     from app.tasks import daily_market_pipeline_tasks as module

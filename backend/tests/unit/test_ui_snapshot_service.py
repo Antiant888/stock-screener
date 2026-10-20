@@ -39,8 +39,6 @@ from app.services.ui_snapshot_service import (
 )
 
 
-
-
 def test_ui_snapshot_service_marks_outdated_pointer_reads_as_stale_and_prunes_old_revisions():
     engine = create_engine("sqlite:///:memory:")
     Session = sessionmaker(bind=engine)

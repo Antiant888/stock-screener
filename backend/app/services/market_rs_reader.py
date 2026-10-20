@@ -61,8 +61,8 @@ class SqlMarketRsReader:
             )
             if resolved_formula != BALANCED_RS_FORMULA_VERSION:
                 raise CanonicalMarketRsUnavailable(
-                    f"Unsupported active Market RS formula for {normalized_market}: "
-                    f"{resolved_formula}"
+                    f"Market RS for {normalized_market} uses formula "
+                    f"{resolved_formula!r}, not {BALANCED_RS_FORMULA_VERSION!r}"
                 )
 
             if requested_run is not None:

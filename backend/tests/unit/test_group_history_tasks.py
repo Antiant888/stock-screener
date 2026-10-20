@@ -191,8 +191,6 @@ def test_ensure_group_history_invalidates_cache_and_publishes_us_snapshot(
     db.close.assert_called_once()
 
 
-
-
 def test_group_history_target_uses_balanced_publication_date(monkeypatch):
     from app.infra.db.repositories import market_rs_repo
     from app.tasks import group_history_tasks as module

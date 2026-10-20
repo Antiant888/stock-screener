@@ -148,6 +148,7 @@ def test_minervini_direct_path_uses_canonical_ratings():
     assert result.details["rs_rating_1m"] == 42
     assert result.details["rs_rating_3m"] == 91
     assert result.details["rs_rating_12m"] == 98
+    assert result.details["full_analysis"]["rs"] == {"rs_rating": 87}
 
 
 def test_minervini_without_resolution_is_insufficient_data():
@@ -177,7 +178,13 @@ def test_custom_direct_path_uses_canonical_rating():
         criteria={"custom_filters": {"rs_rating_min": 80}},
     )
 
-    assert result.details["filter_results"]["rs_rating"]["rs_rating"] == 87
+    assert result.details["filter_results"]["rs_rating"] == {
+        "passes": True,
+        "points": 13.5,
+        "max_points": 15.0,
+        "rs_rating": 87.0,
+        "rs_min": 80.0,
+    }
 
 
 def test_custom_canonical_rs_does_not_require_benchmark_history():

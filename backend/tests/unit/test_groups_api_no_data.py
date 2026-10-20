@@ -40,7 +40,6 @@ def _seed_completed_run(db_session, *, market: str) -> MarketRsRun:
     return run
 
 
-
 @pytest_asyncio.fixture
 async def client():
     transport = httpx.ASGITransport(app=app)
