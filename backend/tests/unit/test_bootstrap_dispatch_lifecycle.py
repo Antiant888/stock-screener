@@ -145,11 +145,6 @@ def test_primary_failure_is_one_atomic_dispatch_transition(
 def test_balanced_completion_consumes_pending_activation_in_same_transition(
     db_session,
 ) -> None:
-    class _BalancedFormulaReader:
-        def active_formula(self, _db, *, market: str) -> str:
-            assert market == "US"
-            return BALANCED_RS_FORMULA_VERSION
-
     repository = BootstrapRunManifestRepository()
     BootstrapDispatchLifecycle().claim(
         db_session,
@@ -162,10 +157,7 @@ def test_balanced_completion_consumes_pending_activation_in_same_transition(
         ),
     )
 
-    BootstrapDispatchLifecycle(
-        repository=repository,
-        formula_reader=_BalancedFormulaReader(),
-    ).finish_market(
+    BootstrapDispatchLifecycle(repository=repository).finish_market(
         db_session,
         dispatch_id="dispatch-current",
         completion=BootstrapMarketCompletion.ready(
@@ -181,67 +173,8 @@ def test_balanced_completion_consumes_pending_activation_in_same_transition(
     assert manifest.completed_markets == ("US",)
 
 
-def test_balanced_completion_requires_formula_reader(db_session) -> None:
-    repository = BootstrapRunManifestRepository()
-    lifecycle = BootstrapDispatchLifecycle(repository=repository)
-    lifecycle.claim(
-        db_session,
-        manifest=BootstrapRunManifest.create(
-            primary_market="US",
-            enabled_markets=("US",),
-            dispatch_id="dispatch-current",
-            fresh_install=True,
-            queue_state="queued",
-        ),
-    )
-
-    with pytest.raises(
-        RuntimeError,
-        match="Balanced activation completion requires a formula reader",
-    ):
-        lifecycle.finish_market(
-            db_session,
-            dispatch_id="dispatch-current",
-            completion=BootstrapMarketCompletion.ready(
-                market="US",
-                primary=True,
-                expected_formula_version=BALANCED_RS_FORMULA_VERSION,
-            ),
-        )
 
 
-def test_missing_active_formula_preserves_pending_activation(db_session) -> None:
-    class _MissingFormulaReader:
-        def active_formula(self, _db, *, market: str) -> str:
-            raise LookupError(market)
-
-    repository = BootstrapRunManifestRepository()
-    lifecycle = BootstrapDispatchLifecycle(
-        repository=repository,
-        formula_reader=_MissingFormulaReader(),
-    )
-    lifecycle.claim(
-        db_session,
-        manifest=BootstrapRunManifest.create(
-            primary_market="US",
-            enabled_markets=("US",),
-            dispatch_id="dispatch-current",
-            fresh_install=True,
-            queue_state="queued",
-        ),
-    )
-
-    updated = lifecycle.finish_market(
-        db_session,
-        dispatch_id="dispatch-current",
-        completion=BootstrapMarketCompletion.ready(
-            market="US",
-            primary=True,
-            expected_formula_version=BALANCED_RS_FORMULA_VERSION,
-        ),
-    )
-
-    assert updated.pending_balanced_activation_markets == ("US",)
 
 
 def test_first_terminal_market_outcome_wins_on_contradictory_redelivery(

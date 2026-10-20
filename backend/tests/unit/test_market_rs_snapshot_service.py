@@ -6,7 +6,6 @@ from app.domain.relative_strength import (
     BALANCED_RS_FORMULA_VERSION,
     BALANCED_RS_PRICE_BASIS,
     BALANCED_RS_SNAPSHOT_SCHEMA_VERSION,
-    LEGACY_RS_FORMULA_VERSION,
 )
 from app.infra.db.models.relative_strength import MarketRsRun
 from app.infra.db.repositories.market_rs_repo import MarketRsRunRepository
@@ -129,7 +128,7 @@ def test_snapshot_input_failure_keeps_previous_completed_date_readable(db_sessio
     assert failed.diagnostics_json["reason_code"] == "benchmark_anchor_missing"
 
 
-def test_snapshot_service_rejects_legacy_without_loading_or_writing(db_session):
+def test_snapshot_service_rejects_other_formulas_without_loading_or_writing(db_session):
     loader = _FakeInputLoader(_complete_inputs())
     service = MarketRsSnapshotService(
         input_loader=loader,
@@ -141,7 +140,7 @@ def test_snapshot_service_rejects_legacy_without_loading_or_writing(db_session):
             db_session,
             market="US",
             as_of_date=AS_OF,
-            formula_version=LEGACY_RS_FORMULA_VERSION,
+            formula_version="legacy-linear-v1",
         )
 
     assert loader.calls == []

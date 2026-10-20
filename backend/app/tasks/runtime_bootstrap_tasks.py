@@ -291,12 +291,7 @@ def _balanced_activation_state_at_dispatch(
 
 
 def _bootstrap_dispatch_lifecycle() -> BootstrapDispatchLifecycle:
-    from ..infra.db.repositories.market_rs_repo import MarketRsRunRepository
-
-    return BootstrapDispatchLifecycle(
-        repository=BootstrapRunManifestRepository(),
-        formula_reader=MarketRsRunRepository(),
-    )
+    return BootstrapDispatchLifecycle(repository=BootstrapRunManifestRepository())
 
 
 def _is_current_bootstrap_dispatch(db, *, dispatch_id: str | None) -> bool:

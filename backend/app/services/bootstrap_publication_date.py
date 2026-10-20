@@ -13,10 +13,7 @@ from app.domain.relative_strength import (
     BALANCED_RS_FORMULA_VERSION,
     balanced_run_has_current_snapshot_contract,
 )
-from app.infra.db.repositories.market_rs_repo import (
-    MarketRsFormulaNotConfigured,
-    MarketRsRunRepository,
-)
+from app.infra.db.repositories.market_rs_repo import MarketRsRunRepository
 from app.services.market_calendar_service import MarketCalendarService
 from app.services.market_session_lag import market_session_lag, session_window_start
 
@@ -64,12 +61,11 @@ def resolve_bootstrap_publication_date(
     *,
     market: str,
     requested_date: date,
-    formula_version: str | None = None,
     repository: MarketRsRunRepository | None = None,
     calendar_service: MarketCalendarService | None = None,
     max_lag_days: int | None = None,
 ) -> BootstrapPublicationDateResolution:
-    """Align implicit bootstrap stages to the active balanced RS publication.
+    """Align implicit bootstrap stages to the balanced RS publication.
 
     Fresh bootstrap activation may intentionally publish balanced Market RS one
     or two sessions behind the calendar while benchmark data catches up. Later
@@ -79,29 +75,6 @@ def resolve_bootstrap_publication_date(
 
     normalized_market = str(market).strip().upper()
     repo = repository or MarketRsRunRepository()
-    try:
-        active_formula = formula_version or repo.active_formula(
-            db,
-            market=normalized_market,
-        )
-    except MarketRsFormulaNotConfigured:
-        return _resolution(
-            market=normalized_market,
-            requested_date=requested_date,
-            selected_date=requested_date,
-            formula_version=None,
-            reason_code="active_formula_unconfigured",
-        )
-
-    if active_formula != BALANCED_RS_FORMULA_VERSION:
-        return _resolution(
-            market=normalized_market,
-            requested_date=requested_date,
-            selected_date=requested_date,
-            formula_version=active_formula,
-            reason_code="active_formula_not_balanced",
-        )
-
     max_lag_sessions = _max_lag_days(max_lag_days)
     calendar = calendar_service or MarketCalendarService()
     window_start = session_window_start(
@@ -113,7 +86,7 @@ def resolve_bootstrap_publication_date(
     completed_runs = repo.list_completed_runs(
         db,
         market=normalized_market,
-        formula_version=active_formula,
+        formula_version=BALANCED_RS_FORMULA_VERSION,
         start_date=window_start,
         through_date=requested_date,
     )
@@ -131,7 +104,7 @@ def resolve_bootstrap_publication_date(
             market=normalized_market,
             requested_date=requested_date,
             selected_date=requested_date,
-            formula_version=active_formula,
+            formula_version=BALANCED_RS_FORMULA_VERSION,
             market_rs_run_id=getattr(latest_run, "id", None),
             lag_days=market_session_lag(
                 calendar,
@@ -145,7 +118,7 @@ def resolve_bootstrap_publication_date(
         latest_run = repo.get_latest_completed(
             db,
             market=normalized_market,
-            formula_version=active_formula,
+            formula_version=BALANCED_RS_FORMULA_VERSION,
             through_date=requested_date,
         )
         if latest_run is not None and not balanced_run_has_current_snapshot_contract(
@@ -155,7 +128,7 @@ def resolve_bootstrap_publication_date(
                 market=normalized_market,
                 requested_date=requested_date,
                 selected_date=requested_date,
-                formula_version=active_formula,
+                formula_version=BALANCED_RS_FORMULA_VERSION,
                 market_rs_run_id=getattr(latest_run, "id", None),
                 lag_days=market_session_lag(
                     calendar,
@@ -170,7 +143,7 @@ def resolve_bootstrap_publication_date(
             market=normalized_market,
             requested_date=requested_date,
             selected_date=requested_date,
-            formula_version=active_formula,
+            formula_version=BALANCED_RS_FORMULA_VERSION,
             reason_code="balanced_run_unavailable",
         )
     if run is None:
@@ -188,7 +161,7 @@ def resolve_bootstrap_publication_date(
             market=normalized_market,
             requested_date=requested_date,
             selected_date=requested_date,
-            formula_version=active_formula,
+            formula_version=BALANCED_RS_FORMULA_VERSION,
             market_rs_run_id=getattr(run, "id", None),
             lag_days=lag_days,
             reason_code="balanced_run_lag_exceeds_policy",
@@ -198,7 +171,7 @@ def resolve_bootstrap_publication_date(
         market=normalized_market,
         requested_date=requested_date,
         selected_date=selected_date,
-        formula_version=active_formula,
+        formula_version=BALANCED_RS_FORMULA_VERSION,
         market_rs_run_id=getattr(run, "id", None),
         lag_days=lag_days,
         reason_code=(

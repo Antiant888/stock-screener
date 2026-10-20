@@ -814,7 +814,6 @@ def test_rejected_activation_rolls_back_without_moving_either_pointer(tmp_path):
             static_staging_dir=tmp_path,
         )
 
-    repository.activate_formula.assert_not_called()
     feature_repository.repoint_published.assert_not_called()
     db.commit.assert_not_called()
 
@@ -852,8 +851,6 @@ def test_activation_rejects_manifest_changed_after_validation(tmp_path):
             validation=validation,
             static_staging_dir=tmp_path,
         )
-
-    repository.activate_formula.assert_not_called()
 
 
 def test_activation_rejects_market_bundle_file_changed_after_validation(
@@ -896,8 +893,6 @@ def test_activation_rejects_market_bundle_file_changed_after_validation(
             validation=validation,
             static_staging_dir=tmp_path,
         )
-
-    repository.activate_formula.assert_not_called()
 
 
 def test_validation_collects_feature_and_static_errors_without_short_circuiting(
@@ -958,7 +953,7 @@ def test_validation_collects_feature_and_static_errors_without_short_circuiting(
     )
 
 
-def test_successful_activation_revalidates_then_commits_both_pointers(
+def test_successful_activation_revalidates_then_commits_feature_pointer(
     monkeypatch, tmp_path
 ):
     events: list[str] = []
@@ -968,7 +963,6 @@ def test_successful_activation_revalidates_then_commits_both_pointers(
         universe_hash="universe-a",
         eligible_symbol_count=2,
     )
-    repository.activate_formula.side_effect = lambda *a, **k: events.append("market")
     feature_repository = MagicMock()
     feature_repository.get_run.return_value = SimpleNamespace(
         id=99,
@@ -1029,7 +1023,7 @@ def test_successful_activation_revalidates_then_commits_both_pointers(
         static_staging_dir=tmp_path,
     )
 
-    assert events == ["market", "feature", "commit"]
+    assert events == ["feature", "commit"]
     feature_repository.repoint_published.assert_called_once_with(
         99,
         pointer_key="latest_published_market:US",
@@ -1104,7 +1098,6 @@ def test_live_activation_revalidates_runtime_groups_before_commit(monkeypatch):
             static_staging_dir=None,
         )
 
-    repository.activate_formula.assert_not_called()
     db.commit.assert_not_called()
     db.rollback.assert_called_once_with()
 
@@ -1179,6 +1172,5 @@ def test_live_activation_revalidates_runtime_rrg_before_commit(monkeypatch):
             static_staging_dir=None,
         )
 
-    repository.activate_formula.assert_not_called()
     db.commit.assert_not_called()
     db.rollback.assert_called_once_with()

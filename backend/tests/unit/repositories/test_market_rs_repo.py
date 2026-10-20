@@ -1,24 +1,17 @@
 from datetime import date, timedelta
 
-import pytest
 from sqlalchemy import inspect
 from sqlalchemy.orm import sessionmaker
 
 from app.domain.relative_strength import (
     BALANCED_RS_FORMULA_VERSION,
-    LEGACY_RS_FORMULA_VERSION,
     StockRsScore,
 )
 from app.infra.db.models.relative_strength import (
-    MarketRsFormulaPointer,
     MarketRsRun,
     StockRsSnapshot,
 )
-from app.infra.db.repositories.market_rs_repo import (
-    MarketRsFormulaNotConfigured,
-    MarketRsFormulaUnsupported,
-    MarketRsRunRepository,
-)
+from app.infra.db.repositories.market_rs_repo import MarketRsRunRepository
 
 AS_OF = date(2026, 4, 10)
 
@@ -162,7 +155,7 @@ def test_list_completed_runs_filters_window_formula_and_status(db_session):
             MarketRsRun(
                 **_run_kwargs(
                     as_of_date=AS_OF,
-                    formula_version=LEGACY_RS_FORMULA_VERSION,
+                    formula_version="legacy-linear-v1",
                 ),
                 status="completed",
                 eligible_symbol_count=0,
@@ -246,83 +239,10 @@ def test_failed_restart_clears_partial_rows_but_completed_run_is_idempotent(
     assert len(completed.rows) == 2
 
 
-def test_formula_activation_is_market_scoped_and_validated(db_session):
-    repo = MarketRsRunRepository()
-    db_session.add_all(
-        [
-            MarketRsFormulaPointer(
-                market="US", formula_version=LEGACY_RS_FORMULA_VERSION
-            ),
-            MarketRsFormulaPointer(
-                market="HK", formula_version=LEGACY_RS_FORMULA_VERSION
-            ),
-        ]
-    )
-    db_session.commit()
-
-    with pytest.raises(ValueError, match="completed"):
-        repo.activate_formula(
-            db_session,
-            market="US",
-            formula_version=BALANCED_RS_FORMULA_VERSION,
-        )
-
-    db_session.add(
-        MarketRsRun(
-            **_run_kwargs(),
-            status="completed",
-            eligible_symbol_count=0,
-            excluded_symbol_count=2,
-            diagnostics_json={},
-        )
-    )
-    db_session.commit()
-    repo.activate_formula(
-        db_session,
-        market="US",
-        formula_version=BALANCED_RS_FORMULA_VERSION,
-    )
-
-    assert repo.active_formula(db_session, market="US") == BALANCED_RS_FORMULA_VERSION
-    assert repo.active_formula(db_session, market="HK") == LEGACY_RS_FORMULA_VERSION
-
-    repo.activate_formula(
-        db_session,
-        market="US",
-        formula_version=LEGACY_RS_FORMULA_VERSION,
-    )
-    assert repo.active_formula(db_session, market="US") == LEGACY_RS_FORMULA_VERSION
-
-    with pytest.raises(MarketRsFormulaUnsupported):
-        repo.activate_formula(db_session, market="US", formula_version="unknown")
 
 
-def test_active_formula_rejects_an_unconfigured_market(db_session):
-    with pytest.raises(MarketRsFormulaNotConfigured):
-        MarketRsRunRepository().active_formula(db_session, market="US")
 
 
-def test_provision_formula_pointers_adds_missing_legacy_rows_without_overwrite(
-    db_session,
-):
-    repo = MarketRsRunRepository()
-    db_session.add(
-        MarketRsFormulaPointer(
-            market="US",
-            formula_version=BALANCED_RS_FORMULA_VERSION,
-        )
-    )
-    db_session.commit()
-
-    provisioned = repo.provision_formula_pointers(
-        db_session,
-        markets=("US", "nz", "NZ"),
-    )
-    db_session.commit()
-
-    assert provisioned == ("NZ",)
-    assert repo.active_formula(db_session, market="US") == BALANCED_RS_FORMULA_VERSION
-    assert repo.active_formula(db_session, market="NZ") == LEGACY_RS_FORMULA_VERSION
 
 
 def test_two_sessions_share_one_completed_winner_and_never_read_partial_rows(

@@ -106,7 +106,6 @@ def test_runtime_market_rs_default_input_loader_remains_strict_for_fresh_import_
     runtime = CanonicalRsRuntime(
         session_factory=lambda: db_session,
         market_calendar=_MarketRsCalendarStub(),
-        legacy_group_service_provider=lambda: object(),
     )
 
     with pytest.raises(MarketRsInputUnavailable) as exc_info:
@@ -132,7 +131,6 @@ def test_rollout_market_rs_uses_current_active_fallback_for_fresh_import_history
     runtime = CanonicalRsRuntime(
         session_factory=lambda: db_session,
         market_calendar=_MarketRsCalendarStub(),
-        legacy_group_service_provider=lambda: object(),
     )
 
     inputs = runtime.rollout_service().backfill_service.input_loader.load(

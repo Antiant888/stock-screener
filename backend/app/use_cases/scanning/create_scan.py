@@ -548,8 +548,9 @@ class CreateScanUseCase:
             universe_hash = hash_universe_symbols(symbols)
 
             # Last-published mode never takes the exact shortcut: a hash match
-            # can be an older run than the Market's pointer, use legacy RS, or
-            # lack rows for some members. The pinned resolver checks all three.
+            # can be an older run than the Market's pointer, lack a canonical RS
+            # identity, or lack rows for some members. The pinned resolver checks
+            # all three.
             if should_attempt_instant and not last_published:
                 try:
                     instant_match = uow.feature_runs.find_latest_published_exact(

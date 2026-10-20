@@ -4,10 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from app.domain.relative_strength import (
-    BALANCED_RS_FORMULA_VERSION,
-    LEGACY_RS_FORMULA_VERSION,
-)
+from app.domain.relative_strength import BALANCED_RS_FORMULA_VERSION
 from app.services.static_artifact_combiner import (
     StaticArtifactCombiner,
     StaticArtifactFormulaError,
@@ -21,6 +18,11 @@ from app.services.static_site_export_service import (
     STATIC_SITE_SCHEMA_VERSION,
     STATIC_SUPPORTED_MARKETS,
 )
+
+
+# An artifact built before the single-formula cutover.
+STALE_FORMULA = "legacy-linear-v1"
+
 
 
 def write_market_artifact(
@@ -146,7 +148,7 @@ def test_combiner_accepts_downloaded_market_artifact_layout(tmp_path):
 
 def test_combiner_rejects_wrong_formula_current_without_using_fallback(tmp_path):
     current = write_market_artifact(
-        tmp_path / "current", market="US", formula=LEGACY_RS_FORMULA_VERSION
+        tmp_path / "current", market="US", formula=STALE_FORMULA
     )
     fallback = write_market_artifact(
         tmp_path / "fallback", market="US", formula=BALANCED_RS_FORMULA_VERSION
@@ -168,7 +170,7 @@ def test_combiner_rejects_wrong_formula_current_without_using_fallback(tmp_path)
 
 def test_combiner_rejects_wrong_formula_fallback(tmp_path):
     fallback = write_market_artifact(
-        tmp_path / "fallback", market="HK", formula=LEGACY_RS_FORMULA_VERSION
+        tmp_path / "fallback", market="HK", formula=STALE_FORMULA
     )
     with pytest.raises(NoPublishedStaticMarketArtifact, match="HK"):
         combiner().combine(
@@ -212,7 +214,7 @@ def test_combiner_allows_legacy_fallback_outside_explicit_formula_policy(tmp_pat
     fallback = write_market_artifact(
         tmp_path / "fallback",
         market="HK",
-        formula=LEGACY_RS_FORMULA_VERSION,
+        formula=STALE_FORMULA,
     )
 
     result = combiner().combine(
@@ -231,7 +233,7 @@ def test_combiner_allows_legacy_fallback_outside_explicit_formula_policy(tmp_pat
         BALANCED_RS_FORMULA_VERSION
     )
     assert result.manifest["markets"]["HK"]["rs_formula_version"] == (
-        LEGACY_RS_FORMULA_VERSION
+        STALE_FORMULA
     )
 
 
@@ -322,7 +324,7 @@ def test_combiner_validates_optional_market_formula_when_artifact_exists(tmp_pat
     current = write_market_artifact(
         tmp_path / "current",
         market="CN",
-        formula=LEGACY_RS_FORMULA_VERSION,
+        formula=STALE_FORMULA,
     )
 
     with pytest.raises(StaticArtifactFormulaError, match="CN current"):
@@ -341,7 +343,7 @@ def test_combiner_rejects_wrong_scan_manifest_formula(tmp_path):
         tmp_path / "current",
         market="US",
         formula=BALANCED_RS_FORMULA_VERSION,
-        scan_formula=LEGACY_RS_FORMULA_VERSION,
+        scan_formula=STALE_FORMULA,
     )
 
     with pytest.raises(
@@ -362,7 +364,7 @@ def test_combiner_rejects_wrong_scan_chunk_formula(tmp_path):
         tmp_path / "current",
         market="US",
         formula=BALANCED_RS_FORMULA_VERSION,
-        chunk_formula=LEGACY_RS_FORMULA_VERSION,
+        chunk_formula=STALE_FORMULA,
     )
 
     with pytest.raises(
@@ -437,7 +439,7 @@ def test_combiner_filters_revision_two_breadth_fallback_without_rs_policy(tmp_pa
     fallback = write_market_artifact(
         tmp_path / "fallback",
         market="HK",
-        formula=LEGACY_RS_FORMULA_VERSION,
+        formula=STALE_FORMULA,
         breadth_revision=2,
     )
 
@@ -956,7 +958,7 @@ def test_publisher_selection_does_not_warn_per_market_reuse(tmp_path: Path) -> N
     selection = write_market_artifact(
         tmp_path / "selection", market="US", formula=BALANCED_RS_FORMULA_VERSION
     )
-    write_market_artifact(selection, market="HK", formula=LEGACY_RS_FORMULA_VERSION)
+    write_market_artifact(selection, market="HK", formula=STALE_FORMULA)
 
     result = combiner().combine(
         artifacts_dir=tmp_path / "empty",

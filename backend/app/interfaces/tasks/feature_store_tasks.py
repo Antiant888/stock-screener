@@ -276,8 +276,7 @@ def _run_serves_ranking_date(feature_run, *, ranking_date: date) -> bool:
     """Report whether a run's RS identity is coherent for ``ranking_date``.
 
     Reuses the identity resolver rather than comparing ``rs_as_of_date`` by
-    hand: legacy runs carry no ``rs_formula_version`` and are deliberately
-    accepted for any date, and only the resolver encodes that rule.
+    hand, so the rules for incomplete RS metadata live in one place.
     """
     from app.services.feature_run_rs_identity import (
         FeatureRunRsIdentityError,
@@ -579,7 +578,6 @@ def build_daily_snapshot(
     bootstrap_cache_only_if_covered: bool = False,
     bootstrap_coverage_report: dict | None = None,
     bootstrap_coverage_retry_count: int = 0,
-    rs_formula_version_override: str | None = None,
     skip_ibd_metadata_enrichment: bool = False,
 ) -> dict:
     """Build a full feature snapshot for a trading day.
@@ -775,43 +773,26 @@ def build_daily_snapshot(
                     feature_run_matches_rs_source,
                 )
 
-                session = getattr(uow_check, "session", None)
-                repository = MarketRsRunRepository()
-                formula = rs_formula_version_override or repository.active_formula(
-                    session,
+                exact_run = MarketRsRunRepository().get_completed_exact(
+                    getattr(uow_check, "session", None),
                     market=effective_market,
+                    as_of_date=as_of,
+                    formula_version=BALANCED_RS_FORMULA_VERSION,
+                    load_rows=False,
                 )
-                market_rs_run_id = None
-                market_rs_universe_size = None
-                source_compatible = True
-                if formula == BALANCED_RS_FORMULA_VERSION:
-                    exact_run = repository.get_completed_exact(
-                        session,
-                        market=effective_market,
-                        as_of_date=as_of,
-                        formula_version=formula,
-                        load_rows=False,
+                if (
+                    exact_run is None
+                    or not balanced_run_has_current_snapshot_contract(exact_run)
+                    or not feature_run_matches_rs_source(
+                        matching_run,
+                        identity=GroupSnapshotIdentity(
+                            effective_market,
+                            as_of,
+                            BALANCED_RS_FORMULA_VERSION,
+                        ),
+                        market_rs_run_id=exact_run.id,
+                        universe_size=exact_run.eligible_symbol_count,
                     )
-                    source_compatible = bool(
-                        exact_run is not None
-                        and balanced_run_has_current_snapshot_contract(exact_run)
-                    )
-                    market_rs_run_id = getattr(exact_run, "id", None)
-                    market_rs_universe_size = getattr(
-                        exact_run,
-                        "eligible_symbol_count",
-                        None,
-                    )
-                identity = GroupSnapshotIdentity(
-                    effective_market,
-                    as_of,
-                    formula,
-                )
-                if not source_compatible or not feature_run_matches_rs_source(
-                    matching_run,
-                    identity=identity,
-                    market_rs_run_id=market_rs_run_id,
-                    universe_size=market_rs_universe_size,
                 ):
                     matching_run = None
             if matching_run is not None:
@@ -943,7 +924,6 @@ def build_daily_snapshot(
         bootstrap_coverage_report=effective_bootstrap_coverage_report,
         publish_pointer_key=publish_pointer_key,
         market=effective_market,
-        rs_formula_version_override=rs_formula_version_override,
     )
 
     try:

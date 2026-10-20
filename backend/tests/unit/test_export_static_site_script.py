@@ -281,49 +281,16 @@ def _stub_market_rs_snapshot_task(monkeypatch, run) -> None:
     )
 
 
-def _stub_balanced_rs_formula_activation(monkeypatch, events: list[str]) -> None:
-    @contextmanager
-    def fake_session():
-        yield SimpleNamespace(commit=lambda: events.append("formula_commit"))
-
-    class FakeMarketRsRepository:
-        def activate_formula(self, _db, *, market, formula_version):
-            events.append(f"activate:{market}:{formula_version}")
-
-    monkeypatch.setattr(export_script, "SessionLocal", fake_session)
-    monkeypatch.setattr(
-        export_script,
-        "MarketRsRunRepository",
-        FakeMarketRsRepository,
-        raising=False,
-    )
 
 
-def test_run_daily_refresh_activates_balanced_rs_before_static_consumers(
+def test_run_daily_refresh_prepares_balanced_rs_before_static_consumers(
     monkeypatch,
     _stub_balanced_static_rs_preparation,
 ):
     events: list[str] = []
 
-    @contextmanager
-    def fake_session():
-        yield SimpleNamespace(commit=lambda: events.append("formula_commit"))
-
-    class FakeMarketRsRepository:
-        def activate_formula(self, _db, *, market, formula_version):
-            assert market == "US"
-            assert formula_version == BALANCED_RS_FORMULA_VERSION
-            events.append("formula_activate")
-
     _restore_real_balanced_static_rs(monkeypatch, _stub_balanced_static_rs_preparation)
     _stub_available_static_rs_benchmark(monkeypatch, benchmark_symbol="SPY")
-    monkeypatch.setattr(export_script, "SessionLocal", fake_session)
-    monkeypatch.setattr(
-        export_script,
-        "MarketRsRunRepository",
-        FakeMarketRsRepository,
-        raising=False,
-    )
     _stub_market_rs_snapshot_task(
         monkeypatch,
         lambda **kwargs: events.append("market_rs_snapshot")
@@ -391,8 +358,6 @@ def test_run_daily_refresh_activates_balanced_rs_before_static_consumers(
     assert events == [
         "prices",
         "market_rs_snapshot",
-        "formula_activate",
-        "formula_commit",
         "exposure",
         "feature_snapshot",
         "group_history",
@@ -424,25 +389,10 @@ def test_prepare_balanced_static_rs_force_hydrates_required_benchmark_anchor(
                 ),
             )
 
-    @contextmanager
-    def fake_session():
-        yield SimpleNamespace(commit=lambda: events.append("formula_commit"))
-
-    class FakeMarketRsRepository:
-        def activate_formula(self, _db, *, market, formula_version):
-            events.append(f"activate:{market}:{formula_version}")
-
     real_helper = _stub_balanced_static_rs_preparation
     if real_helper is not None:
         monkeypatch.setattr(export_script, "_prepare_balanced_static_rs", real_helper)
     monkeypatch.setattr(export_script, "get_benchmark_cache", lambda: FakeBenchmarkCache())
-    monkeypatch.setattr(export_script, "SessionLocal", fake_session)
-    monkeypatch.setattr(
-        export_script,
-        "MarketRsRunRepository",
-        FakeMarketRsRepository,
-        raising=False,
-    )
     monkeypatch.setattr(
         market_rs_tasks,
         "calculate_market_rs_snapshot",
@@ -471,10 +421,7 @@ def test_prepare_balanced_static_rs_force_hydrates_required_benchmark_anchor(
             "required_as_of_date": date(2026, 7, 24),
         }
     ]
-    assert events == [
-        f"activate:SG:{BALANCED_RS_FORMULA_VERSION}",
-        "formula_commit",
-    ]
+    assert events == []
     assert result["market_rs_run_id"] == 42
 
 
@@ -508,25 +455,10 @@ def test_prepare_balanced_static_rs_retries_stale_benchmark_anchor_before_market
                 ),
             )
 
-    @contextmanager
-    def fake_session():
-        yield SimpleNamespace(commit=lambda: events.append("formula_commit"))
-
-    class FakeMarketRsRepository:
-        def activate_formula(self, _db, *, market, formula_version):
-            events.append(f"activate:{market}:{formula_version}")
-
     real_helper = _stub_balanced_static_rs_preparation
     if real_helper is not None:
         monkeypatch.setattr(export_script, "_prepare_balanced_static_rs", real_helper)
     monkeypatch.setattr(export_script, "get_benchmark_cache", lambda: FakeBenchmarkCache())
-    monkeypatch.setattr(export_script, "SessionLocal", fake_session)
-    monkeypatch.setattr(
-        export_script,
-        "MarketRsRunRepository",
-        FakeMarketRsRepository,
-        raising=False,
-    )
     monkeypatch.setattr(
         market_rs_tasks,
         "calculate_market_rs_snapshot",
@@ -563,11 +495,7 @@ def test_prepare_balanced_static_rs_retries_stale_benchmark_anchor_before_market
             "required_as_of_date": date(2026, 7, 24),
         },
     ]
-    assert events == [
-        "market_rs_snapshot",
-        f"activate:SG:{BALANCED_RS_FORMULA_VERSION}",
-        "formula_commit",
-    ]
+    assert events == ["market_rs_snapshot"]
     assert result["market_rs_run_id"] == 42
 
 
@@ -604,25 +532,10 @@ def test_prepare_balanced_static_rs_uses_cached_resolution_after_forced_hydratio
                 ),
             )
 
-    @contextmanager
-    def fake_session():
-        yield SimpleNamespace(commit=lambda: events.append("formula_commit"))
-
-    class FakeMarketRsRepository:
-        def activate_formula(self, _db, *, market, formula_version):
-            events.append(f"activate:{market}:{formula_version}")
-
     real_helper = _stub_balanced_static_rs_preparation
     if real_helper is not None:
         monkeypatch.setattr(export_script, "_prepare_balanced_static_rs", real_helper)
     monkeypatch.setattr(export_script, "get_benchmark_cache", lambda: FakeBenchmarkCache())
-    monkeypatch.setattr(export_script, "SessionLocal", fake_session)
-    monkeypatch.setattr(
-        export_script,
-        "MarketRsRunRepository",
-        FakeMarketRsRepository,
-        raising=False,
-    )
     monkeypatch.setattr(
         market_rs_tasks,
         "calculate_market_rs_snapshot",
@@ -644,11 +557,7 @@ def test_prepare_balanced_static_rs_uses_cached_resolution_after_forced_hydratio
     )
 
     assert [call["force_refresh"] for call in calls] == [True, True, False]
-    assert events == [
-        "market_rs_snapshot",
-        f"activate:SG:{BALANCED_RS_FORMULA_VERSION}",
-        "formula_commit",
-    ]
+    assert events == ["market_rs_snapshot"]
     assert result["market_rs_run_id"] == 42
 
 
@@ -724,14 +633,6 @@ def test_prepare_balanced_static_rs_hydrates_fallback_after_anchor_gap(
             hydrated_symbols.append(kwargs)
             return SimpleNamespace()
 
-    @contextmanager
-    def fake_session():
-        yield SimpleNamespace(commit=lambda: events.append("formula_commit"))
-
-    class FakeMarketRsRepository:
-        def activate_formula(self, _db, *, market, formula_version):
-            events.append(f"activate:{market}:{formula_version}")
-
     def fake_market_rs_run(**kwargs):
         market_rs_calls.append(kwargs)
         if len(market_rs_calls) == 1:
@@ -760,13 +661,6 @@ def test_prepare_balanced_static_rs_hydrates_fallback_after_anchor_gap(
     if real_helper is not None:
         monkeypatch.setattr(export_script, "_prepare_balanced_static_rs", real_helper)
     monkeypatch.setattr(export_script, "get_benchmark_cache", lambda: FakeBenchmarkCache())
-    monkeypatch.setattr(export_script, "SessionLocal", fake_session)
-    monkeypatch.setattr(
-        export_script,
-        "MarketRsRunRepository",
-        FakeMarketRsRepository,
-        raising=False,
-    )
     monkeypatch.setattr(
         market_rs_tasks,
         "calculate_market_rs_snapshot",
@@ -787,10 +681,7 @@ def test_prepare_balanced_static_rs_hydrates_fallback_after_anchor_gap(
         }
     ]
     assert len(market_rs_calls) == 2
-    assert events == [
-        f"activate:SG:{BALANCED_RS_FORMULA_VERSION}",
-        "formula_commit",
-    ]
+    assert events == []
     assert result["market_rs_run_id"] == 42
 
 
@@ -802,7 +693,6 @@ def test_prepare_balanced_static_rs_reports_price_coverage_gap_without_activatio
 
     _restore_real_balanced_static_rs(monkeypatch, _stub_balanced_static_rs_preparation)
     _stub_available_static_rs_benchmark(monkeypatch, benchmark_symbol="^GDAXI")
-    _stub_balanced_rs_formula_activation(monkeypatch, events)
     _stub_market_rs_snapshot_task(
         monkeypatch,
         lambda **kwargs: {
@@ -1354,7 +1244,6 @@ def test_run_daily_refresh_bootstraps_universe_before_other_tasks(monkeypatch):
             "market": market,
             "publish_pointer_key": f"latest_published_market:{market}",
             "ignore_runtime_market_gate": True,
-            "rs_formula_version_override": BALANCED_RS_FORMULA_VERSION,
             "skip_ibd_metadata_enrichment": True,
         }
     assert set(results["price_refresh"]) == set(expected_markets)
@@ -2007,7 +1896,6 @@ def test_run_daily_refresh_limits_work_to_selected_market(monkeypatch):
                 "market": "HK",
                 "publish_pointer_key": "latest_published_market:HK",
                 "ignore_runtime_market_gate": True,
-                "rs_formula_version_override": BALANCED_RS_FORMULA_VERSION,
                 "skip_ibd_metadata_enrichment": True,
             },
         ),
@@ -2079,7 +1967,6 @@ def test_run_daily_refresh_uses_per_market_trading_date_for_in(monkeypatch):
             "market": "IN",
             "publish_pointer_key": "latest_published_market:IN",
             "ignore_runtime_market_gate": True,
-            "rs_formula_version_override": BALANCED_RS_FORMULA_VERSION,
             "skip_ibd_metadata_enrichment": True,
         }
     ]
@@ -2127,7 +2014,6 @@ def test_run_daily_refresh_uses_static_daily_mode_and_group_rank_bypass(monkeypa
         "market": "US",
         "publish_pointer_key": "latest_published_market:US",
         "ignore_runtime_market_gate": True,
-        "rs_formula_version_override": BALANCED_RS_FORMULA_VERSION,
         "skip_ibd_metadata_enrichment": True,
     }
 

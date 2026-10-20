@@ -11,12 +11,9 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.database import Base
-from app.domain.relative_strength import (
-    BALANCED_RS_FORMULA_VERSION,
-    LEGACY_RS_FORMULA_VERSION,
-)
+from app.domain.relative_strength import BALANCED_RS_FORMULA_VERSION
 from app.infra.db.models.feature_store import FeatureRun
-from app.infra.db.models.relative_strength import MarketRsFormulaPointer, MarketRsRun
+from app.infra.db.models.relative_strength import MarketRsRun
 from app.models.app_settings import AppSetting
 from app.models.industry import IBDGroupRank
 from app.models.market_breadth import MarketBreadth
@@ -33,6 +30,11 @@ from app.services.bootstrap_readiness_service import (
     PRE_BOOTSTRAP_SEED_IMPORT_SCHEMA_VERSION,
     BootstrapReadinessService,
 )
+
+
+# Rows the database still holds from before the single-formula cutover.
+STORED_LEGACY_FORMULA = "legacy-linear-v1"
+
 
 
 class FakeBootstrapReadinessService(BootstrapReadinessService):
@@ -216,16 +218,6 @@ def test_sql_service_ignores_inactive_universe_rows_for_core_readiness(readiness
     assert result.market_results["US"].scan_ready is True
 
 
-def test_pristine_installation_ignores_formula_pointer_provisioning(readiness_db) -> None:
-    readiness_db.add(
-        MarketRsFormulaPointer(
-            market="US",
-            formula_version=LEGACY_RS_FORMULA_VERSION,
-        )
-    )
-    readiness_db.commit()
-
-    assert BootstrapReadinessService().is_pristine_installation(readiness_db) is True
 
 
 def test_pristine_installation_rejects_inactive_universe_rows(readiness_db) -> None:
@@ -282,12 +274,12 @@ def test_pristine_installation_rejects_inactive_universe_rows(readiness_db) -> N
             date=date(2026, 5, 1),
             rank=1,
             avg_rs_rating=90,
-            rs_formula_version=LEGACY_RS_FORMULA_VERSION,
+            rs_formula_version=STORED_LEGACY_FORMULA,
         ),
         MarketRsRun(
             market="US",
             as_of_date=date(2026, 5, 1),
-            formula_version=LEGACY_RS_FORMULA_VERSION,
+            formula_version=STORED_LEGACY_FORMULA,
             status="completed",
             benchmark_symbol="SPY",
             benchmark_as_of_date=date(2026, 5, 1),
@@ -490,12 +482,12 @@ def test_pre_bootstrap_seed_import_keeps_valid_old_startup_marker(
             date=date(2026, 5, 1),
             rank=1,
             avg_rs_rating=90,
-            rs_formula_version=LEGACY_RS_FORMULA_VERSION,
+            rs_formula_version=STORED_LEGACY_FORMULA,
         ),
         MarketRsRun(
             market="US",
             as_of_date=date(2026, 5, 1),
-            formula_version=LEGACY_RS_FORMULA_VERSION,
+            formula_version=STORED_LEGACY_FORMULA,
             status="completed",
             benchmark_symbol="SPY",
             benchmark_as_of_date=date(2026, 5, 1),
@@ -533,41 +525,52 @@ def test_pre_bootstrap_seed_import_rejects_bootstrap_outputs(
     assert service.is_pre_bootstrap_seed_import_installation(readiness_db) is False
 
 
-def test_market_readiness_rejects_formula_pointer_mismatch(readiness_db) -> None:
+def test_market_readiness_requires_a_completed_balanced_run(readiness_db) -> None:
     seed_core_market_data(readiness_db)
     seed_scan(readiness_db)
-    readiness_db.add(
-        MarketRsFormulaPointer(
-            market="US",
-            formula_version=LEGACY_RS_FORMULA_VERSION,
-        )
-    )
-    readiness_db.commit()
+    expectation = {"US": BALANCED_RS_FORMULA_VERSION}
 
-    result = BootstrapReadinessService().evaluate(
+    before = BootstrapReadinessService().evaluate(
         readiness_db,
         enabled_markets=["US"],
-        expected_formula_versions={"US": BALANCED_RS_FORMULA_VERSION},
+        expected_formula_versions=expectation,
     ).market_results["US"]
 
-    assert result.core_ready is True
-    assert result.scan_ready is True
-    assert result.rs_ready is False
-    assert result.ready is False
+    assert before.core_ready is True
+    assert before.scan_ready is True
+    assert before.rs_ready is False
+    assert before.ready is False
 
-
-def test_market_readiness_keeps_legacy_compatibility_without_expectation(
-    readiness_db,
-) -> None:
-    seed_core_market_data(readiness_db)
-    seed_scan(readiness_db)
     readiness_db.add(
-        MarketRsFormulaPointer(
+        MarketRsRun(
             market="US",
-            formula_version=LEGACY_RS_FORMULA_VERSION,
+            as_of_date=date(2026, 5, 1),
+            formula_version=BALANCED_RS_FORMULA_VERSION,
+            status="completed",
+            benchmark_symbol="SPY",
+            benchmark_as_of_date=date(2026, 5, 1),
+            universe_hash="hash",
+            expected_symbol_count=0,
+            eligible_symbol_count=0,
+            excluded_symbol_count=0,
+            diagnostics_json={},
         )
     )
     readiness_db.commit()
+
+    after = BootstrapReadinessService().evaluate(
+        readiness_db,
+        enabled_markets=["US"],
+        expected_formula_versions=expectation,
+    ).market_results["US"]
+
+    assert after.rs_ready is True
+    assert after.ready is True
+
+
+def test_market_readiness_is_rs_ready_without_expectation(readiness_db) -> None:
+    seed_core_market_data(readiness_db)
+    seed_scan(readiness_db)
 
     result = BootstrapReadinessService().evaluate(
         readiness_db,

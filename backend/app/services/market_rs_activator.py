@@ -201,11 +201,6 @@ class MarketRsActivator:
             )
             if runtime_errors:
                 raise MarketRsActivationRejected(runtime_errors)
-            self.repository.activate_formula(
-                db,
-                market=normalized,
-                formula_version=formula_version,
-            )
             feature_repo.repoint_published(
                 feature_run_id,
                 pointer_key=f"latest_published_market:{normalized}",

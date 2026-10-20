@@ -8,7 +8,6 @@ from app.domain.relative_strength import (
     BALANCED_RS_FORMULA_VERSION,
     BALANCED_RS_PRICE_BASIS,
     BALANCED_RS_SNAPSHOT_SCHEMA_VERSION,
-    LEGACY_RS_FORMULA_VERSION,
 )
 from app.infra.db.models.relative_strength import MarketRsRun, StockRsSnapshot
 from app.models.industry import IBDGroupRank, IBDIndustryGroup
@@ -276,7 +275,7 @@ def test_canonical_and_legacy_group_rows_coexist(db_session):
             num_stocks_rs_above_80=3,
             top_symbol="AAA",
             top_rs_rating=99.0,
-            rs_formula_version=LEGACY_RS_FORMULA_VERSION,
+            rs_formula_version="legacy-linear-v1",
         )
     )
     db_session.commit()
@@ -292,7 +291,7 @@ def test_canonical_and_legacy_group_rows_coexist(db_session):
         db_session.query(IBDGroupRank).order_by(IBDGroupRank.rs_formula_version).all()
     )
     assert {row.rs_formula_version for row in rows} == {
-        LEGACY_RS_FORMULA_VERSION,
+        "legacy-linear-v1",
         BALANCED_RS_FORMULA_VERSION,
     }
 

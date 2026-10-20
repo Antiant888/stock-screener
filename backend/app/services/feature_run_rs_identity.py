@@ -4,7 +4,6 @@ from datetime import date
 from app.domain.feature_store.run_metadata import feature_run_market
 from app.domain.relative_strength import (
     BALANCED_RS_FORMULA_VERSION,
-    LEGACY_RS_FORMULA_VERSION,
     GroupSnapshotIdentity,
     RsPublicationIdentity,
 )
@@ -99,18 +98,7 @@ def resolve_feature_run_rs_identity(
             identity_source="persisted",
         )
     if all(value is None for value in canonical_values):
-        return FeatureRunRsIdentityResolution(
-            publication=RsPublicationIdentity(
-                snapshot=GroupSnapshotIdentity(
-                    market,
-                    ranking_date,
-                    LEGACY_RS_FORMULA_VERSION,
-                ),
-                market_rs_run_id=None,
-                universe_size=None,
-            ),
-            identity_source="inferred_legacy",
-        )
+        raise FeatureRunRsIdentityError("Feature run has no RS identity metadata")
     raise FeatureRunRsIdentityError(
         "Feature run has partial canonical RS metadata without rs_formula_version"
     )

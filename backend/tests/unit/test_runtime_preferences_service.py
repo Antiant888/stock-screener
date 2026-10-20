@@ -6,8 +6,6 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.domain.relative_strength import LEGACY_RS_FORMULA_VERSION
-
 
 @pytest.fixture(autouse=True)
 def _no_bootstrap_manifest(monkeypatch):
@@ -29,13 +27,11 @@ class _FakeBootstrapReadinessService:
         *,
         empty_system,
         market_results,
-        formula_versions=None,
         calls=None,
     ):
         self._module = module
         self._empty_system = empty_system
         self._market_results = market_results
-        self._formula_versions = formula_versions or {}
         self.calls = calls if calls is not None else []
 
     def evaluate(
@@ -55,10 +51,7 @@ class _FakeBootstrapReadinessService:
                     market=market,
                     core_ready=core_ready,
                     scan_ready=scan_ready,
-                    rs_ready=(
-                        market not in expectations
-                        or self._formula_versions.get(market) == expectations[market]
-                    ),
+                    rs_ready=market not in expectations,
                 )
                 for market, core_ready, scan_ready in self._market_results
             },
@@ -116,7 +109,6 @@ def test_failed_fresh_activation_requires_pending_balanced_formula(monkeypatch):
             module,
             empty_system=False,
             market_results=[("US", True, True)],
-            formula_versions={"US": LEGACY_RS_FORMULA_VERSION},
         ),
     )
 

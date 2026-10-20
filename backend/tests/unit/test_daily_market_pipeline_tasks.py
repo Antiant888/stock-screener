@@ -1098,15 +1098,9 @@ def test_guard_exposure_result_skips_without_aborting_pipeline():
     }
 
 
-def test_guard_market_rs_blocks_failed_result_when_balanced_is_active(monkeypatch):
+def test_guard_market_rs_blocks_failed_result():
     from app.domain.relative_strength import BALANCED_RS_FORMULA_VERSION
     from app.tasks import daily_market_pipeline_tasks as module
-
-    monkeypatch.setattr(
-        module,
-        "_active_formula_for_market",
-        lambda _market: BALANCED_RS_FORMULA_VERSION,
-    )
 
     with pytest.raises(RuntimeError, match="Canonical Market RS failed for US"):
         module.guard_market_rs_result.run(
@@ -1122,48 +1116,11 @@ def test_guard_market_rs_blocks_failed_result_when_balanced_is_active(monkeypatc
         )
 
 
-def test_guard_market_rs_allows_failed_shadow_when_legacy_is_active(monkeypatch):
-    from app.domain.relative_strength import (
-        BALANCED_RS_FORMULA_VERSION,
-        LEGACY_RS_FORMULA_VERSION,
-    )
-    from app.tasks import daily_market_pipeline_tasks as module
-
-    monkeypatch.setattr(
-        module,
-        "_active_formula_for_market",
-        lambda _market: LEGACY_RS_FORMULA_VERSION,
-    )
-
-    assert module.guard_market_rs_result.run(
-        {
-            "status": "failed",
-            "market": "US",
-            "as_of_date": "2026-04-10",
-            "formula_version": BALANCED_RS_FORMULA_VERSION,
-            "reason_code": "benchmark_anchor_missing",
-        },
-        market="US",
-        calculation_date="2026-04-10",
-    ) == {
-        "status": "skipped",
-        "market": "US",
-        "stage": "market_rs_shadow",
-        "as_of_date": "2026-04-10",
-        "formula_version": BALANCED_RS_FORMULA_VERSION,
-        "market_rs_run_id": None,
-    }
 
 
-def test_guard_market_rs_accepts_exact_completed_balanced_run(monkeypatch):
+def test_guard_market_rs_accepts_exact_completed_balanced_run():
     from app.domain.relative_strength import BALANCED_RS_FORMULA_VERSION
     from app.tasks import daily_market_pipeline_tasks as module
-
-    monkeypatch.setattr(
-        module,
-        "_active_formula_for_market",
-        lambda _market: BALANCED_RS_FORMULA_VERSION,
-    )
 
     assert module.guard_market_rs_result.run(
         {

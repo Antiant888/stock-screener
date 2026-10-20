@@ -22,7 +22,6 @@ from app.domain.relative_strength import (
     BALANCED_RS_FORMULA_VERSION,
 )
 from app.infra.db.models.feature_store import FeatureRunPointer, StockFeatureDaily
-from app.infra.db.repositories.market_rs_repo import MarketRsRunRepository
 from app.scripts._runtime import prepare_runtime, repo_root
 from app.services.benchmark_cache_service import BenchmarkFallbackPolicy
 from app.services.benchmark_resolution import BenchmarkResolution
@@ -831,13 +830,6 @@ def _prepare_balanced_static_rs(*, market: str, as_of_date: date) -> dict[str, A
             f"on {as_of_date.isoformat()}: {result}"
         )
 
-    with SessionLocal() as db:
-        MarketRsRunRepository().activate_formula(
-            db,
-            market=normalized_market,
-            formula_version=BALANCED_RS_FORMULA_VERSION,
-        )
-        db.commit()
     return result
 
 
@@ -1228,7 +1220,6 @@ def _run_daily_refresh(
                 market=selected_market,
                 publish_pointer_key=_market_pointer_key(selected_market),
                 ignore_runtime_market_gate=True,
-                rs_formula_version_override=BALANCED_RS_FORMULA_VERSION,
                 skip_ibd_metadata_enrichment=True,
             )
             feature_snapshots[selected_market] = market_result

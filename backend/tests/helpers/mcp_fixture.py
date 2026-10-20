@@ -8,13 +8,11 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from app.domain.relative_strength import LEGACY_RS_FORMULA_VERSION
 from app.infra.db.models.feature_store import (
     FeatureRun,
     FeatureRunPointer,
     StockFeatureDaily,
 )
-from app.infra.db.models.relative_strength import MarketRsFormulaPointer
 from app.models.industry import IBDGroupRank
 from app.models.market_breadth import MarketBreadth
 from app.models.stock import StockFundamental
@@ -37,7 +35,6 @@ _TABLES = (
     ThemeAlert,
     MarketBreadth,
     TaskExecutionHistory,
-    MarketRsFormulaPointer,
     IBDGroupRank,
 )
 
@@ -65,12 +62,6 @@ def seed_market_copilot_data(session_factory: sessionmaker) -> None:
 
     session = session_factory()
     try:
-        session.add(
-            MarketRsFormulaPointer(
-                market="US",
-                formula_version=LEGACY_RS_FORMULA_VERSION,
-            )
-        )
         for symbol, name, sector, industry, market_cap in (
             ("NVDA", "NVIDIA Corporation", "Information Technology", "Semiconductors", 3_000_000_000_000),
             ("AVGO", "Broadcom Inc.", "Information Technology", "Semiconductors", 900_000_000_000),

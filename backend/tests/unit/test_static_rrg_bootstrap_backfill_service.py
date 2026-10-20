@@ -6,10 +6,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.database import Base
-from app.domain.relative_strength import (
-    BALANCED_RS_FORMULA_VERSION,
-    LEGACY_RS_FORMULA_VERSION,
-)
+from app.domain.relative_strength import BALANCED_RS_FORMULA_VERSION
 from app.models.industry import IBDGroupRank
 from app.models.stock_universe import StockUniverse
 from app.services.group_rank_snapshot_coordinator import (
@@ -233,7 +230,7 @@ def test_bootstrap_backfill_rejects_legacy_formula_before_snapshot_dispatch():
                 db,
                 market="US",
                 through_date=through_date,
-                formula_version=LEGACY_RS_FORMULA_VERSION,
+                formula_version="legacy-linear-v1",
             )
 
         assert result.status is StaticRRGBootstrapBackfillStatus.ERRORED
@@ -241,7 +238,7 @@ def test_bootstrap_backfill_rejects_legacy_formula_before_snapshot_dispatch():
             "status": "errored",
             "market": "US",
             "as_of_date": "2026-07-24",
-            "formula_version": LEGACY_RS_FORMULA_VERSION,
+            "formula_version": "legacy-linear-v1",
             "policy": STATIC_RRG_BOOTSTRAP_UNIVERSE_POLICY,
             "lookback_start_date": start.isoformat(),
             "target_dates": [],

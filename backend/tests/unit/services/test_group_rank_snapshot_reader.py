@@ -7,7 +7,6 @@ from app.domain.relative_strength import (
     BALANCED_RS_FORMULA_VERSION,
     BALANCED_RS_PRICE_BASIS,
     BALANCED_RS_SNAPSHOT_SCHEMA_VERSION,
-    LEGACY_RS_FORMULA_VERSION,
     GroupSnapshotIdentity,
     RsPublicationIdentity,
 )
@@ -80,7 +79,7 @@ def test_identity_normalizes_market_and_rejects_blank_formula():
 def test_load_exact_never_crosses_formula(db_session):
     run = _run(db_session)
     _rank(db_session, formula=BALANCED_RS_FORMULA_VERSION, rank=1, run_id=run.id)
-    _rank(db_session, formula=LEGACY_RS_FORMULA_VERSION, rank=9, group="Legacy")
+    _rank(db_session, formula="legacy-linear-v1", rank=9, group="Legacy")
     db_session.commit()
 
     rows = GroupRankSnapshotReader().load_exact(
@@ -135,7 +134,7 @@ def test_load_publication_rejects_a_different_market_rs_run(db_session):
 
 
 def test_available_dates_is_formula_scoped(db_session):
-    _rank(db_session, formula=LEGACY_RS_FORMULA_VERSION, rank=1)
+    _rank(db_session, formula="legacy-linear-v1", rank=1)
     db_session.commit()
     assert (
         GroupRankSnapshotReader().available_dates(

@@ -5,7 +5,6 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
-from typing import Protocol
 
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -26,10 +25,6 @@ from app.services.runtime_preferences_service import (
     get_runtime_preferences,
     stage_runtime_preferences,
 )
-
-
-class ActiveFormulaReader(Protocol):
-    def active_formula(self, db: Session, *, market: str) -> str: ...
 
 
 SessionFactory = Callable[[], Session]
@@ -91,10 +86,8 @@ class BootstrapDispatchLifecycle:
         self,
         *,
         repository: BootstrapRunManifestRepository | None = None,
-        formula_reader: ActiveFormulaReader | None = None,
     ) -> None:
         self.repository = repository or BootstrapRunManifestRepository()
-        self.formula_reader = formula_reader
 
     def claim(
         self,
@@ -136,19 +129,9 @@ class BootstrapDispatchLifecycle:
     ) -> BootstrapRunManifest:
         market = str(completion.market).upper()
         previous_outcome: BootstrapMarketOutcome | None = None
-        balanced_activation_completed = False
-        if completion.expected_formula_version == BALANCED_RS_FORMULA_VERSION:
-            if self.formula_reader is None:
-                raise RuntimeError(
-                    "Balanced activation completion requires a formula reader."
-                )
-            try:
-                balanced_activation_completed = (
-                    self.formula_reader.active_formula(db, market=market)
-                    == BALANCED_RS_FORMULA_VERSION
-                )
-            except LookupError:
-                balanced_activation_completed = False
+        balanced_activation_completed = (
+            completion.expected_formula_version == BALANCED_RS_FORMULA_VERSION
+        )
 
         try:
 

@@ -13,12 +13,8 @@ from app.domain.relative_strength import (
     BALANCED_RS_PRICE_BASIS,
     BALANCED_RS_SNAPSHOT_SCHEMA_VERSION,
     HORIZON_SESSIONS,
-    LEGACY_RS_FORMULA_VERSION,
 )
-from app.infra.db.models.relative_strength import (
-    MarketRsFormulaPointer,
-    MarketRsRun,
-)
+from app.infra.db.models.relative_strength import MarketRsRun
 from app.infra.db.repositories.market_rs_repo import MarketRsRunRepository
 from app.main import app
 from app.models.industry import IBDGroupRank, IBDIndustryGroup
@@ -47,6 +43,11 @@ from app.services.point_in_time_universe_service import (
 )
 from app.services.rrg_history_provider import StoredGroupRankHistoryProvider
 from app.services.server_auth import require_server_session
+
+
+# Rows the database still holds from before the single-formula cutover.
+STORED_LEGACY_FORMULA = "legacy-linear-v1"
+
 
 
 class _WeekdayCalendar:
@@ -206,12 +207,6 @@ async def test_live_repair_populates_rank_changes_movers_and_rrg_without_data_lo
     monkeypatch,
 ):
     through_date = date(2026, 6, 30)
-    db_session.add(
-        MarketRsFormulaPointer(
-            market="US",
-            formula_version=BALANCED_RS_FORMULA_VERSION,
-        )
-    )
     db_session.add_all(
         [
             StockPrice(
@@ -233,7 +228,7 @@ async def test_live_repair_populates_rank_changes_movers_and_rrg_without_data_lo
                 rank=1,
                 avg_rs_rating=55,
                 num_stocks=3,
-                rs_formula_version=LEGACY_RS_FORMULA_VERSION,
+                rs_formula_version=STORED_LEGACY_FORMULA,
             ),
         ]
     )
@@ -265,7 +260,7 @@ async def test_live_repair_populates_rank_changes_movers_and_rrg_without_data_lo
     legacy_count = (
         db_session.query(IBDGroupRank)
         .filter(
-            IBDGroupRank.rs_formula_version == LEGACY_RS_FORMULA_VERSION
+            IBDGroupRank.rs_formula_version == STORED_LEGACY_FORMULA
         )
         .count()
     )
@@ -319,7 +314,7 @@ async def test_live_repair_populates_rank_changes_movers_and_rrg_without_data_lo
     assert (
         db_session.query(IBDGroupRank)
         .filter(
-            IBDGroupRank.rs_formula_version == LEGACY_RS_FORMULA_VERSION
+            IBDGroupRank.rs_formula_version == STORED_LEGACY_FORMULA
         )
         .count()
         == legacy_count

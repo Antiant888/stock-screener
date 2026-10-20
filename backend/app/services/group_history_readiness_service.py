@@ -146,7 +146,6 @@ class GroupHistoryReadinessService:
             rrg_usable_weeks, rrg_plottable_series = self._rrg_readiness(
                 db,
                 market=target.market,
-                formula_version=target.formula_version,
                 through_date=target.through_date,
             )
 
@@ -202,7 +201,6 @@ class GroupHistoryReadinessService:
         db: Session,
         *,
         market: str,
-        formula_version: str,
         through_date: date,
     ) -> tuple[int, int]:
         try:
@@ -212,7 +210,6 @@ class GroupHistoryReadinessService:
                     market=market,
                     days=DEFAULT_LOOKBACK_DAYS,
                     as_of_date=through_date,
-                    formula_version=formula_version,
                 )
             )
         except (GroupSnapshotIntegrityError, LookupError, ValueError):

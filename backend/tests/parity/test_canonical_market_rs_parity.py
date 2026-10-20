@@ -14,7 +14,6 @@ from app.domain.relative_strength import (
     HORIZON_WEIGHTS,
     calculate_balanced_rs,
 )
-from app.infra.db.models.relative_strength import MarketRsFormulaPointer
 from app.infra.db.repositories.market_rs_repo import MarketRsRunRepository
 from app.models.industry import IBDIndustryGroup
 from app.models.stock_universe import StockUniverse
@@ -137,12 +136,6 @@ def _seed_canonical_snapshot(db_session):
                 source="manual",
             )
         )
-    db_session.add(
-        MarketRsFormulaPointer(
-            market="US",
-            formula_version=BALANCED_RS_FORMULA_VERSION,
-        )
-    )
     db_session.commit()
     return run
 

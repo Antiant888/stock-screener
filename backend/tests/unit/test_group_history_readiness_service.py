@@ -81,9 +81,8 @@ class _Reader:
 
 
 class _RRGProvider:
-    def __init__(self, weekly_points=12, expected_formula="balanced-v1"):
+    def __init__(self, weekly_points=12):
         self.weekly_points = weekly_points
-        self.expected_formula = expected_formula
         self.calls = 0
 
     def get_all_groups_history(
@@ -93,11 +92,9 @@ class _RRGProvider:
         market,
         days,
         as_of_date,
-        formula_version,
     ):
         self.calls += 1
         assert market == "US"
-        assert formula_version == self.expected_formula
         points = [
             (as_of_date - timedelta(days=7 * offset), 50.0 + offset, 10)
             for offset in reversed(range(self.weekly_points))
@@ -225,10 +222,7 @@ def test_readiness_preserves_supplied_target_identity() -> None:
     service = GroupHistoryReadinessService(
         calendar_service=_Calendar(_reference_days(current)),
         snapshot_reader=_Reader(),
-        rrg_history_provider=_RRGProvider(
-            weekly_points=12,
-            expected_formula="captured-formula-v1",
-        ),
+        rrg_history_provider=_RRGProvider(weekly_points=12),
     )
     target = GroupHistoryTarget(
         market="US",

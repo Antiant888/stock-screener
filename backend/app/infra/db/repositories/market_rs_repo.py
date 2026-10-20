@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from collections.abc import Iterable, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from typing import Iterator
@@ -11,19 +11,9 @@ from typing import Iterator
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, object_session, selectinload
 
-from app.domain.relative_strength import (
-    BALANCED_RS_FORMULA_VERSION,
-    LEGACY_RS_FORMULA_VERSION,
-    StockRsScore,
-)
-from app.infra.db.models.relative_strength import (
-    MarketRsFormulaPointer,
-    MarketRsRun,
-    StockRsSnapshot,
-)
+from app.domain.relative_strength import StockRsScore
+from app.infra.db.models.relative_strength import MarketRsRun, StockRsSnapshot
 from app.models.industry import IBDGroupRank
-
-SUPPORTED_FORMULAS = frozenset({BALANCED_RS_FORMULA_VERSION, LEGACY_RS_FORMULA_VERSION})
 
 
 @dataclass(frozen=True)
@@ -47,58 +37,7 @@ class StockRsSnapshotRecord:
     excess_return_12m: float
 
 
-class MarketRsFormulaNotConfigured(LookupError):
-    pass
-
-
-class MarketRsFormulaUnsupported(ValueError):
-    pass
-
-
 class MarketRsRunRepository:
-    def provision_formula_pointers(
-        self,
-        db: Session,
-        *,
-        markets: Iterable[str],
-    ) -> tuple[str, ...]:
-        """Seed newly supported markets in explicit legacy mode.
-
-        Existing pointers are never changed; balanced activation remains an
-        explicit rollout operation. Savepoints make concurrent web/worker
-        startup provisioning safe without taking ownership of the caller's
-        outer transaction.
-        """
-        normalized_markets = tuple(
-            sorted(
-                {
-                    str(market).strip().upper()
-                    for market in markets
-                    if str(market).strip()
-                }
-            )
-        )
-        provisioned: list[str] = []
-        for market in normalized_markets:
-            if db.get(MarketRsFormulaPointer, market) is not None:
-                continue
-            try:
-                with db.begin_nested():
-                    db.add(
-                        MarketRsFormulaPointer(
-                            market=market,
-                            formula_version=LEGACY_RS_FORMULA_VERSION,
-                        )
-                    )
-                    db.flush()
-            except IntegrityError:
-                db.expire_all()
-                if db.get(MarketRsFormulaPointer, market) is None:
-                    raise
-            else:
-                provisioned.append(market)
-        return tuple(provisioned)
-
     @staticmethod
     def _run_query(
         db: Session,
@@ -412,51 +351,3 @@ class MarketRsRunRepository:
             .order_by(MarketRsRun.as_of_date.desc(), MarketRsRun.id.desc())
             .all()
         )
-
-    def active_formula(self, db: Session, *, market: str) -> str:
-        pointer = db.get(MarketRsFormulaPointer, market.upper())
-        if pointer is None:
-            raise MarketRsFormulaNotConfigured(
-                f"Market RS formula is not configured for {market.upper()}"
-            )
-        return str(pointer.formula_version)
-
-    def activate_formula(
-        self,
-        db: Session,
-        *,
-        market: str,
-        formula_version: str,
-    ) -> None:
-        if formula_version not in SUPPORTED_FORMULAS:
-            raise MarketRsFormulaUnsupported(
-                f"Unsupported Market RS formula: {formula_version}"
-            )
-        normalized = market.upper()
-        pointer = (
-            db.query(MarketRsFormulaPointer)
-            .filter(MarketRsFormulaPointer.market == normalized)
-            .with_for_update()
-            .one_or_none()
-        )
-        if pointer is None:
-            raise MarketRsFormulaNotConfigured(
-                f"Market RS formula is not configured for {normalized}"
-            )
-        if formula_version == BALANCED_RS_FORMULA_VERSION:
-            completed = (
-                db.query(MarketRsRun.id)
-                .filter(
-                    MarketRsRun.market == normalized,
-                    MarketRsRun.formula_version == formula_version,
-                    MarketRsRun.status == "completed",
-                )
-                .first()
-            )
-            if completed is None:
-                raise ValueError(
-                    f"Cannot activate {formula_version} for {normalized} without "
-                    "a completed run"
-                )
-        pointer.formula_version = formula_version
-        db.flush()

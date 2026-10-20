@@ -12,10 +12,7 @@ from sqlalchemy.orm import Session
 from ..domain.markets.catalog import get_market_catalog
 from ..infra.db.models.feature_store import FeatureRun
 from ..infra.db.models.relative_strength import MarketRsRun
-from ..infra.db.repositories.market_rs_repo import (
-    MarketRsFormulaNotConfigured,
-    MarketRsRunRepository,
-)
+from ..infra.db.repositories.market_rs_repo import MarketRsRunRepository
 from ..models.app_settings import AppSetting
 from ..models.industry import IBDGroupRank
 from ..models.market_breadth import MarketBreadth
@@ -347,7 +344,7 @@ class BootstrapReadinessService:
                         market,
                         bootstrap_started_at=bootstrap_started_at,
                     ),
-                    rs_ready=self._has_expected_formula(
+                    rs_ready=self._has_completed_rs_run(
                         db,
                         market=market,
                         expected_formula_version=normalized_expectations.get(market),
@@ -423,7 +420,7 @@ class BootstrapReadinessService:
             ),
         }
 
-    def _has_expected_formula(
+    def _has_completed_rs_run(
         self,
         db: Session,
         *,
@@ -432,14 +429,15 @@ class BootstrapReadinessService:
     ) -> bool:
         if expected_formula_version is None:
             return True
-        try:
-            active_formula = MarketRsRunRepository().active_formula(
+        return (
+            MarketRsRunRepository().get_latest_completed(
                 db,
                 market=market,
+                formula_version=expected_formula_version,
+                load_rows=False,
             )
-        except MarketRsFormulaNotConfigured:
-            return False
-        return active_formula == expected_formula_version
+            is not None
+        )
 
     def _has_active_universe_rows(
         self,

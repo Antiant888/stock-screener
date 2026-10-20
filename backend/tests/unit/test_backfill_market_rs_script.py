@@ -148,7 +148,6 @@ def test_publish_live_groups_does_not_duplicate_activation_cache_invalidation(
 
     bump_epoch.assert_not_called()
     publish_bootstrap.assert_called_once_with(
-        expected_formula_version=BALANCED_RS_FORMULA_VERSION,
         expected_through_date=date(2026, 4, 10),
     )
 

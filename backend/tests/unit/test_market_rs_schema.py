@@ -2,7 +2,6 @@ from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
 
 from app.infra.db.models.relative_strength import (
-    MarketRsFormulaPointer,
     MarketRsRun,
     StockRsSnapshot,
 )
@@ -12,7 +11,6 @@ from app.models.industry import IBDGroupRank
 def test_market_rs_models_expose_versioned_snapshot_contract():
     assert MarketRsRun.__table__.name == "market_rs_runs"
     assert StockRsSnapshot.__table__.primary_key.columns.keys() == ["run_id", "symbol"]
-    assert MarketRsFormulaPointer.__table__.primary_key.columns.keys() == ["market"]
     assert {
         "rs_1d",
         "rs_1w",

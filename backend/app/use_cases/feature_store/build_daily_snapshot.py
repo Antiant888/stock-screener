@@ -228,7 +228,6 @@ class BuildDailySnapshotCommand:
     bootstrap_coverage_report: dict | None = None
     publish_pointer_key: str = "latest_published"
     market: str = "US"
-    rs_formula_version_override: str | None = None
 
     # DQ thresholds (overridable per-invocation)
     dq_thresholds: DQThresholds = field(default_factory=DQThresholds)
@@ -467,11 +466,6 @@ class BuildDailyFeatureSnapshotUseCase:
                     market=cmd.market,
                     symbols=tuple(symbols),
                     as_of_date=cmd.as_of_date,
-                    formula_version=cmd.rs_formula_version_override,
-                )
-            elif cmd.rs_formula_version_override is not None:
-                raise RuntimeError(
-                    "An RS formula override requires a canonical Market RS reader"
                 )
 
             signature_payload = build_scan_signature_payload(

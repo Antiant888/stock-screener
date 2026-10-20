@@ -14,11 +14,10 @@ from app.domain.relative_strength import (
     BALANCED_RS_FORMULA_VERSION,
     BALANCED_RS_PRICE_BASIS,
     BALANCED_RS_SNAPSHOT_SCHEMA_VERSION,
-    LEGACY_RS_FORMULA_VERSION,
     GroupSnapshotIdentity,
 )
 from app.infra.db.models.feature_store import FeatureRun, FeatureRunPointer
-from app.infra.db.models.relative_strength import MarketRsFormulaPointer, MarketRsRun
+from app.infra.db.models.relative_strength import MarketRsRun
 from app.infra.db.repositories.feature_run_repo import SqlFeatureRunRepository
 from app.infra.db.repositories.market_rs_repo import MarketRsRunRepository
 from app.models.industry import IBDGroupRank
@@ -37,12 +36,6 @@ from app.services.market_rs_static_artifact_validator import (
 
 def _seed_activation_candidates(db_session):
     through_date = date(2026, 4, 10)
-    db_session.add(
-        MarketRsFormulaPointer(
-            market="US",
-            formula_version=LEGACY_RS_FORMULA_VERSION,
-        )
-    )
     rs_run = MarketRsRun(
         market="US",
         as_of_date=through_date,
@@ -95,7 +88,7 @@ def _seed_activation_candidates(db_session):
         run_type="daily_snapshot",
         status=RunStatus.PUBLISHED.value,
         universe_hash="legacy-feature",
-        config_json={"market": "US", "rs_formula_version": LEGACY_RS_FORMULA_VERSION},
+        config_json={"market": "US", "rs_formula_version": "legacy-linear-v1"},
         published_at=datetime.now(timezone.utc),
     )
     candidate = FeatureRun(
@@ -155,7 +148,7 @@ def _service(repository, feature_factory):
     )
 
 
-def test_activation_switches_market_and_feature_pointers_in_one_commit(
+def test_activation_repoints_the_feature_pointer_in_one_commit(
     db_session, tmp_path, monkeypatch
 ):
     rs_run_id, candidate_id, _old_id = _seed_activation_candidates(db_session)
@@ -183,9 +176,6 @@ def test_activation_switches_market_and_feature_pointers_in_one_commit(
     )
 
     db_session.expire_all()
-    assert db_session.get(MarketRsFormulaPointer, "US").formula_version == (
-        BALANCED_RS_FORMULA_VERSION
-    )
     assert (
         db_session.get(
             FeatureRunPointer,
@@ -273,9 +263,6 @@ def test_failure_after_market_pointer_flush_rolls_back_both_pointers(
         )
 
     db_session.expire_all()
-    assert db_session.get(MarketRsFormulaPointer, "US").formula_version == (
-        LEGACY_RS_FORMULA_VERSION
-    )
     assert (
         db_session.get(
             FeatureRunPointer,
@@ -361,9 +348,6 @@ def test_shared_executor_activates_exact_group_and_history_identity(
     db_session.expire_all()
     repository = MarketRsRunRepository()
     assert outcome.market == "US"
-    assert repository.active_formula(db_session, market="US") == (
-        BALANCED_RS_FORMULA_VERSION
-    )
     run = repository.get_completed_exact(
         db_session,
         market="US",

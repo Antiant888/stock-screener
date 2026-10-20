@@ -10,7 +10,6 @@ from app.domain.relative_strength import (
     BALANCED_RS_FORMULA_VERSION,
     BALANCED_RS_PRICE_BASIS,
     BALANCED_RS_SNAPSHOT_SCHEMA_VERSION,
-    LEGACY_RS_FORMULA_VERSION,
 )
 from app.models.app_settings import AppSetting
 from app.services.bootstrap_readiness_service import (
@@ -41,7 +40,7 @@ def test_startup_group_history_reconciliation_marks_pristine_seed_import(
 
     target = GroupHistoryTarget(
         market="US",
-        formula_version=LEGACY_RS_FORMULA_VERSION,
+        formula_version=BALANCED_RS_FORMULA_VERSION,
         through_date=date(2026, 7, 31),
     )
     dispatched = []
@@ -71,7 +70,7 @@ def test_startup_group_history_reconciliation_marks_pristine_seed_import(
     assert dispatched == [
         {
             "market": "US",
-            "formula_version": LEGACY_RS_FORMULA_VERSION,
+            "formula_version": BALANCED_RS_FORMULA_VERSION,
             "through_date": date(2026, 7, 31),
             "reservation_id": dispatched[0]["reservation_id"],
         }
@@ -93,7 +92,7 @@ def test_startup_group_history_reconciliation_clears_owned_marker_on_dispatch_fa
 
     target = GroupHistoryTarget(
         market="US",
-        formula_version=LEGACY_RS_FORMULA_VERSION,
+        formula_version=BALANCED_RS_FORMULA_VERSION,
         through_date=date(2026, 7, 31),
     )
     monkeypatch.setattr(module, "SessionLocal", lambda: db_session)
@@ -195,29 +194,6 @@ def test_ensure_group_history_invalidates_cache_and_publishes_us_snapshot(
     db.close.assert_called_once()
 
 
-def test_group_history_target_uses_active_formula_pointer(monkeypatch):
-    from app.infra.db.repositories import market_rs_repo
-    from app.tasks import group_history_tasks as module
-
-    repository = Mock()
-    repository.active_formula.return_value = LEGACY_RS_FORMULA_VERSION
-    monkeypatch.setattr(
-        market_rs_repo,
-        "MarketRsRunRepository",
-        lambda: repository,
-    )
-    calendar = Mock()
-    calendar.last_completed_trading_day.return_value = date(2026, 6, 30)
-    monkeypatch.setattr(module, "get_market_calendar_service", lambda: calendar)
-    db = Mock()
-
-    target = module._resolve_current_group_history_target(db, market="us")
-
-    assert target.market == "US"
-    assert target.formula_version == LEGACY_RS_FORMULA_VERSION
-    assert target.through_date == date(2026, 6, 30)
-    repository.active_formula.assert_called_once_with(db, market="US")
-    repository.get_latest_completed.assert_not_called()
 
 
 def test_group_history_target_uses_balanced_publication_date(monkeypatch):
@@ -225,7 +201,6 @@ def test_group_history_target_uses_balanced_publication_date(monkeypatch):
     from app.tasks import group_history_tasks as module
 
     repository = Mock()
-    repository.active_formula.return_value = BALANCED_RS_FORMULA_VERSION
     repository.list_completed_runs.return_value = (
         SimpleNamespace(
             id=42,

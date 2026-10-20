@@ -7,7 +7,6 @@ from sqlalchemy.orm import sessionmaker
 from app.database import Base
 from app.domain.relative_strength import (
     BALANCED_RS_FORMULA_VERSION,
-    LEGACY_RS_FORMULA_VERSION,
     GroupSnapshotIdentity,
     RsPublicationIdentity,
 )
@@ -25,12 +24,11 @@ def _publication(
     as_of_date: date,
     *,
     market: str = "US",
-    formula_version: str = LEGACY_RS_FORMULA_VERSION,
-    market_rs_run_id: int | None = None,
-    universe_size: int | None = None,
+    market_rs_run_id: int = 42,
+    universe_size: int = 100,
 ) -> RsPublicationIdentity:
     return RsPublicationIdentity(
-        snapshot=GroupSnapshotIdentity(market, as_of_date, formula_version),
+        snapshot=GroupSnapshotIdentity(market, as_of_date, BALANCED_RS_FORMULA_VERSION),
         market_rs_run_id=market_rs_run_id,
         universe_size=universe_size,
     )
@@ -147,12 +145,14 @@ def _add_legacy_scan_result(
     )
 
 
-def test_feature_run_with_empty_group_does_not_fallback_to_legacy():
+def test_feature_run_with_empty_group_returns_no_constituents():
     db = _make_session()
     group = "Software"
     as_of_date = date(2026, 6, 24)
     try:
-        _add_feature_run(db, run_id=88, as_of_date=as_of_date)
+        _add_feature_run(
+            db, run_id=88, as_of_date=as_of_date, market_rs_run_id=42, universe_size=100
+        )
         _add_feature_row(
             db,
             run_id=88,
@@ -186,12 +186,19 @@ def test_feature_run_with_empty_group_does_not_fallback_to_legacy():
         db.close()
 
 
-def test_feature_run_market_metadata_controls_feature_constituent_source():
+def test_feature_run_from_another_market_is_not_a_constituent_source():
     db = _make_session()
     group = "Software"
     as_of_date = date(2026, 6, 24)
     try:
-        _add_feature_run(db, run_id=88, as_of_date=as_of_date, market="HK")
+        _add_feature_run(
+            db,
+            run_id=88,
+            as_of_date=as_of_date,
+            market="HK",
+            market_rs_run_id=42,
+            universe_size=100,
+        )
         _add_scan(
             db,
             scan_id="mismatched-feature-scan",
@@ -220,115 +227,19 @@ def test_feature_run_market_metadata_controls_feature_constituent_source():
         )
         db.commit()
 
-        items = GroupConstituentSource().get_constituent_items(
-            db,
-            group,
-            publication=_publication(as_of_date),
-        )
-
-        assert [item.symbol for item in items] == ["LEGACY"]
+        with pytest.raises(GroupConstituentPublicationUnavailable):
+            GroupConstituentSource().get_constituent_items(
+                db,
+                group,
+                publication=_publication(as_of_date),
+            )
     finally:
         db.rollback()
         db.close()
 
 
-def test_legacy_scan_constituents_are_market_scoped_and_include_sparklines():
-    db = _make_session()
-    group = "Software"
-    try:
-        _add_scan(
-            db,
-            scan_id="us-scan",
-            market="US",
-            completed_at=datetime(2026, 6, 24, 22, 0, 0),
-        )
-        _add_scan(
-            db,
-            scan_id="hk-scan",
-            market="HK",
-            completed_at=datetime(2026, 6, 26, 22, 0, 0),
-        )
-        db.add_all(
-            [
-                StockUniverse(symbol="USWIN", name="US Winner", market="US"),
-                StockUniverse(symbol="HKNEW", name="HK Newer", market="HK"),
-            ]
-        )
-        _add_legacy_scan_result(
-            db,
-            scan_id="us-scan",
-            symbol="USWIN",
-            industry_group=group,
-        )
-        _add_legacy_scan_result(
-            db,
-            scan_id="hk-scan",
-            symbol="HKNEW",
-            industry_group=group,
-        )
-        db.commit()
-
-        items = GroupConstituentSource().get_constituent_items(
-            db,
-            group,
-            publication=_publication(date(2026, 6, 24)),
-        )
-
-        assert [item.symbol for item in items] == ["USWIN"]
-        assert items[0].extended_fields["company_name"] == "US Winner"
-        assert items[0].extended_fields["price_sparkline_data"] == [1.0, 1.1]
-        assert items[0].extended_fields["rs_sparkline_data"] == [1.0, 1.2]
-    finally:
-        db.rollback()
-        db.close()
 
 
-def test_legacy_scan_selection_honors_as_of_date():
-    db = _make_session()
-    group = "Software"
-    try:
-        _add_scan(
-            db,
-            scan_id="past-us-scan",
-            market="US",
-            completed_at=datetime(2026, 6, 24, 22, 0, 0),
-        )
-        _add_scan(
-            db,
-            scan_id="future-us-scan",
-            market="US",
-            completed_at=datetime(2026, 6, 25, 1, 0, 0),
-        )
-        db.add_all(
-            [
-                StockUniverse(symbol="PAST", name="Past Corp", market="US"),
-                StockUniverse(symbol="FUTURE", name="Future Corp", market="US"),
-            ]
-        )
-        _add_legacy_scan_result(
-            db,
-            scan_id="past-us-scan",
-            symbol="PAST",
-            industry_group=group,
-        )
-        _add_legacy_scan_result(
-            db,
-            scan_id="future-us-scan",
-            symbol="FUTURE",
-            industry_group=group,
-        )
-        db.commit()
-
-        items = GroupConstituentSource().get_constituent_items(
-            db,
-            group,
-            publication=_publication(date(2026, 6, 24)),
-        )
-
-        assert [item.symbol for item in items] == ["PAST"]
-    finally:
-        db.rollback()
-        db.close()
 
 
 def test_balanced_constituents_use_exact_publication_not_latest_market_run():
@@ -369,12 +280,7 @@ def test_balanced_constituents_use_exact_publication_not_latest_market_run():
         items = GroupConstituentSource().get_constituent_items(
             db,
             group,
-            publication=_publication(
-                as_of_date,
-                formula_version=BALANCED_RS_FORMULA_VERSION,
-                market_rs_run_id=42,
-                universe_size=100,
-            ),
+            publication=_publication(as_of_date),
         )
 
         assert [item.symbol for item in items] == ["EXACT"]
@@ -398,12 +304,7 @@ def test_balanced_constituents_fail_closed_without_exact_feature_publication():
             GroupConstituentSource().get_constituent_items(
                 db,
                 "Software",
-                publication=_publication(
-                    as_of_date,
-                    formula_version=BALANCED_RS_FORMULA_VERSION,
-                    market_rs_run_id=42,
-                    universe_size=100,
-                ),
+                publication=_publication(as_of_date),
             )
     finally:
         db.rollback()

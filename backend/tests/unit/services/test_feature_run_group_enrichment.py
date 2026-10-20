@@ -5,10 +5,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.database import Base
-from app.domain.relative_strength import (
-    BALANCED_RS_FORMULA_VERSION,
-    LEGACY_RS_FORMULA_VERSION,
-)
+from app.domain.relative_strength import BALANCED_RS_FORMULA_VERSION
 from app.infra.db.models.feature_store import FeatureRun, StockFeatureDaily
 from app.models.industry import IBDIndustryGroup
 from app.services.feature_run_group_enrichment import (
@@ -124,7 +121,13 @@ def test_missing_exact_snapshot_rolls_back_without_erasing_previous_rank():
                 as_of_date=AS_OF,
                 run_type="daily_snapshot",
                 status="published",
-                config_json={"market": "US"},
+                config_json={
+                    "market": "US",
+                    "rs_formula_version": BALANCED_RS_FORMULA_VERSION,
+                    "market_rs_run_id": 42,
+                    "rs_as_of_date": AS_OF.isoformat(),
+                    "rs_universe_size": 1,
+                },
             ),
             _row(
                 run_id=32,
@@ -140,7 +143,7 @@ def test_missing_exact_snapshot_rolls_back_without_erasing_previous_rank():
 
     class _MissingReader:
         def load_publication(self, db, *, publication, include_top_symbol_names):
-            assert publication.snapshot.formula_version == LEGACY_RS_FORMULA_VERSION
+            assert publication.market_rs_run_id == 42
             raise GroupSnapshotUnavailable(publication.snapshot)
 
     service = FeatureRunGroupEnrichmentService(
@@ -172,7 +175,13 @@ def test_group_less_market_enriches_classifier_group_without_rank():
                     as_of_date=AS_OF,
                     run_type="daily_snapshot",
                     status="published",
-                    config_json={"market": "DE"},
+                    config_json={
+                        "market": "DE",
+                        "rs_formula_version": BALANCED_RS_FORMULA_VERSION,
+                        "market_rs_run_id": 42,
+                        "rs_as_of_date": AS_OF.isoformat(),
+                        "rs_universe_size": 1,
+                    },
                 ),
                 _row(
                     run_id=33,

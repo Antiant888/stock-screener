@@ -1,17 +1,6 @@
 from __future__ import annotations
 
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
-
-from app.database import Base
-from app.domain.markets import market_registry
-from app.domain.relative_strength import LEGACY_RS_FORMULA_VERSION
-from app.infra.db.models.relative_strength import MarketRsFormulaPointer
-from app.wiring.bootstrap import (
-    build_runtime_services,
-    clear_runtime_services,
-    initialize_process_runtime_services,
-)
+from app.wiring.bootstrap import build_runtime_services
 
 
 def test_runtime_services_reset_for_tests_clears_github_bootstrap_services():
@@ -29,26 +18,6 @@ def test_runtime_services_reset_for_tests_clears_github_bootstrap_services():
     assert runtime.daily_price_bundle_service() is not daily_price_bundle
 
 
-def test_process_runtime_provisions_formula_pointers_for_supported_markets():
-    engine = create_engine("sqlite:///:memory:")
-    Base.metadata.create_all(engine, tables=[MarketRsFormulaPointer.__table__])
-    Session = sessionmaker(bind=engine)
-
-    try:
-        initialize_process_runtime_services(session_factory=Session, force=True)
-        with Session() as db:
-            pointers = {
-                row.market: row.formula_version
-                for row in db.query(MarketRsFormulaPointer).all()
-            }
-    finally:
-        clear_runtime_services()
-        engine.dispose()
-
-    assert pointers == {
-        market: LEGACY_RS_FORMULA_VERSION
-        for market in market_registry.supported_market_codes()
-    }
 
 
 def test_runtime_daily_price_bundle_service_keeps_price_cache_dependency_explicit():

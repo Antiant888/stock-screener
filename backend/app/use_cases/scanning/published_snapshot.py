@@ -25,7 +25,7 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Any, Callable
 
-from app.domain.relative_strength.calculator import LEGACY_RS_FORMULA_VERSION
+from app.domain.relative_strength.calculator import BALANCED_RS_FORMULA_VERSION
 from app.domain.scanning.custom_criteria_compiler import compile_custom_criteria
 from app.domain.scanning.signature import (
     build_scan_signature_payload,
@@ -62,7 +62,7 @@ _REASON_MESSAGES = {
     "no_published_run": "No published snapshot exists for this market.",
     "source_market_mismatch": "The market's snapshot pointer references another market's run.",
     "snapshot_not_current": "The latest published snapshot is older than the last completed session.",
-    "rs_not_canonical": "The published snapshot uses legacy RS, which cannot be reused for a subset.",
+    "rs_not_canonical": "The published snapshot has no canonical RS identity, so it cannot be reused for a subset.",
     "rs_source_changed": "Market RS has been republished since this snapshot was built.",
     "incomplete_coverage": "The published snapshot is missing rows for some requested symbols.",
     "criteria_not_equivalent": "The scan criteria cannot be answered exactly from the published snapshot.",
@@ -191,7 +191,7 @@ def resolve_pinned_snapshot(
             )
 
     formula = config.get("rs_formula_version")
-    if not formula or formula == LEGACY_RS_FORMULA_VERSION or config.get("market_rs_run_id") is None:
+    if formula != BALANCED_RS_FORMULA_VERSION or config.get("market_rs_run_id") is None:
         return SnapshotIneligible("rs_not_canonical", source)
 
     if require_current and (
