@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest';
 import {
   adaptCandidateQueueResponse,
   adaptCandidateReviewResponse,
-  adaptLifecycleTransitionsResponse,
   adaptMergeActionResponse,
   adaptMergeHistoryResponse,
   adaptMergeSuggestionsResponse,
@@ -87,29 +86,6 @@ describe('theme adapters', () => {
 
     expect(result.total).toBe(1);
     expect(result.history[0].merge_type).toBe('manual');
-  });
-
-  it('normalizes lifecycle transition history and metadata', () => {
-    const result = adaptLifecycleTransitionsResponse({
-      total: 1,
-      transitions: [
-        {
-          id: 5,
-          theme_cluster_id: 8,
-          theme_name: 'Power Grid',
-          pipeline: 'technical',
-          from_state: 'active',
-          to_state: 'dormant',
-          actor: 'system',
-          transition_metadata: null,
-          transition_history_path: '/api/v1/themes/lifecycle-transitions?theme_cluster_id=8',
-          runbook_url: 'https://example.com/runbook',
-        },
-      ],
-    });
-
-    expect(result.total).toBe(1);
-    expect(result.transitions[0].transition_metadata).toEqual({});
   });
 
   it('normalizes merge action responses', () => {

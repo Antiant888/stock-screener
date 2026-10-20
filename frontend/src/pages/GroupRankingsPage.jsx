@@ -483,7 +483,6 @@ function GroupRankingsPage() {
   const {
     features,
     runtimeReady,
-    uiSnapshots,
     marketCatalog,
   } = useRuntime();
   const queryClient = useQueryClient();
@@ -510,7 +509,6 @@ function GroupRankingsPage() {
   const [calculationError, setCalculationError] = useState(null);
   const [liveRankingMarket, setLiveRankingMarket] = useState(null);
   const [showHistoricalRanks, setShowHistoricalRanks] = useState(false); // Toggle between change vs actual rank
-  const snapshotEnabled = runtimeReady && Boolean(uiSnapshots?.groups);
 
   useEffect(() => {
     setSelectedGroup(null);
@@ -518,7 +516,6 @@ function GroupRankingsPage() {
 
   const groupsBootstrapQuery = useQuery({
     ...groupsBootstrapQueryOptions(queryClient, selectedMarket),
-    enabled: snapshotEnabled,
     refetchInterval: 60_000,
   });
   const groupsBootstrapPayload = (
@@ -533,9 +530,7 @@ function GroupRankingsPage() {
   // Live queries wait for the bootstrap to resolve either way: on success
   // their caches are freshly seeded (no fetch); on error or a stale
   // snapshot they fetch live data.
-  const liveQueriesEnabled = runtimeReady && (
-    !snapshotEnabled || groupsBootstrapQuery.isSuccess || groupsBootstrapQuery.isError
-  );
+  const liveQueriesEnabled = groupsBootstrapQuery.isSuccess || groupsBootstrapQuery.isError;
 
   // The RRG view has its own query (and the static-friendly RRGChart); the
   // table-only rankings/movers fetches are skipped while it's active so a

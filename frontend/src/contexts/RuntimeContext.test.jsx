@@ -8,6 +8,8 @@ import {
   mergeBootstrapCapabilities,
   useRuntime,
 } from './RuntimeContext';
+import { getBreadthBootstrap } from '../api/breadth';
+import BreadthPage from '../pages/BreadthPage';
 
 const {
   getAppCapabilities,
@@ -38,6 +40,23 @@ vi.mock('../api/appRuntime', () => ({
 vi.mock('../api/auth', () => ({
   loginServer: (...args) => loginServer(...args),
   logoutServer: (...args) => logoutServer(...args),
+}));
+
+vi.mock('../api/breadth', () => ({
+  getBreadthBootstrap: vi.fn().mockRejectedValue(new Error('no snapshot')),
+  getBreadthContributorIndex: vi.fn().mockResolvedValue({ dates: [] }),
+  getBreadthContributors: vi.fn(),
+  getBreadthSummary: vi.fn().mockResolvedValue(null),
+  getCurrentBreadth: vi.fn().mockResolvedValue(null),
+  getHistoricalBreadth: vi.fn().mockResolvedValue([]),
+}));
+
+vi.mock('../api/stocks', () => ({
+  getPriceHistory: vi.fn().mockResolvedValue([]),
+}));
+
+vi.mock('../components/Charts/BreadthChart', () => ({
+  default: () => null,
 }));
 
 function RuntimeProbe() {
@@ -129,6 +148,23 @@ describe('RuntimeProvider', () => {
     expect(getAppCapabilities).toHaveBeenCalledTimes(2);
   });
 
+  it('lets a page request its bootstrap snapshot after app capabilities errors out', async () => {
+    getAppCapabilities.mockRejectedValue(new Error('backend unavailable'));
+    function ReadyPage() {
+      return useRuntime().runtimeReady ? <BreadthPage /> : null;
+    }
+
+    render(
+      <QueryClientProvider client={createTestQueryClient()}>
+        <RuntimeProvider>
+          <ReadyPage />
+        </RuntimeProvider>
+      </QueryClientProvider>
+    );
+
+    await waitFor(() => expect(getBreadthBootstrap).toHaveBeenCalledWith('US'));
+  });
+
   it('refetches app capabilities on mount even when cached auth state is fresh', async () => {
     const queryClient = createTestQueryClient();
     queryClient.setQueryData(['appCapabilities'], {
@@ -162,7 +198,6 @@ describe('RuntimeProvider', () => {
     getAppCapabilities.mockResolvedValue({
       features: { themes: true, chatbot: true, tasks: true },
       auth: { required: false, configured: true, authenticated: true, mode: 'session_cookie', message: null },
-      ui_snapshots: { enabled: false, scan: false, breadth: false, groups: false, themes: false },
       scan_defaults: { universe: 'all', screeners: ['minervini'], composite_method: 'weighted_average', criteria: {} },
       bootstrap_required: true,
       primary_market: 'HK',

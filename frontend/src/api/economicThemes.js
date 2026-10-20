@@ -11,14 +11,6 @@ export const getEconomicThemes = async ({ generationId } = {}) => {
   return response.data;
 };
 
-export const getEconomicTheme = async (economicThemeId, { generationId } = {}) => {
-  const response = await apiClient.get(
-    `/v1/economic-themes/${encodeURIComponent(economicThemeId)}`,
-    { params: generationParams(generationId) },
-  );
-  return response.data;
-};
-
 export const getEconomicTaxonomyReview = async ({ generationId } = {}) => {
   const response = await apiClient.get('/v1/economic-taxonomy/review', {
     params: generationParams(generationId),

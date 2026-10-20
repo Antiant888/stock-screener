@@ -279,7 +279,7 @@ flowchart TB
     USER --> CADDY
 
     subgraph WEB["⚛ React SPA"]
-      SPA["Vite build<br/><small>React Query · MUI · TanStack Table</small>"]:::fe
+      SPA["Vite build<br/><small>React Query · MUI · TanStack Virtual</small>"]:::fe
     end
     CADDY -->|"static"| SPA
 
@@ -448,7 +448,7 @@ flowchart LR
           <p>Provider stack: QueryClient → ColorMode → MUI Theme → Runtime → StrategyProfile → Pipeline. Secondary pages are <code>React.lazy</code> + Suspense; routes feature-gate on runtime capabilities.</p></div>
         <div class="card animate" style="--i:2; --accent:var(--fe)"><div class="ttl">Data layer</div><div class="meta">api/client.js · React Query v5</div>
           <p>Axios with <code>baseURL=/api</code> (Vite proxies to <code>:8000</code> in dev). 5-min staleTime, 30-min gc; scan status &amp; theme pipelines poll via <code>refetchInterval</code>.</p></div>
-        <div class="card animate" style="--i:3; --accent:var(--fe)"><div class="ttl">Results table</div><div class="meta">ResultsTable.jsx · TanStack Table v8</div>
+        <div class="card animate" style="--i:3; --accent:var(--fe)"><div class="ttl">Results table</div><div class="meta">ResultsTable.jsx · MUI Table + TanStack Virtual</div>
           <p>Virtualized (react-virtual, 48px rows), sortable, with inline sparklines and drill-down to <code>SetupEngineDrawer</code> and the chart modal.</p></div>
       </div>
 

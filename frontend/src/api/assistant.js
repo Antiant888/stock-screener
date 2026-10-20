@@ -8,13 +8,6 @@ export const createConversation = async (title = null) => {
   return response.data;
 };
 
-export const listConversations = async (limit = 20, offset = 0) => {
-  const response = await apiClient.get('/v1/assistant/conversations', {
-    params: { limit, offset },
-  });
-  return response.data;
-};
-
 export const getConversation = async (conversationId) => {
   const response = await apiClient.get(`/v1/assistant/conversations/${conversationId}`);
   return response.data;

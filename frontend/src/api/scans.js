@@ -154,41 +154,11 @@ export const getScans = async (params = {}) => {
 };
 
 /**
- * Delete a scan and its results
- * @param {string} scanId - Scan ID
- * @returns {Promise<Object>} Deletion confirmation
- */
-export const deleteScan = async (scanId) => {
-  const response = await apiClient.delete(`/v1/scans/${scanId}`);
-  return response.data;
-};
-
-/**
  * Get universe statistics
  * @returns {Promise<Object>} Universe stats (total, active, by_exchange)
  */
 export const getUniverseStats = async () => {
   const response = await apiClient.get('/v1/universe/stats');
-  return response.data;
-};
-
-/**
- * Export scan results to CSV
- * @param {string} scanId - Scan ID
- * @param {Object} params - Query parameters
- * @param {string} params.format - Export format (csv or excel)
- * @param {number} params.min_score - Minimum Minervini score filter
- * @param {number} params.stage - Stage filter (1-4)
- * @param {boolean} params.passes_only - Filter for passing stocks only
- * @param {number} params.min_eps_growth - Minimum EPS growth Q/Q filter (%)
- * @param {number} params.min_sales_growth - Minimum sales growth Q/Q filter (%)
- * @returns {Promise<Blob>} CSV file blob
- */
-export const exportScanResults = async (scanId, params = {}) => {
-  const response = await apiClient.get(`/v1/scans/${scanId}/export`, {
-    params: { format: 'csv', ...params },
-    responseType: 'blob',
-  });
   return response.data;
 };
 

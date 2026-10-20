@@ -102,14 +102,12 @@ describe('Layout', () => {
     runtimeState.marketCatalog = { markets: [] };
     runtimeState.primaryMarket = 'US';
     runtimeState.enabledMarkets = undefined;
-    runtimeState.uiSnapshots = undefined;
   });
 
   it("loads a page's code and snapshot when its nav link is hovered", async () => {
     useRuntimeActivityMock.mockReturnValue({ data: null });
     runtimeState.enabledMarkets = ['US', 'HK'];
     runtimeState.primaryMarket = 'HK';
-    runtimeState.uiSnapshots = { breadth: true };
     renderInApp();
 
     fireEvent.mouseEnter(screen.getByRole('link', { name: 'Breadth' }));
@@ -122,7 +120,6 @@ describe('Layout', () => {
     useRuntimeActivityMock.mockReturnValue({ data: null });
     runtimeState.enabledMarkets = ['US', 'HK'];
     runtimeState.primaryMarket = 'HK';
-    runtimeState.uiSnapshots = { scan: true };
     renderInApp('/');
 
     fireEvent.mouseEnter(screen.getByRole('link', { name: 'Scan' }));
@@ -135,7 +132,6 @@ describe('Layout', () => {
     // would replace the scan the user picked or just started. The router
     // renders it for a trailing slash or other casing too.
     useRuntimeActivityMock.mockReturnValue({ data: null });
-    runtimeState.uiSnapshots = { scan: true };
     renderInApp(openPath);
 
     fireEvent.mouseEnter(screen.getByRole('link', { name: 'Scan' }));
@@ -149,7 +145,6 @@ describe('Layout', () => {
     // SG is selected, but group rankings and breadth fall back to US for it.
     runtimeState.enabledMarkets = ['SG', 'US'];
     runtimeState.primaryMarket = 'SG';
-    runtimeState.uiSnapshots = { breadth: true, groups: true };
     renderInApp();
 
     fireEvent.mouseEnter(screen.getByRole('link', { name: 'Breadth' }));
@@ -163,7 +158,6 @@ describe('Layout', () => {
 
   it('does not retry a failed prefetch on every hover', async () => {
     useRuntimeActivityMock.mockReturnValue({ data: null });
-    runtimeState.uiSnapshots = { scan: true };
     api.getScanBootstrap.mockRejectedValue(new Error('404'));
     renderInApp('/');
     const scanLink = screen.getByRole('link', { name: 'Scan' });
@@ -175,17 +169,6 @@ describe('Layout', () => {
     await act(async () => {});
 
     expect(api.getScanBootstrap).toHaveBeenCalledTimes(1);
-  });
-
-  it('skips the snapshot a page would not request', async () => {
-    useRuntimeActivityMock.mockReturnValue({ data: null });
-    runtimeState.uiSnapshots = { breadth: false };
-    renderInApp();
-
-    fireEvent.mouseEnter(screen.getByRole('link', { name: 'Breadth' }));
-    await act(async () => {});
-
-    expect(api.getBreadthBootstrap).not.toHaveBeenCalled();
   });
 
   it('prefetches the daily snapshot for the selected market on focus', async () => {
@@ -201,7 +184,6 @@ describe('Layout', () => {
 
   it('seeds the same caches as the page when it prefetches a groups snapshot', async () => {
     useRuntimeActivityMock.mockReturnValue({ data: null });
-    runtimeState.uiSnapshots = { groups: true };
     const rankings = { date: '2026-10-09', rankings: [] };
     api.getGroupsBootstrap.mockResolvedValue({
       is_stale: false,
@@ -431,7 +413,6 @@ describe('Layout', () => {
     });
 
     it('prefetches a page when its bottom-bar item is touched', async () => {
-      runtimeState.uiSnapshots = { breadth: true };
       renderInApp('/');
 
       const nav = screen.getByRole('navigation', { name: 'Main' });

@@ -128,16 +128,6 @@ class UISnapshotService:
         self._session_factory = session_factory
         self._engine = session_factory.kw.get("bind")
 
-    def ui_snapshot_flags(self) -> dict[str, bool]:
-        """Expose frontend-visible bootstrap availability flags."""
-        return {
-            "enabled": True,
-            "scan": True,
-            "breadth": True,
-            "groups": True,
-            "themes": settings.feature_themes,
-        }
-
     def get_scan_bootstrap(
         self, scan_id: str | None = None, market: str | None = None
     ) -> SnapshotResult | None:

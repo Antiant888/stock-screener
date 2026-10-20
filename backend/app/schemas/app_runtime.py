@@ -170,7 +170,6 @@ class AppCapabilitiesResponse(BaseModel):
             "Deployment feature flags, including fail-closed social_signals availability."
         )
     )
-    ui_snapshots: dict[str, bool] = Field(default_factory=dict)
     scan_defaults: ScanDefaultsResponse
     bootstrap_required: bool = False
     primary_market: str = "US"

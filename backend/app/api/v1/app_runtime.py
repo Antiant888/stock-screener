@@ -113,8 +113,6 @@ def get_app_capabilities(
     db: Session = Depends(get_db),
 ) -> AppCapabilitiesResponse:
     """Return frontend capability flags and auth status."""
-    from ...wiring.bootstrap import get_ui_snapshot_service
-
     auth = get_server_auth_status(request)
     bootstrap_status = get_runtime_bootstrap_status(db)
     market_catalog = get_market_catalog()
@@ -128,7 +126,6 @@ def get_app_capabilities(
             )
     return AppCapabilitiesResponse(
         features=features,
-        ui_snapshots=get_ui_snapshot_service().ui_snapshot_flags(),
         scan_defaults=ScanDefaultsResponse(
             **get_default_scan_profile(bootstrap_status.primary_market)
         ),

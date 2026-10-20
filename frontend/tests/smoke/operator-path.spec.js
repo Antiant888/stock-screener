@@ -30,13 +30,6 @@ const defaultCapabilities = (authenticated) => ({
     mode: 'session_cookie',
     message: null,
   },
-  ui_snapshots: {
-    enabled: false,
-    scan: false,
-    breadth: false,
-    groups: false,
-    themes: false,
-  },
   scan_defaults: defaultScanDefaults,
   api_base_path: '/api',
 });
@@ -286,23 +279,8 @@ test('single-tenant operator smoke path (assistant -> scan -> themes review -> a
       });
     }
 
-    if (path === '/v1/cache/dashboard-stats' && method === 'GET') {
-      return jsonResponse(route, {
-        fundamentals: {
-          last_update: '2026-04-09T00:00:00Z',
-          cached_count: 1,
-          fresh_count: 1,
-        },
-      });
-    }
-
-    if (path === '/v1/cache/health' && method === 'GET') {
-      return jsonResponse(route, {
-        status: 'fresh',
-        spy_last_date: '2026-04-09',
-        message: 'Cache up to date',
-        can_refresh: true,
-      });
+    if (/^\/v1\/(scans|breadth|groups|themes)\/bootstrap$/.test(path) && method === 'GET') {
+      return jsonResponse(route, { detail: 'No published bootstrap snapshot is available' }, 404);
     }
 
     if (path === '/v1/runtime/activity' && method === 'GET') {

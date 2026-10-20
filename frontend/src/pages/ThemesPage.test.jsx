@@ -11,9 +11,6 @@ const economicApi = vi.hoisted(() => ({
 const runtimeState = {
   runtimeReady: true,
   features: { social_signals: false },
-  uiSnapshots: {
-    themes: false,
-  },
 };
 
 vi.mock('../contexts/RuntimeContext', () => ({
@@ -91,7 +88,7 @@ vi.mock('../api/themes', () => {
     getMergeSuggestions: vi.fn().mockResolvedValue({ total: 0, suggestions: [] }),
     getPipelineObservability: vi.fn().mockResolvedValue({ metrics: {}, alerts: [] }),
     getThemeRankings,
-    getThemesBootstrap: vi.fn(),
+    getThemesBootstrap: vi.fn().mockRejectedValue(new Error('no snapshot')),
     runPipelineAsync: vi.fn(),
     getThemeDetail: vi.fn(),
     getThemeHistory: vi.fn(),
@@ -108,7 +105,6 @@ describe('ThemesPage', () => {
   beforeEach(() => {
     localStorage.clear();
     runtimeState.runtimeReady = true;
-    runtimeState.uiSnapshots = { themes: false };
     runtimeState.features = { social_signals: false };
     economicApi.getEconomicThemes.mockReset();
     economicApi.getEconomicThemes.mockRejectedValue(new Error('not configured'));
@@ -118,15 +114,14 @@ describe('ThemesPage', () => {
 
   it('resets grouped category filter when pipeline toggles', async () => {
     renderPage();
-    await waitFor(() => expect(screen.getByTestId('taxonomy')).toBeInTheDocument());
-    expect(screen.getByTestId('taxonomy')).toHaveTextContent('technical:none');
+    expect(await screen.findByTestId('taxonomy', {}, { timeout: 5000 })).toHaveTextContent('technical:none');
 
-    const categoryChip = await screen.findByRole('button', { name: /technology \(1\)/i });
-    fireEvent.click(categoryChip);
+    await screen.findByText(/technology \(1\)/i, {}, { timeout: 5000 });
+    fireEvent.click(screen.getByRole('button', { name: /technology \(1\)/i }));
     expect(screen.getByTestId('taxonomy')).toHaveTextContent('technical:technology');
 
     fireEvent.click(screen.getByRole('button', { name: /fundamental/i }));
-    expect(screen.getByTestId('taxonomy')).toHaveTextContent('fundamental:none');
+    expect(await screen.findByTestId('taxonomy', {}, { timeout: 5000 })).toHaveTextContent('fundamental:none');
   });
 
   it('supports flat-view switch and opens review surface', async () => {
@@ -145,7 +140,7 @@ describe('ThemesPage', () => {
     runtimeState.features = { social_signals: true };
     renderPage();
     expect(await screen.findByText('Published Social Pulse')).toBeInTheDocument();
-    expect(screen.getByTestId('taxonomy')).toHaveTextContent('technical:none');
+    expect(await screen.findByTestId('taxonomy')).toHaveTextContent('technical:none');
   });
 
   it('uses the generation-scoped global view in economic authority mode', async () => {

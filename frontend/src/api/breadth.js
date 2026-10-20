@@ -52,19 +52,6 @@ export const getHistoricalBreadth = async (startDate, endDate, limit = 365, mark
 };
 
 /**
- * Get time series data for a specific breadth indicator.
- *
- * @param {string} indicator - The indicator name (e.g., 'stocks_up_4pct')
- * @param {number} days - Number of days to retrieve (default: 30)
- */
-export const getIndicatorTrend = async (indicator, days = 30, market = 'US') => {
-  const response = await apiClient.get(`/v1/breadth/trend/${indicator}`, {
-    params: { days, market }
-  });
-  return response.data;
-};
-
-/**
  * Get summary statistics for market breadth.
  */
 export const getBreadthSummary = async (market = 'US') => {

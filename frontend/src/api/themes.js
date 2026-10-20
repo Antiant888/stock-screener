@@ -5,22 +5,11 @@ import apiClient from './client';
 import {
   adaptCandidateQueueResponse,
   adaptCandidateReviewResponse,
-  adaptLifecycleTransitionsResponse,
   adaptMergeActionResponse,
   adaptMergeHistoryResponse,
   adaptMergeSuggestionsResponse,
   adaptRelationshipGraphResponse,
 } from './themeAdapters';
-
-/**
- * Get available pipelines.
- *
- * @returns {Promise<Object>} List of available pipelines (technical, fundamental)
- */
-export const getPipelines = async () => {
-  const response = await apiClient.get('/v1/themes/pipelines');
-  return response.data;
-};
 
 /**
  * Get the published themes bootstrap snapshot for a pipeline/view default state.
@@ -111,51 +100,6 @@ export const getThemeMentions = async (themeId, limit = 50) => {
 };
 
 /**
- * Discover correlation clusters (hidden themes).
- *
- * @param {number} correlationThreshold - Minimum correlation (default: 0.6)
- * @param {number} minClusterSize - Minimum stocks per cluster (default: 3)
- * @returns {Promise<Object>} Correlation discovery results
- */
-export const discoverCorrelationClusters = async (correlationThreshold = 0.6, minClusterSize = 3) => {
-  const response = await apiClient.get('/v1/themes/correlation/clusters', {
-    params: {
-      correlation_threshold: correlationThreshold,
-      min_cluster_size: minClusterSize
-    }
-  });
-  return response.data;
-};
-
-/**
- * Validate a theme by checking internal correlations.
- *
- * @param {number} themeId - Theme cluster ID
- * @param {number} minCorrelation - Minimum correlation threshold (default: 0.5)
- * @returns {Promise<Object>} Validation results
- */
-export const validateTheme = async (themeId, minCorrelation = 0.5) => {
-  const response = await apiClient.get(`/v1/themes/${themeId}/validate`, {
-    params: { min_correlation: minCorrelation }
-  });
-  return response.data;
-};
-
-/**
- * Find stocks that may be joining a theme.
- *
- * @param {number} themeId - Theme cluster ID
- * @param {number} correlationThreshold - Minimum correlation (default: 0.6)
- * @returns {Promise<Object>} Potential entrants
- */
-export const findThemeEntrants = async (themeId, correlationThreshold = 0.6) => {
-  const response = await apiClient.get(`/v1/themes/${themeId}/entrants`, {
-    params: { correlation_threshold: correlationThreshold }
-  });
-  return response.data;
-};
-
-/**
  * Get theme alerts.
  *
  * @param {boolean} unreadOnly - Only return unread alerts (default: false)
@@ -166,17 +110,6 @@ export const getAlerts = async (unreadOnly = false, limit = 50) => {
   const response = await apiClient.get('/v1/themes/alerts', {
     params: { unread_only: unreadOnly, limit }
   });
-  return response.data;
-};
-
-/**
- * Mark an alert as read.
- *
- * @param {number} alertId - Alert ID
- * @returns {Promise<Object>} Status response
- */
-export const markAlertRead = async (alertId) => {
-  const response = await apiClient.post(`/v1/themes/alerts/${alertId}/read`);
   return response.data;
 };
 
@@ -240,43 +173,6 @@ export const deleteContentSource = async (sourceId) => {
 };
 
 /**
- * Trigger content ingestion from all sources.
- *
- * @returns {Promise<Object>} Ingestion results
- */
-export const runIngestion = async () => {
-  const response = await apiClient.post('/v1/themes/ingest');
-  return response.data;
-};
-
-/**
- * Trigger theme extraction from unprocessed content.
- *
- * @param {number} limit - Max items to process (default: 50)
- * @param {string} pipeline - Pipeline: technical or fundamental (default: 'technical')
- * @returns {Promise<Object>} Extraction results
- */
-export const runExtraction = async (limit = 50, pipeline = 'technical') => {
-  const response = await apiClient.post('/v1/themes/extract', null, {
-    params: { limit, pipeline }
-  });
-  return response.data;
-};
-
-/**
- * Calculate/update metrics for all themes.
- *
- * @param {string} pipeline - Pipeline: technical or fundamental (default: 'technical')
- * @returns {Promise<Object>} Calculation results
- */
-export const calculateMetrics = async (pipeline = 'technical') => {
-  const response = await apiClient.post('/v1/themes/calculate-metrics', null, {
-    params: { pipeline }
-  });
-  return response.data;
-};
-
-/**
  * Create a theme from selected stocks.
  *
  * @param {string} name - Theme name
@@ -288,18 +184,6 @@ export const createTheme = async (name, symbols, description = null) => {
   const response = await apiClient.post('/v1/themes/create-from-cluster', null, {
     params: { name, symbols, description }
   });
-  return response.data;
-};
-
-/**
- * Add stocks to an existing theme.
- *
- * @param {number} themeId - Theme cluster ID
- * @param {Array<string>} symbols - Stock symbols to add
- * @returns {Promise<Object>} Result
- */
-export const addThemeConstituents = async (themeId, symbols) => {
-  const response = await apiClient.post(`/v1/themes/${themeId}/add-constituents`, symbols);
   return response.data;
 };
 
@@ -335,19 +219,6 @@ export const runPipelineAsync = async (pipeline = null, lookbackDays = null) => 
  */
 export const getPipelineStatus = async (runId) => {
   const response = await apiClient.get(`/v1/themes/pipeline/${runId}/status`);
-  return response.data;
-};
-
-/**
- * List recent pipeline runs.
- *
- * @param {number} limit - Maximum runs to return (default: 10)
- * @returns {Promise<Object>} List of recent pipeline runs
- */
-export const listPipelineRuns = async (limit = 10) => {
-  const response = await apiClient.get('/v1/themes/pipeline/runs', {
-    params: { limit }
-  });
   return response.data;
 };
 
@@ -427,31 +298,6 @@ export const getMergeHistory = async (limit = 50) => {
     params: { limit }
   });
   return adaptMergeHistoryResponse(response.data);
-};
-
-/**
- * Get lifecycle transition audit history.
- *
- * @param {Object} params - Optional query filters
- * @param {number} [params.limit=100] - Max rows (1-500)
- * @param {number} [params.offset=0] - Pagination offset
- * @param {string} [params.pipeline='technical'] - technical|fundamental
- * @param {number|null} [params.themeClusterId=null] - Optional theme filter
- * @param {string|null} [params.toState=null] - Optional to_state filter
- * @returns {Promise<Object>} Normalized lifecycle transition response
- */
-export const getLifecycleTransitions = async ({
-  limit = 100,
-  offset = 0,
-  pipeline = 'technical',
-  themeClusterId = null,
-  toState = null,
-} = {}) => {
-  const params = { limit, offset, pipeline };
-  if (themeClusterId != null) params.theme_cluster_id = themeClusterId;
-  if (toState) params.to_state = toState;
-  const response = await apiClient.get('/v1/themes/lifecycle-transitions', { params });
-  return adaptLifecycleTransitionsResponse(response.data);
 };
 
 /**
@@ -573,50 +419,6 @@ export const getL1Children = async (l1Id, { limit = 100, offset = 0, sortBy = 'm
 export const getL1Categories = async (pipeline = 'technical') => {
   const response = await apiClient.get('/v1/themes/taxonomy/categories', {
     params: { pipeline },
-  });
-  return response.data;
-};
-
-/**
- * Get L2 themes without L1 parent assignment.
- *
- * @param {Object} params - Query parameters
- * @param {string} [params.pipeline='technical'] - Pipeline filter
- * @param {number} [params.limit=100] - Max themes
- * @param {number} [params.offset=0] - Pagination offset
- * @returns {Promise<Object>} Unassigned themes response
- */
-export const getUnassignedThemes = async ({ pipeline = 'technical', limit = 100, offset = 0 } = {}) => {
-  const response = await apiClient.get('/v1/themes/taxonomy/unassigned', {
-    params: { pipeline, limit, offset },
-  });
-  return response.data;
-};
-
-/**
- * Reassign an L2 theme to a different L1 parent.
- *
- * @param {number} l2Id - L2 theme cluster ID
- * @param {number} l1Id - Target L1 theme cluster ID
- * @returns {Promise<Object>} Result
- */
-export const reassignL2ToL1 = async (l2Id, l1Id) => {
-  const response = await apiClient.put(`/v1/themes/taxonomy/${l2Id}/reassign`, { l1_id: l1Id });
-  return response.data;
-};
-
-/**
- * Run taxonomy assignment pipeline.
- *
- * @param {Object} params - Assignment parameters
- * @param {boolean} [params.dryRun=true] - Preview without applying
- * @param {string} [params.pipeline='technical'] - Pipeline to assign
- * @returns {Promise<Object>} Assignment report
- */
-export const runTaxonomyAssignment = async ({ dryRun = true, pipeline = 'technical' } = {}) => {
-  const response = await apiClient.post('/v1/themes/taxonomy/assign', {
-    dry_run: dryRun,
-    pipeline,
   });
   return response.data;
 };
