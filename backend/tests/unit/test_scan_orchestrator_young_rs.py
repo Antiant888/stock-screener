@@ -163,22 +163,18 @@ def test_volume_breakthrough_runs_on_a_young_listing_at_252_bars():
     assert _rs_fields(result) == (None, 66, 1, None)
 
 
-def test_setup_engine_runs_without_the_overall_rating(monkeypatch):
+def test_setup_engine_needs_the_overall_rating(monkeypatch):
     monkeypatch.setattr(settings, "setup_engine_enabled", True)
-    # Its pattern policy needs 252 daily bars (app/analysis/patterns/policy.py),
-    # so a placed stock with 300 scan bars is the smallest case that scores.
-    result = _scan("NEWIPO", 300, ["setup_engine"])
 
-    assert result["result_status"] == "ok"
-    assert result["screeners_run"] == ["setup_engine"]
-    assert result["setup_engine"]["rs_rating"] is None
-    assert _rs_fields(result) == (None, 66, 1, None)
+    young = _scan("NEWIPO", 300, ["ipo", "setup_engine"])
+    eligible = _scan("AAA", 300, ["ipo", "setup_engine"])
 
-    short = _scan("NEWIPO", 150, ["setup_engine"])
-
-    assert short["unavailable_screeners"] == ["setup_engine"]
-    assert short["reason"] == "Insufficient price history"
-    assert _rs_fields(short) == (None, 66, 1, None)
+    assert young["result_status"] == "ok"
+    assert young["screeners_run"] == ["ipo"]
+    assert young["unavailable_screeners"] == ["setup_engine"]
+    assert _rs_fields(young) == (None, 66, 1, None)
+    assert eligible["screeners_run"] == ["ipo", "setup_engine"]
+    assert eligible["setup_engine"]["rs_rating"] == 80.0
 
 
 def test_custom_is_gated_only_when_it_filters_on_the_overall_rating():

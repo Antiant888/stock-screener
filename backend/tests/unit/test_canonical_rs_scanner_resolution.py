@@ -416,11 +416,14 @@ def test_partial_history_carries_placed_horizons_without_an_overall():
     assert metrics["rs_rating_12m"] is None
 
 
-def test_setup_engine_direct_path_scores_a_placed_stock_without_an_overall():
+def test_setup_engine_direct_path_fails_closed_for_a_placed_stock():
     result = SetupEngineScanner().scan_stock("TEST", _placed_stock_data())
 
-    assert result.rating not in ("Error", "Insufficient Data")
-    assert result.details["setup_engine"]["rs_rating"] is None
+    assert result.rating == "Insufficient Data"
+    assert result.details == {
+        "reason": "Canonical RS is unavailable for TEST in the "
+        "balanced-horizon-percentile-v2 eligible universe"
+    }
 
 
 def test_custom_needs_the_overall_rating_only_when_its_criteria_filter_on_it():
