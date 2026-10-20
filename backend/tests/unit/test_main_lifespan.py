@@ -20,7 +20,7 @@ def test_initialize_runtime_seeds_declared_social_sources(monkeypatch, tmp_path)
     sessions = sessionmaker(engine)
     monkeypatch.setattr(module, "engine", engine)
     monkeypatch.setattr(module, "SessionLocal", sessions)
-    monkeypatch.setattr(module, "migrate_database_to_head", lambda selected: "current")
+    monkeypatch.setattr(module, "migrate_database_to_head", lambda selected: None)
 
     module.initialize_runtime()
 
@@ -102,7 +102,7 @@ def _sqlite_sessions(monkeypatch, tmp_path):
     sessions = sessionmaker(engine)
     monkeypatch.setattr(module, "engine", engine)
     monkeypatch.setattr(module, "SessionLocal", sessions)
-    monkeypatch.setattr(module, "migrate_database_to_head", lambda selected: "current")
+    monkeypatch.setattr(module, "migrate_database_to_head", lambda selected: None)
     return sessions
 
 

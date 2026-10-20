@@ -179,17 +179,13 @@ pg_restore -d <database> <dump-file>
 
 ### Legacy Pre-Alembic Upgrade Path
 
-Older installs that already have a populated PostgreSQL schema but no `alembic_version` marker should run the one-shot reconciliation script before the first post-upgrade boot:
+A database created before Alembic baseline `20260408_0001` and never upgraded since has tables but no `alembic_version` table. Current releases refuse to start against it. Start release v1.6.0 once against the database, then upgrade. Do this in your existing checkout: the database lives in its `./docker-data/postgres` directory, so a fresh clone would start v1.6.0 against an empty database.
 
-Use the same Compose file stack you deployed with for both commands below. Examples:
-- Local/default stack: `scripts/docker-compose-enabled-markets.sh ...`
-- Production overlay: `scripts/docker-compose-enabled-markets.sh --env-file .env.docker -f docker-compose.yml -f docker-compose.prod.yml ...`
-- HTTPS overlay: `scripts/docker-compose-enabled-markets.sh --env-file .env.docker -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.https.yml ...`
-
-```bash
-scripts/docker-compose-enabled-markets.sh --env-file .env.docker -f docker-compose.yml -f docker-compose.prod.yml run --rm backend python scripts/run_legacy_runtime_migrations.py
-scripts/docker-compose-enabled-markets.sh --env-file .env.docker -f docker-compose.yml -f docker-compose.prod.yml run --rm backend alembic upgrade head
-```
+1. Start v1.6.0 in the existing checkout:
+   - GHCR images: set `APP_IMAGE_TAG` to `v1.6.0` in `.env.docker`, then run `pull` and `up -d --no-build` with the release overlay as in [Production with GHCR Images](#production-with-ghcr-images-recommended).
+   - Source builds: run `git checkout v1.6.0`, then rebuild and start the stack with `up -d --build`.
+2. Wait until `docker compose logs backend` shows `Database schema ready`. v1.6.0's startup has then reconciled the old schema, stamped the baseline, and upgraded.
+3. Return to the current release: set `APP_IMAGE_TAG` back, or `git checkout` your branch again, and deploy as usual. Its startup runs the remaining migrations.
 
 Fresh installs now auto-seed `ibd_industry_groups` from the bundled canonical CSV on backend startup when the table is empty.
 If you already have an existing database with an empty `ibd_industry_groups` table, repair it with:

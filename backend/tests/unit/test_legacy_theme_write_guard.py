@@ -429,7 +429,6 @@ def _load(path):
 
 
 GUARDED_CLIS = [
-    ("scripts/backfill_l1_taxonomy.py", []),
     ("scripts/backfill_silent_failures.py", []),
     ("scripts/backfill_theme_aliases.py", ["--yes"]),
     ("app/scripts/repair_jp_alpha_universe_symbols.py", ["--apply"]),
