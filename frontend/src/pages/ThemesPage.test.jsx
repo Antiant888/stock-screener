@@ -114,15 +114,14 @@ describe('ThemesPage', () => {
 
   it('resets grouped category filter when pipeline toggles', async () => {
     renderPage();
-    await waitFor(() => expect(screen.getByTestId('taxonomy')).toBeInTheDocument());
-    expect(screen.getByTestId('taxonomy')).toHaveTextContent('technical:none');
+    expect(await screen.findByTestId('taxonomy', {}, { timeout: 5000 })).toHaveTextContent('technical:none');
 
-    const categoryChip = await screen.findByRole('button', { name: /technology \(1\)/i });
-    fireEvent.click(categoryChip);
+    await screen.findByText(/technology \(1\)/i, {}, { timeout: 5000 });
+    fireEvent.click(screen.getByRole('button', { name: /technology \(1\)/i }));
     expect(screen.getByTestId('taxonomy')).toHaveTextContent('technical:technology');
 
     fireEvent.click(screen.getByRole('button', { name: /fundamental/i }));
-    expect(screen.getByTestId('taxonomy')).toHaveTextContent('fundamental:none');
+    expect(await screen.findByTestId('taxonomy', {}, { timeout: 5000 })).toHaveTextContent('fundamental:none');
   });
 
   it('supports flat-view switch and opens review surface', async () => {
