@@ -43,8 +43,25 @@ def _run_revision(engine, fn_name: str) -> None:
             module.op = original_op
 
 
-def _create_pre_drop_schema(engine, *, pointers: dict[str, str], runs: list[tuple[str, str]]) -> None:
+def _create_pre_drop_schema(
+    engine,
+    *,
+    pointers: dict[str, str],
+    runs: list[tuple[str, str]],
+    published: tuple[str, ...] = (),
+) -> None:
     with engine.begin() as connection:
+        connection.execute(
+            text(
+                "CREATE TABLE feature_run_pointers ("
+                "key VARCHAR(64) PRIMARY KEY, run_id INTEGER NOT NULL)"
+            )
+        )
+        for market in published:
+            connection.execute(
+                text("INSERT INTO feature_run_pointers (key, run_id) VALUES (:key, 1)"),
+                {"key": f"latest_published_market:{market}"},
+            )
         connection.execute(
             text(
                 "CREATE TABLE market_rs_formula_pointers ("
@@ -94,11 +111,28 @@ def test_upgrade_drops_the_table_when_every_pointer_is_balanced(tmp_path):
         engine,
         pointers={"US": BALANCED_RS_FORMULA_VERSION, "HK": BALANCED_RS_FORMULA_VERSION},
         runs=[("US", "completed"), ("HK", "completed")],
+        published=("US", "HK"),
     )
 
     _run_revision(engine, "upgrade")
 
-    assert inspect(engine).get_table_names() == ["market_rs_runs"]
+    assert inspect(engine).get_table_names() == ["feature_run_pointers", "market_rs_runs"]
+    engine.dispose()
+
+
+def test_upgrade_drops_the_legacy_pointers_a_fresh_install_seeded(tmp_path):
+    # Revision 0025 seeds a legacy pointer for every catalog market, and an
+    # empty database reaches 0068 in the same run with nothing published.
+    engine = create_engine(f"sqlite:///{tmp_path / 'fresh.sqlite'}")
+    _create_pre_drop_schema(
+        engine,
+        pointers={"US": STORED_LEGACY_FORMULA, "HK": STORED_LEGACY_FORMULA},
+        runs=[],
+    )
+
+    _run_revision(engine, "upgrade")
+
+    assert inspect(engine).get_table_names() == ["feature_run_pointers", "market_rs_runs"]
     engine.dispose()
 
 
@@ -110,17 +144,19 @@ def test_upgrade_refuses_while_a_pointer_names_a_retired_formula(tmp_path):
             "US": BALANCED_RS_FORMULA_VERSION,
             "HK": STORED_LEGACY_FORMULA,
             "JP": STORED_LEGACY_FORMULA,
+            "CA": STORED_LEGACY_FORMULA,
         },
         runs=[("US", "completed")],
+        published=("US", "HK", "JP"),
     )
 
     with pytest.raises(RuntimeError) as exc_info:
         _run_revision(engine, "upgrade")
 
     assert str(exc_info.value) == (
-        "Market RS formula pointers still name a retired formula: "
-        "HK='legacy-linear-v1', JP='legacy-linear-v1'. This release has only "
-        "'balanced-horizon-percentile-v2' and cannot finish a rollout. Finish the "
+        "Markets published under a retired RS formula: "
+        "HK='legacy-linear-v1', JP='legacy-linear-v1'. This release serves only "
+        "'balanced-horizon-percentile-v2' and cannot serve those publications. Finish the "
         "balanced rollout on the previous release first: run 'python -m "
         "app.scripts.backfill_market_rs --market <MARKET> --through-date "
         "<YYYY-MM-DD> --activate' for each listed market on the release before "
@@ -128,6 +164,7 @@ def test_upgrade_refuses_while_a_pointer_names_a_retired_formula(tmp_path):
         "its row from market_rs_formula_pointers."
     )
     assert _pointer_rows(engine) == [
+        ("CA", STORED_LEGACY_FORMULA),
         ("HK", STORED_LEGACY_FORMULA),
         ("JP", STORED_LEGACY_FORMULA),
         ("US", BALANCED_RS_FORMULA_VERSION),
@@ -151,5 +188,5 @@ def test_downgrade_seeds_a_balanced_pointer_only_for_markets_with_a_completed_ru
         ("US", BALANCED_RS_FORMULA_VERSION),
     ]
     _run_revision(engine, "upgrade")
-    assert inspect(engine).get_table_names() == ["market_rs_runs"]
+    assert inspect(engine).get_table_names() == ["feature_run_pointers", "market_rs_runs"]
     engine.dispose()
