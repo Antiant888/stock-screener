@@ -504,27 +504,12 @@ class TestScanOrchestratorErrorPaths:
         assert len(result["rs_sparkline_data"]) == 30
         assert result["rs_trend"] == 0
         assert result["adr_percent"] == 10.0
-        assert result["rs_rating_1m"] == 50.0
+        assert result["rs_rating_1m"] is None
         assert result["rs_rating"] is None
         assert result["rs_rating_3m"] is None
         assert result["rs_rating_12m"] is None
         assert result["stage"] is None
         assert result["ma_alignment"] is None
-
-    def test_young_ipo_invalid_1m_rs_stays_null_instead_of_zero(self):
-        stock_data = _make_stock_data("TEST", n_days=30)
-        stock_data.price_data.iloc[-21, stock_data.price_data.columns.get_loc("Close")] = 0.0
-        provider = FakeDataProvider({"TEST": stock_data})
-        registry = ScreenerRegistry()
-
-        registry.register(type("FakeMinervini", (RecordingScreener,), {
-            "__init__": lambda self: RecordingScreener.__init__(self, name="minervini", score=90.0),
-        }))
-
-        orch = ScanOrchestrator(data_provider=provider, registry=registry)
-        result = orch.scan_stock_multi("TEST", ["minervini"], composite_method="weighted_average")
-
-        assert result["rs_rating_1m"] is None
 
     def test_young_ipo_adr_requires_twenty_valid_ohlc_rows(self):
         stock_data = _make_stock_data("TEST", n_days=20)
@@ -596,7 +581,7 @@ class TestScanOrchestratorErrorPaths:
         assert len(result["price_sparkline_data"]) == 30
         assert len(result["rs_sparkline_data"]) == 30
         assert result["adr_percent"] == 10.0
-        assert result["rs_rating_1m"] == 50.0
+        assert result["rs_rating_1m"] is None
 
     def test_partial_young_ipo_without_strong_ipo_score_gets_no_bonus(self):
         stock_data = _make_stock_data("TEST", n_days=60)

@@ -115,7 +115,6 @@ def test_runtime_orchestrator_uses_process_market_rs_reader():
     orchestrator = runtime.scan_orchestrator()
 
     assert orchestrator._market_rs_reader is runtime.market_rs_reader()
-    assert orchestrator._data_provider._layer._defer_market_rs_resolution is True
 
 
 def test_runtime_group_rank_service_uses_process_canonical_group_service():

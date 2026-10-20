@@ -9,7 +9,6 @@ from sqlalchemy.orm import Session
 
 from app.domain.relative_strength import (
     BALANCED_RS_FORMULA_VERSION,
-    LEGACY_RS_FORMULA_VERSION,
     SCANNER_RS_FIELD_BY_HORIZON,
     STOCK_RS_RATING_ATTR_BY_HORIZON,
     balanced_run_has_current_snapshot_contract,
@@ -58,18 +57,8 @@ class SqlMarketRsReader:
             resolved_formula = formula_version or (
                 requested_run.formula_version
                 if requested_run is not None
-                else self._repository.active_formula(db, market=normalized_market)
+                else BALANCED_RS_FORMULA_VERSION
             )
-            if resolved_formula == LEGACY_RS_FORMULA_VERSION:
-                if run_id is not None:
-                    raise CanonicalMarketRsUnavailable(
-                        "Legacy Market RS does not have a canonical run ID"
-                    )
-                return MarketRsResolution.legacy(
-                    market=normalized_market,
-                    as_of_date=as_of_date,
-                    formula_version=resolved_formula,
-                )
             if resolved_formula != BALANCED_RS_FORMULA_VERSION:
                 raise CanonicalMarketRsUnavailable(
                     f"Unsupported active Market RS formula for {normalized_market}: "

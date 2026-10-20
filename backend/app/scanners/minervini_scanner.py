@@ -8,7 +8,6 @@ All original criteria and scoring logic is preserved for backward compatibility.
 """
 import logging
 from typing import Dict, Optional
-import pandas as pd
 
 from .base_screener import (
     BaseStockScreener,
@@ -18,7 +17,6 @@ from .base_screener import (
     fifty_two_week_range,
 )
 from .screener_registry import register_screener
-from .criteria.relative_strength import RelativeStrengthCalculator
 from .criteria.rs_resolution import CanonicalStockRsUnavailable, resolve_stock_rs
 from .criteria.stage_analysis import WeinsteinstageAnalyzer
 from .criteria.moving_averages import MovingAverageAnalyzer
@@ -49,7 +47,6 @@ class MinerviniScanner(BaseStockScreener):
 
     def __init__(self):
         """Initialize Minervini scanner with criteria calculators."""
-        self.rs_calc = RelativeStrengthCalculator()
         self.stage_analyzer = WeinsteinstageAnalyzer()
         self.ma_analyzer = MovingAverageAnalyzer()
         self.vcp_detector = VCPDetector()
@@ -304,12 +301,6 @@ class MinerviniScanner(BaseStockScreener):
                 if precomputed is not None and precomputed.volume_rev is not None
                 else volumes_chrono[::-1].reset_index(drop=True)
             )
-            spy_prices = (
-                precomputed.benchmark_close_rev
-                if precomputed is not None and precomputed.benchmark_close_rev is not None
-                else spy_prices_chrono[::-1].reset_index(drop=True)
-            )
-
             # 52-week range
             high_52w = (
                 float(precomputed.high_52w)
@@ -326,15 +317,7 @@ class MinerviniScanner(BaseStockScreener):
             rs_ratings = (
                 precomputed.rs_ratings
                 if precomputed is not None and precomputed.rs_ratings is not None
-                else resolve_stock_rs(
-                    data,
-                    lambda: self.rs_calc.calculate_all_rs_ratings(
-                        symbol,
-                        prices,
-                        spy_prices,
-                        data.rs_universe_performances,
-                    ),
-                )
+                else resolve_stock_rs(data)
             )
 
             # calculate_all_rs_ratings now surfaces relative_performance and

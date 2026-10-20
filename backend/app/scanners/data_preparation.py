@@ -14,7 +14,7 @@ from typing import Dict, List, Optional
 import pandas as pd
 
 from ..domain.common.errors import DataFetchError
-from ..domain.scanning.ports import LegacyMarketRsSource, MarketRsResolution
+from ..domain.scanning.ports import MarketRsResolution
 from ..services.benchmark_cache_service import (
     BenchmarkCacheService,
     BenchmarkDataBundle,
@@ -30,12 +30,10 @@ from ..services.stock_event_context_service import StockEventContextService
 from ..services.yahoo_earnings_calendar import persisted_next_earnings_date
 from ..wiring.bootstrap import get_rate_limiter, get_yfinance_service
 from .base_screener import DataRequirements, StockData
-from .criteria.relative_strength import RelativeStrengthCalculator
 
 logger = logging.getLogger(__name__)
 
 _TRANSIENT_TYPES = (ConnectionError, TimeoutError, RateLimitTimeoutError)
-_RS_PERCENTILE_PERIODS = (21, 63, 252)
 
 
 class DataPreparationLayer:
@@ -55,7 +53,6 @@ class DataPreparationLayer:
         event_context_service: StockEventContextService | None = None,
         max_retries: int = 0,
         retry_base_delay: float = 1.0,
-        defer_market_rs_resolution: bool = False,
     ):
         """Initialize data preparation layer."""
         self.price_cache = price_cache
@@ -66,11 +63,9 @@ class DataPreparationLayer:
         )
         self._max_retries = max_retries
         self._retry_base_delay = retry_base_delay
-        self._defer_market_rs_resolution = defer_market_rs_resolution
         self._yfinance_service = get_yfinance_service()
         self._rate_limiter = get_rate_limiter()
         self._security_master = security_master_resolver
-        self._rs_calc = RelativeStrengthCalculator()
 
     @staticmethod
     def _as_of_date(price_data: pd.DataFrame | None) -> date | None:
@@ -125,13 +120,6 @@ class DataPreparationLayer:
     def _resolve_identity(self, symbol: str):
         resolver = getattr(self, "_security_master", None) or SecurityMasterResolver()
         return resolver.resolve_identity(symbol=symbol)
-
-    def _get_rs_calc(self) -> RelativeStrengthCalculator:
-        rs_calc = getattr(self, "_rs_calc", None)
-        if rs_calc is None:
-            rs_calc = RelativeStrengthCalculator()
-            self._rs_calc = rs_calc
-        return rs_calc
 
     def _fetch_benchmark_bundle(
         self,
@@ -200,62 +188,6 @@ class DataPreparationLayer:
             data=benchmark_data,
         )
 
-    def _compute_market_rs_universe_performances(
-        self,
-        stock_data_items: list[StockData],
-    ) -> dict[str, dict[int | str, list[float]]]:
-        """Build legacy scan-local percentile inputs for rollback mode only."""
-        rs_calc = self._get_rs_calc()
-        by_market: dict[str, dict[int | str, list[float]]] = {}
-        seen_symbols: set[tuple[str, str]] = set()
-
-        for item in stock_data_items:
-            market = (item.market or "").strip().upper() or "US"
-            dedupe_key = (market, item.symbol)
-            if dedupe_key in seen_symbols:
-                continue
-            seen_symbols.add(dedupe_key)
-            if (
-                item.price_data is None
-                or item.price_data.empty
-                or item.benchmark_data is None
-                or item.benchmark_data.empty
-                or "Close" not in item.price_data.columns
-                or "Close" not in item.benchmark_data.columns
-            ):
-                continue
-
-            prices = item.price_data["Close"].reset_index(drop=True)[::-1].reset_index(drop=True)
-            benchmark = item.benchmark_data["Close"].reset_index(drop=True)[::-1].reset_index(drop=True)
-
-            market_universe = by_market.setdefault(
-                market,
-                {"weighted": [], 21: [], 63: [], 252: []},
-            )
-
-            weighted_perf = rs_calc.calculate_weighted_performance(prices, benchmark)
-            if weighted_perf is not None:
-                market_universe["weighted"].append(weighted_perf)
-
-            for period in _RS_PERCENTILE_PERIODS:
-                stock_return = rs_calc.calculate_return(prices, period)
-                benchmark_return = rs_calc.calculate_return(benchmark, period)
-                if stock_return is None or benchmark_return is None:
-                    continue
-                market_universe[period].append(stock_return - benchmark_return)
-
-        normalized: dict[str, dict[int | str, list[float]]] = {}
-        for market, values in by_market.items():
-            market_values = {
-                key: series
-                for key, series in values.items()
-                if len(series) >= 2
-            }
-            if market_values:
-                normalized[market] = market_values
-
-        return normalized
-
     def _detect_and_set_mixed_market_flag(
         self,
         results: dict[str, StockData],
@@ -278,42 +210,18 @@ class DataPreparationLayer:
         for item in results.values():
             item.is_mixed_market = mixed
 
-    def _attach_market_rs_universe_performances(
-        self,
-        results: dict[str, StockData],
-    ) -> None:
-        """Attach legacy per-market scan-local percentile inputs.
-
-        Requires benchmark data on each item (only meaningful when
-        ``needs_benchmark`` is True). ``_detect_and_set_mixed_market_flag``
-        must already have been called so the flag is correct regardless of
-        whether this method runs.
-        """
-        items = list(results.values())
-        market_universe = self._compute_market_rs_universe_performances(items)
-        for item in items:
-            key = (item.market or "").strip().upper() or "US"
-            item.rs_universe_performances = market_universe.get(key, {})
-
     def apply_market_rs_resolution(
         self,
         results: dict[str, StockData],
         resolution: MarketRsResolution,
     ) -> None:
-        """Hydrate one Market resolution and build local inputs only in legacy mode."""
+        """Attach the Market's stock RS sources to the items it covers."""
         normalized_market = resolution.market.strip().upper()
-        market_results: dict[str, StockData] = {}
-        for key, item in results.items():
+        for item in results.values():
             item_market = (item.market or "US").strip().upper()
             if item_market != normalized_market:
                 continue
-            normalized_symbol = item.symbol.strip().upper()
-            item.rs_source = resolution.stock_source(normalized_symbol)
-            item.rs_universe_performances = None
-            market_results[key] = item
-
-        if isinstance(resolution.source, LegacyMarketRsSource) and market_results:
-            self._attach_market_rs_universe_performances(market_results)
+            item.rs_source = resolution.stock_source(item.symbol.strip().upper())
 
     def _is_transient(self, exc: Exception) -> bool:
         """Classify whether an exception is transient (worth retrying)."""
@@ -765,13 +673,6 @@ class DataPreparationLayer:
             # Always detect mixed-market so cap/volume filters use USD columns
             # even when no RS filter is requested (needs_benchmark=False).
             self._detect_and_set_mixed_market_flag(results)
-        if (
-            requirements.needs_benchmark
-            and results
-            and not getattr(self, "_defer_market_rs_resolution", False)
-        ):
-            self._attach_market_rs_universe_performances(results)
-
         if not allow_partial and all_errors:
             raise DataFetchError("<bulk>", all_errors, partial_data=results)
 

@@ -22,7 +22,6 @@ from app.analysis.patterns.rs_line import (
 from app.config import settings
 from app.domain.scanning.models import CompositeMethod, ScreenerOutputDomain
 from app.domain.scanning.ports import (
-    CanonicalStockRsSource,
     MarketRsReader,
     MarketRsResolution,
     StockDataProvider,
@@ -44,7 +43,6 @@ from .base_screener import (
     StockData,
     fifty_two_week_range,
 )
-from .criteria.relative_strength import RelativeStrengthCalculator
 from .criteria.rs_resolution import CanonicalStockRsUnavailable, resolve_stock_rs
 from .partial_history_metrics import partial_history_metrics
 from .scan_result_assembler import (
@@ -132,19 +130,9 @@ def _build_precomputed_scan_context(
         fifty_two_week_range(close_rev) if not close_rev.empty else (None, None)
     )
 
-    rs_ratings = None
-    if isinstance(stock_data.rs_source, CanonicalStockRsSource) or (
-        benchmark_close_rev is not None and not benchmark_close_rev.empty
-    ):
-        rs_ratings = resolve_stock_rs(
-            stock_data,
-            lambda: RelativeStrengthCalculator().calculate_all_rs_ratings(
-                stock_data.symbol,
-                close_rev,
-                benchmark_close_rev,
-                stock_data.rs_universe_performances,
-            ),
-        )
+    rs_ratings = (
+        resolve_stock_rs(stock_data) if stock_data.rs_source is not None else None
+    )
 
     rs_leadership = RsLineLeadershipSnapshot.empty()
     if benchmark_close_indexed is not None and not benchmark_close_indexed.empty:

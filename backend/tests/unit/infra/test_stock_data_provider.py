@@ -759,44 +759,6 @@ class TestBulkDataPreparation:
         assert results["0700.HK"].benchmark_symbol == "^HSI"
         assert results["0700.HK"].benchmark_candidates == ("^HSI", "2800.HK")
 
-    def test_bulk_computes_rs_universe_performances_within_each_market(
-        self, data_layer, mock_price_cache, mock_benchmark_cache
-    ):
-        us_benchmark = _make_price_df(price=450.0)
-        hk_benchmark = _make_price_df(price=280.0)
-        mock_benchmark_cache.get_benchmark_bundle.side_effect = lambda *, market, period: (
-            BenchmarkDataBundle(
-                market=market,
-                period=period,
-                benchmark_symbol="SPY" if market == "US" else "^HSI",
-                benchmark_role="primary",
-                benchmark_kind="etf" if market == "US" else "index",
-                candidate_symbols=("SPY", "IVV") if market == "US" else ("^HSI", "2800.HK"),
-                data=us_benchmark if market == "US" else hk_benchmark,
-            )
-        )
-        mock_price_cache.get_many.return_value = {
-            "AAPL": _make_price_df(price=180.0),
-            "MSFT": _make_price_df(price=190.0),
-            "0700.HK": _make_price_df(price=380.0),
-            "0005.HK": _make_price_df(price=60.0),
-        }
-
-        results = data_layer.prepare_data_bulk(["AAPL", "MSFT", "0700.HK", "0005.HK"], REQUIREMENTS)
-
-        assert results["AAPL"].rs_universe_performances is not None
-        assert results["MSFT"].rs_universe_performances is not None
-        assert results["0700.HK"].rs_universe_performances is not None
-        assert results["0005.HK"].rs_universe_performances is not None
-
-        us_weighted = results["AAPL"].rs_universe_performances["weighted"]
-        hk_weighted = results["0700.HK"].rs_universe_performances["weighted"]
-        assert len(us_weighted) == 2
-        assert len(hk_weighted) == 2
-        assert us_weighted is results["MSFT"].rs_universe_performances["weighted"]
-        assert hk_weighted is results["0005.HK"].rs_universe_performances["weighted"]
-        assert results["AAPL"].rs_universe_performances is not results["0700.HK"].rs_universe_performances
-
     def test_bulk_results_preserve_requested_input_key_for_unsuffixed_symbol(
         self, data_layer, mock_price_cache
     ):

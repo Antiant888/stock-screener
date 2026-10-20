@@ -22,7 +22,6 @@ from .base_screener import (
     fifty_two_week_range,
 )
 from .screener_registry import register_screener
-from .criteria.relative_strength import RelativeStrengthCalculator
 from .criteria.rs_resolution import CanonicalStockRsUnavailable, resolve_stock_rs
 
 logger = logging.getLogger(__name__)
@@ -36,10 +35,6 @@ class CANSLIMScanner(BaseStockScreener):
     Focuses on growth stocks with strong fundamentals, price momentum,
     and institutional support.
     """
-
-    def __init__(self):
-        """Initialize CANSLIM scanner."""
-        self.rs_calc = RelativeStrengthCalculator()
 
     @property
     def screener_name(self) -> str:
@@ -88,7 +83,6 @@ class CANSLIMScanner(BaseStockScreener):
 
             # Extract data
             price_data = data.price_data
-            benchmark_data = data.benchmark_data
             quarterly_growth = data.quarterly_growth
             fundamentals = data.fundamentals
             precomputed = data.precomputed_scan_context
@@ -103,11 +97,6 @@ class CANSLIMScanner(BaseStockScreener):
                 precomputed.volume_chrono
                 if precomputed is not None and precomputed.volume_chrono is not None
                 else price_data["Volume"].reset_index(drop=True)
-            )
-            spy_prices_chrono = (
-                precomputed.benchmark_close_chrono
-                if precomputed is not None and precomputed.benchmark_close_chrono is not None
-                else benchmark_data["Close"].reset_index(drop=True)
             )
 
             # Current price
@@ -128,23 +117,10 @@ class CANSLIMScanner(BaseStockScreener):
                 if precomputed is not None and precomputed.volume_rev is not None
                 else volumes_chrono[::-1].reset_index(drop=True)
             )
-            spy_prices = (
-                precomputed.benchmark_close_rev
-                if precomputed is not None and precomputed.benchmark_close_rev is not None
-                else spy_prices_chrono[::-1].reset_index(drop=True)
-            )
             rs_ratings = (
                 precomputed.rs_ratings
                 if precomputed is not None and precomputed.rs_ratings is not None
-                else resolve_stock_rs(
-                    data,
-                    lambda: self.rs_calc.calculate_all_rs_ratings(
-                        symbol,
-                        prices,
-                        spy_prices,
-                        data.rs_universe_performances,
-                    ),
-                )
+                else resolve_stock_rs(data)
             )
 
             # Calculate all CANSLIM criteria
@@ -152,21 +128,7 @@ class CANSLIMScanner(BaseStockScreener):
             a_result = self._check_annual_earnings(quarterly_growth)
             n_result = self._check_new_highs(current_price, prices)
             s_result = self._check_supply_demand(prices, volumes)
-            l_result = self._check_leader(
-                symbol,
-                prices,
-                spy_prices,
-                (
-                    data.rs_universe_performances.get("weighted")
-                    if data.rs_universe_performances
-                    else None
-                ),
-                precomputed_rs_rating=(
-                    rs_ratings.get("rs_rating")
-                    if rs_ratings is not None
-                    else None
-                ),
-            )
+            l_result = self._check_leader(rs_ratings["rs_rating"])
             i_result = self._check_institutional(fundamentals)
 
             # Calculate overall score
@@ -418,14 +380,7 @@ class CANSLIMScanner(BaseStockScreener):
                 "reason": f"Error: {str(e)}"
             }
 
-    def _check_leader(
-        self,
-        symbol: str,
-        prices: pd.Series,
-        spy_prices: pd.Series,
-        universe_performances: Optional[list[float]] = None,
-        precomputed_rs_rating: Optional[float] = None,
-    ) -> Dict:
+    def _check_leader(self, rs_rating: float) -> Dict:
         """
         L - Leader (20 points).
 
@@ -437,45 +392,22 @@ class CANSLIMScanner(BaseStockScreener):
         - RS >= 70: 10 points
         - RS < 70: proportional
         """
-        try:
-            if precomputed_rs_rating is not None:
-                rs_rating = precomputed_rs_rating
-            else:
-                rs_result = self.rs_calc.calculate_rs_rating(
-                    symbol,
-                    prices,
-                    spy_prices,
-                    universe_performances=universe_performances,
-                )
-                rs_rating = rs_result["rs_rating"]
+        if rs_rating >= 90:
+            points = 20
+        elif rs_rating >= 80:
+            points = 15
+        elif rs_rating >= 70:
+            points = 10
+        else:
+            points = (rs_rating / 70) * 10  # Proportional
 
-            # Calculate points
-            if rs_rating >= 90:
-                points = 20
-            elif rs_rating >= 80:
-                points = 15
-            elif rs_rating >= 70:
-                points = 10
-            else:
-                points = (rs_rating / 70) * 10  # Proportional
-
-            return {
-                "points": round(points, 2),
-                "max_points": 20,
-                "rs_rating": rs_rating,
-                "passes": rs_rating >= 80,
-                "reason": f"RS Rating: {rs_rating:.1f}"
-            }
-
-        except Exception as e:
-            logger.warning(f"Error calculating RS rating: {e}")
-            return {
-                "points": 0,
-                "max_points": 20,
-                "rs_rating": None,
-                "passes": False,
-                "reason": f"Error: {str(e)}"
-            }
+        return {
+            "points": round(points, 2),
+            "max_points": 20,
+            "rs_rating": rs_rating,
+            "passes": rs_rating >= 80,
+            "reason": f"RS Rating: {rs_rating:.1f}"
+        }
 
     def _check_institutional(self, fundamentals: Optional[Dict]) -> Dict:
         """
