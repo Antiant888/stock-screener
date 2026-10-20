@@ -290,7 +290,7 @@ def get_universe_stats(db: Session = Depends(get_db)):
 
 @router.get("/stats/by-market")
 def get_universe_market_audit(db: Session = Depends(get_db)):
-    """Get market-level universe audit summary for ops dashboards and launch gates."""
+    """Get market-level universe audit summary for ops dashboards."""
     try:
         stock_universe_service = get_stock_universe_service()
         return stock_universe_service.get_market_audit(db)

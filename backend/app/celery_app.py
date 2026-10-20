@@ -95,7 +95,6 @@ celery_app = Celery(
         'app.tasks.theme_intelligence_tasks',
         'app.tasks.universe_tasks',  # Stock universe management tasks
         'app.tasks.daily_market_pipeline_tasks',  # Per-market daily refresh + scan pipeline
-        'app.tasks.telemetry_tasks',  # Weekly telemetry governance audit (asia.10.4)
         'app.tasks.runtime_bootstrap_tasks',  # Local-default first-run bootstrap orchestration
         'app.tasks.static_export_tasks',  # Scheduled static-data bundle export
         'app.tasks.task_history_tasks',  # Closes runs no task signal reported
@@ -810,19 +809,6 @@ def _build_cache_warmup_beat_schedule(enabled_markets: list[str]) -> dict:
             'task': 'app.tasks.daily_market_pipeline_tasks.renew_daily_market_pipeline_claims',
             'schedule': float(PIPELINE_CHAIN_HEARTBEAT_SECONDS),
             'options': {'queue': 'celery', 'expires': PIPELINE_CHAIN_HEARTBEAT_SECONDS - 10},
-        },
-
-        # Weekly telemetry governance audit (bead asia.10.4).
-        # Sunday 5 AM ET — after weekly-full-refresh (2 AM) and universe refresh
-        # (3 AM) have emitted their final telemetry for the week. Produces a signed report at
-        # data/governance/telemetry_audit/YYYY-MM-DD.{json,md,sha256}.
-        'weekly-telemetry-governance-audit': {
-            'task': 'app.tasks.telemetry_tasks.weekly_telemetry_audit',
-            'schedule': crontab(
-                hour=5,
-                minute=0,
-                day_of_week=0,  # Sunday
-            ),
         },
     }
 

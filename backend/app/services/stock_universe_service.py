@@ -3075,7 +3075,7 @@ class StockUniverseService:
         """
         Return market-level universe audit with freshness + reconciliation summary.
 
-        The payload is designed for ops visibility and launch-gate checks:
+        The payload is designed for ops visibility:
         - counts by market + normalized lifecycle status
         - latest reconciliation snapshot age/diff summary for official universe markets
         - stale/missing/quarantine check lists

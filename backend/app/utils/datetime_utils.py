@@ -1,10 +1,4 @@
-"""Datetime helpers shared across telemetry and governance code.
-
-Shared here so DB-adapter tz-awareness differences (see
-``services/telemetry/weekly_audit._summarize_alerts``) and the launch-gate
-``now`` normalization (see ``services/governance/launch_gates.GateContext``)
-stay in lockstep on what "make this UTC-aware" actually means.
-"""
+"""Shared datetime helpers."""
 
 from __future__ import annotations
 

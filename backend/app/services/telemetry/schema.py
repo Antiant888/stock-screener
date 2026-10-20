@@ -132,10 +132,7 @@ def completeness_bucket_for(score: float) -> str:
 def low_completeness_ratio(payload: Dict[str, Any]) -> Optional[float]:
     """Return fraction of a completeness payload's universe in the 0-25 bucket.
 
-    Shared reader helper for the alert evaluator (live breach check) and the
-    weekly audit (historical regression signal) — both interpret the same
-    payload shape the same way, so the extraction keeps their semantics in
-    lockstep when the payload schema evolves.
+    Reader helper for the alert evaluator (live breach check).
     """
     total = payload.get("symbols_total") or 0
     if total <= 0:
@@ -150,8 +147,6 @@ def field_coverage_payload(
     support_state_counts: Dict[str, int],
     unsupported_field_names: tuple,
     computed_field_names: tuple,
-    cadence_counts: Dict[str, int],
-    cadence_eligible_universe: int,
 ) -> Dict[str, Any]:
     """Recorded after a per-market field-coverage snapshot (bead asia.10.5).
 
@@ -159,11 +154,6 @@ def field_coverage_payload(
     are supported/computed/partial/unsupported for this market, plus the
     concrete field names in each degraded bucket so runbooks can diagnose
     without a registry lookup.
-
-    Dynamic part (from ``stock_fundamentals.growth_reporting_cadence``):
-    per-symbol cadence distribution — the ``comparable_period_yoy`` count
-    over a non-zero ``cadence_eligible_universe`` is the cadence-fallback
-    signal operators watch.
     """
     return {
         "schema_version": SCHEMA_VERSION,
@@ -171,30 +161,7 @@ def field_coverage_payload(
         "support_state_counts": {str(k): int(v) for k, v in support_state_counts.items()},
         "unsupported_field_names": list(unsupported_field_names),
         "computed_field_names": list(computed_field_names),
-        "cadence_counts": {str(k): int(v) for k, v in cadence_counts.items()},
-        "cadence_eligible_universe": int(cadence_eligible_universe),
     }
-
-
-# The fallback-basis key name. String literal rather than an import from
-# growth_cadence_service to keep schema.py free of the growth-pipeline
-# dependency graph (schema is a foundation module; growth_cadence_service
-# depends on the capability registry which depends on routing policy).
-_BASIS_COMPARABLE_YOY = "comparable_period_yoy"
-
-
-def cadence_fallback_ratio(payload: Dict[str, Any]) -> Optional[float]:
-    """Return fraction of universe on comparable-period YoY fallback.
-
-    Shared reader so the alert evaluator and weekly audit agree on the
-    definition. ``comparable_period_yoy`` is the cadence-fallback marker
-    (see ``growth_cadence_service.BASIS_COMPARABLE_YOY``).
-    """
-    eligible = payload.get("cadence_eligible_universe") or 0
-    if eligible <= 0:
-        return None
-    fallbacks = (payload.get("cadence_counts") or {}).get(_BASIS_COMPARABLE_YOY, 0)
-    return float(fallbacks) / float(eligible)
 
 
 def unsupported_field_ratio(payload: Dict[str, Any]) -> Optional[float]:

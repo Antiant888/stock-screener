@@ -1,11 +1,4 @@
-"""Database URL helpers shared across the app and CLI scripts.
-
-Centralized here so the redaction format stays consistent between the
-FastAPI startup banner (``app.main``) and the migration rehearsal script
-(``backend/scripts/run_migration_rehearsal.py``) — otherwise a future
-operator reading two log lines from the same incident would see two
-different "safe" forms of the same URL.
-"""
+"""Database URL helpers."""
 
 from __future__ import annotations
 

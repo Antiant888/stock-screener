@@ -58,15 +58,3 @@ REGULAR_MARKET_CLOSE_TIMES: dict[str, time] = {
     "AU": time(16, 0),
     "MY": time(17, 0),
 }
-
-
-def calendar_session_probe_expectations(
-    overrides: tuple[CalendarSessionOverride, ...] = DEFAULT_CALENDAR_SESSION_OVERRIDES,
-) -> dict[str, dict[date, bool]]:
-    """Return market/date expectations used by health checks and gates."""
-    expectations: dict[str, dict[date, bool]] = {}
-    for override in overrides:
-        expectations.setdefault(override.normalized_market(), {})[
-            override.day
-        ] = override.is_trading_day
-    return expectations
