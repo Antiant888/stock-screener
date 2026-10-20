@@ -31,10 +31,13 @@ class TestSchemaHelpers:
             support_state_counts={"supported": 45, "unsupported": 5},
             unsupported_field_names=("institutional_ownership", "short_interest"),
             computed_field_names=("rs_rating",),
+            cadence_counts={"quarterly_qoq": 400, "comparable_period_yoy": 100},
+            cadence_eligible_universe=500,
         )
         assert p["schema_version"] == SCHEMA_VERSION
         assert p["total_fields"] == 50
         assert p["support_state_counts"] == {"supported": 45, "unsupported": 5}
+        assert p["cadence_eligible_universe"] == 500
         # Tuples convert to lists for JSON serialization.
         assert p["unsupported_field_names"] == ["institutional_ownership", "short_interest"]
 
@@ -44,6 +47,8 @@ class TestSchemaHelpers:
             support_state_counts={"supported": 45, "unsupported": 5},
             unsupported_field_names=(),
             computed_field_names=(),
+            cadence_counts={},
+            cadence_eligible_universe=0,
         )
         assert unsupported_field_ratio(p) == pytest.approx(5 / 50)
 
@@ -53,6 +58,8 @@ class TestSchemaHelpers:
             support_state_counts={},
             unsupported_field_names=(),
             computed_field_names=(),
+            cadence_counts={},
+            cadence_eligible_universe=0,
         )
         assert unsupported_field_ratio(p) is None
 
@@ -67,6 +74,8 @@ class TestEvaluatorIntegration:
             support_state_counts={"supported": 40, "unsupported": 10},
             unsupported_field_names=(),
             computed_field_names=(),
+            cadence_counts={},
+            cadence_eligible_universe=0,
         )
         assert extractor(p) == pytest.approx(0.20)
 
@@ -118,6 +127,8 @@ class TestRecordFromRegistry:
         )
 
         t = PerMarketTelemetry(redis_client_factory=lambda: None, session_factory=None)
+        # Stub DB cadence query via internal helper
+        t._read_cadence_counts = lambda market: ({"quarterly_qoq": 400}, 400)
         t._emit_pg = MagicMock()
         t._set_gauge = MagicMock()
 
@@ -129,3 +140,4 @@ class TestRecordFromRegistry:
         assert market == "HK"
         assert payload["support_state_counts"] == {"unsupported": 1, "supported": 1}
         assert payload["unsupported_field_names"] == ["institutional_ownership"]
+        assert payload["cadence_eligible_universe"] == 400

@@ -147,6 +147,8 @@ def field_coverage_payload(
     support_state_counts: Dict[str, int],
     unsupported_field_names: tuple,
     computed_field_names: tuple,
+    cadence_counts: Dict[str, int],
+    cadence_eligible_universe: int,
 ) -> Dict[str, Any]:
     """Recorded after a per-market field-coverage snapshot (bead asia.10.5).
 
@@ -154,6 +156,10 @@ def field_coverage_payload(
     are supported/computed/partial/unsupported for this market, plus the
     concrete field names in each degraded bucket so runbooks can diagnose
     without a registry lookup.
+
+    Dynamic part (from ``stock_fundamentals.growth_reporting_cadence``):
+    per-symbol cadence distribution. No app code reads it; the fields stay
+    because the telemetry history API returns this payload unchanged.
     """
     return {
         "schema_version": SCHEMA_VERSION,
@@ -161,6 +167,8 @@ def field_coverage_payload(
         "support_state_counts": {str(k): int(v) for k, v in support_state_counts.items()},
         "unsupported_field_names": list(unsupported_field_names),
         "computed_field_names": list(computed_field_names),
+        "cadence_counts": {str(k): int(v) for k, v in cadence_counts.items()},
+        "cadence_eligible_universe": int(cadence_eligible_universe),
     }
 
 

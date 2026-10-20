@@ -390,9 +390,13 @@ class PerMarketTelemetry:
         )
 
     def record_field_coverage_from_registry(self, market: Optional[str]) -> None:
-        """Snapshot per-market field coverage (bead asia.10.5) from
-        ``field_capability_registry``: policy-level supported/computed/unsupported
-        counts per market.
+        """Snapshot per-market field coverage (bead asia.10.5).
+
+        Static part comes from ``field_capability_registry`` (policy-level
+        supported/computed/unsupported counts per market). Dynamic part comes
+        from a single GROUP BY on ``stock_fundamentals.growth_metric_basis``
+        for the market's active universe — the comparable-period-YoY count
+        gives the cadence-fallback rate.
         """
         from ..field_capability_registry import (
             SUPPORT_STATE_COMPUTED,
@@ -426,14 +430,62 @@ class PerMarketTelemetry:
             elif cap.support_state == SUPPORT_STATE_COMPUTED:
                 computed.append(entry.field)
 
+        cadence_counts, cadence_eligible = self._read_cadence_counts(m)
+
         payload = field_coverage_payload(
             total_fields=len(entries),
             support_state_counts=state_counts,
             unsupported_field_names=tuple(sorted(unsupported)),
             computed_field_names=tuple(sorted(computed)),
+            cadence_counts=cadence_counts,
+            cadence_eligible_universe=cadence_eligible,
         )
         self._set_gauge(MetricKey.FIELD_COVERAGE, m, payload)
         self._emit_pg(market=m, metric_key=MetricKey.FIELD_COVERAGE, payload=payload)
+
+    def _read_cadence_counts(self, market: str) -> tuple:
+        """Return ((basis→count) dict, eligible_universe) for one market.
+
+        Eligible universe = active symbols with a non-NULL ``growth_metric_basis``.
+        A NULL basis means fundamentals never landed or never produced a
+        reportable basis, so those symbols stay out of the denominator.
+        """
+        from sqlalchemy import func as sa_func
+
+        try:
+            db = self._session()
+        except Exception:
+            return ({}, 0)
+
+        counts: Dict[str, int] = {}
+        total = 0
+        try:
+            from ...models.stock import StockFundamental
+            from ...models.stock_universe import StockUniverse
+
+            basis = StockFundamental.growth_metric_basis
+            q = (
+                db.query(basis, sa_func.count().label("n"))
+                .select_from(StockFundamental)
+                .join(StockUniverse, StockUniverse.symbol == StockFundamental.symbol)
+                .filter(StockUniverse.is_active.is_(True))
+                .filter(StockUniverse.market == market)
+                .filter(basis.isnot(None))
+                .group_by(basis)
+            )
+            for value, n in q.all():
+                counts[str(value)] = int(n)
+                total += int(n)
+        except Exception as exc:
+            logger.debug("telemetry: cadence DB query failed (%s)", exc)
+            return ({}, 0)
+        finally:
+            try:
+                db.close()
+            except Exception:
+                pass
+
+        return (counts, total)
 
     # ------------------------------------------------------------------
     # Read API
