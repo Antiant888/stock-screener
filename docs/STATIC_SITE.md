@@ -50,7 +50,7 @@ Balanced activation validates every declared Scan chunk and requires exact formu
 
 `markets/<market>/groups.json` is an exact export of the stored Group snapshot for that formula/run. It includes Group overall, 1M, and 3M RS, with Group Rank based only on overall RS. The static Group table exposes separate **1M RS** and **3M RS** columns, matching the live table.
 
-RRG rolling-history assets use `static-rrg-history-v4` and identify their RS formula version. The weekly RS-Ratio/RS-Momentum transformation is unchanged, but history from different formulas is never merged. A fallback market artifact or RRG-history bundle is rejected when its schema or formula does not match the requested export. Until enough balanced history exists, RRG reports insufficient history.
+RRG rolling-history assets use `static-rrg-history-v4` and identify their RS formula version. The weekly RS-Ratio/RS-Momentum transformation is unchanged, but history from different formulas is never merged. A fallback market artifact or RRG-history bundle is rejected when its schema does not match or it does not use `balanced-horizon-percentile-v2`. The fallback downloader (`backend/app/scripts/download_static_market_fallbacks.py`) skips such an artifact and keeps the market's newest balanced one. Until enough balanced history exists, RRG reports insufficient history.
 
 ## Breadth Data Contract
 
