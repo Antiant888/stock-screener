@@ -355,10 +355,7 @@ class StaticSiteExportService:
                 else None
             ),
             output_dir=Path(output_dir),
-            required_formula_by_market={
-                market: BALANCED_RS_FORMULA_VERSION
-                for market in (*required_markets, *optional_markets)
-            },
+            required_markets=required_markets,
             optional_markets=optional_markets,
             clean=clean,
         )

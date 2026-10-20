@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import json
 import shutil
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
+from app.domain.relative_strength import BALANCED_RS_FORMULA_VERSION
 from app.services.atomic_directory_publisher import AtomicDirectoryPublisher
 from app.services.static_group_matrix import validate_group_matrix_asset
 from app.services.breadth.types import CURRENT_BREADTH_CALCULATION_REVISION
@@ -61,40 +62,30 @@ class StaticArtifactCombiner:
         artifacts_dir: Path,
         fallback_artifacts_dir: Path | None,
         output_dir: Path,
-        required_formula_by_market: Mapping[str, str],
-        fallback_required_formula_by_market: Mapping[str, str] | None = None,
+        required_markets: Iterable[str] = (),
         optional_markets: Iterable[str] = (),
         clean: bool,
     ) -> StaticArtifactCombineResult:
         required = {
-            str(market).strip().upper(): str(formula).strip()
-            for market, formula in required_formula_by_market.items()
+            str(market).strip().upper()
+            for market in required_markets
+            if str(market).strip()
         }
         optional = {
             str(market).strip().upper()
             for market in optional_markets
             if str(market).strip()
         }
-        fallback_required = (
-            required
-            if fallback_required_formula_by_market is None
-            else {
-                str(market).strip().upper(): str(formula).strip()
-                for market, formula in fallback_required_formula_by_market.items()
-            }
-        )
         rejections: list[tuple[str, str]] = []
         current = self._discover(
             Path(artifacts_dir),
             source_label="current",
-            required={},
             rejections=rejections,
         )
         fallback = (
             self._discover(
                 Path(fallback_artifacts_dir),
                 source_label="fallback",
-                required={},
                 rejections=rejections,
             )
             if fallback_artifacts_dir is not None
@@ -103,7 +94,6 @@ class StaticArtifactCombiner:
         selected, fallback_reasons = self._select_artifacts(
             current=current,
             fallback=fallback,
-            fallback_required=fallback_required,
         )
 
         if required:
@@ -126,15 +116,11 @@ class StaticArtifactCombiner:
             raise RuntimeError(
                 "No market artifacts are available to combine into a static-site bundle"
             )
-        self._validate_selected_formulas(
-            selected=selected,
-            required=required,
-            fallback_required=fallback_required,
-        )
+        self._validate_selected_breadth_revisions(selected)
 
         generated_at = datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
         warnings: list[str] = [
-            f"Ignored damaged static market artifact: {message}"
+            f"Ignored static market artifact: {message}"
             for _market, message in rejections
         ]
         entries: dict[str, dict[str, Any]] = {}
@@ -202,7 +188,6 @@ class StaticArtifactCombiner:
         *,
         current: dict[str, dict[str, Any]],
         fallback: dict[str, dict[str, Any]],
-        fallback_required: Mapping[str, str],
     ) -> tuple[dict[str, dict[str, Any]], dict[str, str]]:
         selected = dict(current)
         fallback_reasons: dict[str, str] = {}
@@ -210,16 +195,6 @@ class StaticArtifactCombiner:
             if not cls._artifact_matches_breadth_revision(
                 market=market,
                 artifact=fallback_artifact,
-            ):
-                continue
-            expected_fallback_formula = fallback_required.get(market)
-            if (
-                expected_fallback_formula is not None
-                and not cls._artifact_matches_formula(
-                    market=market,
-                    artifact=fallback_artifact,
-                    expected_formula=expected_fallback_formula,
-                )
             ):
                 continue
             current_artifact = selected.get(market)
@@ -263,26 +238,6 @@ class StaticArtifactCombiner:
             return None
 
     @classmethod
-    def _artifact_matches_formula(
-        cls,
-        *,
-        market: str,
-        artifact: dict[str, Any],
-        expected_formula: str,
-    ) -> bool:
-        try:
-            cls._validate_formula(
-                market=market,
-                source_label=artifact["source_label"],
-                metadata=artifact["metadata"],
-                market_dir=artifact["market_dir"],
-                expected_formula=expected_formula,
-            )
-        except StaticArtifactFormulaError:
-            return False
-        return True
-
-    @classmethod
     def _artifact_matches_breadth_revision(
         cls,
         *,
@@ -301,28 +256,11 @@ class StaticArtifactCombiner:
         return True
 
     @classmethod
-    def _validate_selected_formulas(
+    def _validate_selected_breadth_revisions(
         cls,
-        *,
         selected: dict[str, dict[str, Any]],
-        required: Mapping[str, str],
-        fallback_required: Mapping[str, str],
     ) -> None:
         for market, artifact in selected.items():
-            required_formulas = (
-                fallback_required
-                if artifact["source_label"] == "fallback"
-                else required
-            )
-            expected = required_formulas.get(market)
-            if expected is not None:
-                artifact["entry"] = cls._validate_formula(
-                    market=market,
-                    source_label=artifact["source_label"],
-                    metadata=artifact["metadata"],
-                    market_dir=artifact["market_dir"],
-                    expected_formula=expected,
-                )
             artifact["entry"] = cls._validate_breadth_revision(
                 market=market,
                 source_label=artifact["source_label"],
@@ -335,7 +273,6 @@ class StaticArtifactCombiner:
         root: Path,
         *,
         source_label: str,
-        required: Mapping[str, str],
         rejections: list[tuple[str, str]],
     ) -> dict[str, dict[str, Any]]:
         discovered: dict[str, dict[str, Any]] = {}
@@ -368,15 +305,21 @@ class StaticArtifactCombiner:
                     (market, f"{market} {source_label} metadata has no Market entry")
                 )
                 continue
-            expected = required.get(market)
-            if expected is not None:
+            try:
                 entry = self._validate_formula(
                     market=market,
                     source_label=source_label,
                     metadata=metadata,
                     market_dir=market_dir,
-                    expected_formula=expected,
+                    expected_formula=BALANCED_RS_FORMULA_VERSION,
                 )
+            except StaticArtifactFormulaError as exc:
+                if source_label == "current":
+                    # The export just built this artifact; a wrong formula is
+                    # a defect to surface, never something to paper over.
+                    raise
+                rejections.append((market, str(exc)))
+                continue
             try:
                 asset_warnings = self._validate_advertised_assets(
                     market=market,

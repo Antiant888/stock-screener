@@ -17,6 +17,7 @@ from typing import Any
 from urllib.parse import urlencode
 
 from app.domain.markets import SUPPORTED_MARKET_CODES
+from app.domain.relative_strength import BALANCED_RS_FORMULA_VERSION
 from app.services.static_artifact_combiner import (
     StaticArtifactCombiner,
     StaticArtifactFormulaError,
@@ -201,6 +202,44 @@ def downloaded_market_has_advertised_assets(
     return True
 
 
+def downloaded_market_uses_balanced_formula(
+    target_dir: Path,
+    *,
+    market: str,
+    artifact_name: str,
+    run_id: int,
+) -> bool:
+    metadata_paths = sorted(target_dir.rglob(STATIC_MARKET_METADATA_FILENAME))
+    if len(metadata_paths) != 1:
+        warn(
+            f"{artifact_name} from run {run_id} has no unique "
+            f"{STATIC_MARKET_METADATA_FILENAME} for formula validation."
+        )
+        return False
+    metadata_path = metadata_paths[0]
+    try:
+        metadata = read_static_market_manifest(metadata_path, expected_market=market)
+        StaticArtifactCombiner._validate_formula(
+            market=market,
+            source_label="fallback",
+            metadata=metadata,
+            market_dir=metadata_path.parent,
+            expected_formula=BALANCED_RS_FORMULA_VERSION,
+        )
+    except (
+        OSError,
+        json.JSONDecodeError,
+        TypeError,
+        RuntimeError,
+        StaticMarketArtifactContractError,
+        StaticArtifactFormulaError,
+    ) as exc:
+        warn(
+            f"{artifact_name} from run {run_id} does not use the balanced RS "
+            f"formula for {market} ({exc})."
+        )
+        return False
+    return True
 
 
 def _coerce_manifest_date(value: object) -> date | None:
@@ -371,6 +410,13 @@ def _find_compatible_market_candidate(
     ):
         return None
     if not downloaded_market_has_advertised_assets(
+        wrapper,
+        market=market,
+        artifact_name=artifact_name,
+        run_id=run_id,
+    ):
+        return None
+    if not downloaded_market_uses_balanced_formula(
         wrapper,
         market=market,
         artifact_name=artifact_name,

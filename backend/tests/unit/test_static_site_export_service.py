@@ -1796,16 +1796,28 @@ def test_serialize_scan_row_preserves_compact_opportunity_evidence_only(
 def _materialize_advertised_files(root: Path) -> None:
     """Write minimal JSON for advertised page/asset paths a fixture omits.
 
-    The combiner rejects artifacts whose advertised files are missing; these
-    combine tests exercise selection, not that validation.
+    The combiner rejects artifacts whose advertised files are missing or that
+    name no RS formula; these combine tests exercise selection, not that
+    validation, so a fixture that names no formula gets the balanced one. A
+    formula the fixture does name is left alone.
     """
     for metadata_path in root.rglob(STATIC_MARKET_METADATA_FILENAME):
         try:
-            entry = json.loads(metadata_path.read_text(encoding="utf-8")).get("entry")
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
         except ValueError:
             continue
+        entry = metadata.get("entry") if isinstance(metadata, dict) else None
         if not isinstance(entry, dict):
             continue
+        if "rs_formula_version" not in entry:
+            entry["rs_formula_version"] = BALANCED_RS_FORMULA_VERSION
+            metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+        scan_manifest = metadata_path.parent / "scan" / "manifest.json"
+        if scan_manifest.is_file():
+            scan = json.loads(scan_manifest.read_text(encoding="utf-8"))
+            if "rs_formula_version" not in scan:
+                scan["rs_formula_version"] = BALANCED_RS_FORMULA_VERSION
+                scan_manifest.write_text(json.dumps(scan), encoding="utf-8")
         market = str(entry.get("market") or "").lower()
         descriptors = [
             *(entry.get("pages") or {}).values(),
@@ -1921,13 +1933,20 @@ def test_combine_rejects_live_only_keys_copied_from_market_artifact(tmp_path):
     market_dir = artifacts_dir / "job-us" / "markets" / "us"
     (market_dir / "scan").mkdir(parents=True)
     (market_dir / "scan" / "manifest.json").write_text(
-        json.dumps({"rows_total": 0, "source_metrics": {"posts": 2}}),
+        json.dumps(
+            {
+                "rows_total": 0,
+                "source_metrics": {"posts": 2},
+                "rs_formula_version": BALANCED_RS_FORMULA_VERSION,
+            }
+        ),
         encoding="utf-8",
     )
     entry = {
         "market": "US",
         "display_name": "United States",
         "as_of_date": "2026-04-04",
+        "rs_formula_version": BALANCED_RS_FORMULA_VERSION,
         "features": {"scan": True},
         "pages": {"scan": {"path": "markets/us/scan/manifest.json"}},
         "assets": {},
@@ -2139,10 +2158,12 @@ def test_combine_market_artifacts_uses_fallback_only_for_missing_markets(tmp_pat
     assert manifest["markets"]["US"]["as_of_date"] == "2026-04-05"
     assert manifest["markets"]["HK"]["as_of_date"] == "2026-04-03"
     assert json.loads((output_dir / "markets" / "us" / "scan" / "manifest.json").read_text(encoding="utf-8")) == {
-        "source": str(current_us_dir)
+        "source": str(current_us_dir),
+        "rs_formula_version": BALANCED_RS_FORMULA_VERSION,
     }
     assert json.loads((output_dir / "markets" / "hk" / "scan" / "manifest.json").read_text(encoding="utf-8")) == {
-        "source": str(fallback_hk_dir)
+        "source": str(fallback_hk_dir),
+        "rs_formula_version": BALANCED_RS_FORMULA_VERSION,
     }
     assert "HK reused from a previous static-site market artifact because the current run produced no artifact." in manifest["warnings"]
     assert not any(warning.startswith("US reused from previous") for warning in manifest["warnings"])
@@ -2206,7 +2227,8 @@ def test_combine_market_artifacts_uses_newer_fallback_for_rewound_current_market
     manifest = result.manifest
     assert manifest["markets"]["US"]["as_of_date"] == "2026-08-03"
     assert json.loads((output_dir / "markets" / "us" / "scan" / "manifest.json").read_text(encoding="utf-8")) == {
-        "source": str(fallback_us_dir)
+        "source": str(fallback_us_dir),
+        "rs_formula_version": BALANCED_RS_FORMULA_VERSION,
     }
     assert (
         "US reused from a previous static-site market artifact because it is newer "
@@ -2214,7 +2236,11 @@ def test_combine_market_artifacts_uses_newer_fallback_for_rewound_current_market
     ) in manifest["warnings"]
 
 
-def test_combine_market_artifacts_prefers_newer_balanced_fallback_over_legacy_current(tmp_path):
+def test_combine_market_artifacts_rejects_a_legacy_current_before_selecting_a_newer_fallback(
+    tmp_path,
+):
+    from app.services.static_artifact_combiner import StaticArtifactFormulaError
+
     current_dir = tmp_path / "current"
     fallback_dir = tmp_path / "fallback"
     output_dir = tmp_path / "combined"
@@ -2268,23 +2294,15 @@ def test_combine_market_artifacts_prefers_newer_balanced_fallback_over_legacy_cu
         )
 
     _materialize_advertised_files(tmp_path)
-    result = StaticSiteExportService.combine_market_artifacts(
-        current_dir,
-        output_dir,
-        fallback_artifacts_dir=fallback_dir,
-        required_markets={"US"},
-    )
+    with pytest.raises(StaticArtifactFormulaError, match="US current artifact uses incompatible RS formula"):
+        StaticSiteExportService.combine_market_artifacts(
+            current_dir,
+            output_dir,
+            fallback_artifacts_dir=fallback_dir,
+            required_markets={"US"},
+        )
 
-    manifest = result.manifest
-    assert manifest["markets"]["US"]["rs_formula_version"] == BALANCED_RS_FORMULA_VERSION
-    assert manifest["markets"]["US"]["as_of_date"] == "2026-08-04"
-    assert json.loads((output_dir / "markets" / "us" / "scan" / "manifest.json").read_text(encoding="utf-8")) == {
-        "rs_formula_version": BALANCED_RS_FORMULA_VERSION
-    }
-    assert any(
-        "US reused from a previous static-site market artifact" in warning
-        for warning in manifest["warnings"]
-    )
+    assert not output_dir.exists()
 
 
 def test_combine_market_artifacts_rejects_legacy_fallback_when_current_missing(tmp_path):

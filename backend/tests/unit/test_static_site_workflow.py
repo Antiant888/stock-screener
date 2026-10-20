@@ -520,7 +520,10 @@ def test_static_site_fallback_downloader_keeps_newest_candidate_for_current_mark
             (target_dir / "manifest.market.json").write_text(json.dumps({{
                 "market": artifact_name.rsplit("-", 1)[1],
                 "schema_version": "static-site-v3",
-                "entry": {{"as_of_date": as_of_date_by_run.get(run_id, "2026-08-02")}},
+                "entry": {{
+                    "as_of_date": as_of_date_by_run.get(run_id, "2026-08-02"),
+                    "rs_formula_version": "balanced-horizon-percentile-v2",
+                }},
             }}))
             with downloads_log.open("a", encoding="utf-8") as handle:
                 handle.write(json.dumps({{"run": run_id, "artifact": artifact_name}}) + "\\n")
@@ -602,8 +605,8 @@ def test_static_site_fallback_downloader_keeps_newest_balanced_candidate(
             market_dir = target_dir / "markets" / "us"
             (market_dir / "scan").mkdir(parents=True, exist_ok=True)
             formula_by_run = {{
-                "333": "balanced-horizon-percentile-v2",
-                "222": "legacy-linear-v1",
+                "333": "legacy-linear-v1",
+                "222": "balanced-horizon-percentile-v2",
             }}
             date_by_run = {{
                 "333": "2026-08-04",
@@ -654,7 +657,13 @@ def test_static_site_fallback_downloader_keeps_newest_balanced_candidate(
         json.loads(line)
         for line in downloads_log.read_text(encoding="utf-8").splitlines()
     ]
-    assert downloads == [{"run": "333", "artifact": "static-market-US"}]
+    assert downloads == [
+        {"run": "333", "artifact": "static-market-US"},
+        {"run": "222", "artifact": "static-market-US"},
+    ]
+    assert (
+        "does not use the balanced RS formula for US" in result.stdout
+    ), result.stdout
     manifest = json.loads(
         (
             fallback_dir
@@ -665,6 +674,7 @@ def test_static_site_fallback_downloader_keeps_newest_balanced_candidate(
         ).read_text(encoding="utf-8")
     )
     assert manifest["entry"]["rs_formula_version"] == "balanced-horizon-percentile-v2"
+    assert manifest["entry"]["as_of_date"] == "2026-08-03"
 
 
 def test_static_site_fallback_downloader_skips_damaged_advertised_assets(
@@ -771,7 +781,14 @@ def test_static_site_fallback_downloader_skips_incompatible_schema_and_keeps_sea
             target_dir.mkdir(parents=True, exist_ok=True)
             schema_version = "static-site-v2" if run_id == "333" else "static-site-v3"
             (target_dir / "manifest.market.json").write_text(
-                json.dumps({{"market": "AU", "schema_version": schema_version}})
+                json.dumps({{
+                    "market": "AU",
+                    "schema_version": schema_version,
+                    "entry": {{
+                        "as_of_date": "2026-08-03",
+                        "rs_formula_version": "balanced-horizon-percentile-v2",
+                    }},
+                }})
             )
             with downloads_log.open("a", encoding="utf-8") as handle:
                 handle.write(json.dumps({{"run": run_id, "artifact": artifact_name}}) + "\\n")
@@ -993,14 +1010,15 @@ def _write_selected_market(root: Path, market: str, formula: str) -> None:
     )
 
 
-def test_publisher_combine_arguments_omit_last_good_legacy_artifacts(
+def test_publisher_combine_arguments_reject_a_stale_formula_artifact_with_a_reason(
     tmp_path, monkeypatch
 ) -> None:
     """Run the publisher's own combine arguments end to end.
 
-    The publisher selects stored artifacts. A stored artifact from the retired
-    legacy formula is left out of the bundle instead of failing every market's
-    publish or mixing formulas.
+    The downloader only hands over balanced artifacts, so a stale one here
+    means every stored artifact for that market predates the cutover. An
+    optional market is then left out with the reason in the manifest
+    warnings; a required one fails the publish with the same reason.
     """
     from app.domain.relative_strength import BALANCED_RS_FORMULA_VERSION
     from app.scripts import export_static_site as export_script
@@ -1032,6 +1050,12 @@ def test_publisher_combine_arguments_omit_last_good_legacy_artifacts(
     manifest = json.loads((tmp_path / "out" / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["supported_markets"] == ["US"]
     assert "HK" in manifest["unavailable_markets"]
+    assert [w for w in manifest["warnings"] if w.startswith("Ignored static market")] == [
+        "Ignored static market artifact: HK fallback artifact uses incompatible "
+        "RS formula: Scan chunk chunk-0001.json='legacy-linear-v1', "
+        "Scan manifest='legacy-linear-v1', market entry='legacy-linear-v1'; "
+        f"expected {BALANCED_RS_FORMULA_VERSION!r}"
+    ]
 
 
 @pytest.mark.parametrize(
