@@ -71,7 +71,7 @@ Bootstrap stages:
 1. **Universe refresh** — seeds the market symbol list. US uses S&P 500 / Russell / NDX via `refresh_stock_universe`; HK / IN / JP / KR / TW / CN / CA / DE / SG / MY / AU use official exchange feeds via `refresh_official_market_universe`.
 2. **Benchmark + price refresh** — imports the GitHub daily price bundle first, accepts recent stale bundles during bootstrap, then live-fetches missing/current-session gaps (`7d` top-up for stale symbols, `2y` for no-history symbols). Under `live_only` this stage skips the bundle and fetches live — see [Market Data Source Mode](#market-data-source-mode).
 3. **Fundamentals refresh** — loads quarterly and annual financials.
-4. **Market RS publication** — on a pristine installation, backfills balanced Market RS, validates a staged static export, and publishes it atomically. Existing databases publish through the operator procedure ([Balanced Market RS Publication](#balanced-market-rs-publication)).
+4. **Market RS publication** — on a pristine installation, backfills balanced Market RS, validates the balanced Feature snapshot and Group rows, and repoints the Market's Feature pointer atomically. It stages no static export (`bootstrap_balanced_market_rs` runs with `MarketRsActivationArtifactPolicy.LIVE_RUNTIME` in `backend/app/tasks/market_rs_tasks.py`). Existing databases publish through the operator procedure ([Balanced Market RS Publication](#balanced-market-rs-publication)).
 5. **Breadth calculation** — computes StockBee-style advance/decline data with gap-fill.
 6. **Market exposure** — derives the market-regime exposure state from the refreshed breadth data.
 7. **Group rankings** — averages canonical constituent RS values for each group.
@@ -290,7 +290,7 @@ Bootstrap decides once, before dispatch, whether the database is **pristine**, a
 On a pristine installation, balanced Market RS backfill and guarded publication is a required stage for every enabled Market:
 
 - **Window:** it materializes sessions from 187 calendar days before the latest completed session through that session. That covers the 6M Group-rank lookup plus tolerance, exceeds the 12-week RRG minimum, and includes the current daily Feature snapshot used by the latest scan. It does not calculate every historical session.
-- **Requirements:** backfill, balanced Feature publication, staged static parity validation and the Feature pointer repoint must all succeed. The primary Market isn't marked ready until a completed balanced Market RS run exists for it.
+- **Requirements:** backfill, balanced Feature publication, validation and the Feature pointer repoint must all succeed. Bootstrap stages no static export; static parity is checked by the operator command below and by the Static Site workflows. A Market isn't marked ready until its `latest_published_market:<MARKET>` pointer names a published Feature run whose balanced Market RS run is completed (`BootstrapReadinessService.has_balanced_publication`). A completed run alone, which the backfill writes before publication, does not count.
 - **Failure:** the Feature pointer stays unchanged and that bootstrap chain fails. Correct the reported input or coverage problem and resume bootstrap.
 - **Group history** runs after publication, so 1W/1M/3M/6M rank changes, movers and RRG snapshots have balanced history. Where point-in-time membership is unavailable, bootstrap may use the current active universe for past dates; that avoids an empty 12-week window, at the cost of survivor bias.
 
@@ -379,30 +379,6 @@ gh workflow run static-site.yml -f market_group=us
 ```
 
 Confirm the export run publishes `static-site-v3` artifacts and updates the Market's `static-rrg-history-v4` release asset where applicable, then confirm the following Static Site Publish run deploys Pages successfully. A publish can be re-run at any time without re-exporting: `gh workflow run static-site-publish.yml`.
-
-#### 5. Serve an earlier publication
-
-There is no formula to roll back to. To serve an earlier snapshot for one Market, repoint `latest_published_market:<MARKET>` to a Feature run that is still `published` and whose `config_json` names `balanced-horizon-percentile-v2` and a `market_rs_run_id`. Do not do this while the initial bootstrap or a publication command is running.
-
-```sql
-UPDATE feature_run_pointers
-SET run_id = <FEATURE_RUN_ID>, updated_at = CURRENT_TIMESTAMP
-WHERE key = 'latest_published_market:US';
-```
-
-After commit, invalidate the affected Market's Group-ranking cache. For US, also republish the live Groups bootstrap snapshot:
-
-```bash
-python - <<'PY'
-from app.services.group_rankings_cache import bump_group_rankings_epoch
-from app.services.ui_snapshot_service import safe_publish_groups_bootstrap
-
-bump_group_rankings_epoch("US")
-safe_publish_groups_bootstrap()
-PY
-```
-
-For a non-US Market, change the argument to `bump_group_rankings_epoch()` and omit `safe_publish_groups_bootstrap()`. Restarting the API is not a substitute for the cache epoch bump when Redis is retained. Static artifacts have no formula input: rerun the Static Site export workflow and the publisher selects each Market's newest valid artifact.
 
 ## Static Price-Stage Checkpoints
 
