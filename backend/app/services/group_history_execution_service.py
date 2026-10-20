@@ -9,6 +9,7 @@ from typing import Callable
 from sqlalchemy.orm import Session
 
 from app.domain.group_history import GroupHistoryTarget
+from app.domain.relative_strength import BALANCED_RS_FORMULA_VERSION
 from app.services.group_history_bootstrap_service import (
     GroupHistoryBootstrapService,
     GroupHistoryBootstrapStatus,
@@ -453,7 +454,7 @@ class GroupHistoryExecutionService:
             "status": "superseded",
             "reason": reason,
             "market": target.market,
-            "formula_version": target.formula_version,
+            "formula_version": BALANCED_RS_FORMULA_VERSION,
             "through_date": target.through_date.isoformat(),
         }
 

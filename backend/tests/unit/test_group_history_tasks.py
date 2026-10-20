@@ -40,7 +40,6 @@ def test_startup_group_history_reconciliation_marks_pristine_seed_import(
 
     target = GroupHistoryTarget(
         market="US",
-        formula_version=BALANCED_RS_FORMULA_VERSION,
         through_date=date(2026, 7, 31),
     )
     dispatched = []
@@ -92,7 +91,6 @@ def test_startup_group_history_reconciliation_clears_owned_marker_on_dispatch_fa
 
     target = GroupHistoryTarget(
         market="US",
-        formula_version=BALANCED_RS_FORMULA_VERSION,
         through_date=date(2026, 7, 31),
     )
     monkeypatch.setattr(module, "SessionLocal", lambda: db_session)
@@ -150,7 +148,6 @@ def test_ensure_group_history_invalidates_cache_and_publishes_us_snapshot(
     )
     target = GroupHistoryTarget(
         market="US",
-        formula_version="balanced-v1",
         through_date=date(2026, 6, 30),
     )
     monkeypatch.setattr(
@@ -224,7 +221,6 @@ def test_group_history_target_uses_balanced_publication_date(monkeypatch):
     target = module._resolve_current_group_history_target(db, market="us")
 
     assert target.market == "US"
-    assert target.formula_version == BALANCED_RS_FORMULA_VERSION
     assert target.through_date == date(2026, 6, 29)
     repository.list_completed_runs.assert_called_once_with(
         db,
@@ -254,7 +250,6 @@ def test_strict_group_history_task_raises_when_readiness_remains_incomplete(
         "_resolve_current_group_history_target",
         lambda _db, *, market: GroupHistoryTarget(
             market=market,
-            formula_version="balanced-v1",
             through_date=date(2026, 6, 30),
         ),
     )
@@ -291,7 +286,6 @@ def test_strict_group_history_task_records_snapshot_publication_failure_once(
     )
     target = GroupHistoryTarget(
         market="US",
-        formula_version="balanced-v1",
         through_date=date(2026, 6, 30),
     )
     monkeypatch.setattr(
@@ -359,7 +353,6 @@ def test_execution_service_finalizes_successful_us_reconciliation_once():
     )
     target = GroupHistoryTarget(
         market="US",
-        formula_version="captured-v1",
         through_date=date(2026, 6, 30),
     )
 
@@ -391,8 +384,8 @@ def test_execution_service_revalidates_fresh_bootstrap_target_before_finalizatio
     )
     from app.services.group_history_reconciliation import GroupHistoryTarget
 
-    target = GroupHistoryTarget("US", "captured-v1", date(2026, 6, 30))
-    replacement = GroupHistoryTarget("US", "captured-v1", date(2026, 7, 1))
+    target = GroupHistoryTarget("US", date(2026, 6, 30))
+    replacement = GroupHistoryTarget("US", date(2026, 7, 1))
     repository = Mock()
     bump = Mock()
     publish = Mock()
@@ -431,8 +424,8 @@ def test_execution_service_revalidates_target_after_snapshot_publication():
         GroupHistoryTarget,
     )
 
-    target = GroupHistoryTarget("US", "captured-v1", date(2026, 6, 30))
-    replacement = GroupHistoryTarget("US", "balanced-v1", date(2026, 6, 30))
+    target = GroupHistoryTarget("US", date(2026, 6, 30))
+    replacement = GroupHistoryTarget("US", date(2026, 7, 1))
     repository = Mock()
     repository.reserve_finalization.return_value = GroupHistoryReservation(
         target, "fresh-lease"
@@ -478,7 +471,7 @@ def test_execution_service_records_successful_fresh_bootstrap_as_ready(db_sessio
         GroupHistoryTarget,
     )
 
-    target = GroupHistoryTarget("US", "captured-v1", date(2026, 6, 30))
+    target = GroupHistoryTarget("US", date(2026, 6, 30))
     repository = GroupHistoryReconciliationRepository()
     service = GroupHistoryExecutionService(
         bootstrap_service=Mock(ensure=Mock(return_value=_result(ready=True))),
@@ -516,7 +509,7 @@ def test_fresh_bootstrap_adopts_pending_reconciliation_for_same_target(db_sessio
         GroupHistoryTarget,
     )
 
-    target = GroupHistoryTarget("US", "captured-v1", date(2026, 6, 30))
+    target = GroupHistoryTarget("US", date(2026, 6, 30))
     repository = GroupHistoryReconciliationRepository()
     pending = repository.reserve(db_session, target=target)
     assert pending is not None
@@ -575,7 +568,6 @@ def test_activity_completion_failure_does_not_reclassify_success():
 
     target = GroupHistoryTarget(
         market="US",
-        formula_version="captured-v1",
         through_date=date(2026, 6, 30),
     )
     result = service.execute_reconciliation(
@@ -625,7 +617,7 @@ def test_skipped_reconciliation_reaches_terminal_ready_without_finalization():
         mark_failed=Mock(),
     )
     reservation = GroupHistoryReservation(
-        GroupHistoryTarget("US", "captured-v1", date(2026, 6, 30)),
+        GroupHistoryTarget("US", date(2026, 6, 30)),
         "lease-1",
     )
 
@@ -674,7 +666,6 @@ def test_superseded_reconciliation_does_not_repair_or_publish():
     reservation = GroupHistoryReservation(
         target=GroupHistoryTarget(
             market="US",
-            formula_version="old-v1",
             through_date=date(2026, 6, 30),
         ),
         reservation_id="stale-lease",
@@ -702,8 +693,8 @@ def test_target_drift_before_finalization_suppresses_cache_and_publication():
         GroupHistoryTarget,
     )
 
-    target = GroupHistoryTarget("US", "captured-v1", date(2026, 6, 30))
-    replacement = GroupHistoryTarget("US", "captured-v2", date(2026, 6, 30))
+    target = GroupHistoryTarget("US", date(2026, 6, 30))
+    replacement = GroupHistoryTarget("US", date(2026, 7, 1))
     repository = Mock()
     repository.transition.return_value = True
     repository.owns.return_value = True

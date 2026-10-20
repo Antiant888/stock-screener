@@ -288,7 +288,6 @@ async def test_live_repair_populates_rank_changes_movers_and_rrg_without_data_lo
         db_session,
         target=GroupHistoryTarget(
             market="US",
-            formula_version=BALANCED_RS_FORMULA_VERSION,
             through_date=through_date,
         ),
     )

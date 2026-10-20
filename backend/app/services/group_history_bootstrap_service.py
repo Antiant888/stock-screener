@@ -12,7 +12,10 @@ from celery.exceptions import SoftTimeLimitExceeded
 from sqlalchemy.orm import Session
 
 from app.domain.group_history import GroupHistoryTarget
-from app.domain.relative_strength import GroupSnapshotIdentity
+from app.domain.relative_strength import (
+    BALANCED_RS_FORMULA_VERSION,
+    GroupSnapshotIdentity,
+)
 from app.services.group_history_readiness_service import (
     GroupHistoryReadinessReport,
 )
@@ -80,7 +83,7 @@ class GroupHistoryBootstrapService:
                 status=GroupHistoryBootstrapStatus.SKIPPED,
                 market=target.market,
                 through_date=target.through_date,
-                formula_version=target.formula_version,
+                formula_version=BALANCED_RS_FORMULA_VERSION,
                 before=before,
                 after=before,
             )
@@ -89,7 +92,7 @@ class GroupHistoryBootstrapService:
                 status=GroupHistoryBootstrapStatus.READY,
                 market=target.market,
                 through_date=target.through_date,
-                formula_version=target.formula_version,
+                formula_version=BALANCED_RS_FORMULA_VERSION,
                 before=before,
                 after=before,
                 skipped_valid=len(before.valid_dates),
@@ -104,7 +107,7 @@ class GroupHistoryBootstrapService:
             identity = GroupSnapshotIdentity(
                 target.market,
                 target_date,
-                target.formula_version,
+                BALANCED_RS_FORMULA_VERSION,
             )
             try:
                 if target_date in invalid_dates:
@@ -137,7 +140,7 @@ class GroupHistoryBootstrapService:
             ),
             market=target.market,
             through_date=target.through_date,
-            formula_version=target.formula_version,
+            formula_version=BALANCED_RS_FORMULA_VERSION,
             before=before,
             after=after,
             processed_dates=tuple(processed),

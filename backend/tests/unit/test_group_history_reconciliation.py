@@ -8,6 +8,7 @@ from unittest.mock import Mock
 from celery.exceptions import SoftTimeLimitExceeded
 import pytest
 from sqlalchemy.orm import sessionmaker
+from app.domain.relative_strength import BALANCED_RS_FORMULA_VERSION
 
 
 def _target():
@@ -15,7 +16,6 @@ def _target():
 
     return GroupHistoryTarget(
         market="US",
-        formula_version="balanced-v1",
         through_date=date(2026, 6, 30),
     )
 
@@ -106,7 +106,6 @@ def test_existing_marker_compare_and_swap_allows_only_one_stale_reservation(
     repository = GroupHistoryReconciliationRepository()
     target = GroupHistoryTarget(
         market="US",
-        formula_version="balanced-v1",
         through_date=date(2026, 6, 30),
     )
     reservation = repository.reserve(db_session, target=target)
@@ -250,7 +249,6 @@ def test_stale_reservation_cannot_overwrite_a_new_target(db_session):
     assert stale is not None
     current_target = GroupHistoryTarget(
         market="US",
-        formula_version="balanced-v2",
         through_date=date(2026, 7, 1),
     )
     current = repository.reserve(db_session, target=current_target)
@@ -298,7 +296,7 @@ def test_finalizing_reservation_cannot_be_superseded(db_session):
 
     replacement = repository.reserve(
         db_session,
-        target=GroupHistoryTarget("US", "balanced-v2", date(2026, 7, 1)),
+        target=GroupHistoryTarget("US", date(2026, 7, 1)),
     )
 
     assert replacement is None
@@ -372,7 +370,6 @@ def test_celery_discovery_queues_incomplete_enabled_group_market(monkeypatch):
         "_resolve_current_group_history_target",
         lambda _db, *, market: GroupHistoryTarget(
             market=market,
-            formula_version="balanced-v1",
             through_date=date(2026, 6, 30),
         ),
     )
@@ -381,7 +378,7 @@ def test_celery_discovery_queues_incomplete_enabled_group_market(monkeypatch):
         "_evaluate_group_history_readiness",
         lambda _db, *, target: _readiness(
             ready=False,
-            formula=target.formula_version,
+            formula=BALANCED_RS_FORMULA_VERSION,
         ),
     )
     monkeypatch.setattr(
@@ -408,7 +405,7 @@ def test_celery_discovery_queues_incomplete_enabled_group_market(monkeypatch):
     assert dispatched == [
         {
             "market": "US",
-            "formula_version": "balanced-v1",
+            "formula_version": BALANCED_RS_FORMULA_VERSION,
             "through_date": date(2026, 6, 30),
             "reservation_id": "lease-1",
         }
@@ -478,7 +475,6 @@ def test_startup_reconciliation_database_ready_queues_finalization(monkeypatch):
         "_resolve_current_group_history_target",
         lambda _db, *, market: GroupHistoryTarget(
             market=market,
-            formula_version="balanced-v1",
             through_date=date(2026, 6, 30),
         ),
     )
@@ -487,7 +483,7 @@ def test_startup_reconciliation_database_ready_queues_finalization(monkeypatch):
         "_evaluate_group_history_readiness",
         lambda _db, *, target: _readiness(
             ready=True,
-            formula=target.formula_version,
+            formula=BALANCED_RS_FORMULA_VERSION,
         ),
     )
     monkeypatch.setattr(
@@ -514,7 +510,7 @@ def test_startup_reconciliation_database_ready_queues_finalization(monkeypatch):
     repair_dispatch.assert_not_called()
     finalization_dispatch.assert_called_once_with(
         market="US",
-        formula_version="balanced-v1",
+        formula_version=BALANCED_RS_FORMULA_VERSION,
         through_date=date(2026, 6, 30),
         reservation_id="lease-1",
     )
@@ -536,7 +532,6 @@ def test_startup_reconciliation_ready_marker_is_verified_noop(monkeypatch):
     db = Mock()
     target = GroupHistoryTarget(
         market="US",
-        formula_version="balanced-v1",
         through_date=date(2026, 6, 30),
     )
     repository = Mock()
@@ -607,7 +602,6 @@ def test_startup_reconciliation_reserve_failure_isolated_per_market(monkeypatch)
         "_resolve_current_group_history_target",
         lambda _db, *, market: GroupHistoryTarget(
             market=market,
-            formula_version="balanced-v1",
             through_date=date(2026, 6, 30),
         ),
     )
@@ -647,7 +641,6 @@ def test_startup_reconciliation_reraises_soft_timeout(monkeypatch):
         "_resolve_current_group_history_target",
         lambda _db, *, market: GroupHistoryTarget(
             market=market,
-            formula_version="balanced-v1",
             through_date=date(2026, 6, 30),
         ),
     )
@@ -695,7 +688,6 @@ def test_dispatch_failure_returns_marker_to_incomplete(monkeypatch):
         "_resolve_current_group_history_target",
         lambda _db, *, market: GroupHistoryTarget(
             market=market,
-            formula_version="balanced-v1",
             through_date=date(2026, 6, 30),
         ),
     )
@@ -704,7 +696,7 @@ def test_dispatch_failure_returns_marker_to_incomplete(monkeypatch):
         "_evaluate_group_history_readiness",
         lambda _db, *, target: _readiness(
             ready=False,
-            formula=target.formula_version,
+            formula=BALANCED_RS_FORMULA_VERSION,
         ),
     )
     monkeypatch.setattr(
@@ -835,7 +827,6 @@ def test_reconciliation_repair_executes_the_captured_target(monkeypatch):
     reservation = executor.execute_reconciliation.call_args.kwargs["reservation"]
     assert reservation.target == GroupHistoryTarget(
         market="US",
-        formula_version="captured-v1",
         through_date=date(2026, 6, 30),
     )
     assert reservation.reservation_id == "lease-1"

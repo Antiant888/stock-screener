@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 
+from app.domain.relative_strength import BALANCED_RS_FORMULA_VERSION
 from app.domain.relative_strength import GroupSnapshotIdentity
 from app.services.group_history_reconciliation import GroupHistoryTarget
 from app.services.group_rank_snapshot_reader import GroupSnapshotIntegrityError
@@ -10,7 +11,6 @@ from app.services.group_rank_snapshot_reader import GroupSnapshotIntegrityError
 def _target(market: str, through_date: date) -> GroupHistoryTarget:
     return GroupHistoryTarget(
         market=market,
-        formula_version="balanced-v1",
         through_date=through_date,
     )
 
@@ -130,7 +130,7 @@ def test_readiness_classifies_missing_invalid_rank_windows_and_rrg() -> None:
 
     report = service.evaluate(object(), target=_target("US", current))
 
-    assert report.formula_version == "balanced-v1"
+    assert report.formula_version == BALANCED_RS_FORMULA_VERSION
     assert report.valid_dates == _reference_days(current)
     assert report.missing_dates == (missing,)
     assert report.invalid_dates == (invalid,)
@@ -226,12 +226,11 @@ def test_readiness_preserves_supplied_target_identity() -> None:
     )
     target = GroupHistoryTarget(
         market="US",
-        formula_version="captured-formula-v1",
         through_date=current,
     )
 
     report = service.evaluate(object(), target=target)
 
-    assert report.formula_version == "captured-formula-v1"
+    assert report.formula_version == BALANCED_RS_FORMULA_VERSION
     assert report.market == "US"
     assert report.through_date == current

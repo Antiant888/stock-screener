@@ -112,7 +112,6 @@ def _resolve_current_group_history_target(db, *, market: str) -> GroupHistoryTar
     ).selected_date
     return GroupHistoryTarget(
         market=market_code,
-        formula_version=BALANCED_RS_FORMULA_VERSION,
         through_date=through_date,
     )
 
@@ -171,7 +170,6 @@ def repair_group_history_reconciliation(
 ) -> dict:
     target = GroupHistoryTarget(
         market=market,
-        formula_version=formula_version,
         through_date=date.fromisoformat(through_date),
     )
     task_name = getattr(self, "name", "repair_group_history_reconciliation")
@@ -405,7 +403,7 @@ def discover_group_history_reconciliation() -> dict[str, str]:
                     )
                 dispatch(
                     market=target.market,
-                    formula_version=target.formula_version,
+                    formula_version=BALANCED_RS_FORMULA_VERSION,
                     through_date=target.through_date,
                     reservation_id=reservation.reservation_id,
                 )
@@ -471,7 +469,6 @@ def fail_group_history_reconciliation(
 ) -> dict:
     target = GroupHistoryTarget(
         market=market,
-        formula_version=formula_version,
         through_date=date.fromisoformat(through_date),
     )
     db = SessionLocal()
@@ -495,7 +492,7 @@ def fail_group_history_reconciliation(
         return {
             "status": "failed",
             "market": target.market,
-            "formula_version": target.formula_version,
+            "formula_version": BALANCED_RS_FORMULA_VERSION,
             "through_date": target.through_date.isoformat(),
         }
     finally:

@@ -16,18 +16,17 @@ class FeatureRunRsIdentityError(RuntimeError):
 @dataclass(frozen=True)
 class FeatureRunRsIdentityResolution:
     publication: RsPublicationIdentity
-    identity_source: str
 
     @property
     def identity(self) -> GroupSnapshotIdentity:
         return self.publication.snapshot
 
     @property
-    def market_rs_run_id(self) -> int | None:
+    def market_rs_run_id(self) -> int:
         return self.publication.market_rs_run_id
 
     @property
-    def universe_size(self) -> int | None:
+    def universe_size(self) -> int:
         return self.publication.universe_size
 
 
@@ -46,62 +45,45 @@ def resolve_feature_run_rs_identity(
     market = feature_run_market(feature_run) or config.get("market")
     if not str(market or "").strip():
         raise FeatureRunRsIdentityError("Feature run has no market identity")
-    formula = config.get("rs_formula_version")
+    formula = str(config.get("rs_formula_version") or "").strip()
     canonical_values = (
         config.get("market_rs_run_id"),
         config.get("rs_as_of_date"),
         config.get("rs_universe_size"),
     )
-    if formula is not None and str(formula).strip():
-        normalized_formula = str(formula).strip()
-        configured_as_of = config.get("rs_as_of_date")
-        if (
-            configured_as_of is not None
-            and str(configured_as_of) != ranking_date.isoformat()
-        ):
-            raise FeatureRunRsIdentityError(
-                f"Feature run RS date {configured_as_of} does not match "
-                f"ranking date {ranking_date.isoformat()}"
-            )
-        if normalized_formula == BALANCED_RS_FORMULA_VERSION and any(
-            value is None for value in canonical_values
-        ):
-            raise FeatureRunRsIdentityError(
-                "Feature run has partial canonical RS metadata"
-            )
-        try:
-            market_rs_run_id = (
-                int(config["market_rs_run_id"])
-                if config.get("market_rs_run_id") is not None
-                else None
-            )
-            universe_size = (
-                int(config["rs_universe_size"])
-                if config.get("rs_universe_size") is not None
-                else None
-            )
-            publication = RsPublicationIdentity(
-                snapshot=GroupSnapshotIdentity(
-                    market,
-                    ranking_date,
-                    normalized_formula,
-                ),
-                market_rs_run_id=market_rs_run_id,
-                universe_size=universe_size,
-            )
-        except (TypeError, ValueError) as exc:
-            raise FeatureRunRsIdentityError(
-                f"Feature run has invalid canonical RS metadata: {exc}"
-            ) from exc
-        return FeatureRunRsIdentityResolution(
-            publication=publication,
-            identity_source="persisted",
+    if not formula:
+        if all(value is None for value in canonical_values):
+            raise FeatureRunRsIdentityError("Feature run has no RS identity metadata")
+        raise FeatureRunRsIdentityError(
+            "Feature run has partial canonical RS metadata without rs_formula_version"
         )
-    if all(value is None for value in canonical_values):
-        raise FeatureRunRsIdentityError("Feature run has no RS identity metadata")
-    raise FeatureRunRsIdentityError(
-        "Feature run has partial canonical RS metadata without rs_formula_version"
-    )
+    if formula != BALANCED_RS_FORMULA_VERSION:
+        raise FeatureRunRsIdentityError(
+            f"Feature run RS formula {formula!r} is not {BALANCED_RS_FORMULA_VERSION!r}"
+        )
+    configured_as_of = config.get("rs_as_of_date")
+    if configured_as_of is not None and str(configured_as_of) != ranking_date.isoformat():
+        raise FeatureRunRsIdentityError(
+            f"Feature run RS date {configured_as_of} does not match "
+            f"ranking date {ranking_date.isoformat()}"
+        )
+    if any(value is None for value in canonical_values):
+        raise FeatureRunRsIdentityError("Feature run has partial canonical RS metadata")
+    try:
+        publication = RsPublicationIdentity(
+            snapshot=GroupSnapshotIdentity(
+                market,
+                ranking_date,
+                BALANCED_RS_FORMULA_VERSION,
+            ),
+            market_rs_run_id=int(config["market_rs_run_id"]),
+            universe_size=int(config["rs_universe_size"]),
+        )
+    except (TypeError, ValueError) as exc:
+        raise FeatureRunRsIdentityError(
+            f"Feature run has invalid canonical RS metadata: {exc}"
+        ) from exc
+    return FeatureRunRsIdentityResolution(publication=publication)
 
 
 def feature_run_matches_rs_source(

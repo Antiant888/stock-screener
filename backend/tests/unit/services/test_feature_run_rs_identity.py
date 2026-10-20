@@ -36,6 +36,27 @@ def test_partial_canonical_feature_metadata_is_rejected():
         resolve_feature_run_rs_identity(run, ranking_date=date(2026, 4, 10))
 
 
+def test_feature_identity_rejects_a_retired_formula():
+    run = SimpleNamespace(
+        as_of_date=date(2026, 4, 10),
+        config_json={
+            "market": "US",
+            "rs_formula_version": "legacy-linear-v1",
+            "market_rs_run_id": 42,
+            "rs_as_of_date": "2026-04-10",
+            "rs_universe_size": 100,
+        },
+    )
+
+    with pytest.raises(FeatureRunRsIdentityError) as exc_info:
+        resolve_feature_run_rs_identity(run, ranking_date=date(2026, 4, 10))
+
+    assert str(exc_info.value) == (
+        "Feature run RS formula 'legacy-linear-v1' is not "
+        f"{BALANCED_RS_FORMULA_VERSION!r}"
+    )
+
+
 def test_persisted_feature_identity_rejects_a_different_ranking_date():
     run = SimpleNamespace(
         as_of_date=date(2026, 4, 9),

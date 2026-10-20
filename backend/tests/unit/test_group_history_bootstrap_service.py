@@ -7,12 +7,12 @@ import pytest
 
 from app.services.group_history_readiness_service import GroupHistoryReadinessReport
 from app.services.group_history_reconciliation import GroupHistoryTarget
+from app.domain.relative_strength import BALANCED_RS_FORMULA_VERSION
 
 
 def _target(market="US", formula_version="balanced-v1"):
     return GroupHistoryTarget(
         market=market,
-        formula_version=formula_version,
         through_date=date(2026, 6, 30),
     )
 
@@ -235,7 +235,6 @@ def test_group_history_bootstrap_preserves_supplied_target_identity():
 
     target = GroupHistoryTarget(
         market="US",
-        formula_version="captured-formula-v1",
         through_date=date(2026, 6, 30),
     )
 
@@ -256,5 +255,5 @@ def test_group_history_bootstrap_preserves_supplied_target_identity():
 
     assert readiness.targets == [target]
     assert result.market == target.market
-    assert result.formula_version == target.formula_version
+    assert result.formula_version == BALANCED_RS_FORMULA_VERSION
     assert result.through_date == target.through_date

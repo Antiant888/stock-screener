@@ -93,13 +93,18 @@ def group_snapshot_metadata(
         raise RuntimeError("group snapshot mixes canonical RS sources")
     formula_version = str(next(iter(formula_versions)))
     run_id = next(iter(run_ids))
-    if formula_version == BALANCED_RS_FORMULA_VERSION and run_id is None:
+    if formula_version != BALANCED_RS_FORMULA_VERSION:
+        raise RuntimeError(
+            f"Group snapshot uses RS formula {formula_version!r}, "
+            f"not {BALANCED_RS_FORMULA_VERSION!r}"
+        )
+    if run_id is None:
         raise RuntimeError("balanced Group snapshot has no single Market RS run")
 
-    run = db.get(MarketRsRun, int(run_id)) if run_id is not None else None
+    run = db.get(MarketRsRun, int(run_id))
     normalized_market = market.strip().upper()
     snapshot_date = str(next(iter(dates)))
-    if run_id is not None and (
+    if (
         run is None
         or run.market != normalized_market
         or run.formula_version != formula_version
@@ -107,14 +112,12 @@ def group_snapshot_metadata(
         or run.status != "completed"
     ):
         raise RuntimeError("Group snapshot metadata does not match its Market RS run")
-    if formula_version == BALANCED_RS_FORMULA_VERSION and (
-        run is None or not balanced_run_has_current_snapshot_contract(run)
-    ):
+    if not balanced_run_has_current_snapshot_contract(run):
         raise RuntimeError(
             "Group snapshot metadata references an incompatible balanced snapshot"
         )
     return {
         "rs_formula_version": formula_version,
         "rs_as_of_date": snapshot_date,
-        "rs_universe_size": run.eligible_symbol_count if run is not None else None,
+        "rs_universe_size": run.eligible_symbol_count,
     }

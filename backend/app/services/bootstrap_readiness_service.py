@@ -444,8 +444,6 @@ class BootstrapReadinessService:
             )
         except FeatureRunRsIdentityError:
             return False
-        if resolution.market_rs_run_id is None:
-            return False
         rs_run = db.get(MarketRsRun, resolution.market_rs_run_id)
         return (
             rs_run is not None

@@ -95,7 +95,7 @@ def get_group_matrix(market: str = Query("US"), db: Session = Depends(get_db)):
             generated_at=datetime.now(timezone.utc).isoformat())
     if run is None:
         return build()
-    formula = (run.config_json or {}).get("rs_formula_version", "legacy")
+    formula = (run.config_json or {}).get("rs_formula_version")
     return cached_group_payload(market=market, name="matrix",
         params=f"schema=group-matrix-v1:run={run.id}:formula={formula}",
         compute=build, ttl_seconds=60,

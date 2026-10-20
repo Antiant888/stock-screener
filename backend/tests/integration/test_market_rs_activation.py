@@ -394,7 +394,6 @@ def test_shared_executor_activates_exact_group_and_history_identity(
         db_session,
         market="US",
     )
-    assert target.formula_version == BALANCED_RS_FORMULA_VERSION
     assert target.through_date == date(2026, 4, 10)
     invalidations.assert_called_once_with("US")
     live_publish.assert_called_once_with(

@@ -40,7 +40,6 @@ from app.services.snapshot_date_coherence import (
 from app.services.market_calendar_service import MarketCalendarService
 from app.services.static_artifact_combiner import (
     StaticArtifactCombiner,
-    StaticArtifactFormulaError,
     annotate_publication_lag,
 )
 from app.services.static_breadth_contributor_exporter import (
@@ -426,15 +425,9 @@ class StaticSiteExportService:
         )
 
         formula_version = BALANCED_RS_FORMULA_VERSION
-        feature_formula_version = resolve_feature_run_rs_identity(
-            latest_run,
-            ranking_date=latest_run.as_of_date,
-        ).identity.formula_version
-        if feature_formula_version != formula_version:
-            raise StaticArtifactFormulaError(
-                f"Requested RS formula {formula_version} does not match Feature run "
-                f"{latest_run.id} formula {feature_formula_version} for {market}"
-            )
+        # Rejects a run without a complete balanced RS identity before any
+        # scan rows are exported.
+        resolve_feature_run_rs_identity(latest_run, ranking_date=latest_run.as_of_date)
 
         path_prefix = Path("markets") / market.lower()
         scan_rows, filter_options = self._load_scan_export_source(db, latest_run)

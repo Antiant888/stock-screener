@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 
 from app.models.app_settings import AppSetting
 from app.domain.group_history import GroupHistoryTarget
+from app.domain.relative_strength import BALANCED_RS_FORMULA_VERSION
 
 
 GROUP_HISTORY_RECONCILIATION_SCHEMA_VERSION = 2
@@ -57,7 +58,6 @@ class GroupHistoryReconciliationMarker:
     def target(self) -> GroupHistoryTarget:
         return GroupHistoryTarget(
             market=self.market,
-            formula_version=self.formula_version,
             through_date=self.through_date,
         )
 
@@ -338,7 +338,7 @@ class GroupHistoryReconciliationRepository:
     ) -> GroupHistoryReconciliationMarker:
         return GroupHistoryReconciliationMarker(
             market=target.market,
-            formula_version=target.formula_version,
+            formula_version=BALANCED_RS_FORMULA_VERSION,
             through_date=target.through_date,
             status=status,
             reservation_id=reservation_id,

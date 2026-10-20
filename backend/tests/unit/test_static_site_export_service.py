@@ -34,6 +34,7 @@ from app.models.market_breadth import MarketBreadth
 from app.models.market_exposure import MarketExposure
 from app.models.stock import StockPrice
 from app.models.stock_universe import StockUniverse
+from app.services.feature_run_rs_identity import FeatureRunRsIdentityError
 from app.services.breadth.contributors import (
     BREADTH_CONTRIBUTOR_SIGNALS,
     contributor_calculation_signature,
@@ -835,7 +836,7 @@ def test_get_latest_published_run_ignores_market_pointer_for_wrong_market(
     assert run.id == 4
 
 
-def test_export_rejects_feature_run_with_another_rs_formula(
+def test_export_rejects_feature_run_without_a_balanced_rs_identity(
     service_and_session_factory,
     monkeypatch,
     tmp_path,
@@ -866,7 +867,7 @@ def test_export_rejects_feature_run_with_another_rs_formula(
         ),
     )
 
-    with pytest.raises(StaticArtifactFormulaError, match="does not match Feature run 6"):
+    with pytest.raises(FeatureRunRsIdentityError, match="'legacy-linear-v1' is not"):
         service.export(
             tmp_path / "static-data",
             markets=("US",),
