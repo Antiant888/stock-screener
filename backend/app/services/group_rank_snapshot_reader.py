@@ -74,8 +74,6 @@ class GroupRankSnapshotReader:
             raise GroupSnapshotIntegrityError(
                 "Group rows do not reference the expected Market RS run"
             )
-        if publication.market_rs_run_id is None:
-            return rows
         run = db.get(MarketRsRun, publication.market_rs_run_id)
         if run is None or int(run.eligible_symbol_count) != publication.universe_size:
             raise GroupSnapshotIntegrityError(
