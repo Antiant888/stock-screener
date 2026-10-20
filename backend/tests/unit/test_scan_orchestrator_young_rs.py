@@ -6,7 +6,6 @@ from datetime import date
 
 import numpy as np
 import pandas as pd
-import pytest
 
 from app.config import settings
 from app.domain.relative_strength import BALANCED_RS_FORMULA_VERSION

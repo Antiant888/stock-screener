@@ -324,7 +324,7 @@ class CanonicalStockRsSource:
     def scan_row_fields(self) -> dict[str, int | None]:
         """Every scan-row RS field, None where this run holds no rating."""
         present = self.ratings if self.ratings is not None else (self.placed_ratings or {})
-        return {field: present.get(field) for field in SCAN_ROW_RS_FIELDS}
+        return {name: present.get(name) for name in SCAN_ROW_RS_FIELDS}
 
     def audit_fields(self) -> dict[str, object]:
         return {
