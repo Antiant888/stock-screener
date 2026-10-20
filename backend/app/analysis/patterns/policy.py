@@ -36,9 +36,10 @@ class SetupEngineDataRequirements:
     def min_history_bars(self) -> int:
         """Fewest contiguous daily bars that always meet both bar minimums.
 
-        A week holds at most five sessions and the excluded current week up to
-        four, so five bars per required week always leave ``min_weekly_bars``
-        completed weeks, whichever weekday the history ends on.
+        For weekday-only bars, five per required week (52 x 5 by default) cover
+        ``min_weekly_bars`` completed weeks plus the up to four bars of the
+        excluded current week. A rare weekend session (India, 2026-02-01) is
+        absorbed by the spare weeks holidays leave on every shipped calendar.
         """
         return max(self.min_daily_bars, 5 * self.min_weekly_bars)
 

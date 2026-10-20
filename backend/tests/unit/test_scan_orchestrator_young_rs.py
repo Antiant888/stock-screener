@@ -233,14 +233,20 @@ def test_the_default_profile_scores_a_young_listing_with_ipo(monkeypatch):
         assert _rs_fields(result) == (None, 66, 1, None)
 
 
-def _setup_engine_bar_failures(bars: int, end: str) -> list[str]:
+def _setup_engine_bar_check(bars: int, end: str) -> tuple[str, list[str]]:
     result = SetupEngineScanner().scan_stock("SE", _stock("SE", bars, end))
     reason = str(result.details.get("reason") or "")
-    return [
+    return result.rating, [
         check
         for check in ("insufficient_daily_bars", "insufficient_weekly_bars")
         if check in reason
     ]
+
+
+def _assert_setup_engine_rates(bars: int, end: str) -> None:
+    rating, failures = _setup_engine_bar_check(bars, end)
+    assert failures == []
+    assert rating not in ("Error", "Insufficient Data")
 
 
 def test_setup_engines_partition_minimum_always_meets_its_bar_policy():
@@ -248,10 +254,10 @@ def test_setup_engines_partition_minimum_always_meets_its_bar_policy():
 
     assert minimum == 260
     for end in ("2026-10-12", "2026-10-13", "2026-10-14", "2026-10-15", "2026-10-16"):
-        assert _setup_engine_bar_failures(minimum, end) == []
+        _assert_setup_engine_rates(minimum, end)
     # A Thursday close leaves four bars in the excluded current week.
-    assert _setup_engine_bar_failures(minimum - 1, "2026-10-15") == ["insufficient_weekly_bars"]
-    assert _setup_engine_bar_failures(minimum - 1, "2026-10-16") == []
+    assert _setup_engine_bar_check(minimum - 1, "2026-10-15")[1] == ["insufficient_weekly_bars"]
+    _assert_setup_engine_rates(minimum - 1, "2026-10-16")
 
 
 def test_an_eligible_stock_short_of_setup_engines_weekly_history_keeps_its_other_screeners(

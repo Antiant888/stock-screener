@@ -14,6 +14,7 @@ from __future__ import annotations
 from datetime import date
 
 import pandas as pd
+from app.analysis.patterns.policy import SetupEngineDataRequirements
 from app.domain.relative_strength import BALANCED_RS_FORMULA_VERSION
 from app.domain.scanning.ports import (
     CanonicalStockRsSource,
@@ -29,6 +30,8 @@ from app.scanners.base_screener import (
 from app.scanners.scan_orchestrator import ScanOrchestrator
 from app.scanners.scan_result_assembler import ScanResultAssembler
 from app.scanners.screener_registry import ScreenerRegistry
+
+SETUP_ENGINE_RUNNABLE_BARS = SetupEngineDataRequirements().min_history_bars + 40
 
 # ── Fakes ───────────────────────────────────────────────────────────
 
@@ -662,7 +665,7 @@ class TestScanOrchestratorErrorPaths:
         assert result["unavailable_screeners"] == ["minervini"]
 
     def test_full_history_non_scannable_rows_keep_full_band(self):
-        stock_data = _make_stock_data("TEST", n_days=260)
+        stock_data = _make_stock_data("TEST", n_days=SETUP_ENGINE_RUNNABLE_BARS)
         provider = FakeDataProvider({"TEST": stock_data})
         registry = ScreenerRegistry()
 
@@ -684,10 +687,10 @@ class TestScanOrchestratorErrorPaths:
         assert result["result_status"] == "insufficient_history"
         assert result["scan_mode"] == "full"
         assert result["is_scannable"] is False
-        assert result["history_bars"] == 260
+        assert result["history_bars"] == SETUP_ENGINE_RUNNABLE_BARS
 
     def test_full_history_screener_insufficient_data_degrades_symbol_instead_of_excluding_it(self):
-        stock_data = _make_stock_data("TEST", n_days=260)
+        stock_data = _make_stock_data("TEST", n_days=SETUP_ENGINE_RUNNABLE_BARS)
         provider = FakeDataProvider({"TEST": stock_data})
         registry = ScreenerRegistry()
 
@@ -724,7 +727,7 @@ class TestScanOrchestratorErrorPaths:
 class TestScanOrchestratorDataFlow:
     def test_materializes_opportunity_projection_after_local_dollar_volume(self):
         """Break caught: persisting a scan row before the opportunity projection is attached."""
-        stock_data = _make_stock_data("TEST", n_days=260)
+        stock_data = _make_stock_data("TEST", n_days=SETUP_ENGINE_RUNNABLE_BARS)
         stock_data.market = "US"
         stock_data.exchange = "NASDAQ"
         stock_data.benchmark_symbol = "SPY"

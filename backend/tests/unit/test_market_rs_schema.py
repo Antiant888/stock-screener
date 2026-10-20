@@ -3,6 +3,7 @@ from pathlib import Path
 
 from app.domain.relative_strength import HORIZONS
 from app.infra.db.models.relative_strength import (
+    STOCK_RS_PLACEMENT_CHECK,
     MarketRsRun,
     StockRsPlacementSnapshot,
     StockRsSnapshot,
@@ -124,3 +125,6 @@ def test_placements_migration_extends_current_head_with_a_frozen_check():
     assert migration.down_revision == "20261021_0068"
     assert migration.HORIZONS == ("1d", "1w", "1m", "3m", "6m", "9m", "12m")
     assert migration.STOCK_RS_PLACEMENT_CHECK == PLACEMENT_CHECK_AT_0069
+    # Tests build the schema from the model, production from the migration.
+    # A migration that changes this CHECK must update this assertion.
+    assert STOCK_RS_PLACEMENT_CHECK == PLACEMENT_CHECK_AT_0069
