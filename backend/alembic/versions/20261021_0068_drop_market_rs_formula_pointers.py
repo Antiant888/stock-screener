@@ -1,8 +1,11 @@
 """Drop the per-market RS formula pointer table.
 
 Nothing reads a pointer any more: balanced-horizon-percentile-v2 is the only
-RS formula. Downgrade recreates the table and seeds a balanced row for every
-market that has Market RS runs, which is the state every deployment was in.
+RS formula. Upgrade refuses while any market's pointer still names another
+formula, because this release cannot serve that market and has no way to
+finish its rollout. Downgrade recreates the table and seeds a balanced row
+for every market with a completed Market RS run, the markets the previous
+release could have published.
 """
 
 import sqlalchemy as sa
@@ -18,6 +21,27 @@ BALANCED_FORMULA_VERSION = "balanced-horizon-percentile-v2"
 
 
 def upgrade() -> None:
+    stale = (
+        op.get_bind()
+        .execute(
+            sa.text(
+                "SELECT market, formula_version FROM market_rs_formula_pointers "
+                "WHERE formula_version <> :formula ORDER BY market"
+            ).bindparams(formula=BALANCED_FORMULA_VERSION)
+        )
+        .all()
+    )
+    if stale:
+        listed = ", ".join(f"{market}={formula!r}" for market, formula in stale)
+        raise RuntimeError(
+            f"Market RS formula pointers still name a retired formula: {listed}. "
+            f"This release has only {BALANCED_FORMULA_VERSION!r} and cannot finish "
+            "a rollout. Finish the balanced rollout on the previous release first: "
+            "run 'python -m app.scripts.backfill_market_rs --market <MARKET> "
+            "--through-date <YYYY-MM-DD> --activate' for each listed market on "
+            "the release before this one, then upgrade. If a listed market is no "
+            "longer enabled, delete its row from market_rs_formula_pointers."
+        )
     op.drop_table("market_rs_formula_pointers")
 
 
@@ -37,6 +61,7 @@ def downgrade() -> None:
     op.execute(
         sa.text(
             "INSERT INTO market_rs_formula_pointers (market, formula_version) "
-            "SELECT DISTINCT market, :formula FROM market_rs_runs"
+            "SELECT DISTINCT market, :formula FROM market_rs_runs "
+            "WHERE status = 'completed'"
         ).bindparams(formula=BALANCED_FORMULA_VERSION)
     )
