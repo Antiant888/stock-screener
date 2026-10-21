@@ -20,6 +20,7 @@ from app.analysis.patterns.rs_line import (
     RsLineLeadershipSnapshot,
     rs_line_leadership_snapshot,
 )
+from app.analysis.patterns.technicals import resample_ohlcv
 from app.config import settings
 from app.domain.scanning.models import CompositeMethod, ScreenerOutputDomain
 from app.domain.scanning.ports import (
@@ -67,7 +68,6 @@ IPO_BONUS_MAX = 15.0
 _DEFAULT_SCREENER_MIN_BARS = 100
 _SCREENER_MIN_BARS: dict[str, int] = {
     "ipo": 30,
-    "setup_engine": SetupEngineDataRequirements().min_history_bars,
     "custom": 200,
     "minervini": 240,
     "canslim": 240,
@@ -198,6 +198,20 @@ def _required_bars_for_screener(name: str) -> int:
     return _SCREENER_MIN_BARS.get(name, _DEFAULT_SCREENER_MIN_BARS)
 
 
+def _setup_engine_has_history(stock_data: StockData) -> bool:
+    """Whether the history passes Setup Engine's daily and completed-week checks."""
+    requirements = SetupEngineDataRequirements()
+    bars = _history_bar_count(stock_data)
+    if bars >= requirements.min_history_bars:
+        return True
+    if bars < requirements.min_daily_bars:
+        return False
+    # Between the two, the weekday the history ends on decides, so count the
+    # completed weeks the way SetupEngineScanner does.
+    weekly = resample_ohlcv(stock_data.price_data, exclude_incomplete_last_period=True)
+    return len(weekly) >= requirements.min_weekly_bars
+
+
 def _requirements_with_opportunity_state_fields(
     requirements: DataRequirements,
 ) -> DataRequirements:
@@ -268,15 +282,21 @@ def _composite_method(value: str) -> CompositeMethod:
 
 def _partition_screeners(
     screeners: dict[str, BaseStockScreener],
-    history_bars: int,
+    stock_data: StockData,
     *,
     criteria: Optional[Dict],
     lacks_overall_rs: bool,
 ) -> tuple[dict[str, BaseStockScreener], list[str]]:
+    history_bars = _history_bar_count(stock_data)
     runnable: dict[str, BaseStockScreener] = {}
     unavailable: list[str] = []
     for name, screener in screeners.items():
-        if history_bars < _required_bars_for_screener(name) or (
+        has_history = (
+            _setup_engine_has_history(stock_data)
+            if name == "setup_engine"
+            else history_bars >= _required_bars_for_screener(name)
+        )
+        if not has_history or (
             lacks_overall_rs and screener.needs_overall_rs(criteria)
         ):
             unavailable.append(name)
@@ -431,7 +451,7 @@ class ScanOrchestrator:
 
             runnable, unavailable = _partition_screeners(
                 screeners,
-                history_bars,
+                stock_data,
                 criteria=criteria,
                 lacks_overall_rs=stock_rs_lacks_overall(stock_data),
             )

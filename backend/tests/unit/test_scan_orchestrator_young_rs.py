@@ -81,7 +81,13 @@ class _Reader:
         )
 
 
-def _scan(symbol: str, bars: int, screeners: list[str], criteria: dict | None = None) -> dict:
+def _scan(
+    symbol: str,
+    bars: int,
+    screeners: list[str],
+    criteria: dict | None = None,
+    end: str = "2026-10-16",
+) -> dict:
     registry = ScreenerRegistry()
     for screener in (
         IPOScanner,
@@ -93,7 +99,7 @@ def _scan(symbol: str, bars: int, screeners: list[str], criteria: dict | None = 
     ):
         registry.register(screener)
     orchestrator = ScanOrchestrator(
-        data_provider=_Provider(_stock(symbol, bars)),
+        data_provider=_Provider(_stock(symbol, bars, end)),
         registry=registry,
         market_rs_reader=_Reader(),
     )
@@ -278,6 +284,22 @@ def test_an_eligible_stock_short_of_setup_engines_weekly_history_keeps_its_other
     ]
     assert result["unavailable_screeners"] == ["setup_engine"]
     assert _rs_fields(result) == (80, 70, 75, 90)
+
+
+def test_setup_engine_runs_on_a_history_short_of_260_bars_that_holds_52_completed_weeks(
+    monkeypatch,
+):
+    monkeypatch.setattr(settings, "setup_engine_enabled", True)
+    profile = get_default_scan_profile("US")
+
+    friday = _scan("AAA", 259, profile["screeners"], profile["criteria"], end="2026-10-16")
+    thursday = _scan("AAA", 259, profile["screeners"], profile["criteria"], end="2026-10-15")
+
+    assert friday["result_status"] == "ok"
+    assert "setup_engine" in friday["screeners_run"]
+    assert friday["unavailable_screeners"] == []
+    assert thursday["result_status"] == "ok"
+    assert thursday["unavailable_screeners"] == ["setup_engine"]
 
 
 def _evidence_rs(result: dict) -> tuple:
