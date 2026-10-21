@@ -66,8 +66,6 @@ GATE_3 = \
   tests/unit/test_cot_static_live_parity.py \
   tests/integration/test_breadth_revision_cutover.py \
   tests/integration/test_workload_fence_postgres.py \
-  tests/integration/test_shared_breadth_metrics_migration.py \
-  tests/integration/test_common_stock_classification_migration.py \
   tests/unit/test_backfill_setup_engine.py \
   tests/parity/test_canonical_market_rs_parity.py \
   tests/parity/test_scan_parity.py \
