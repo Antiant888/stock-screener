@@ -612,12 +612,46 @@ def test_cn_market_data_service_fetches_suffix_conflicting_index_from_index_feed
     assert result.iloc[-1]["Close"] == 105.0
 
 
-def test_cn_market_data_service_tries_em_index_feed_when_primary_index_feed_is_stale():
-    primary_frame = pd.DataFrame(
-        [
-            {"date": "2026-04-29", "open": 104.0, "high": 106.0, "low": 103.0, "close": 105.0, "volume": 234567},
-        ]
-    )
+_PRIMARY_BAR_0429 = {"date": "2026-04-29", "open": 104.0, "high": 106.0, "low": 103.0, "close": 105.0, "volume": 234567}
+
+
+@pytest.mark.parametrize(
+    ("symbol", "primary", "required_as_of_date", "expected_calls"),
+    [
+        pytest.param(
+            "000001.SS",
+            [_PRIMARY_BAR_0429],
+            date(2026, 4, 30),
+            [("daily", {"symbol": "sh000001"}), ("daily_em", {"symbol": "sh000001"})],
+            id="primary_index_feed_is_stale",
+        ),
+        pytest.param(
+            "000001.SS",
+            [
+                _PRIMARY_BAR_0429,
+                {"date": "2026-04-30", "open": None, "high": None, "low": None, "close": None, "volume": 0},
+            ],
+            date(2026, 4, 30),
+            [("daily", {"symbol": "sh000001"}), ("daily_em", {"symbol": "sh000001"})],
+            id="required_primary_bar_is_non_finite",
+        ),
+        pytest.param(
+            "000001.SS",
+            RuntimeError("primary index feed unavailable"),
+            None,
+            [("daily", {"symbol": "sh000001"}), ("daily_em", {"symbol": "sh000001"})],
+            id="primary_index_feed_fails",
+        ),
+        pytest.param(
+            "000300.SS",
+            [_PRIMARY_BAR_0429],
+            date(2026, 4, 30),
+            [("daily", {"symbol": "sh000300"}), ("daily_em", {"symbol": "csi000300"})],
+            id="csi300_uses_csi_symbol",
+        ),
+    ],
+)
+def test_cn_market_data_service_falls_back_to_em_index_feed(symbol, primary, required_as_of_date, expected_calls):
     em_frame = pd.DataFrame(
         [
             {"date": "2026-04-30", "open": 105.0, "high": 107.0, "low": 104.0, "close": 106.0, "volume": 345678},
@@ -629,7 +663,9 @@ def test_cn_market_data_service_tries_em_index_feed_when_primary_index_feed_is_s
         @staticmethod
         def stock_zh_index_daily(**kwargs):
             calls.append(("daily", kwargs))
-            return primary_frame
+            if isinstance(primary, Exception):
+                raise primary
+            return pd.DataFrame(primary)
 
         @staticmethod
         def stock_zh_index_daily_em(**kwargs):
@@ -643,145 +679,13 @@ def test_cn_market_data_service_tries_em_index_feed_when_primary_index_feed_is_s
     service = CnMarketDataService(akshare_module=FakeAkshare())
 
     result = service.index_ohlcv_dataframe(
-        "000001.SS",
+        symbol,
         period="1mo",
         end=date(2026, 4, 30),
-        required_as_of_date=date(2026, 4, 30),
+        required_as_of_date=required_as_of_date,
     )
 
-    assert calls == [
-        ("daily", {"symbol": "sh000001"}),
-        ("daily_em", {"symbol": "sh000001"}),
-    ]
-    assert result is not None
-    assert result.index.date.tolist() == [date(2026, 4, 30)]
-    assert result.iloc[-1]["Close"] == 106.0
-
-
-def test_cn_market_data_service_tries_em_index_feed_when_required_primary_bar_is_non_finite():
-    primary_frame = pd.DataFrame(
-        [
-            {"date": "2026-04-29", "open": 104.0, "high": 106.0, "low": 103.0, "close": 105.0, "volume": 234567},
-            {"date": "2026-04-30", "open": None, "high": None, "low": None, "close": None, "volume": 0},
-        ]
-    )
-    em_frame = pd.DataFrame(
-        [
-            {"date": "2026-04-30", "open": 105.0, "high": 107.0, "low": 104.0, "close": 106.0, "volume": 345678},
-        ]
-    )
-    calls = []
-
-    class FakeAkshare:
-        @staticmethod
-        def stock_zh_index_daily(**kwargs):
-            calls.append(("daily", kwargs))
-            return primary_frame
-
-        @staticmethod
-        def stock_zh_index_daily_em(**kwargs):
-            calls.append(("daily_em", kwargs))
-            return em_frame
-
-        @staticmethod
-        def stock_zh_a_hist(**kwargs):  # pragma: no cover - should not be called
-            raise AssertionError(f"CN index benchmark must use index feed, not A-share OHLCV: {kwargs}")
-
-    service = CnMarketDataService(akshare_module=FakeAkshare())
-
-    result = service.index_ohlcv_dataframe(
-        "000001.SS",
-        period="1mo",
-        end=date(2026, 4, 30),
-        required_as_of_date=date(2026, 4, 30),
-    )
-
-    assert calls == [
-        ("daily", {"symbol": "sh000001"}),
-        ("daily_em", {"symbol": "sh000001"}),
-    ]
-    assert result is not None
-    assert result.index.date.tolist() == [date(2026, 4, 30)]
-    assert result.iloc[-1]["Close"] == 106.0
-
-
-def test_cn_market_data_service_tries_em_index_feed_when_primary_index_feed_fails():
-    em_frame = pd.DataFrame(
-        [
-            {"date": "2026-04-30", "open": 105.0, "high": 107.0, "low": 104.0, "close": 106.0, "volume": 345678},
-        ]
-    )
-    calls = []
-
-    class FakeAkshare:
-        @staticmethod
-        def stock_zh_index_daily(**kwargs):
-            calls.append(("daily", kwargs))
-            raise RuntimeError("primary index feed unavailable")
-
-        @staticmethod
-        def stock_zh_index_daily_em(**kwargs):
-            calls.append(("daily_em", kwargs))
-            return em_frame
-
-        @staticmethod
-        def stock_zh_a_hist(**kwargs):  # pragma: no cover - should not be called
-            raise AssertionError(f"CN index benchmark must use index feed, not A-share OHLCV: {kwargs}")
-
-    service = CnMarketDataService(akshare_module=FakeAkshare())
-
-    result = service.index_ohlcv_dataframe("000001.SS", period="1mo", end=date(2026, 4, 30))
-
-    assert calls == [
-        ("daily", {"symbol": "sh000001"}),
-        ("daily_em", {"symbol": "sh000001"}),
-    ]
-    assert result is not None
-    assert result.index.date.tolist() == [date(2026, 4, 30)]
-    assert result.iloc[-1]["Close"] == 106.0
-
-
-def test_cn_market_data_service_uses_csi_symbol_for_csi300_em_index_fallback():
-    primary_frame = pd.DataFrame(
-        [
-            {"date": "2026-04-29", "open": 104.0, "high": 106.0, "low": 103.0, "close": 105.0, "volume": 234567},
-        ]
-    )
-    em_frame = pd.DataFrame(
-        [
-            {"date": "2026-04-30", "open": 105.0, "high": 107.0, "low": 104.0, "close": 106.0, "volume": 345678},
-        ]
-    )
-    calls = []
-
-    class FakeAkshare:
-        @staticmethod
-        def stock_zh_index_daily(**kwargs):
-            calls.append(("daily", kwargs))
-            return primary_frame
-
-        @staticmethod
-        def stock_zh_index_daily_em(**kwargs):
-            calls.append(("daily_em", kwargs))
-            return em_frame
-
-        @staticmethod
-        def stock_zh_a_hist(**kwargs):  # pragma: no cover - should not be called
-            raise AssertionError(f"CN index benchmark must use index feed, not A-share OHLCV: {kwargs}")
-
-    service = CnMarketDataService(akshare_module=FakeAkshare())
-
-    result = service.index_ohlcv_dataframe(
-        "000300.SS",
-        period="1mo",
-        end=date(2026, 4, 30),
-        required_as_of_date=date(2026, 4, 30),
-    )
-
-    assert calls == [
-        ("daily", {"symbol": "sh000300"}),
-        ("daily_em", {"symbol": "csi000300"}),
-    ]
+    assert calls == expected_calls
     assert result is not None
     assert result.index.date.tolist() == [date(2026, 4, 30)]
     assert result.iloc[-1]["Close"] == 106.0
