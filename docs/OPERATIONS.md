@@ -380,6 +380,20 @@ gh workflow run static-site.yml -f market_group=us
 
 Confirm the export run publishes `static-site-v3` artifacts and updates the Market's `static-rrg-history-v4` release asset where applicable, then confirm the following Static Site Publish run deploys Pages successfully. A publish can be re-run at any time without re-exporting: `gh workflow run static-site-publish.yml`.
 
+### Upgrade refused by migration 0068
+
+Migration `20261021_0068` drops `market_rs_formula_pointers` and refuses with "Markets served under a retired RS formula" while a pointer names another formula for a Market that is still served: one with a `latest_published_market:<MARKET>` Feature pointer, or one whose `ibd_group_ranks` rows carry that formula (`backend/alembic/versions/20261021_0068_drop_market_rs_formula_pointers.py`). The database stays at the previous revision. Go back to the previous release and publish balanced RS for each listed Market from `backend`:
+
+```bash
+python -m app.scripts.backfill_market_rs \
+  --market <MARKET> \
+  --through-date <YYYY-MM-DD> \
+  --static-staging-dir <absolute empty directory that nothing serves> \
+  --activate
+```
+
+On that release `--activate` requires `--static-staging-dir`. Then upgrade again. If a listed Market is no longer enabled, delete its row from `market_rs_formula_pointers` instead.
+
 ## Static Price-Stage Checkpoints
 
 A static market job loses every fetched price when it hits its `timeout-minutes`, because the runner's database is discarded. Markets listed in the repository variable `STATIC_PRICE_STAGE_DEADLINE_MINUTES` checkpoint the price stage instead (#502). Markets not listed behave as before.

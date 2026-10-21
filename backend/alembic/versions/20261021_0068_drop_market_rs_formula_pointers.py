@@ -61,9 +61,11 @@ def upgrade() -> None:
             "serve those markets. Finish the balanced rollout on the previous "
             "release first: "
             "run 'python -m app.scripts.backfill_market_rs --market <MARKET> "
-            "--through-date <YYYY-MM-DD> --activate' for each listed market on "
-            "the release before this one, then upgrade. If a listed market is no "
-            "longer enabled, delete its row from market_rs_formula_pointers."
+            "--through-date <YYYY-MM-DD> --static-staging-dir <absolute empty "
+            "directory that nothing serves> --activate' for each listed market on "
+            "the release before this one, then upgrade. See 'Balanced Market RS "
+            "Publication' in docs/OPERATIONS.md. If a listed market is no longer "
+            "enabled, delete its row from market_rs_formula_pointers."
         )
     op.drop_table("market_rs_formula_pointers")
 
