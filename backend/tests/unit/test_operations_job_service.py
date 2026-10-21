@@ -9,6 +9,8 @@ import threading
 from types import SimpleNamespace
 from unittest.mock import ANY, MagicMock, patch
 
+import pytest
+
 from app.services.operations_job_service import OperationsJobService, _JobRecord
 from app.services.runtime_activity_contract import progress_mode
 
@@ -156,47 +158,7 @@ def test_list_jobs_surfaces_stuck_lock_holder_without_worker_inspect():
     assert stuck_job["queue"] == "data_fetch_us"
 
 
-def test_list_jobs_marks_orphaned_market_lease_as_stale():
-    service = OperationsJobService()
-    service._broker = lambda: _FakeBroker({})
-    service._inspect = lambda: _FakeInspect()
-    service._runtime_activity_records = lambda _db: []
-    service._job_backend.get_status = MagicMock(return_value=None)
-
-    lock = MagicMock()
-    lock.get_current_task.return_value = None
-
-    with patch("app.services.operations_job_service.get_workload_coordination") as mock_get_coordination, patch(
-        "app.services.operations_job_service.get_data_fetch_lock",
-        return_value=lock,
-    ):
-        mock_get_coordination.return_value.get_external_fetch_holder.return_value = None
-        mock_get_coordination.return_value.get_market_workload_holders.return_value = {
-            "US": {
-                "task_id": "market-job-1",
-                "task_name": "app.tasks.group_rank_tasks.calculate_daily_group_rankings",
-                "started_at": (datetime.now(timezone.utc) - timedelta(minutes=45)).isoformat(),
-                "ttl_seconds": 5400,
-            },
-            "HK": None,
-            "JP": None,
-            "TW": None,
-        }
-
-        payload = service.list_jobs(MagicMock())
-
-    lease_job = next(job for job in payload["jobs"] if job["task_id"] == "market-job-1")
-    assert lease_job["state"] == "stale"
-    assert lease_job["queue"] == "market_jobs_us"
-
-
-def test_list_jobs_marks_near_expiry_market_lease_as_stuck():
-    service = OperationsJobService()
-    service._broker = lambda: _FakeBroker({})
-    service._inspect = lambda: _FakeInspect()
-    service._runtime_activity_records = lambda _db: []
-    service._job_backend.get_status = MagicMock(return_value=None)
-
+def _list_jobs_with_market_holders(service, market_holders):
     lock = MagicMock()
     lock.get_current_task.return_value = None
 
@@ -207,54 +169,68 @@ def test_list_jobs_marks_near_expiry_market_lease_as_stuck():
         mock_get_coordination.return_value.get_external_fetch_holder.return_value = None
         mock_get_coordination.return_value.get_market_workload_holders.return_value = {
             "US": None,
-            "HK": {
-                "task_id": "scan-hk-1",
-                "task_name": "app.tasks.scan_tasks.run_bulk_scan",
-                "started_at": (datetime.now(timezone.utc) - timedelta(minutes=50)).isoformat(),
-                "ttl_seconds": 120,
-            },
+            "HK": None,
             "JP": None,
             "TW": None,
+            **market_holders,
         }
 
-        payload = service.list_jobs(MagicMock())
-
-    lease_job = next(job for job in payload["jobs"] if job["task_id"] == "scan-hk-1")
-    assert lease_job["state"] == "stuck"
-    assert lease_job["queue"] == "user_scans_hk"
+        return service.list_jobs(MagicMock())
 
 
-def test_market_lease_for_data_fetch_task_keeps_data_fetch_queue_label():
+@pytest.mark.parametrize(
+    ("market", "task_id", "task_name", "minutes_ago", "ttl_seconds", "expected"),
+    [
+        pytest.param(
+            "US",
+            "market-job-1",
+            "app.tasks.group_rank_tasks.calculate_daily_group_rankings",
+            45,
+            5400,
+            {"state": "stale", "queue": "market_jobs_us"},
+            id="orphaned_market_lease_is_stale",
+        ),
+        pytest.param(
+            "HK",
+            "scan-hk-1",
+            "app.tasks.scan_tasks.run_bulk_scan",
+            50,
+            120,
+            {"state": "stuck", "queue": "user_scans_hk"},
+            id="near_expiry_market_lease_is_stuck",
+        ),
+        pytest.param(
+            "US",
+            "fetch-us-1",
+            "app.tasks.cache_tasks.smart_refresh_cache",
+            5,
+            6000,
+            {"queue": "data_fetch_us"},
+            id="data_fetch_task_keeps_data_fetch_queue_label",
+        ),
+    ],
+)
+def test_list_jobs_reports_market_lease_holders(market, task_id, task_name, minutes_ago, ttl_seconds, expected):
     service = OperationsJobService()
     service._broker = lambda: _FakeBroker({})
     service._inspect = lambda: _FakeInspect()
     service._runtime_activity_records = lambda _db: []
     service._job_backend.get_status = MagicMock(return_value=None)
 
-    lock = MagicMock()
-    lock.get_current_task.return_value = None
+    payload = _list_jobs_with_market_holders(
+        service,
+        {
+            market: {
+                "task_id": task_id,
+                "task_name": task_name,
+                "started_at": (datetime.now(timezone.utc) - timedelta(minutes=minutes_ago)).isoformat(),
+                "ttl_seconds": ttl_seconds,
+            }
+        },
+    )
 
-    with patch("app.services.operations_job_service.get_workload_coordination") as mock_get_coordination, patch(
-        "app.services.operations_job_service.get_data_fetch_lock",
-        return_value=lock,
-    ):
-        mock_get_coordination.return_value.get_external_fetch_holder.return_value = None
-        mock_get_coordination.return_value.get_market_workload_holders.return_value = {
-            "US": {
-                "task_id": "fetch-us-1",
-                "task_name": "app.tasks.cache_tasks.smart_refresh_cache",
-                "started_at": (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat(),
-                "ttl_seconds": 6000,
-            },
-            "HK": None,
-            "JP": None,
-            "TW": None,
-        }
-
-        payload = service.list_jobs(MagicMock())
-
-    lease_job = next(job for job in payload["jobs"] if job["task_id"] == "fetch-us-1")
-    assert lease_job["queue"] == "data_fetch_us"
+    lease_job = next(job for job in payload["jobs"] if job["task_id"] == task_id)
+    assert {key: lease_job[key] for key in expected} == expected
 
 
 def test_list_jobs_surfaces_runtime_activity_progress_fields():
@@ -312,219 +288,98 @@ def test_progress_mode_keeps_active_100_percent_indeterminate():
     assert progress_mode("completed", 100.0, 3750, 3750) == "determinate"
 
 
-def test_list_jobs_falls_back_to_job_backend_progress_for_active_worker_task():
+class _InspectWithRunningTask(_FakeInspect):
+    def active(self):
+        return {
+            "datafetch-global@host": [
+                {
+                    "id": "task-fetch-us",
+                    "name": "app.tasks.cache_tasks.smart_refresh_cache",
+                    "kwargs": {"market": "US"},
+                    "delivery_info": {"routing_key": "data_fetch_us"},
+                    "time_start": datetime.now(timezone.utc).timestamp(),
+                }
+            ]
+        }
+
+    def active_queues(self):
+        return {
+            "datafetch-global@host": [
+                {"name": "data_fetch_us"},
+            ]
+        }
+
+    def stats(self):
+        return {"datafetch-global@host": {}}
+
+
+_BACKEND_PRICE_PROGRESS = SimpleNamespace(
+    status="running",
+    current=50,
+    total=200,
+    percent=25.0,
+    message="Batch 1/4 · refreshing prices",
+)
+
+
+@pytest.mark.parametrize(
+    ("runtime_progress", "backend_status", "expected"),
+    [
+        pytest.param(
+            None,
+            _BACKEND_PRICE_PROGRESS,
+            {
+                "progress_mode": "determinate",
+                "percent": 25.0,
+                "current": 50,
+                "total": 200,
+                "message": "Batch 1/4 · refreshing prices",
+            },
+            id="falls_back_to_job_backend_progress_for_active_worker_task",
+        ),
+        pytest.param(
+            {"progress_mode": "indeterminate", "message": "Batch 1/4 · refreshing prices"},
+            None,
+            {"progress_mode": "determinate", "current": 50, "total": 200, "message": "Batch 1/4 · refreshing prices"},
+            id="recomputes_runtime_progress_mode_from_counts",
+        ),
+        pytest.param(
+            {"progress_mode": "determinate", "message": None},
+            _BACKEND_PRICE_PROGRESS,
+            {"progress_mode": "determinate", "message": "Batch 1/4 · refreshing prices"},
+            id="reads_backend_message_even_when_runtime_counts_are_determinate",
+        ),
+    ],
+)
+def test_list_jobs_resolves_active_worker_task_progress(runtime_progress, backend_status, expected):
     service = OperationsJobService()
     service._broker = lambda: _FakeBroker({})
-
-    class _InspectWithRunningTask(_FakeInspect):
-        def active(self):
-            return {
-                "datafetch-global@host": [
-                    {
-                        "id": "task-fetch-us",
-                        "name": "app.tasks.cache_tasks.smart_refresh_cache",
-                        "kwargs": {"market": "US"},
-                        "delivery_info": {"routing_key": "data_fetch_us"},
-                        "time_start": datetime.now(timezone.utc).timestamp(),
-                    }
-                ]
-            }
-
-        def active_queues(self):
-            return {
-                "datafetch-global@host": [
-                    {"name": "data_fetch_us"},
-                ]
-            }
-
-        def stats(self):
-            return {"datafetch-global@host": {}}
-
     service._inspect = lambda: _InspectWithRunningTask()
-    service._runtime_activity_records = lambda _db: []
-    service._job_backend.get_status = MagicMock(
-        return_value=SimpleNamespace(
-            status="running",
-            current=50,
-            total=200,
-            percent=25.0,
-            message="Batch 1/4 · refreshing prices",
+    runtime_records = []
+    if runtime_progress is not None:
+        runtime_records.append(
+            {
+                "market": "US",
+                "lifecycle": "bootstrap",
+                "stage_key": "prices",
+                "stage_label": "Price Refresh",
+                "status": "running",
+                "percent": None,
+                "current": 50,
+                "total": 200,
+                "task_name": "app.tasks.cache_tasks.smart_refresh_cache",
+                "task_id": "task-fetch-us",
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+                **runtime_progress,
+            }
         )
-    )
+    service._runtime_activity_records = lambda _db: runtime_records
+    service._job_backend.get_status = MagicMock(return_value=backend_status)
 
-    lock = MagicMock()
-    lock.get_current_task.return_value = None
-
-    with patch("app.services.operations_job_service.get_workload_coordination") as mock_get_coordination, patch(
-        "app.services.operations_job_service.get_data_fetch_lock",
-        return_value=lock,
-    ):
-        mock_get_coordination.return_value.get_external_fetch_holder.return_value = None
-        mock_get_coordination.return_value.get_market_workload_holders.return_value = {
-            "US": None,
-            "HK": None,
-            "JP": None,
-            "TW": None,
-        }
-
-        payload = service.list_jobs(MagicMock())
+    payload = _list_jobs_with_market_holders(service, {})
 
     job = next(job for job in payload["jobs"] if job["task_id"] == "task-fetch-us")
-    assert job["progress_mode"] == "determinate"
-    assert job["percent"] == 25.0
-    assert job["current"] == 50
-    assert job["total"] == 200
-    assert job["message"] == "Batch 1/4 · refreshing prices"
-
-
-def test_list_jobs_recomputes_runtime_progress_mode_from_counts():
-    service = OperationsJobService()
-    service._broker = lambda: _FakeBroker({})
-
-    class _InspectWithRunningTask(_FakeInspect):
-        def active(self):
-            return {
-                "datafetch-global@host": [
-                    {
-                        "id": "task-fetch-us",
-                        "name": "app.tasks.cache_tasks.smart_refresh_cache",
-                        "kwargs": {"market": "US"},
-                        "delivery_info": {"routing_key": "data_fetch_us"},
-                        "time_start": datetime.now(timezone.utc).timestamp(),
-                    }
-                ]
-            }
-
-        def active_queues(self):
-            return {
-                "datafetch-global@host": [
-                    {"name": "data_fetch_us"},
-                ]
-            }
-
-        def stats(self):
-            return {"datafetch-global@host": {}}
-
-    service._inspect = lambda: _InspectWithRunningTask()
-    service._runtime_activity_records = lambda _db: [
-        {
-            "market": "US",
-            "lifecycle": "bootstrap",
-            "stage_key": "prices",
-            "stage_label": "Price Refresh",
-            "status": "running",
-            "progress_mode": "indeterminate",
-            "percent": None,
-            "current": 50,
-            "total": 200,
-            "message": "Batch 1/4 · refreshing prices",
-            "task_name": "app.tasks.cache_tasks.smart_refresh_cache",
-            "task_id": "task-fetch-us",
-            "updated_at": datetime.now(timezone.utc).isoformat(),
-        }
-    ]
-    service._job_backend.get_status = MagicMock(return_value=None)
-
-    lock = MagicMock()
-    lock.get_current_task.return_value = None
-
-    with patch("app.services.operations_job_service.get_workload_coordination") as mock_get_coordination, patch(
-        "app.services.operations_job_service.get_data_fetch_lock",
-        return_value=lock,
-    ):
-        mock_get_coordination.return_value.get_external_fetch_holder.return_value = None
-        mock_get_coordination.return_value.get_market_workload_holders.return_value = {
-            "US": None,
-            "HK": None,
-            "JP": None,
-            "TW": None,
-        }
-
-        payload = service.list_jobs(MagicMock())
-
-    job = next(job for job in payload["jobs"] if job["task_id"] == "task-fetch-us")
-    assert job["progress_mode"] == "determinate"
-    assert job["current"] == 50
-    assert job["total"] == 200
-    assert job["message"] == "Batch 1/4 · refreshing prices"
-
-
-def test_list_jobs_reads_backend_message_even_when_runtime_counts_are_determinate():
-    service = OperationsJobService()
-    service._broker = lambda: _FakeBroker({})
-
-    class _InspectWithRunningTask(_FakeInspect):
-        def active(self):
-            return {
-                "datafetch-global@host": [
-                    {
-                        "id": "task-fetch-us",
-                        "name": "app.tasks.cache_tasks.smart_refresh_cache",
-                        "kwargs": {"market": "US"},
-                        "delivery_info": {"routing_key": "data_fetch_us"},
-                        "time_start": datetime.now(timezone.utc).timestamp(),
-                    }
-                ]
-            }
-
-        def active_queues(self):
-            return {
-                "datafetch-global@host": [
-                    {"name": "data_fetch_us"},
-                ]
-            }
-
-        def stats(self):
-            return {"datafetch-global@host": {}}
-
-    service._inspect = lambda: _InspectWithRunningTask()
-    service._runtime_activity_records = lambda _db: [
-        {
-            "market": "US",
-            "lifecycle": "bootstrap",
-            "stage_key": "prices",
-            "stage_label": "Price Refresh",
-            "status": "running",
-            "progress_mode": "determinate",
-            "percent": None,
-            "current": 50,
-            "total": 200,
-            "message": None,
-            "task_name": "app.tasks.cache_tasks.smart_refresh_cache",
-            "task_id": "task-fetch-us",
-            "updated_at": datetime.now(timezone.utc).isoformat(),
-        }
-    ]
-    service._job_backend.get_status = MagicMock(
-        return_value=SimpleNamespace(
-            status="running",
-            current=50,
-            total=200,
-            percent=25.0,
-            message="Batch 1/4 · refreshing prices",
-        )
-    )
-
-    lock = MagicMock()
-    lock.get_current_task.return_value = None
-
-    with patch("app.services.operations_job_service.get_workload_coordination") as mock_get_coordination, patch(
-        "app.services.operations_job_service.get_data_fetch_lock",
-        return_value=lock,
-    ):
-        mock_get_coordination.return_value.get_external_fetch_holder.return_value = None
-        mock_get_coordination.return_value.get_market_workload_holders.return_value = {
-            "US": None,
-            "HK": None,
-            "JP": None,
-            "TW": None,
-        }
-
-        payload = service.list_jobs(MagicMock())
-
-    job = next(job for job in payload["jobs"] if job["task_id"] == "task-fetch-us")
-    assert job["progress_mode"] == "determinate"
-    assert job["message"] == "Batch 1/4 · refreshing prices"
+    assert {key: job[key] for key in expected} == expected
 
 
 def test_cancel_job_removes_queued_task_and_revokes():
