@@ -897,6 +897,9 @@ class UISnapshotService:
         *,
         expected_through_date: date | None = None,
     ) -> SnapshotResult:
+        # Lock before reading: the source revision names only the latest
+        # ranking date, but movers read older dates it does not cover.
+        self._lock_variant(db, GROUPS_VIEW_KEY, "default")
         if expected_through_date is not None:
             latest_date = (
                 db.query(func.max(IBDGroupRank.date))
@@ -922,7 +925,6 @@ class UISnapshotService:
             still_current=lambda locked_db: (
                 self._resolve_groups_source_revision(locked_db) == source_revision
             ),
-            retry_on_conflict=True,  # the daily task and the publication command can race
         )
 
     def _build_groups_payload(self, db: Session) -> dict[str, Any]:
