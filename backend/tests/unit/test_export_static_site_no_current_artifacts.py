@@ -11,51 +11,49 @@ import pytest
 import app.scripts.export_static_site as export_script
 
 
-def test_main_returns_skip_code_for_market_not_trading_day(monkeypatch, tmp_path, capsys):
+def _run_main_without_export(monkeypatch, output_dir, refresh_summary, refresh_warnings, *market_args):
+    """Run main() --refresh-daily on a canned refresh result; fail if a market export starts."""
     export_calls: list[object] = []
-    output_dir = tmp_path / "out"
-
-    monkeypatch.setattr(export_script, "prepare_runtime", lambda: None)
-    monkeypatch.setattr(
-        export_script,
-        "_run_daily_refresh",
-        lambda **_kwargs: (
-            {
-                "feature_snapshots": {
-                    "TW": {
-                        "status": "skipped",
-                        "reason": "not_trading_day",
-                        "market": "TW",
-                        "as_of_date": "2026-05-01",
-                    }
-                }
-            },
-            ["Static export market TW snapshot returned status 'skipped' (not_trading_day)."],
-        ),
-    )
 
     class ExportShouldNotRun:
         def __init__(self, *_args, **_kwargs):
             export_calls.append("constructed")
 
         def export(self, *_args, **_kwargs):
-            raise AssertionError("market export should not run for not_trading_day")
+            raise AssertionError("market export should not run")
 
+    monkeypatch.setattr(export_script, "prepare_runtime", lambda: None)
+    monkeypatch.setattr(export_script, "_run_daily_refresh", lambda **_kwargs: (refresh_summary, refresh_warnings))
     monkeypatch.setattr(export_script, "StaticSiteExportService", ExportShouldNotRun)
     monkeypatch.setattr(
         sys,
         "argv",
-        [
-            "export_static_site.py",
-            "--output-dir",
-            str(output_dir),
-            "--refresh-daily",
-            "--market",
-            "TW",
-        ],
+        ["export_static_site.py", "--output-dir", str(output_dir), "--refresh-daily", *market_args],
+    )
+    return export_script.main(), export_calls
+
+
+def test_main_returns_skip_code_for_market_not_trading_day(monkeypatch, tmp_path, capsys):
+    output_dir = tmp_path / "out"
+
+    exit_code, export_calls = _run_main_without_export(
+        monkeypatch,
+        output_dir,
+        {
+            "feature_snapshots": {
+                "TW": {
+                    "status": "skipped",
+                    "reason": "not_trading_day",
+                    "market": "TW",
+                    "as_of_date": "2026-05-01",
+                }
+            }
+        },
+        ["Static export market TW snapshot returned status 'skipped' (not_trading_day)."],
+        "--market", "TW",
     )
 
-    assert export_script.main() == export_script.STATIC_EXPORT_SKIPPED_EXIT_CODE
+    assert exit_code == export_script.STATIC_EXPORT_SKIPPED_EXIT_CODE
 
     captured = capsys.readouterr()
     assert "Static site export skipped for market TW because it is not a trading day." in captured.out
@@ -68,64 +66,40 @@ def test_main_returns_no_current_artifact_code_for_selected_market_exposure_erro
     tmp_path,
     capsys,
 ):
-    export_calls: list[object] = []
     output_dir = tmp_path / "out"
 
-    monkeypatch.setattr(export_script, "prepare_runtime", lambda: None)
-    monkeypatch.setattr(
-        export_script,
-        "_run_daily_refresh",
-        lambda **_kwargs: (
-            {
-                "market_exposure": {
-                    "IN": {
-                        "market": "IN",
+    exit_code, export_calls = _run_main_without_export(
+        monkeypatch,
+        output_dir,
+        {
+            "market_exposure": {
+                "IN": {
+                    "market": "IN",
+                    "date": "2026-06-25",
+                    "error": "no_benchmark_data",
+                }
+            },
+            "feature_snapshots": {
+                "IN": {
+                    "status": "skipped",
+                    "reason": "market_exposure_not_ready",
+                    "market": "IN",
+                    "as_of_date": "2026-06-25",
+                    "warnings": [
+                        "Static export market IN exposure not stored for 2026-06-25: no_benchmark_data."
+                    ],
+                    "failure_diagnostics": {
                         "date": "2026-06-25",
                         "error": "no_benchmark_data",
-                    }
-                },
-                "feature_snapshots": {
-                    "IN": {
-                        "status": "skipped",
-                        "reason": "market_exposure_not_ready",
-                        "market": "IN",
-                        "as_of_date": "2026-06-25",
-                        "warnings": [
-                            "Static export market IN exposure not stored for 2026-06-25: no_benchmark_data."
-                        ],
-                        "failure_diagnostics": {
-                            "date": "2026-06-25",
-                            "error": "no_benchmark_data",
-                        },
-                    }
-                },
+                    },
+                }
             },
-            ["Static export market IN exposure not stored for 2026-06-25: no_benchmark_data."],
-        ),
+        },
+        ["Static export market IN exposure not stored for 2026-06-25: no_benchmark_data."],
+        "--market", "IN",
     )
 
-    class ExportShouldNotRun:
-        def __init__(self, *_args, **_kwargs):
-            export_calls.append("constructed")
-
-        def export(self, *_args, **_kwargs):
-            raise AssertionError("market export should not run when exposure is missing")
-
-    monkeypatch.setattr(export_script, "StaticSiteExportService", ExportShouldNotRun)
-    monkeypatch.setattr(
-        sys,
-        "argv",
-        [
-            "export_static_site.py",
-            "--output-dir",
-            str(output_dir),
-            "--refresh-daily",
-            "--market",
-            "IN",
-        ],
-    )
-
-    assert export_script.main() == export_script.STATIC_EXPORT_NO_CURRENT_ARTIFACT_EXIT_CODE
+    assert exit_code == export_script.STATIC_EXPORT_NO_CURRENT_ARTIFACT_EXIT_CODE
 
     diagnostics_path = output_dir / "diagnostics" / "in" / "snapshot-failure.json"
     assert diagnostics_path.exists()
@@ -153,72 +127,49 @@ def test_main_returns_no_current_artifact_code_for_all_market_exposure_error(
     tmp_path,
     capsys,
 ):
-    export_calls: list[object] = []
     output_dir = tmp_path / "out"
 
-    monkeypatch.setattr(export_script, "prepare_runtime", lambda: None)
-    monkeypatch.setattr(
-        export_script,
-        "_run_daily_refresh",
-        lambda **_kwargs: (
-            {
-                "market_exposure": {
-                    "US": {
-                        "market": "US",
-                        "date": "2026-06-25",
-                        "exposure_score": 75.0,
-                    },
-                    "IN": {
-                        "market": "IN",
+    exit_code, export_calls = _run_main_without_export(
+        monkeypatch,
+        output_dir,
+        {
+            "market_exposure": {
+                "US": {
+                    "market": "US",
+                    "date": "2026-06-25",
+                    "exposure_score": 75.0,
+                },
+                "IN": {
+                    "market": "IN",
+                    "date": "2026-06-25",
+                    "error": "no_benchmark_data",
+                },
+            },
+            "feature_snapshots": {
+                "US": {
+                    "status": "published",
+                    "market": "US",
+                    "run_id": 90,
+                },
+                "IN": {
+                    "status": "skipped",
+                    "reason": "market_exposure_not_ready",
+                    "market": "IN",
+                    "as_of_date": "2026-06-25",
+                    "warnings": [
+                        "Static export market IN exposure not stored for 2026-06-25: no_benchmark_data."
+                    ],
+                    "failure_diagnostics": {
                         "date": "2026-06-25",
                         "error": "no_benchmark_data",
                     },
                 },
-                "feature_snapshots": {
-                    "US": {
-                        "status": "published",
-                        "market": "US",
-                        "run_id": 90,
-                    },
-                    "IN": {
-                        "status": "skipped",
-                        "reason": "market_exposure_not_ready",
-                        "market": "IN",
-                        "as_of_date": "2026-06-25",
-                        "warnings": [
-                            "Static export market IN exposure not stored for 2026-06-25: no_benchmark_data."
-                        ],
-                        "failure_diagnostics": {
-                            "date": "2026-06-25",
-                            "error": "no_benchmark_data",
-                        },
-                    },
-                },
             },
-            ["Static export market IN exposure not stored for 2026-06-25: no_benchmark_data."],
-        ),
+        },
+        ["Static export market IN exposure not stored for 2026-06-25: no_benchmark_data."],
     )
 
-    class ExportShouldNotRun:
-        def __init__(self, *_args, **_kwargs):
-            export_calls.append("constructed")
-
-        def export(self, *_args, **_kwargs):
-            raise AssertionError("all-market export should not run when any exposure is missing")
-
-    monkeypatch.setattr(export_script, "StaticSiteExportService", ExportShouldNotRun)
-    monkeypatch.setattr(
-        sys,
-        "argv",
-        [
-            "export_static_site.py",
-            "--output-dir",
-            str(output_dir),
-            "--refresh-daily",
-        ],
-    )
-
-    assert export_script.main() == export_script.STATIC_EXPORT_NO_CURRENT_ARTIFACT_EXIT_CODE
+    assert exit_code == export_script.STATIC_EXPORT_NO_CURRENT_ARTIFACT_EXIT_CODE
 
     diagnostics_path = output_dir / "diagnostics" / "in" / "snapshot-failure.json"
     assert diagnostics_path.exists()
@@ -278,67 +229,43 @@ def test_main_returns_no_current_artifact_code_for_group_rank_backfill_failure(
     tmp_path,
     capsys,
 ):
-    export_calls: list[object] = []
     output_dir = tmp_path / "out"
 
-    monkeypatch.setattr(export_script, "prepare_runtime", lambda: None)
-    monkeypatch.setattr(
-        export_script,
-        "_run_daily_refresh",
-        lambda **_kwargs: (
-            {
-                "feature_snapshots": {
-                    "US": {
-                        "status": "quarantined",
-                        "reason": "group_rank_backfill_not_ready",
-                        "market": "US",
-                        "run_id": 77,
-                        "as_of_date": "2026-07-24",
-                        "warnings": [
-                            "Static export market US group-rank history backfill not "
-                            "ready for 2026-07-24: errored."
-                        ],
-                        "failure_diagnostics": {
-                            "group_rank_history_backfill": {
-                                "status": "errored",
-                                "market": "US",
-                                "as_of_date": "2026-07-24",
-                                "lookback_start_date": "2026-01-18",
-                                "error": "US current price coverage is 0.0%",
-                            }
-                        },
-                    }
+    exit_code, export_calls = _run_main_without_export(
+        monkeypatch,
+        output_dir,
+        {
+            "feature_snapshots": {
+                "US": {
+                    "status": "quarantined",
+                    "reason": "group_rank_backfill_not_ready",
+                    "market": "US",
+                    "run_id": 77,
+                    "as_of_date": "2026-07-24",
+                    "warnings": [
+                        "Static export market US group-rank history backfill not "
+                        "ready for 2026-07-24: errored."
+                    ],
+                    "failure_diagnostics": {
+                        "group_rank_history_backfill": {
+                            "status": "errored",
+                            "market": "US",
+                            "as_of_date": "2026-07-24",
+                            "lookback_start_date": "2026-01-18",
+                            "error": "US current price coverage is 0.0%",
+                        }
+                    },
                 }
-            },
-            [
-                "Static export market US group-rank history backfill not ready "
-                "for 2026-07-24: errored."
-            ],
-        ),
-    )
-
-    class ExportShouldNotRun:
-        def __init__(self, *_args, **_kwargs):
-            export_calls.append("constructed")
-
-        def export(self, *_args, **_kwargs):
-            raise AssertionError("market export should use fallback after backfill failure")
-
-    monkeypatch.setattr(export_script, "StaticSiteExportService", ExportShouldNotRun)
-    monkeypatch.setattr(
-        sys,
-        "argv",
+            }
+        },
         [
-            "export_static_site.py",
-            "--output-dir",
-            str(output_dir),
-            "--refresh-daily",
-            "--market",
-            "US",
+            "Static export market US group-rank history backfill not ready "
+            "for 2026-07-24: errored."
         ],
+        "--market", "US",
     )
 
-    assert export_script.main() == export_script.STATIC_EXPORT_NO_CURRENT_ARTIFACT_EXIT_CODE
+    assert exit_code == export_script.STATIC_EXPORT_NO_CURRENT_ARTIFACT_EXIT_CODE
 
     diagnostics_path = output_dir / "diagnostics" / "us" / "snapshot-failure.json"
     assert diagnostics_path.exists()
@@ -362,66 +289,42 @@ def test_main_returns_no_current_artifact_code_for_market_rs_price_coverage_gap(
     tmp_path,
     capsys,
 ):
-    export_calls: list[object] = []
     output_dir = tmp_path / "out"
     warning = (
         "Static export market DE Market RS not ready for 2026-07-27: "
         "current_adjusted_price_coverage_below_threshold."
     )
 
-    monkeypatch.setattr(export_script, "prepare_runtime", lambda: None)
-    monkeypatch.setattr(
-        export_script,
-        "_run_daily_refresh",
-        lambda **_kwargs: (
-            {
-                "feature_snapshots": {
-                    "DE": {
-                        "status": "skipped",
-                        "reason": "market_rs_not_ready",
-                        "market": "DE",
-                        "as_of_date": "2026-07-27",
-                        "warnings": [warning],
-                        "failure_diagnostics": {
-                            "reason_code": (
-                                "current_adjusted_price_coverage_below_threshold"
-                            ),
-                            "diagnostics": {
-                                "current_price_coverage": 0.8434065934065934,
-                                "minimum_current_price_coverage": 0.88,
-                                "current_prices_available": 1228,
-                                "expected_symbol_count": 1456,
-                            },
+    exit_code, export_calls = _run_main_without_export(
+        monkeypatch,
+        output_dir,
+        {
+            "feature_snapshots": {
+                "DE": {
+                    "status": "skipped",
+                    "reason": "market_rs_not_ready",
+                    "market": "DE",
+                    "as_of_date": "2026-07-27",
+                    "warnings": [warning],
+                    "failure_diagnostics": {
+                        "reason_code": (
+                            "current_adjusted_price_coverage_below_threshold"
+                        ),
+                        "diagnostics": {
+                            "current_price_coverage": 0.8434065934065934,
+                            "minimum_current_price_coverage": 0.88,
+                            "current_prices_available": 1228,
+                            "expected_symbol_count": 1456,
                         },
-                    }
+                    },
                 }
-            },
-            [warning],
-        ),
+            }
+        },
+        [warning],
+        "--market", "DE",
     )
 
-    class ExportShouldNotRun:
-        def __init__(self, *_args, **_kwargs):
-            export_calls.append("constructed")
-
-        def export(self, *_args, **_kwargs):
-            raise AssertionError("market export should use fallback when Market RS is not ready")
-
-    monkeypatch.setattr(export_script, "StaticSiteExportService", ExportShouldNotRun)
-    monkeypatch.setattr(
-        sys,
-        "argv",
-        [
-            "export_static_site.py",
-            "--output-dir",
-            str(output_dir),
-            "--refresh-daily",
-            "--market",
-            "DE",
-        ],
-    )
-
-    assert export_script.main() == export_script.STATIC_EXPORT_NO_CURRENT_ARTIFACT_EXIT_CODE
+    assert exit_code == export_script.STATIC_EXPORT_NO_CURRENT_ARTIFACT_EXIT_CODE
 
     diagnostics_path = output_dir / "diagnostics" / "de" / "snapshot-failure.json"
     assert diagnostics_path.exists()
