@@ -47,6 +47,51 @@ def writer(factory):
     return SocialSignalWriter(factory, clock=lambda: NOW)
 
 
+def repeated_post_batch():
+    single = batch()
+    post = single.posts[0]
+    return replace(single, posts=(post, replace(post, likes=11)),
+        outcome=replace(single.outcome, received_count=2))
+
+
+def test_a_batch_repeating_a_post_records_it_once(store):
+    from app.infra.db.models.social_signals import SocialPostTicker
+
+    writer(store).persist_observations(repeated_post_batch())
+
+    with store() as db:
+        assert db.query(ContentItem).count() == 1
+        assert db.query(SocialPostSource).count() == 1
+        assert db.query(SocialPostTicker).count() == 1
+        assert db.query(SocialContentMetrics).one().likes == 10
+
+
+def test_a_redelivered_batch_repeating_a_post_is_accepted_as_the_same_delivery(store):
+    from app.infra.db.models.social_signals import SocialSignalRun
+
+    w = writer(store)
+    run = w.create_run("run", NOW)
+    w.persist_observations(repeated_post_batch(), run_id=run)
+
+    saved = w.persist_observations(repeated_post_batch(), run_id=run)
+
+    assert saved.outcome.committed_progress == "cursor"
+    with store() as db:
+        inputs = db.get(SocialSignalRun, run).application_progress_json["observations"]["1"]["inputs"]
+    assert [value["post"]["provider_post_id"] for value in inputs] == ["100"]
+
+
+def test_a_redelivery_whose_repeated_copy_names_another_source_is_rejected(store):
+    w = writer(store)
+    run = w.create_run("run", NOW)
+    w.persist_observations(repeated_post_batch(), run_id=run)
+    changed = repeated_post_batch()
+    changed = replace(changed, posts=(changed.posts[0], replace(changed.posts[1], source_id="2")))
+
+    with pytest.raises(ValueError, match="post_source_identity_mismatch"):
+        w.persist_observations(changed, run_id=run)
+
+
 def test_cross_list_duplicate_retains_memberships_and_only_social_eligibility(store):
     w = writer(store)
     w.persist_observations(batch())
