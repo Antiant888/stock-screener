@@ -79,6 +79,18 @@ class SqlSocialRefreshCatalog:
             ) == (version, mode, provider)
 
 
+def _candidate(resolution):
+    resolved = resolution.status == "resolved"
+    key = (f"{resolution.market}:{resolution.symbol}" if resolved
+           else f"unresolved:{resolution.raw_token.casefold()}")
+    return key, {
+        "symbol": resolution.symbol or resolution.raw_token,
+        "market": resolution.market,
+        "kind": resolution.security_kind,
+        "resolved": resolved,
+    }
+
+
 class SocialScoringEvidenceReader:
     """Rebuild rolling evidence from immutable successful collection records.
 
@@ -236,6 +248,7 @@ class SocialScoringEvidenceReader:
             candidates = {}
             judgments = {}
             claims = {}
+            revision_claims = {}
             by_content = {}
             for (post_id, _), post in canonical.items():
                 by_content.setdefault(content_ids[post_id], post_id)
@@ -255,9 +268,11 @@ class SocialScoringEvidenceReader:
                             value.get("has_new_thesis"), value.get("canonical_claim_key")
                         )
                 claims.setdefault(post_id, []).extend(work.result_json.get("claims", ()))
+                revision_claims[(post_id, work.input_hash)] = work.result_json.get("claims", ())
 
             for (post_id, source_id), post in canonical.items():
-                if (content_ids[post_id], self._content_revision(post)) in unavailable:
+                revision = self._content_revision(post)
+                if (content_ids[post_id], revision) in unavailable:
                     # Its earlier mentions are unknown, so acceleration has no full baseline.
                     history_complete = False
                     continue
@@ -265,20 +280,15 @@ class SocialScoringEvidenceReader:
                 if judgment is not None:
                     post = replace(post, has_new_thesis=judgment[0], canonical_claim_key=judgment[1])
                     canonical[(post_id, source_id)] = post
-                resolutions = [resolver.resolve(token) for token in cashtags(post.text)]
-                resolutions.extend(resolver.resolve(value.get("company_token", ""))
-                                    for value in claims.get(post_id, ()))
-                targets = {}
-                for resolution in resolutions:
-                    resolved = resolution.status == "resolved"
-                    key = (f"{resolution.market}:{resolution.symbol}" if resolved
-                           else f"unresolved:{resolution.raw_token.casefold()}")
-                    targets[key] = {
-                        "symbol": resolution.symbol or resolution.raw_token,
-                        "market": resolution.market,
-                        "kind": resolution.security_kind,
-                        "resolved": resolved,
-                    }
+                targets = dict(_candidate(resolver.resolve(token)) for token in cashtags(post.text))
+                for value in claims.get(post_id, ()):
+                    key, target = _candidate(resolver.resolve(value.get("company_token", "")))
+                    targets[key] = target
+                # Only the extraction of this exact text decides whether the post is a copy.
+                flagged, original = set(), set()
+                for value in revision_claims.get((post_id, revision), ()):
+                    key, _ = _candidate(resolver.resolve(value.get("company_token", "")))
+                    (flagged if value.get("duplicate_of_post_ids") else original).add(key)
                 for mapping in mappings_by_content.get(content_ids[post_id], ()):
                     # The text was just resolved fresh; an old unresolved row adds only staleness.
                     if mapping.resolution_state != "resolved":
@@ -290,15 +300,20 @@ class SocialScoringEvidenceReader:
                         "resolved": mapping.resolution_state == "resolved",
                     }
                 for key, target in targets.items():
-                    candidates.setdefault(key, {
+                    candidate = candidates.setdefault(key, {
                         **target,
                         "posts": {},
-                    })["posts"][(post_id, source_id)] = post
+                        "duplicates": set(),
+                    })
+                    candidate["posts"][(post_id, source_id)] = post
+                    if key in flagged - original:
+                        candidate["duplicates"].add((f"{post.provider}:{post.provider_post_id}", source_id))
 
             return tuple(SocialEvidenceInput(
                 key, value["symbol"], value["market"],
                 tuple(value["posts"][post_key] for post_key in sorted(value["posts"])),
                 source_ids, history_complete, tuple(sorted(reasons)), value["resolved"], value["kind"],
+                tuple(sorted(value["duplicates"])),
             ) for key, value in sorted(candidates.items()))
 
     @classmethod

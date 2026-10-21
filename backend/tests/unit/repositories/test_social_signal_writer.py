@@ -387,6 +387,116 @@ def test_retained_work_that_aged_out_of_analysis_does_not_hold_the_generation(st
     assert (manifest.scoring_work_ids, work_id in manifest.audit_work_ids) == ((), True)
 
 
+def flagged_claim(token, duplicate_of=()):
+    return {"post_id": "100", "theme_key": "cooling", "raw_theme": "cooling", "company_token": token,
+            "relationship": "supplier", "excerpt": "supplies cooling", "support": "supported",
+            "duplicate_of_post_ids": list(duplicate_of), "evidence_id": None}
+
+
+@pytest.mark.parametrize(("claims", "expected"), [
+    ([flagged_claim("$AAA", ["99"])], (("official:100", "1"),)),
+    ([flagged_claim("$AAA", ["99"]), flagged_claim("$AAA")], ()),
+    ([flagged_claim("$BBB", ["99"])], ()),
+    ([], ()),
+])
+def test_scoring_evidence_marks_a_post_whose_claims_about_a_ticker_are_all_flagged(store, claims, expected):
+    from app.infra.db.models.social_analysis import SocialExtractionWork, SocialRunWork
+    from app.infra.db.repositories.social_refresh_support import SocialScoringEvidenceReader
+    from app.models.stock_universe import StockUniverse
+    from app.services.social_extraction_service import SocialExtractionService
+
+    w = writer(store)
+    w.create_run("run", NOW)
+    saved = w.persist_observations(batch(), run_id="run")
+    content_id = dict(w.read_run_inputs("run").content_ids)["100"]
+    with store.begin() as db:
+        for symbol in ("AAA", "BBB"):
+            db.add(StockUniverse(symbol=symbol, name=f"{symbol} Corp", market="US", exchange="NASDAQ", is_active=True))
+        input_hash = SocialExtractionService.input_hash(saved.posts)
+        work = SocialExtractionWork(
+            content_item_id=content_id, input_hash=input_hash, prompt_version="v1",
+            schema_version="v1", selected_model="model", input_snapshot_json={}, state="succeeded",
+            result_json={"claims": claims, "judgments": []}, created_at=NOW, updated_at=NOW,
+        )
+        db.add(work)
+        db.flush()
+        db.add(SocialRunWork(run_id="run", work_id=work.id, input_hash=input_hash, included_at=NOW))
+    w.select_current_inputs("run")
+
+    evidence = {item.candidate_key: item for item in SocialScoringEvidenceReader(store).read("run", NOW)}
+
+    assert evidence["US:AAA"].duplicate_posts == expected
+
+
+def test_a_flag_on_an_earlier_revision_does_not_exclude_the_edited_post(store):
+    from app.infra.db.models.social_analysis import SocialExtractionWork, SocialRunWork
+    from app.infra.db.repositories.social_refresh_support import SocialScoringEvidenceReader
+    from app.models.stock_universe import StockUniverse
+    from app.services.social_extraction_service import SocialExtractionService
+
+    w = writer(store)
+    w.create_run("old", NOW)
+    original = w.persist_observations(batch(), run_id="old")
+    later = NOW + timedelta(hours=1)
+    w.clock = lambda: later + timedelta(minutes=1)
+    w.create_run("new", later)
+    edited = batch(age=1)
+    edited = w.persist_observations(
+        replace(edited, posts=(replace(edited.posts[0], text="$AAA supplies cooling, edited"),)), run_id="new")
+    content_id = dict(w.read_run_inputs("new").content_ids)["100"]
+    with store.begin() as db:
+        db.add(StockUniverse(symbol="AAA", name="AAA Corp", market="US", exchange="NASDAQ", is_active=True))
+        for saved, claims in ((original, [flagged_claim("$AAA", ["99"])]), (edited, [])):
+            input_hash = SocialExtractionService.input_hash(saved.posts)
+            work = SocialExtractionWork(
+                content_item_id=content_id, input_hash=input_hash, prompt_version="v1",
+                schema_version="v1", selected_model="model", state="succeeded",
+                input_snapshot_json={"created_at": saved.posts[0].created_at.isoformat()},
+                result_json={"claims": claims, "judgments": []}, created_at=NOW, updated_at=NOW,
+            )
+            db.add(work)
+            db.flush()
+            db.add(SocialRunWork(run_id="new", work_id=work.id, input_hash=input_hash, included_at=later))
+    w.select_current_inputs("new")
+
+    evidence = {item.candidate_key: item for item in SocialScoringEvidenceReader(store).read("new", later)}
+
+    assert [post.text for post in evidence["US:AAA"].posts] == ["$AAA supplies cooling, edited"]
+    assert evidence["US:AAA"].duplicate_posts == ()
+
+
+def test_each_list_revision_of_a_post_carries_its_own_flag(store):
+    from app.infra.db.models.social_analysis import SocialExtractionWork, SocialRunWork
+    from app.infra.db.repositories.social_refresh_support import SocialScoringEvidenceReader
+    from app.models.stock_universe import StockUniverse
+    from app.services.social_extraction_service import SocialExtractionService
+
+    w = writer(store)
+    w.create_run("run", NOW)
+    first = w.persist_observations(batch(), run_id="run")
+    edited = batch(2)
+    edited = replace(edited, posts=(replace(edited.posts[0], text="$AAA supplies cooling, edited"),))
+    second = w.persist_observations(edited, run_id="run")
+    content_id = dict(w.read_run_inputs("run").content_ids)["100"]
+    with store.begin() as db:
+        db.add(StockUniverse(symbol="AAA", name="AAA Corp", market="US", exchange="NASDAQ", is_active=True))
+        for saved, claims in ((first, [flagged_claim("$AAA", ["99"])]), (second, [])):
+            input_hash = SocialExtractionService.input_hash(saved.posts)
+            work = SocialExtractionWork(
+                content_item_id=content_id, input_hash=input_hash, prompt_version="v1",
+                schema_version="v1", selected_model="model", input_snapshot_json={}, state="succeeded",
+                result_json={"claims": claims, "judgments": []}, created_at=NOW, updated_at=NOW,
+            )
+            db.add(work)
+            db.flush()
+            db.add(SocialRunWork(run_id="run", work_id=work.id, input_hash=input_hash, included_at=NOW))
+    w.select_current_inputs("run")
+
+    evidence = {item.candidate_key: item for item in SocialScoringEvidenceReader(store).read("run", NOW)}
+
+    assert evidence["US:AAA"].duplicate_posts == (("official:100", "1"),)
+
+
 def test_unavailable_revision_does_not_hide_another_revision_of_the_same_post(store):
     from app.infra.db.models.social_analysis import SocialExtractionWork, SocialRunWork
     from app.infra.db.repositories.social_refresh_support import SocialScoringEvidenceReader

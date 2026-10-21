@@ -123,6 +123,7 @@ def _prepare(evidence: SocialEvidenceInput, window_days: int, now: datetime) -> 
     accepted = []
     authors = defaultdict(deque)
     urls, claims = set(), set()
+    duplicates = set(evidence.duplicate_posts)
     for post in unique:
         key = _post_key(post)
         reason = None
@@ -130,6 +131,8 @@ def _prepare(evidence: SocialEvidenceInput, window_days: int, now: datetime) -> 
             reason = "repost"
         elif post.quoted_text is not None and post.has_new_thesis is not True:
             reason = "quote_without_new_thesis"
+        elif (key, post.source_id) in duplicates:
+            reason = "flagged_duplicate"
         elif post.canonical_url and post.canonical_url in urls:
             reason = "repeated_canonical_url"
         elif post.canonical_claim_key and post.canonical_claim_key in claims:
