@@ -699,91 +699,58 @@ def test_import_daily_price_bundle_flushes_streamed_rows_in_bounded_chunks(
     db.close()
 
 
-def test_import_daily_price_bundle_rejects_malformed_streamed_row(tmp_path):
-    session_factory = _make_session()
-    db = session_factory()
-    service = DailyPriceBundleService()
-    bundle_path = tmp_path / "daily-price-us.json"
-    bundle_path.write_text(
-        json.dumps(
-            {
-                "schema_version": service.DAILY_PRICE_BUNDLE_SCHEMA_VERSION,
-                "market": "US",
-                "as_of_date": "2026-04-18",
-                "bar_period": service.DAILY_PRICE_BAR_PERIOD,
-                "source_revision": "daily_prices_us:20260418120000",
-                "symbol_count": 1,
-                "rows": [42],
-            }
+@pytest.mark.parametrize(
+    ("symbol_count", "rows", "chunk_size", "error_match"),
+    [
+        pytest.param(1, [42], None, "row 1 must be an object", id="malformed_streamed_row"),
+        pytest.param(
+            1,
+            [
+                {
+                    "symbol": "AAPL",
+                    "prices": [
+                        {
+                            "date": "2026-04-18",
+                            "open": 100.0,
+                            "high": 101.0,
+                            "low": 99.0,
+                            "close": None,
+                            "adj_close": 100.0,
+                            "volume": 1_000_000,
+                        }
+                    ],
+                }
+            ],
+            None,
+            "invalid OHLCV",
+            id="invalid_ohlcv",
         ),
-        encoding="utf-8",
-    )
-
-    with pytest.raises(ValueError, match="row 1 must be an object"):
-        service.import_daily_price_bundle(
-            db,
-            input_path=bundle_path,
-            warm_redis_symbols=0,
-        )
-
-    assert db.query(AppSetting).count() == 0
-    db.close()
-
-
-def test_import_daily_price_bundle_rejects_invalid_ohlcv_and_rolls_back(tmp_path):
-    session_factory = _make_session()
-    db = session_factory()
-    service = DailyPriceBundleService()
-    bundle_path = tmp_path / "daily-price-us.json"
-    bundle_path.write_text(
-        json.dumps(
-            {
-                "schema_version": service.DAILY_PRICE_BUNDLE_SCHEMA_VERSION,
-                "market": "US",
-                "as_of_date": "2026-04-18",
-                "bar_period": service.DAILY_PRICE_BAR_PERIOD,
-                "source_revision": "daily_prices_us:20260418120000",
-                "symbol_count": 1,
-                "rows": [
-                    {
-                        "symbol": "AAPL",
-                        "prices": [
-                            {
-                                "date": "2026-04-18",
-                                "open": 100.0,
-                                "high": 101.0,
-                                "low": 99.0,
-                                "close": None,
-                                "adj_close": 100.0,
-                                "volume": 1_000_000,
-                            }
-                        ],
-                    }
-                ],
-            }
+        pytest.param(
+            2,
+            [
+                {"symbol": "AAPL", "prices": [_bundle_price()]},
+                {"symbol": "aapl", "prices": [_bundle_price(day="2026-04-19")]},
+            ],
+            1,
+            "duplicate symbol AAPL",
+            id="duplicate_symbols",
         ),
-        encoding="utf-8",
-    )
-
-    with pytest.raises(ValueError, match="invalid OHLCV"):
-        service.import_daily_price_bundle(
-            db,
-            input_path=bundle_path,
-            warm_redis_symbols=0,
-        )
-
-    assert db.query(AppSetting).count() == 0
-    assert db.query(StockPrice).filter(StockPrice.symbol == "AAPL").count() == 0
-    db.close()
-
-def test_import_daily_price_bundle_rejects_duplicate_symbols_and_rolls_back(
-    monkeypatch,
-    tmp_path,
+        pytest.param(
+            2,
+            [{"symbol": "AAPL", "prices": [_bundle_price()]}],
+            None,
+            "does not match manifest symbol_count 2",
+            id="symbol_count_mismatch",
+        ),
+    ],
+)
+def test_import_daily_price_bundle_rejects_invalid_bundle_and_rolls_back(
+    monkeypatch, tmp_path, symbol_count, rows, chunk_size, error_match
 ):
     session_factory = _make_session()
     db = session_factory()
     service = DailyPriceBundleService()
-    monkeypatch.setattr(service, "DAILY_PRICE_IMPORT_CHUNK_SIZE", 1)
+    monkeypatch.setattr(service, "DAILY_PRICE_IMPORT_CHUNK_SIZE", chunk_size or service.DAILY_PRICE_IMPORT_CHUNK_SIZE)
     bundle_path = tmp_path / "daily-price-us.json"
     bundle_path.write_text(
         json.dumps(
@@ -793,53 +760,14 @@ def test_import_daily_price_bundle_rejects_duplicate_symbols_and_rolls_back(
                 "as_of_date": "2026-04-18",
                 "bar_period": service.DAILY_PRICE_BAR_PERIOD,
                 "source_revision": "daily_prices_us:20260418120000",
-                "symbol_count": 2,
-                "rows": [
-                    {"symbol": "AAPL", "prices": [_bundle_price()]},
-                    {"symbol": "aapl", "prices": [_bundle_price(day="2026-04-19")]},
-                ],
+                "symbol_count": symbol_count,
+                "rows": rows,
             }
         ),
         encoding="utf-8",
     )
 
-    with pytest.raises(ValueError, match="duplicate symbol AAPL"):
-        service.import_daily_price_bundle(
-            db,
-            input_path=bundle_path,
-            warm_redis_symbols=0,
-        )
-
-    assert db.query(AppSetting).count() == 0
-    assert db.query(StockPrice).filter(StockPrice.symbol == "AAPL").count() == 0
-    db.close()
-
-
-def test_import_daily_price_bundle_rejects_symbol_count_mismatch_and_rolls_back(
-    tmp_path,
-):
-    session_factory = _make_session()
-    db = session_factory()
-    service = DailyPriceBundleService()
-    bundle_path = tmp_path / "daily-price-us.json"
-    bundle_path.write_text(
-        json.dumps(
-            {
-                "schema_version": service.DAILY_PRICE_BUNDLE_SCHEMA_VERSION,
-                "market": "US",
-                "as_of_date": "2026-04-18",
-                "bar_period": service.DAILY_PRICE_BAR_PERIOD,
-                "source_revision": "daily_prices_us:20260418120000",
-                "symbol_count": 2,
-                "rows": [
-                    {"symbol": "AAPL", "prices": [_bundle_price()]},
-                ],
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    with pytest.raises(ValueError, match="does not match manifest symbol_count 2"):
+    with pytest.raises(ValueError, match=error_match):
         service.import_daily_price_bundle(
             db,
             input_path=bundle_path,
