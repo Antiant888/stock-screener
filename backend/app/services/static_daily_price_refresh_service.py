@@ -20,7 +20,6 @@ from app.domain.providers.price_symbol_support import split_supported_price_symb
 from app.models.stock import StockPrice
 from app.models.stock_universe import StockUniverse
 from app.services.price_row_normalization import (
-    STOCK_PRICE_ROW_COLUMNS,
     drop_non_finite_close_rows,
     stock_price_frame,
     stock_price_row_from_ohlcv,
@@ -74,11 +73,6 @@ STATIC_RATE_LIMITED_RETRY_BATCH_SIZE = 25
 # After the refresh, symbols still stored without the as-of session get one more
 # quote repair once Yahoo's 429 burst has cleared (about a minute).
 STATIC_SESSION_REPAIR_WAIT_SECONDS = 60
-# Calendar days of stored history read back to seed that repair with a primary
-# benchmark none of its fetches stored: holds the session before as_of_date
-# across every Yahoo-quote market's closures (the longest in the 2025-2026
-# calendars is TW's 12-day Lunar New Year).
-STATIC_QUOTE_REPAIR_SEED_LOOKBACK_DAYS = 14
 RS_ANCHOR_UNRESOLVED_SAMPLE_LIMIT = 20
 
 
@@ -154,6 +148,13 @@ def _frame_price_rows(symbol: str, frame: pd.DataFrame) -> list[dict[str, Any]]:
 def _has_session(frame: pd.DataFrame, session: date) -> bool:
     valid = drop_non_finite_close_rows(frame)
     return valid is not None and any(pd.Timestamp(stamp).date() == session for stamp in valid.index)
+
+
+def _quote_repair_enabled(market: str | None) -> bool:
+    """Whether ``market``'s price plan repairs the latest session from Yahoo quotes."""
+    return market is not None and provider_data_plan_registry.plan_for(
+        market, DATASET_PRICES
+    ).allows(PROVIDER_YAHOO_QUOTE)
 
 
 def _dedupe_symbols(symbols: list[str]) -> list[str]:
@@ -551,11 +552,10 @@ class StaticDailyPriceRefreshService:
             refreshed += readjusted_refreshed
             failed += readjusted_failed
         primary_benchmark = critical_symbols[0] if critical_symbols else None
-        primary_fetch_candidate = primary_benchmark in supported_symbols
         primary_was_stored = primary_benchmark in stored_symbols
         primary_benchmark_retry = self._retry_primary_benchmark(
             symbol=primary_benchmark,
-            fetch_candidate=primary_fetch_candidate,
+            fetch_candidate=primary_benchmark in supported_symbols,
             period=(
                 STATIC_DAILY_PRICE_REFRESH_PERIOD
                 if primary_benchmark in stale_symbol_set
@@ -572,18 +572,6 @@ class StaticDailyPriceRefreshService:
         if not primary_was_stored and primary_benchmark in stored_symbols:
             refreshed += 1
             failed -= 1
-        # A primary none of its fetches stored never reached
-        # missing_session_frames; its stored history can still take the quote.
-        primary_benchmark_retry["quote_repair_seed"] = (
-            self._seed_primary_benchmark_quote_repair(
-                symbol=primary_benchmark,
-                market=market,
-                as_of_date=as_of_date,
-                missing_session_frames=missing_session_frames,
-            )
-            if primary_fetch_candidate and primary_benchmark not in stored_symbols
-            else "not_needed"
-        )
         # Before the latest-session quote repair, so a repair frame missing
         # the as-of bar is quote-repaired with the rest.
         rs_anchor_repair = self._repair_rs_anchor_gaps(
@@ -593,11 +581,23 @@ class StaticDailyPriceRefreshService:
             market=market,
             as_of_date=as_of_date,
             missing_session_frames=missing_session_frames,
+            stored_symbols=stored_symbols,
         )
         session_repair = self._repair_missing_sessions(
             market=market,
             as_of_date=as_of_date,
             frames=missing_session_frames,
+        )
+        # Fresh in the database at the start, stored by a fetch, or seeded
+        # from stored history; and not left behind by the quote repair.
+        primary_benchmark_retry["primary_current"] = (
+            primary_benchmark is not None
+            and primary_benchmark not in missing_session_frames
+            and (
+                primary_benchmark in db_fresh_symbols
+                or primary_benchmark in stored_symbols
+                or primary_benchmark_retry["quote_repair_seed"] == "seeded"
+            )
         )
 
         return {
@@ -788,6 +788,7 @@ class StaticDailyPriceRefreshService:
         market: str | None,
         as_of_date: date | None = None,
         missing_session_frames: dict[str, pd.DataFrame] | None = None,
+        stored_symbols: set[str] | None = None,
     ) -> dict[str, Any]:
         """Refetch 2y for symbols with RS anchor holes and swap their history.
 
@@ -822,6 +823,7 @@ class StaticDailyPriceRefreshService:
                 as_of_date=as_of_date,
                 replacement_required_dates=required,
                 missing_session_frames=missing_session_frames,
+                stored_symbols=stored_symbols,
             )
             rate_limited = _rate_limited_symbols(failures)
             if rate_limited:
@@ -842,6 +844,7 @@ class StaticDailyPriceRefreshService:
                     as_of_date=as_of_date,
                     replacement_required_dates=required,
                     missing_session_frames=missing_session_frames,
+                    stored_symbols=stored_symbols,
                 )
         with self._session_factory() as db:
             unresolved = self._rs_anchor_price_coverage.gaps(
@@ -1036,19 +1039,18 @@ class StaticDailyPriceRefreshService:
         as_of_date: date,
         frames: dict[str, pd.DataFrame],
     ) -> dict[str, Any]:
-        """Quote-repair frames the refresh stored without ``as_of_date``, once more.
+        """Quote-repair ``frames`` still lacking ``as_of_date``, once more.
 
-        Only for markets whose price plan uses Yahoo quote repair, after
-        ``STATIC_SESSION_REPAIR_WAIT_SECONDS``. Repaired frames are stored.
+        ``frames`` holds the frames the refresh stored without that session,
+        plus a primary benchmark's seeded stored history (see
+        ``_seed_primary_benchmark_quote_repair``). Only for markets whose
+        price plan uses Yahoo quote repair, after
+        ``STATIC_SESSION_REPAIR_WAIT_SECONDS``. Repaired frames are stored
+        and removed from ``frames``, which then holds only what is still
+        missing.
         """
         stats: dict[str, Any] = {"attempted": 0, "repaired": 0, "wait_seconds": 0}
-        if (
-            not frames
-            or market is None
-            or not provider_data_plan_registry.plan_for(market, DATASET_PRICES).allows(
-                PROVIDER_YAHOO_QUOTE
-            )
-        ):
+        if not frames or not _quote_repair_enabled(market):
             return stats
         self._check_deadline(STATIC_SESSION_REPAIR_WAIT_SECONDS)
         from app.services.yahoo_quote_price_repair import (
@@ -1066,6 +1068,7 @@ class StaticDailyPriceRefreshService:
         self._sleep(STATIC_SESSION_REPAIR_WAIT_SECONDS)
         self._check_deadline()  # the wait itself may have run past it
         rate_limiter = getattr(self._fetcher, "_rate_limiter", None)
+        attempted = len(frames)
         repaired: dict[str, pd.DataFrame] = {}
         # One quote batch per call, deadline-checked and stored before the
         # next, so a stop past the deadline keeps the batches already repaired.
@@ -1094,14 +1097,16 @@ class StaticDailyPriceRefreshService:
                     batch_repaired, also_store_db=True, market=market
                 )
                 repaired.update(batch_repaired)
+                for symbol in batch_repaired:
+                    del frames[symbol]
         stats.update(
-            attempted=len(frames),
+            attempted=attempted,
             repaired=len(repaired),
             wait_seconds=STATIC_SESSION_REPAIR_WAIT_SECONDS,
         )
         print(
             f"[static-daily prices:{market}] Latest-session repair complete: "
-            f"{len(repaired):,}/{len(frames):,} repaired.",
+            f"{len(repaired):,}/{attempted:,} repaired.",
             flush=True,
         )
         return stats
@@ -1318,9 +1323,7 @@ class StaticDailyPriceRefreshService:
         """
         fetch_seconds = sum(self._fetcher.price_batch_backoff_schedule(market))
         session_repair_wait = 0
-        if market is not None and provider_data_plan_registry.plan_for(
-            market, DATASET_PRICES
-        ).allows(PROVIDER_YAHOO_QUOTE):
+        if _quote_repair_enabled(market):
             fetch_seconds += sum(YAHOO_QUOTE_RETRY_BACKOFF_SECONDS)
             session_repair_wait = STATIC_SESSION_REPAIR_WAIT_SECONDS
         return 2 * fetch_seconds + session_repair_wait
@@ -1349,13 +1352,17 @@ class StaticDailyPriceRefreshService:
         refetch as the main pass. The refetch is skipped, never raising, when
         the deadline leaves less than the reserve, and reported as skipped
         when its own call finds the Yahoo circuit open. A frame still lacking
-        the session stays in ``missing_session_frames`` for the quote repair.
+        the session stays in ``missing_session_frames`` for the quote repair;
+        a primary still unstored after all this is seeded there from its
+        stored history instead (``quote_repair_seed`` says how that went).
+        ``_refresh`` adds ``primary_current`` once the quote repair has run.
         """
         stats: dict[str, Any] = {
             "symbol": symbol,
             "attempted": False,
             "recovered": False,
             "skipped_reason": None,
+            "quote_repair_seed": "not_needed",
         }
 
         def current() -> bool:
@@ -1372,59 +1379,66 @@ class StaticDailyPriceRefreshService:
             return stats
         label = f"[static-daily prices:{market}]"
         remaining = self._seconds_until_deadline()
-        if remaining is not None:
-            reserve = self._primary_benchmark_retry_reserve_seconds(market)
-            if remaining < reserve:
-                print(
-                    f"{label} Not refetching {symbol}: {remaining:.0f}s left before the "
-                    f"price-stage deadline, {reserve:.0f}s needed.",
-                    flush=True,
-                )
-                stats["skipped_reason"] = "deadline"
-                return stats
-
-        fetch_kwargs: dict[str, Any] = {
-            "batch_size": 1,
-            "market": market,
-            "as_of_date": as_of_date,
-            "missing_session_frames": missing_session_frames,
-            "stored_symbols": stored_symbols,
-        }
-        failures: dict[str, str] = {}
-        if symbol not in readjusted_symbols:
-            drift_found: dict[str, set[date]] = {}
-            _, _, failures = self._fetch_and_store(
-                [symbol],
-                period=period,
-                readjusted_symbols=(
-                    drift_found if period == STATIC_DAILY_PRICE_REFRESH_PERIOD else None
-                ),
-                **fetch_kwargs,
-            )
-            readjusted_symbols.update(drift_found)
-        if symbol in readjusted_symbols:
-            _, _, failures = self._fetch_and_store(
-                [symbol],
-                period=STATIC_DAILY_PRICE_BOOTSTRAP_PERIOD,
-                replacement_required_dates=readjusted_symbols,
-                **fetch_kwargs,
-            )
-        if failures.get(symbol) == "circuit_open":
+        if remaining is not None and remaining < (
+            reserve := self._primary_benchmark_retry_reserve_seconds(market)
+        ):
             print(
-                f"{label} Late refetch of {symbol} found the Yahoo circuit open for {market}; "
-                "not retried.",
+                f"{label} Not refetching {symbol}: {remaining:.0f}s left before the "
+                f"price-stage deadline, {reserve:.0f}s needed.",
                 flush=True,
             )
-            stats["skipped_reason"] = "circuit_open"
-            return stats
-        stats["attempted"] = True
-        stats["recovered"] = current()
-        outcome = "recovered" if stats["recovered"] else "still missing"
-        print(
-            f"{label} Primary benchmark {symbol} {outcome} {as_of_date.isoformat()} "
-            "after its late single-symbol refetch.",
-            flush=True,
-        )
+            stats["skipped_reason"] = "deadline"
+        else:
+            fetch_kwargs: dict[str, Any] = {
+                "batch_size": 1,
+                "market": market,
+                "as_of_date": as_of_date,
+                "missing_session_frames": missing_session_frames,
+                "stored_symbols": stored_symbols,
+            }
+            failures: dict[str, str] = {}
+            if symbol not in readjusted_symbols:
+                drift_found: dict[str, set[date]] = {}
+                _, _, failures = self._fetch_and_store(
+                    [symbol],
+                    period=period,
+                    readjusted_symbols=(
+                        drift_found if period == STATIC_DAILY_PRICE_REFRESH_PERIOD else None
+                    ),
+                    **fetch_kwargs,
+                )
+                readjusted_symbols.update(drift_found)
+            if symbol in readjusted_symbols:
+                _, _, failures = self._fetch_and_store(
+                    [symbol],
+                    period=STATIC_DAILY_PRICE_BOOTSTRAP_PERIOD,
+                    replacement_required_dates=readjusted_symbols,
+                    **fetch_kwargs,
+                )
+            if failures.get(symbol) == "circuit_open":
+                print(
+                    f"{label} Late refetch of {symbol} found the Yahoo circuit open for "
+                    f"{market}; not retried.",
+                    flush=True,
+                )
+                stats["skipped_reason"] = "circuit_open"
+            else:
+                stats["attempted"] = True
+                stats["recovered"] = current()
+                outcome = "recovered" if stats["recovered"] else "still missing"
+                print(
+                    f"{label} Primary benchmark {symbol} {outcome} {as_of_date.isoformat()} "
+                    "after its late single-symbol refetch.",
+                    flush=True,
+                )
+        if symbol not in stored_symbols:
+            stats["quote_repair_seed"] = self._seed_primary_benchmark_quote_repair(
+                symbol=symbol,
+                market=market,
+                as_of_date=as_of_date,
+                readjusted_symbols=readjusted_symbols,
+                missing_session_frames=missing_session_frames,
+            )
         return stats
 
     def _seed_primary_benchmark_quote_repair(
@@ -1433,6 +1447,7 @@ class StaticDailyPriceRefreshService:
         symbol: str,
         market: str | None,
         as_of_date: date,
+        readjusted_symbols: dict[str, set[date]],
         missing_session_frames: dict[str, pd.DataFrame],
     ) -> str:
         """Hand an unstored primary benchmark's stored history to the quote repair.
@@ -1441,31 +1456,34 @@ class StaticDailyPriceRefreshService:
         of it reached ``missing_session_frames``, so the latest-session quote
         repair never saw it (SPY on 2026-10-20: throttled, then Yahoo's history
         dropped the session from 00:00 UTC while its quote still reported it).
-        The stored frame is seeded only when it ends on the session before
-        ``as_of_date``: a quote describes one session, so an older frame would
-        keep a hole. Returns the outcome reported under
-        ``primary_benchmark_retry``; the repair itself still applies the
-        market's quote plan, wait and deadline.
+        The stored bar of the session before ``as_of_date`` is seeded, and only
+        when it is the latest stored: a quote describes one session, so an
+        older frame would keep a hole. Not when the market's price plan has no
+        quote repair, when a top-up found the stored history back-adjusted
+        (its basis is stale and the replacement refetch failed), or when the
+        deadline leaves less than the repair's wait plus the quote backoff.
+        Returns the outcome reported under ``primary_benchmark_retry``.
         """
         label = f"[static-daily prices:{market}]"
 
-        def outcome(reason: str, latest_stored: date | None = None) -> str:
-            detail = (
-                f" (stored history through {latest_stored.isoformat()})"
-                if latest_stored is not None
-                else ""
-            )
+        def outcome(reason: str, detail: str = "") -> str:
             print(
                 f"{label} Quote-repair seed for primary benchmark {symbol}: {reason}{detail}.",
                 flush=True,
             )
             return reason
 
-        if market is None or not provider_data_plan_registry.plan_for(
-            market, DATASET_PRICES
-        ).allows(PROVIDER_YAHOO_QUOTE):
+        if not _quote_repair_enabled(market):
             return outcome("plan_disallows_quotes")
-        window_start = as_of_date - timedelta(days=STATIC_QUOTE_REPAIR_SEED_LOOKBACK_DAYS)
+        if symbol in readjusted_symbols:
+            return outcome("history_readjusted")
+        remaining = self._seconds_until_deadline()
+        needed = STATIC_SESSION_REPAIR_WAIT_SECONDS + sum(YAHOO_QUOTE_RETRY_BACKOFF_SECONDS)
+        if remaining is not None and remaining < needed:
+            return outcome(
+                "deadline",
+                f" ({remaining:.0f}s left before the price-stage deadline, {needed:.0f}s needed)",
+            )
         with self._session_factory() as db:
             latest_stored = (
                 db.query(func.max(StockPrice.date))
@@ -1474,22 +1492,23 @@ class StaticDailyPriceRefreshService:
             )
             if latest_stored is None:
                 return outcome("no_stored_history")
+            stored_through = f" (stored history through {latest_stored.isoformat()})"
             if latest_stored == as_of_date:
-                return outcome("not_needed", latest_stored)
-            sessions_before = self._calendar_service.trading_days(
-                market, window_start, as_of_date - timedelta(days=1)
-            )
-            if not sessions_before or latest_stored != sessions_before[-1]:
-                return outcome("gap_too_large", latest_stored)
+                return outcome("not_needed", stored_through)
+            previous_session = self._calendar_service.session_anchors(
+                market, as_of_date, offsets=(1,)
+            )[1]
+            if latest_stored != previous_session:
+                return outcome("gap_too_large", stored_through)
             rows = (
-                db.query(*(getattr(StockPrice, column) for column in STOCK_PRICE_ROW_COLUMNS[1:]))
+                db.query(StockPrice)
                 .filter(
                     StockPrice.symbol == symbol,
-                    StockPrice.date >= window_start,
+                    StockPrice.date >= previous_session,
                     StockPrice.date <= as_of_date,
                 )
                 .order_by(StockPrice.date.asc())
                 .all()
             )
         missing_session_frames[symbol] = stock_price_frame(rows, include_adj_close=True)
-        return outcome("seeded", latest_stored)
+        return outcome("seeded", stored_through)

@@ -17,6 +17,7 @@ from typing import Any
 import pandas as pd
 
 from .price_row_normalization import drop_non_finite_close_rows
+from .price_value_policy import is_usable_adjusted_close
 
 logger = logging.getLogger(__name__)
 
@@ -116,8 +117,10 @@ def repair_missing_latest_sessions(
 
     Mutates ``results`` in place. Only symbols Yahoo returned history for are
     repaired: their Yahoo history anchors the adjusted-close ratio. Filled bars
-    get ``Adj Close = Close * (anchor Adj Close / Close)``; Yahoo's next full
-    refetch replaces them with its own adjusted values.
+    get ``Adj Close = Close * (anchor Adj Close / Close)``, or ``Close`` itself
+    when the anchor's Adj Close is missing or not positive (a stored NULL or 0
+    would otherwise give the bar an Adj Close of 0, which Market RS drops);
+    Yahoo's next full refetch replaces them with its own adjusted values.
 
     ``max_consecutive_failures=None`` bypasses the process-wide breaker, for
     fetchers that already hold their bars (a per-symbol miss is not an outage).
@@ -161,13 +164,22 @@ def repair_missing_latest_sessions(
             continue
 
         adj_ratio = 1.0
-        if "Adj Close" in valid.columns and anchor_row["Close"]:
+        if (
+            "Adj Close" in valid.columns
+            and anchor_row["Close"]
+            and is_usable_adjusted_close(anchor_row["Adj Close"])
+        ):
             adj_ratio = float(anchor_row["Adj Close"]) / float(anchor_row["Close"])
         missing["Adj Close"] = missing["Close"] * adj_ratio
         if valid.index.tz is not None:
             missing.index = missing.index.tz_localize(valid.index.tz)
         # Yahoo frames also carry action columns (Dividends, Stock Splits).
         missing = missing.reindex(columns=valid.columns).fillna(0.0)
+        # Stored rows read back with an all-NULL column (adj_close can be)
+        # come as object None; concat would warn about inferring its dtype.
+        all_null = valid.columns[valid.isna().all().to_numpy()]
+        if len(all_null):
+            valid = valid.astype({column: "float64" for column in all_null})
 
         payload["price_data"] = pd.concat([valid, missing]).sort_index()
         payload["repaired_by"] = source
