@@ -537,6 +537,7 @@ jobs:
           STATUS_PATH="/tmp/static-data/status/${MARKET_LOWER}/status.json"
           if [ "$status" -eq 78 ]; then
             echo "Market ${{ matrix.market }} is not a trading day; no current static artifact will be uploaded."
+            echo "not_trading_day=true" >> "$GITHUB_OUTPUT"
             echo "has_artifact=false" >> "$GITHUB_OUTPUT"
             echo "has_price_bundle=false" >> "$GITHUB_OUTPUT"
             echo "rrg_history_publishable=false" >> "$GITHUB_OUTPUT"
@@ -840,6 +841,33 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh workflow run static-site-publish.yml --repo "${{ github.repository }}" --ref "${{ github.event.repository.default_branch }}"
+
+      # Last, after the status, diagnostics and daily price bundle uploads, so
+      # a required market whose artifact upload did not succeed (exit 79, a
+      # failed RRG restore, unpublished breadth metadata, a failed upload)
+      # fails its job without losing them. Exit 80 fails above with its own
+      # message. The matrix does not fail fast and wake-publisher runs on
+      # always(), so the other markets still publish; the combiner pairs them
+      # with this market's newest earlier artifact.
+      - name: Fail a required market that uploaded no current artifact
+        if: ${{ always() && steps.upload-market-artifact.outcome != 'success' && steps.export-market.outputs.not_trading_day != 'true' && steps.export-market.outputs.price_checkpointed != 'true' }}
+        run: |
+          # Mirrors static_market_publish_policy.REQUIRED_STATIC_MARKETS; a
+          # test keeps them in lockstep.
+          REQUIRED_MARKETS='["US"]'
+          if ! echo "$REQUIRED_MARKETS" | grep -qF "\"${{ matrix.market }}\""; then
+            echo "${{ matrix.market }} uploaded no current artifact; it is not a required market."
+            exit 0
+          fi
+          DIAGNOSTICS_PATH="/tmp/static-data/diagnostics/${MARKET_LOWER}/snapshot-failure.json"
+          STATUS_PATH="/tmp/static-data/status/${MARKET_LOWER}/status.json"
+          reason="$(jq -r '[.reason, (.failure_diagnostics.error // .failure_diagnostics.reason_code)] | map(select(. != null)) | join(": ")' "$DIAGNOSTICS_PATH" 2>/dev/null || true)"
+          [ -n "$reason" ] || reason="$(jq -r '.reason // empty' "$STATUS_PATH" 2>/dev/null || true)"
+          [ -n "$reason" ] || reason="export has_artifact=${{ steps.export-market.outputs.has_artifact }}, upload step ${{ steps.upload-market-artifact.outcome }}; see the export step log"
+          message="Required market ${{ matrix.market }} uploaded no current static artifact (${reason}). The site keeps the newest earlier ${{ matrix.market }} artifact beside the other markets' fresh ones until a rerun succeeds. See the static-market-diagnostics-${{ matrix.market }} artifact."
+          echo "::error::${message}"
+          echo "${message}" >> "$GITHUB_STEP_SUMMARY"
+          exit 1
 
   # Catch-all wake-up: covers a market that uploaded and was cancelled before
   # its own wake step. Duplicate wake-ups coalesce in the publisher's
