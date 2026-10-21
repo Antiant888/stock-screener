@@ -633,14 +633,15 @@ class SocialEvidenceInput:
     coverage_reasons: tuple[str, ...] = ()
     resolved: bool = True
     security_kind: str = "stock"
-    # provider:post_id keys of posts whose every claim about this candidate copies another post.
-    duplicate_post_keys: tuple[str, ...] = ()
+    # (provider:post_id, source_id) of observed revisions whose every claim about this
+    # candidate copies another post. Per source, since lists can hold different revisions.
+    duplicate_posts: tuple[tuple[str, str], ...] = ()
 
     def __post_init__(self) -> None:
         _deeply_immutable(self.posts, "posts")
         _deeply_immutable(self.enabled_source_ids, "enabled_source_ids")
         _deeply_immutable(self.coverage_reasons, "coverage_reasons")
-        _deeply_immutable(self.duplicate_post_keys, "duplicate_post_keys")
+        _deeply_immutable(self.duplicate_posts, "duplicate_posts")
         _choice(self.security_kind, {"stock", "thematic_etf", "broad_etf", "macro"}, "security_kind")
         _required(self.candidate_key, "candidate_key")
         _required(self.canonical_symbol, "canonical_symbol")

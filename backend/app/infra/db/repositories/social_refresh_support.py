@@ -307,7 +307,7 @@ class SocialScoringEvidenceReader:
                     })
                     candidate["posts"][(post_id, source_id)] = post
                     if key in flagged - original:
-                        candidate["duplicates"].add(f"{post.provider}:{post.provider_post_id}")
+                        candidate["duplicates"].add((f"{post.provider}:{post.provider_post_id}", source_id))
 
             return tuple(SocialEvidenceInput(
                 key, value["symbol"], value["market"],
