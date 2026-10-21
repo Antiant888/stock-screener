@@ -8,8 +8,10 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 
 def test_releases_wait_for_the_quickstart_install_smoke():
     jobs = yaml.safe_load((REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text())["jobs"]
+    smoke = jobs["quickstart-smoke"]
 
-    assert jobs["quickstart-smoke"]["needs"] == ["publish-images"]
+    assert smoke["needs"] == ["publish-images"]
+    assert any("scripts/run_quickstart_smoke.sh" in str(step.get("run", "")) for step in smoke["steps"])
     assert "quickstart-smoke" in jobs["release"]["needs"]
 
 

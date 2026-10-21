@@ -73,6 +73,13 @@ def _build_market_step(name: str) -> dict:
     return next(step for step in _static_build_market_steps() if step.get("name") == name)
 
 
+def _export_branch(predicate: str) -> str:
+    """Return the shell lines guarded by ``predicate`` in the export step."""
+    run = _build_market_step("Export market static data bundle")["run"]
+    assert predicate in run, predicate
+    return re.split(r"\n\s*(?:else|fi)\n", run.split(predicate, 1)[1], maxsplit=1)[0]
+
+
 def test_static_workflow_does_not_replace_rrg_history_after_restore_failure():
     publish = _build_market_step("Publish rolling RRG history")
     assert "steps.restore-rrg-history.outputs.safe_to_publish == 'true'" in publish["if"]
@@ -94,9 +101,16 @@ def test_market_export_failure_fails_the_job():
     assert not _build_market_step("Export market static data bundle").get("continue-on-error")
 
 
+def test_failed_rrg_restore_keeps_the_last_good_market_artifact():
+    branch = _export_branch('[ "$RRG_RESTORE_STATUS" = "failed" ]')
+    assert "has_artifact=false" in branch
+    assert "exit 0" in branch
+    assert "steps.export-market.outputs.has_artifact == 'true'" in _build_market_step("Upload market artifact")["if"]
+
+
 def test_rewound_export_never_publishes_rrg_history():
-    export = _build_market_step("Export market static data bundle")
-    assert "rrg_history_publishable=false" in export["run"]
+    branch = _export_branch("using (benchmark-backed|previous-session) as-of date")
+    assert "rrg_history_publishable=false" in branch
     publish = _build_market_step("Publish rolling RRG history")
     assert "steps.export-market.outputs.rrg_history_publishable == 'true'" in publish["if"]
 
