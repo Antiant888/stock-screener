@@ -7,6 +7,7 @@ from datetime import date, timedelta
 from typing import Any, Callable
 
 import pandas as pd
+from sqlalchemy import func
 
 from app.domain.markets.key_markets import key_market_price_symbols
 from app.domain.markets.registry import critical_price_symbols
@@ -19,7 +20,9 @@ from app.domain.providers.price_symbol_support import split_supported_price_symb
 from app.models.stock import StockPrice
 from app.models.stock_universe import StockUniverse
 from app.services.price_row_normalization import (
+    STOCK_PRICE_ROW_COLUMNS,
     drop_non_finite_close_rows,
+    stock_price_frame,
     stock_price_row_from_ohlcv,
 )
 from app.services.stock_price_persistence import persist_stock_price_mappings
@@ -71,6 +74,11 @@ STATIC_RATE_LIMITED_RETRY_BATCH_SIZE = 25
 # After the refresh, symbols still stored without the as-of session get one more
 # quote repair once Yahoo's 429 burst has cleared (about a minute).
 STATIC_SESSION_REPAIR_WAIT_SECONDS = 60
+# Calendar days of stored history read back to seed that repair with a primary
+# benchmark none of its fetches stored: holds the session before as_of_date
+# across every Yahoo-quote market's closures (the longest in the 2025-2026
+# calendars is TW's 12-day Lunar New Year).
+STATIC_QUOTE_REPAIR_SEED_LOOKBACK_DAYS = 14
 RS_ANCHOR_UNRESOLVED_SAMPLE_LIMIT = 20
 
 
@@ -543,10 +551,11 @@ class StaticDailyPriceRefreshService:
             refreshed += readjusted_refreshed
             failed += readjusted_failed
         primary_benchmark = critical_symbols[0] if critical_symbols else None
+        primary_fetch_candidate = primary_benchmark in supported_symbols
         primary_was_stored = primary_benchmark in stored_symbols
         primary_benchmark_retry = self._retry_primary_benchmark(
             symbol=primary_benchmark,
-            fetch_candidate=primary_benchmark in supported_symbols,
+            fetch_candidate=primary_fetch_candidate,
             period=(
                 STATIC_DAILY_PRICE_REFRESH_PERIOD
                 if primary_benchmark in stale_symbol_set
@@ -563,6 +572,18 @@ class StaticDailyPriceRefreshService:
         if not primary_was_stored and primary_benchmark in stored_symbols:
             refreshed += 1
             failed -= 1
+        # A primary none of its fetches stored never reached
+        # missing_session_frames; its stored history can still take the quote.
+        primary_benchmark_retry["quote_repair_seed"] = (
+            self._seed_primary_benchmark_quote_repair(
+                symbol=primary_benchmark,
+                market=market,
+                as_of_date=as_of_date,
+                missing_session_frames=missing_session_frames,
+            )
+            if primary_fetch_candidate and primary_benchmark not in stored_symbols
+            else "not_needed"
+        )
         # Before the latest-session quote repair, so a repair frame missing
         # the as-of bar is quote-repaired with the rest.
         rs_anchor_repair = self._repair_rs_anchor_gaps(
@@ -1405,3 +1426,70 @@ class StaticDailyPriceRefreshService:
             flush=True,
         )
         return stats
+
+    def _seed_primary_benchmark_quote_repair(
+        self,
+        *,
+        symbol: str,
+        market: str | None,
+        as_of_date: date,
+        missing_session_frames: dict[str, pd.DataFrame],
+    ) -> str:
+        """Hand an unstored primary benchmark's stored history to the quote repair.
+
+        When every Yahoo history fetch of the primary failed this run, no frame
+        of it reached ``missing_session_frames``, so the latest-session quote
+        repair never saw it (SPY on 2026-10-20: throttled, then Yahoo's history
+        dropped the session from 00:00 UTC while its quote still reported it).
+        The stored frame is seeded only when it ends on the session before
+        ``as_of_date``: a quote describes one session, so an older frame would
+        keep a hole. Returns the outcome reported under
+        ``primary_benchmark_retry``; the repair itself still applies the
+        market's quote plan, wait and deadline.
+        """
+        label = f"[static-daily prices:{market}]"
+
+        def outcome(reason: str, latest_stored: date | None = None) -> str:
+            detail = (
+                f" (stored history through {latest_stored.isoformat()})"
+                if latest_stored is not None
+                else ""
+            )
+            print(
+                f"{label} Quote-repair seed for primary benchmark {symbol}: {reason}{detail}.",
+                flush=True,
+            )
+            return reason
+
+        if market is None or not provider_data_plan_registry.plan_for(
+            market, DATASET_PRICES
+        ).allows(PROVIDER_YAHOO_QUOTE):
+            return outcome("plan_disallows_quotes")
+        window_start = as_of_date - timedelta(days=STATIC_QUOTE_REPAIR_SEED_LOOKBACK_DAYS)
+        with self._session_factory() as db:
+            latest_stored = (
+                db.query(func.max(StockPrice.date))
+                .filter(StockPrice.symbol == symbol, StockPrice.date <= as_of_date)
+                .scalar()
+            )
+            if latest_stored is None:
+                return outcome("no_stored_history")
+            if latest_stored == as_of_date:
+                return outcome("not_needed", latest_stored)
+            sessions_before = self._calendar_service.trading_days(
+                market, window_start, as_of_date - timedelta(days=1)
+            )
+            if not sessions_before or latest_stored != sessions_before[-1]:
+                return outcome("gap_too_large", latest_stored)
+            rows = (
+                db.query(*(getattr(StockPrice, column) for column in STOCK_PRICE_ROW_COLUMNS[1:]))
+                .filter(
+                    StockPrice.symbol == symbol,
+                    StockPrice.date >= window_start,
+                    StockPrice.date <= as_of_date,
+                )
+                .order_by(StockPrice.date.asc())
+                .all()
+            )
+        missing_session_frames[symbol] = stock_price_frame(rows, include_adj_close=True)
+        return outcome("seeded", latest_stored)
