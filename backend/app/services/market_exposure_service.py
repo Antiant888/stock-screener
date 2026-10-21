@@ -24,6 +24,7 @@ from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from ..domain.common.benchmarks import get_primary_benchmark_symbol
+from ..domain.markets.registry import US_VIX_PRICE_SYMBOL
 from ..models.market_breadth import MarketBreadth
 from ..models.market_exposure import MarketExposure
 from ..models.stock import StockPrice
@@ -261,7 +262,7 @@ def _vix_on_date(db: Session, as_of_date: date) -> Optional[float]:
     """
     row = (
         db.query(StockPrice)
-        .filter(StockPrice.symbol == "^VIX", StockPrice.date == as_of_date)
+        .filter(StockPrice.symbol == US_VIX_PRICE_SYMBOL, StockPrice.date == as_of_date)
         .first()
     )
     return _f(row.close) if row is not None else None

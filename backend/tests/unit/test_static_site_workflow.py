@@ -1032,7 +1032,7 @@ def test_every_upload_path_wakes_the_publisher() -> None:
         names = [step.get("name") for step in jobs[job]["steps"]]
         assert names.index("Wake static-site publisher") > names.index(upload), job
         assert wake in jobs[job]["steps"][names.index("Wake static-site publisher")]["run"], job
-    assert "always()" in jobs["build-market"]["steps"][-1]["if"]
+    assert "always()" in jobs["build-market"]["steps"][names.index("Wake static-site publisher")]["if"]
     assert "always()" in jobs["wake-publisher"]["if"]
     assert wake in jobs["wake-publisher"]["steps"][0]["run"]
 

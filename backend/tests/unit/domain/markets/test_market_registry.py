@@ -6,7 +6,13 @@ import pytest
 
 from app.domain.markets import Market, SUPPORTED_MARKET_CODES
 from app.domain.markets.catalog import get_market_catalog
-from app.domain.markets.registry import BenchmarkFacts, MarketProfile, MarketRegistry, market_registry
+from app.domain.markets.registry import (
+    BenchmarkFacts,
+    MarketProfile,
+    MarketRegistry,
+    critical_price_symbols,
+    market_registry,
+)
 from app.domain.universe.indexes import index_registry
 
 
@@ -143,3 +149,10 @@ def test_custom_registry_does_not_own_exchange_alias_uniqueness() -> None:
 
 def test_profile_type_is_public_contract() -> None:
     assert isinstance(market_registry.profile("US"), MarketProfile)
+
+
+def test_critical_price_symbols_are_the_benchmark_candidates_then_vix_for_us() -> None:
+    assert critical_price_symbols("us") == ("SPY", "IVV", "^VIX")
+    assert critical_price_symbols("HK") == ("^HSI", "2800.HK")
+    assert critical_price_symbols("MY") == ("^KLSE",)
+    assert critical_price_symbols(None) == ()

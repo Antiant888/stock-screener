@@ -15,15 +15,6 @@ from app.services.static_daily_price_refresh_service import (
 )
 
 
-IN_KEY_MARKET_PRICE_SYMBOLS = [
-    "^NSEI",
-    "NIFTYBEES.NS",
-    "RELIANCE.NS",
-    "TCS.NS",
-    "HDFCBANK.NS",
-]
-
-
 def _sqlite_session_factory():
     engine = create_engine("sqlite:///:memory:")
     Base.metadata.create_all(
@@ -133,11 +124,17 @@ def test_static_daily_price_refresh_bootstraps_breadth_incomplete_active_symbols
 
     assert fetch_calls == [
         {
-            "symbols": ["SHORT.NS", *IN_KEY_MARKET_PRICE_SYMBOLS],
+            "symbols": ["^NSEI", "NIFTYBEES.NS"],
             "period": STATIC_DAILY_PRICE_BOOTSTRAP_PERIOD,
             "start_batch_size": 25,
             "market": "IN",
-        }
+        },
+        {
+            "symbols": ["SHORT.NS", "RELIANCE.NS", "TCS.NS", "HDFCBANK.NS"],
+            "period": STATIC_DAILY_PRICE_BOOTSTRAP_PERIOD,
+            "start_batch_size": 25,
+            "market": "IN",
+        },
     ]
     assert breadth_coverage.calls == [
         {

@@ -155,3 +155,29 @@ market_registry = MarketRegistry.from_catalog(
     get_market_catalog(),
     benchmark_facts=_BENCHMARK_FACTS_BY_MARKET,
 )
+
+
+# Its close feeds the VIX penalties of the US exposure score
+# (market_exposure_service._score); without it the score just skips them.
+US_VIX_PRICE_SYMBOL = "^VIX"
+
+
+def critical_price_symbols(market: str | None) -> tuple[str, ...]:
+    """Price symbols the static daily refresh fetches before the universe.
+
+    The primary benchmark comes first: without its as-of bar a US build
+    publishes nothing (US exposure is scored on the primary only) and other
+    markets fall back to their secondary benchmark. That secondary and, for
+    US, ``^VIX`` follow because their absence only degrades the build (no RS
+    fallback when the primary is missing, no VIX penalties in the exposure
+    score).
+    """
+    if market is None:
+        return ()
+    profile = market_registry.profile(market)
+    symbols = [profile.primary_benchmark_symbol]
+    if profile.benchmark_fallback_symbol:
+        symbols.append(profile.benchmark_fallback_symbol)
+    if profile.market.code == "US":
+        symbols.append(US_VIX_PRICE_SYMBOL)
+    return tuple(symbols)

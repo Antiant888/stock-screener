@@ -9,6 +9,7 @@ from typing import Any, Callable
 import pandas as pd
 
 from app.domain.markets.key_markets import key_market_price_symbols
+from app.domain.markets.registry import critical_price_symbols
 from app.domain.providers.data_plan import (
     DATASET_PRICES,
     PROVIDER_YAHOO_QUOTE,
@@ -22,6 +23,7 @@ from app.services.price_row_normalization import (
     stock_price_row_from_ohlcv,
 )
 from app.services.stock_price_persistence import persist_stock_price_mappings
+from app.services.yahoo_quote_price_repair import YAHOO_QUOTE_RETRY_BACKOFF_SECONDS
 from app.services.breadth_history_price_coverage import (
     BreadthHistoryPriceCoverageService,
     DEFAULT_BREADTH_HISTORY_PRICE_LOOKBACK_DAYS,
@@ -117,14 +119,14 @@ def _iter_chunks(items: list[str], chunk_size: int) -> list[list[str]]:
     return [items[index:index + chunk_size] for index in range(0, len(items), chunk_size)]
 
 
-def _is_rate_limit_failure(payload: dict[str, Any]) -> bool:
-    if not payload.get("has_error"):
-        return False
-    error = str(payload.get("error") or "").lower()
-    if not error:
-        return False
+def _is_rate_limit_error(error: str) -> bool:
+    error = error.lower()
     indicators = ("rate", "429", "too many", "limit", "throttl")
     return any(token in error for token in indicators)
+
+
+def _rate_limited_symbols(failures: dict[str, str]) -> list[str]:
+    return [symbol for symbol, error in failures.items() if _is_rate_limit_error(error)]
 
 
 def _key_market_price_symbols(market: str | None) -> list[str]:
@@ -252,6 +254,12 @@ class StaticDailyPriceRefreshService:
         if self._deadline is not None and self._clock() + wait_seconds >= self._deadline:
             raise PriceStageDeadlineReached
 
+    def _seconds_until_deadline(self) -> float | None:
+        """Seconds left before the deadline (negative once past it); ``None`` without one."""
+        if self._deadline is None:
+            return None
+        return self._deadline - self._clock()
+
     def _refresh(
         self,
         *,
@@ -270,7 +278,10 @@ class StaticDailyPriceRefreshService:
                 query = query.filter(StockUniverse.market == market)
             active_symbols = [symbol for symbol, in query.all()]
             key_market_symbols = _key_market_price_symbols(market)
-            refresh_candidates = _dedupe_symbols(active_symbols + key_market_symbols)
+            critical_symbols = list(critical_price_symbols(market))
+            refresh_candidates = _dedupe_symbols(
+                active_symbols + key_market_symbols + critical_symbols
+            )
             supported_symbols, skipped_symbols = split_supported_price_symbols(refresh_candidates)
             active_symbol_set = set(_dedupe_symbols(active_symbols))
             volume_required_symbols = [
@@ -302,7 +313,9 @@ class StaticDailyPriceRefreshService:
                 enabled=ensure_static_history,
             )
             # Benchmarks too: a benchmark hole fails RS for the whole market.
-            rs_anchor_symbol_set = active_symbol_set | set(key_market_symbols)
+            rs_anchor_symbol_set = (
+                active_symbol_set | set(key_market_symbols) | set(critical_symbols)
+            )
             rs_anchor_coverage = self._rs_anchor_coverage(
                 db,
                 market=market,
@@ -400,9 +413,37 @@ class StaticDailyPriceRefreshService:
             }
 
         batch_size = self._batch_size_for_market(market)
-        total_batches = (
-            (len(stale_symbols) + batch_size - 1) // batch_size
-            + (len(bootstrap_symbols) + batch_size - 1) // batch_size
+        # Critical symbols go first, as their own small calls, so a throttled
+        # one meets the fetcher's backoff at once instead of behind the
+        # universe (SPY sat in batch 52/55 on 2026-10-20 and the US site
+        # stayed a day behind).
+        critical_symbol_set = set(critical_symbols)
+        stale_symbol_set = set(stale_symbols)
+        bootstrap_symbol_set = set(bootstrap_symbols)
+        fetch_groups = [
+            (symbols, period)
+            for symbols, period in (
+                (
+                    [s for s in critical_symbols if s in stale_symbol_set],
+                    STATIC_DAILY_PRICE_REFRESH_PERIOD,
+                ),
+                (
+                    [s for s in critical_symbols if s in bootstrap_symbol_set],
+                    STATIC_DAILY_PRICE_BOOTSTRAP_PERIOD,
+                ),
+                (
+                    [s for s in stale_symbols if s not in critical_symbol_set],
+                    STATIC_DAILY_PRICE_REFRESH_PERIOD,
+                ),
+                (
+                    [s for s in bootstrap_symbols if s not in critical_symbol_set],
+                    STATIC_DAILY_PRICE_BOOTSTRAP_PERIOD,
+                ),
+            )
+            if symbols
+        ]
+        total_batches = sum(
+            (len(symbols) + batch_size - 1) // batch_size for symbols, _ in fetch_groups
         )
 
         print(
@@ -442,35 +483,40 @@ class StaticDailyPriceRefreshService:
         readjusted_symbols: dict[str, set[date]] = {}
         # Symbol -> its stored frame, while that frame lacks the as-of session.
         missing_session_frames: dict[str, pd.DataFrame] = {}
-        stale_refreshed, stale_failed, stale_rate_limited = self._fetch_and_store(
-            stale_symbols,
-            period=STATIC_DAILY_PRICE_REFRESH_PERIOD,
-            batch_size=batch_size,
-            market=market,
-            as_of_date=as_of_date,
-            readjusted_symbols=readjusted_symbols,
-            missing_session_frames=missing_session_frames,
-        )
-        bootstrap_refreshed, bootstrap_failed, bootstrap_rate_limited = self._fetch_and_store(
-            bootstrap_symbols,
-            period=STATIC_DAILY_PRICE_BOOTSTRAP_PERIOD,
-            batch_size=batch_size,
-            market=market,
-            as_of_date=as_of_date,
-            missing_session_frames=missing_session_frames,
-        )
-        refreshed = stale_refreshed + bootstrap_refreshed
-        failed = stale_failed + bootstrap_failed
+        # Every symbol some pass has stored.
+        stored_symbols: set[str] = set()
+        refreshed = 0
+        failed = 0
+        rate_limited_by_period: dict[str, list[str]] = {
+            STATIC_DAILY_PRICE_REFRESH_PERIOD: [],
+            STATIC_DAILY_PRICE_BOOTSTRAP_PERIOD: [],
+        }
+        for symbols, period in fetch_groups:
+            group_refreshed, group_failed, group_failures = self._fetch_and_store(
+                symbols,
+                period=period,
+                batch_size=batch_size,
+                market=market,
+                as_of_date=as_of_date,
+                readjusted_symbols=(
+                    readjusted_symbols
+                    if period == STATIC_DAILY_PRICE_REFRESH_PERIOD
+                    else None
+                ),
+                missing_session_frames=missing_session_frames,
+                stored_symbols=stored_symbols,
+            )
+            refreshed += group_refreshed
+            failed += group_failed
+            rate_limited_by_period[period].extend(_rate_limited_symbols(group_failures))
         retry_readjusted_symbols: dict[str, set[date]] = {}
         retry_stats = self._retry_rate_limited_failures(
             market=market,
-            rate_limited_symbols_by_period={
-                STATIC_DAILY_PRICE_REFRESH_PERIOD: stale_rate_limited,
-                STATIC_DAILY_PRICE_BOOTSTRAP_PERIOD: bootstrap_rate_limited,
-            },
+            rate_limited_symbols_by_period=rate_limited_by_period,
             readjusted_symbols=retry_readjusted_symbols,
             as_of_date=as_of_date,
             missing_session_frames=missing_session_frames,
+            stored_symbols=stored_symbols,
         )
         refreshed += retry_stats["recovered"]
         failed -= retry_stats["recovered"]
@@ -492,9 +538,31 @@ class StaticDailyPriceRefreshService:
                 as_of_date=as_of_date,
                 replacement_required_dates=readjusted_symbols,
                 missing_session_frames=missing_session_frames,
+                stored_symbols=stored_symbols,
             )
             refreshed += readjusted_refreshed
             failed += readjusted_failed
+        primary_benchmark = critical_symbols[0] if critical_symbols else None
+        primary_was_stored = primary_benchmark in stored_symbols
+        primary_benchmark_retry = self._retry_primary_benchmark(
+            symbol=primary_benchmark,
+            fetch_candidate=primary_benchmark in supported_symbols,
+            period=(
+                STATIC_DAILY_PRICE_REFRESH_PERIOD
+                if primary_benchmark in stale_symbol_set
+                else STATIC_DAILY_PRICE_BOOTSTRAP_PERIOD
+                if primary_benchmark in bootstrap_symbol_set
+                else None
+            ),
+            market=market,
+            as_of_date=as_of_date,
+            readjusted_symbols=readjusted_symbols,
+            stored_symbols=stored_symbols,
+            missing_session_frames=missing_session_frames,
+        )
+        if not primary_was_stored and primary_benchmark in stored_symbols:
+            refreshed += 1
+            failed -= 1
         # Before the latest-session quote repair, so a repair frame missing
         # the as-of bar is quote-repaired with the rest.
         rs_anchor_repair = self._repair_rs_anchor_gaps(
@@ -547,6 +615,7 @@ class StaticDailyPriceRefreshService:
             "yahoo_fetched_symbols": refreshed,
             "yahoo_failed_symbols": failed,
             "rate_limited_retry": retry_stats,
+            "primary_benchmark_retry": primary_benchmark_retry,
             "latest_session_repair": session_repair,
             "rs_anchor_repair": rs_anchor_repair,
         }
@@ -724,7 +793,7 @@ class StaticDailyPriceRefreshService:
                 flush=True,
             )
             required = {symbol: set(missing[symbol]) for symbol in symbols}
-            _, _, rate_limited = self._fetch_and_store(
+            _, _, failures = self._fetch_and_store(
                 symbols,
                 period=STATIC_DAILY_PRICE_BOOTSTRAP_PERIOD,
                 batch_size=batch_size,
@@ -733,6 +802,7 @@ class StaticDailyPriceRefreshService:
                 replacement_required_dates=required,
                 missing_session_frames=missing_session_frames,
             )
+            rate_limited = _rate_limited_symbols(failures)
             if rate_limited:
                 # A large repair burst is the likeliest 429; replay it once.
                 print(
@@ -829,8 +899,13 @@ class StaticDailyPriceRefreshService:
         readjusted_symbols: dict[str, set[date]] | None = None,
         replacement_required_dates: dict[str, set[date]] | None = None,
         missing_session_frames: dict[str, pd.DataFrame] | None = None,
-    ) -> tuple[int, int, list[str]]:
+        stored_symbols: set[str] | None = None,
+    ) -> tuple[int, int, dict[str, str]]:
         """Fetch and store ``symbols``.
+
+        Returns the stored count, the failed count and each provider failure
+        by symbol (its error text). With ``stored_symbols``, each symbol
+        stored is added there.
 
         With ``as_of_date``, each batch line also counts the frames a provider
         repair (e.g. Yahoo quotes) completed and those still stored without
@@ -850,10 +925,10 @@ class StaticDailyPriceRefreshService:
         failed_count = 0
         repaired_count = 0
         missing_session_count = 0
-        rate_limited: list[str] = []
+        failures: dict[str, str] = {}
         total_symbols = len(symbols)
         if not symbols:
-            return 0, 0, []
+            return 0, 0, {}
         total_group_batches = (total_symbols + batch_size - 1) // batch_size
         for batch_index, batch_symbols in enumerate(
             _iter_chunks(symbols, batch_size),
@@ -881,8 +956,7 @@ class StaticDailyPriceRefreshService:
                     refreshed_count += 1
                 else:
                     failed_count += 1
-                    if _is_rate_limit_failure(payload):
-                        rate_limited.append(symbol)
+                    failures[symbol] = str(payload.get("error") or "no_price_data")
             if readjusted_symbols is not None and batch_to_store:
                 for symbol in sorted(self._adjustment_drift_symbols(batch_to_store)):
                     readjusted_symbols[symbol] = {
@@ -905,6 +979,8 @@ class StaticDailyPriceRefreshService:
                     also_store_db=True,
                     market=market,
                 )
+                if stored_symbols is not None:
+                    stored_symbols.update(batch_to_store)
             session_note = ""
             if as_of_date is not None:
                 repaired_count += sum(
@@ -930,7 +1006,7 @@ class StaticDailyPriceRefreshService:
                 f"{refreshed_count:,} refreshed, {failed_count:,} failed{session_note}.",
                 flush=True,
             )
-        return refreshed_count, failed_count, rate_limited
+        return refreshed_count, failed_count, failures
 
     def _repair_missing_sessions(
         self,
@@ -1108,38 +1184,42 @@ class StaticDailyPriceRefreshService:
         readjusted_symbols: dict[str, set[date]] | None = None,
         as_of_date: date | None = None,
         missing_session_frames: dict[str, pd.DataFrame] | None = None,
+        stored_symbols: set[str] | None = None,
     ) -> dict[str, Any]:
-        skipped_payload: dict[str, Any] = {
-            "attempted": 0,
-            "recovered": 0,
-            "still_failed": 0,
-            "wait_seconds": 0,
-            "batch_size": STATIC_RATE_LIMITED_RETRY_BATCH_SIZE,
-        }
         retry_groups = [
             (period, sorted(set(symbols)))
             for period, symbols in rate_limited_symbols_by_period.items()
             if symbols
         ]
-        attempted = sum(len(symbols) for _period, symbols in retry_groups)
-        if not attempted:
-            return skipped_payload
+        flagged = sum(len(symbols) for _period, symbols in retry_groups)
+        stats: dict[str, Any] = {
+            "attempted": 0,
+            "recovered": 0,
+            "still_failed": 0,
+            "skipped": 0,
+            "skip_reason": None,
+            "wait_seconds": 0,
+            "batch_size": STATIC_RATE_LIMITED_RETRY_BATCH_SIZE,
+        }
+        if not flagged:
+            return stats
         normalized = (market or "").upper()
         if normalized not in STATIC_RATE_LIMITED_RETRY_MARKETS:
             print(
                 f"[static-daily prices] Skipping rate-limited retry for market={normalized or 'shared'}: "
-                f"{attempted} symbols looked throttled but market is outside the retry allowlist.",
+                f"{flagged} symbols looked throttled but market is outside the retry allowlist.",
                 flush=True,
             )
-            return skipped_payload
+            stats.update(skipped=flagged, skip_reason="market_not_in_retry_allowlist")
+            return stats
 
+        self._check_deadline(STATIC_RATE_LIMITED_RETRY_WAIT_SECONDS)
         print(
-            f"[static-daily prices:{normalized}] Yahoo flagged {attempted} symbols as rate-limited; "
+            f"[static-daily prices:{normalized}] Yahoo flagged {flagged} symbols as rate-limited; "
             f"waiting {STATIC_RATE_LIMITED_RETRY_WAIT_SECONDS}s then retrying with batch size "
             f"{STATIC_RATE_LIMITED_RETRY_BATCH_SIZE}.",
             flush=True,
         )
-        self._check_deadline(STATIC_RATE_LIMITED_RETRY_WAIT_SECONDS)
         self._sleep(STATIC_RATE_LIMITED_RETRY_WAIT_SECONDS)
 
         recovered = 0
@@ -1181,6 +1261,8 @@ class StaticDailyPriceRefreshService:
                     also_store_db=True,
                     market=market,
                 )
+                if stored_symbols is not None:
+                    stored_symbols.update(recovered_payload)
                 if as_of_date is not None and missing_session_frames is not None:
                     for symbol, frame in recovered_payload.items():
                         if not isinstance(frame, pd.DataFrame):
@@ -1189,16 +1271,137 @@ class StaticDailyPriceRefreshService:
                             missing_session_frames.pop(symbol, None)
                         else:
                             missing_session_frames[symbol] = frame
-        still_failed = attempted - recovered
+        still_failed = flagged - recovered
         print(
             f"[static-daily prices:{normalized}] Rate-limited retry complete: "
-            f"{recovered}/{attempted} recovered, {still_failed} still failed.",
+            f"{recovered}/{flagged} recovered, {still_failed} still failed.",
             flush=True,
         )
-        return {
-            "attempted": attempted,
-            "recovered": recovered,
-            "still_failed": still_failed,
-            "wait_seconds": STATIC_RATE_LIMITED_RETRY_WAIT_SECONDS,
-            "batch_size": STATIC_RATE_LIMITED_RETRY_BATCH_SIZE,
+        stats.update(
+            attempted=flagged,
+            recovered=recovered,
+            still_failed=still_failed,
+            wait_seconds=STATIC_RATE_LIMITED_RETRY_WAIT_SECONDS,
+        )
+        return stats
+
+    def _primary_benchmark_retry_reserve_seconds(self, market: str | None) -> float:
+        """Deadline headroom the late primary-benchmark refetch needs.
+
+        Two throttled single-symbol fetches (the top-up, then a drift
+        replacement), each with the fetcher's full inter-attempt backoff and,
+        where the market's price plan repairs the latest session from Yahoo
+        quotes, that repair's backoff too; plus the wait the latest-session
+        repair then checks for. HTTP time and the RS-anchor repair that runs
+        between the two are not budgeted.
+        """
+        fetch_seconds = sum(self._fetcher.price_batch_backoff_schedule(market))
+        session_repair_wait = 0
+        if market is not None and provider_data_plan_registry.plan_for(
+            market, DATASET_PRICES
+        ).allows(PROVIDER_YAHOO_QUOTE):
+            fetch_seconds += sum(YAHOO_QUOTE_RETRY_BACKOFF_SECONDS)
+            session_repair_wait = STATIC_SESSION_REPAIR_WAIT_SECONDS
+        return 2 * fetch_seconds + session_repair_wait
+
+    def _retry_primary_benchmark(
+        self,
+        *,
+        symbol: str | None,
+        fetch_candidate: bool,
+        period: str | None,
+        market: str | None,
+        as_of_date: date,
+        readjusted_symbols: dict[str, set[date]],
+        stored_symbols: set[str],
+        missing_session_frames: dict[str, pd.DataFrame],
+    ) -> dict[str, Any]:
+        """Refetch the primary benchmark once more if the refresh left it
+        unstored or stored without ``as_of_date``.
+
+        Without it a US build publishes nothing, and other markets fall back
+        to their secondary benchmark (see ``critical_price_symbols``).
+        ``fetch_candidate`` says it passed the provider symbol policy;
+        ``period`` is the one its fetch group used (``None`` when the database
+        already had it). The single-symbol call meets the fetcher's own
+        backoff when throttled; drift found now gets the same replacement
+        refetch as the main pass. The refetch is skipped, never raising, when
+        the deadline leaves less than the reserve, and reported as skipped
+        when its own call finds the Yahoo circuit open. A frame still lacking
+        the session stays in ``missing_session_frames`` for the quote repair.
+        """
+        stats: dict[str, Any] = {
+            "symbol": symbol,
+            "attempted": False,
+            "recovered": False,
+            "skipped_reason": None,
         }
+
+        def current() -> bool:
+            return symbol in stored_symbols and symbol not in missing_session_frames
+
+        if symbol is None:
+            stats["skipped_reason"] = "no_primary_benchmark"
+            return stats
+        if not fetch_candidate:
+            stats["skipped_reason"] = "not_a_fetch_candidate"
+            return stats
+        if period is None or current():
+            stats["skipped_reason"] = "already_current"
+            return stats
+        label = f"[static-daily prices:{market}]"
+        remaining = self._seconds_until_deadline()
+        if remaining is not None:
+            reserve = self._primary_benchmark_retry_reserve_seconds(market)
+            if remaining < reserve:
+                print(
+                    f"{label} Not refetching {symbol}: {remaining:.0f}s left before the "
+                    f"price-stage deadline, {reserve:.0f}s needed.",
+                    flush=True,
+                )
+                stats["skipped_reason"] = "deadline"
+                return stats
+
+        fetch_kwargs: dict[str, Any] = {
+            "batch_size": 1,
+            "market": market,
+            "as_of_date": as_of_date,
+            "missing_session_frames": missing_session_frames,
+            "stored_symbols": stored_symbols,
+        }
+        failures: dict[str, str] = {}
+        if symbol not in readjusted_symbols:
+            drift_found: dict[str, set[date]] = {}
+            _, _, failures = self._fetch_and_store(
+                [symbol],
+                period=period,
+                readjusted_symbols=(
+                    drift_found if period == STATIC_DAILY_PRICE_REFRESH_PERIOD else None
+                ),
+                **fetch_kwargs,
+            )
+            readjusted_symbols.update(drift_found)
+        if symbol in readjusted_symbols:
+            _, _, failures = self._fetch_and_store(
+                [symbol],
+                period=STATIC_DAILY_PRICE_BOOTSTRAP_PERIOD,
+                replacement_required_dates=readjusted_symbols,
+                **fetch_kwargs,
+            )
+        if failures.get(symbol) == "circuit_open":
+            print(
+                f"{label} Late refetch of {symbol} found the Yahoo circuit open for {market}; "
+                "not retried.",
+                flush=True,
+            )
+            stats["skipped_reason"] = "circuit_open"
+            return stats
+        stats["attempted"] = True
+        stats["recovered"] = current()
+        outcome = "recovered" if stats["recovered"] else "still missing"
+        print(
+            f"{label} Primary benchmark {symbol} {outcome} {as_of_date.isoformat()} "
+            "after its late single-symbol refetch.",
+            flush=True,
+        )
+        return stats

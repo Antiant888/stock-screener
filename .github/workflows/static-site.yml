@@ -537,6 +537,7 @@ jobs:
           STATUS_PATH="/tmp/static-data/status/${MARKET_LOWER}/status.json"
           if [ "$status" -eq 78 ]; then
             echo "Market ${{ matrix.market }} is not a trading day; no current static artifact will be uploaded."
+            echo "not_trading_day=true" >> "$GITHUB_OUTPUT"
             echo "has_artifact=false" >> "$GITHUB_OUTPUT"
             echo "has_price_bundle=false" >> "$GITHUB_OUTPUT"
             echo "rrg_history_publishable=false" >> "$GITHUB_OUTPUT"
@@ -570,6 +571,13 @@ jobs:
             echo "rrg_history_publishable=false" >> "$GITHUB_OUTPUT"
           else
             echo "rrg_history_publishable=true" >> "$GITHUB_OUTPUT"
+          fi
+          # The warning export_static_site.py prints when neither benchmark has
+          # the as-of bar: the artifact uploads a session behind, so the last
+          # step fails a required market on it. The previous-session coverage
+          # rewind is deliberate and stays a warning.
+          if grep -qF "using benchmark-backed as-of date" "$EXPORT_LOG"; then
+            echo "benchmark_backed_rewind=true" >> "$GITHUB_OUTPUT"
           fi
           if [ "$RRG_HISTORY_ENABLED" = "true" ] && [ "$RRG_RESTORE_STATUS" = "failed" ]; then
             echo "Rolling RRG history restore failed for ${{ matrix.market }}; current output will not replace the last good market artifact."
@@ -840,6 +848,40 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh workflow run static-site-publish.yml --repo "${{ github.repository }}" --ref "${{ github.event.repository.default_branch }}"
+
+      # Last, after the status, diagnostics and daily price bundle uploads, so
+      # a required market whose artifact upload did not succeed (exit 79, a
+      # failed RRG restore, unpublished breadth metadata, a failed upload)
+      # fails its job without losing them. A benchmark-backed rewind counts
+      # too: its upload succeeds, but a session behind, which is what the
+      # reader sees when nothing uploads. Exit 80 fails above with its own
+      # message. The matrix does not fail fast and wake-publisher runs on
+      # always(), so the other markets still publish; the combiner pairs them
+      # with this market's newest earlier artifact. The market list mirrors
+      # static_market_publish_policy.REQUIRED_STATIC_MARKETS; a test keeps
+      # them in lockstep.
+      - name: Fail a required market that published no current artifact
+        if: ${{ !cancelled() && contains(fromJSON('["US"]'), matrix.market) && steps.export-market.outputs.not_trading_day != 'true' && steps.export-market.outputs.price_checkpointed != 'true' && (steps.upload-market-artifact.outcome != 'success' || steps.export-market.outputs.benchmark_backed_rewind == 'true') }}
+        run: |
+          MARKET_LOWER="$(echo "${{ matrix.market }}" | tr '[:upper:]' '[:lower:]')"
+          if [ "${{ steps.upload-market-artifact.outcome }}" != "success" ]; then
+            DIAGNOSTICS_PATH="/tmp/static-data/diagnostics/${MARKET_LOWER}/snapshot-failure.json"
+            STATUS_PATH="/tmp/static-data/status/${MARKET_LOWER}/status.json"
+            reason="$(jq -r '[.reason, (.failure_diagnostics.error // .failure_diagnostics.reason_code)] | map(select(. != null)) | join(": ")' "$DIAGNOSTICS_PATH" 2>/dev/null || true)"
+            [ -n "$reason" ] || reason="$(jq -r '.reason // empty' "$STATUS_PATH" 2>/dev/null || true)"
+            has_artifact="${{ steps.export-market.outputs.has_artifact }}"
+            [ -n "$reason" ] || reason="export step ${{ steps.export-market.outcome }}, has_artifact=${has_artifact:-unset}, upload step ${{ steps.upload-market-artifact.outcome }}; see the job log"
+            message="Required market ${{ matrix.market }} uploaded no current static artifact (${reason}). The site keeps the newest earlier ${{ matrix.market }} artifact beside the other markets' fresh ones until a rerun succeeds. See the static-market-diagnostics-${{ matrix.market }} artifact."
+          else
+            message="Required market ${{ matrix.market }} published its artifact a session behind: the export rewound to the benchmark-backed as-of date because no benchmark candidate had the current session. See the export step log; rerun once the benchmark's bar is available."
+          fi
+          # A workflow command ends at the first newline; GitHub decodes these.
+          annotation="${message//'%'/%25}"
+          annotation="${annotation//$'\r'/%0D}"
+          annotation="${annotation//$'\n'/%0A}"
+          echo "::error::${annotation}"
+          echo "${message}" >> "$GITHUB_STEP_SUMMARY"
+          exit 1
 
   # Catch-all wake-up: covers a market that uploaded and was cancelled before
   # its own wake step. Duplicate wake-ups coalesce in the publisher's
