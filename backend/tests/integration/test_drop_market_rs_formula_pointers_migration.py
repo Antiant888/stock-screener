@@ -14,6 +14,7 @@ from app.domain.relative_strength import BALANCED_RS_FORMULA_VERSION
 
 # What a deployment that never finished the balanced rollout still stores.
 STORED_LEGACY_FORMULA = "legacy-linear-v1"
+REMAINING_TABLES = ["feature_run_pointers", "ibd_group_ranks", "market_rs_runs"]
 
 MIGRATION_PATH = (
     Path(__file__).resolve().parents[2]
@@ -49,8 +50,24 @@ def _create_pre_drop_schema(
     pointers: dict[str, str],
     runs: list[tuple[str, str]],
     published: tuple[str, ...] = (),
+    group_ranks: tuple[tuple[str, str], ...] = (),
 ) -> None:
     with engine.begin() as connection:
+        connection.execute(
+            text(
+                "CREATE TABLE ibd_group_ranks ("
+                "id INTEGER PRIMARY KEY, market VARCHAR(8) NOT NULL, "
+                "rs_formula_version VARCHAR(64) NOT NULL)"
+            )
+        )
+        for market, formula in group_ranks:
+            connection.execute(
+                text(
+                    "INSERT INTO ibd_group_ranks (market, rs_formula_version) "
+                    "VALUES (:market, :formula)"
+                ),
+                {"market": market, "formula": formula},
+            )
         connection.execute(
             text(
                 "CREATE TABLE feature_run_pointers ("
@@ -116,7 +133,7 @@ def test_upgrade_drops_the_table_when_every_pointer_is_balanced(tmp_path):
 
     _run_revision(engine, "upgrade")
 
-    assert inspect(engine).get_table_names() == ["feature_run_pointers", "market_rs_runs"]
+    assert inspect(engine).get_table_names() == REMAINING_TABLES
     engine.dispose()
 
 
@@ -132,7 +149,7 @@ def test_upgrade_drops_the_legacy_pointers_a_fresh_install_seeded(tmp_path):
 
     _run_revision(engine, "upgrade")
 
-    assert inspect(engine).get_table_names() == ["feature_run_pointers", "market_rs_runs"]
+    assert inspect(engine).get_table_names() == REMAINING_TABLES
     engine.dispose()
 
 
@@ -154,9 +171,10 @@ def test_upgrade_refuses_while_a_pointer_names_a_retired_formula(tmp_path):
         _run_revision(engine, "upgrade")
 
     assert str(exc_info.value) == (
-        "Markets published under a retired RS formula: "
-        "HK='legacy-linear-v1', JP='legacy-linear-v1'. This release serves only "
-        "'balanced-horizon-percentile-v2' and cannot serve those publications. Finish the "
+        "Markets served under a retired RS formula: "
+        "HK='legacy-linear-v1' (published Feature run), "
+        "JP='legacy-linear-v1' (published Feature run). This release serves only "
+        "'balanced-horizon-percentile-v2' and cannot serve those markets. Finish the "
         "balanced rollout on the previous release first: run 'python -m "
         "app.scripts.backfill_market_rs --market <MARKET> --through-date "
         "<YYYY-MM-DD> --activate' for each listed market on the release before "
@@ -169,6 +187,51 @@ def test_upgrade_refuses_while_a_pointer_names_a_retired_formula(tmp_path):
         ("JP", STORED_LEGACY_FORMULA),
         ("US", BALANCED_RS_FORMULA_VERSION),
     ]
+    engine.dispose()
+
+
+def test_upgrade_refuses_while_legacy_group_ranks_serve_an_unpublished_market(tmp_path):
+    engine = create_engine(f"sqlite:///{tmp_path / 'legacy-groups.sqlite'}")
+    _create_pre_drop_schema(
+        engine,
+        pointers={
+            "KR": STORED_LEGACY_FORMULA,
+            "JP": STORED_LEGACY_FORMULA,
+            "CA": STORED_LEGACY_FORMULA,
+        },
+        runs=[],
+        published=("KR",),
+        group_ranks=(("JP", STORED_LEGACY_FORMULA), ("CA", BALANCED_RS_FORMULA_VERSION)),
+    )
+
+    with pytest.raises(RuntimeError) as exc_info:
+        _run_revision(engine, "upgrade")
+
+    assert str(exc_info.value).startswith(
+        "Markets served under a retired RS formula: "
+        "JP='legacy-linear-v1' (legacy group ranks), "
+        "KR='legacy-linear-v1' (published Feature run). "
+    )
+    assert _pointer_rows(engine) == [
+        ("CA", STORED_LEGACY_FORMULA),
+        ("JP", STORED_LEGACY_FORMULA),
+        ("KR", STORED_LEGACY_FORMULA),
+    ]
+    engine.dispose()
+
+
+def test_upgrade_drops_a_legacy_pointer_whose_group_ranks_are_balanced(tmp_path):
+    engine = create_engine(f"sqlite:///{tmp_path / 'balanced-groups.sqlite'}")
+    _create_pre_drop_schema(
+        engine,
+        pointers={"JP": STORED_LEGACY_FORMULA},
+        runs=[],
+        group_ranks=(("JP", BALANCED_RS_FORMULA_VERSION),),
+    )
+
+    _run_revision(engine, "upgrade")
+
+    assert inspect(engine).get_table_names() == REMAINING_TABLES
     engine.dispose()
 
 
@@ -188,5 +251,5 @@ def test_downgrade_seeds_a_balanced_pointer_only_for_markets_with_a_completed_ru
         ("US", BALANCED_RS_FORMULA_VERSION),
     ]
     _run_revision(engine, "upgrade")
-    assert inspect(engine).get_table_names() == ["feature_run_pointers", "market_rs_runs"]
+    assert inspect(engine).get_table_names() == REMAINING_TABLES
     engine.dispose()
