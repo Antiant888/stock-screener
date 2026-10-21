@@ -143,18 +143,20 @@ def seed_balanced_publication(
     feature_status: str = "published",
     snapshot_contract: bool = True,
     with_run_id: bool = True,
+    rs_as_of_date: date = date(2026, 5, 1),
+    eligible_symbol_count: int = 1,
 ) -> None:
     published_at = datetime(2026, 5, 1, 21, 0, tzinfo=timezone.utc)
     rs_run = MarketRsRun(
         market=market,
-        as_of_date=date(2026, 5, 1),
+        as_of_date=rs_as_of_date,
         formula_version=BALANCED_RS_FORMULA_VERSION,
         status=rs_status,
         benchmark_symbol="SPY",
         benchmark_as_of_date=date(2026, 5, 1),
         universe_hash="hash",
-        expected_symbol_count=1,
-        eligible_symbol_count=1,
+        expected_symbol_count=eligible_symbol_count,
+        eligible_symbol_count=eligible_symbol_count,
         excluded_symbol_count=0,
         diagnostics_json=(
             {
@@ -638,12 +640,16 @@ def test_market_readiness_requires_a_committed_balanced_publication(readiness_db
         {"rs_status": "failed"},
         {"snapshot_contract": False},
         {"with_run_id": False},
+        {"rs_as_of_date": date(2026, 4, 30)},
+        {"eligible_symbol_count": 2},
     ],
     ids=[
         "feature-run-not-published",
         "market-rs-run-not-completed",
         "old-snapshot-contract",
         "no-market-rs-run-id",
+        "market-rs-run-for-another-date",
+        "universe-size-differs",
     ],
 )
 def test_market_readiness_rejects_an_incomplete_publication(

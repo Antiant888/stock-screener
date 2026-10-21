@@ -10,11 +10,7 @@ from typing import Iterable
 from sqlalchemy.orm import Session
 
 from ..domain.markets.catalog import get_market_catalog
-from ..domain.relative_strength import (
-    BALANCED_RS_FORMULA_VERSION,
-    balanced_run_has_current_snapshot_contract,
-)
-from ..infra.db.models.feature_store import FeatureRun, FeatureRunPointer
+from ..infra.db.models.feature_store import FeatureRun
 from ..infra.db.models.relative_strength import MarketRsRun
 from ..models.app_settings import AppSetting
 from ..models.industry import IBDGroupRank
@@ -23,10 +19,7 @@ from ..models.market_exposure import MarketExposure
 from ..models.scan_result import SCAN_TRIGGER_SOURCE_AUTO, Scan
 from ..models.stock import StockFundamental, StockPrice
 from ..models.stock_universe import StockUniverse
-from .feature_run_rs_identity import (
-    FeatureRunRsIdentityError,
-    resolve_feature_run_rs_identity,
-)
+from .feature_run_rs_identity import resolve_published_balanced_publication
 
 PRE_BOOTSTRAP_SEED_IMPORT_KEY = "runtime.bootstrap.pre_bootstrap_seed_import"
 PRE_BOOTSTRAP_SEED_IMPORT_CATEGORY = "runtime_activity"
@@ -426,30 +419,9 @@ class BootstrapReadinessService:
         }
 
     def has_balanced_publication(self, db: Session, market: str) -> bool:
-        """The market's publication pointer names a committed balanced snapshot.
-
-        The shadow backfill writes completed balanced runs before validation and
-        before the pointer moves, so a completed run alone proves nothing.
-        """
-        market = self.normalize_market(market)
-        pointer = db.get(FeatureRunPointer, f"latest_published_market:{market}")
-        feature_run = db.get(FeatureRun, pointer.run_id) if pointer is not None else None
-        if feature_run is None or feature_run.status != "published":
-            return False
-        try:
-            resolution = resolve_feature_run_rs_identity(
-                feature_run,
-                ranking_date=feature_run.as_of_date,
-            )
-        except FeatureRunRsIdentityError:
-            return False
-        rs_run = db.get(MarketRsRun, resolution.market_rs_run_id)
         return (
-            rs_run is not None
-            and rs_run.status == "completed"
-            and rs_run.market == market
-            and rs_run.formula_version == BALANCED_RS_FORMULA_VERSION
-            and balanced_run_has_current_snapshot_contract(rs_run)
+            resolve_published_balanced_publication(db, self.normalize_market(market))
+            is not None
         )
 
     def _has_active_universe_rows(

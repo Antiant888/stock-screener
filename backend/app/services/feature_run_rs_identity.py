@@ -1,12 +1,17 @@
 from dataclasses import dataclass
 from datetime import date
 
+from sqlalchemy.orm import Session
+
 from app.domain.feature_store.run_metadata import feature_run_market
 from app.domain.relative_strength import (
     BALANCED_RS_FORMULA_VERSION,
     GroupSnapshotIdentity,
     RsPublicationIdentity,
+    balanced_run_has_current_snapshot_contract,
 )
+from app.infra.db.models.feature_store import FeatureRun, FeatureRunPointer
+from app.infra.db.models.relative_strength import MarketRsRun
 
 
 class FeatureRunRsIdentityError(RuntimeError):
@@ -105,3 +110,40 @@ def feature_run_matches_rs_source(
     if resolved.market_rs_run_id != market_rs_run_id:
         return False
     return universe_size is None or resolved.universe_size == universe_size
+
+
+def resolve_published_balanced_publication(
+    db: Session,
+    market: str,
+) -> FeatureRunRsIdentityResolution | None:
+    """The market's committed balanced publication, or None.
+
+    Follows ``latest_published_market:<MARKET>`` to a published Feature run,
+    resolves its balanced RS identity, and requires the Market RS run that
+    identity names to be completed, current-contract, and for the same market,
+    date and universe size. A completed run alone is not a publication: the
+    shadow backfill writes those before validation and the pointer move.
+    """
+    pointer = db.get(FeatureRunPointer, f"latest_published_market:{market}")
+    feature_run = db.get(FeatureRun, pointer.run_id) if pointer is not None else None
+    if feature_run is None or feature_run.status != "published":
+        return None
+    try:
+        resolution = resolve_feature_run_rs_identity(
+            feature_run,
+            ranking_date=feature_run.as_of_date,
+        )
+    except FeatureRunRsIdentityError:
+        return None
+    rs_run = db.get(MarketRsRun, resolution.market_rs_run_id)
+    if (
+        rs_run is None
+        or rs_run.status != "completed"
+        or rs_run.formula_version != BALANCED_RS_FORMULA_VERSION
+        or not balanced_run_has_current_snapshot_contract(rs_run)
+        or rs_run.market != resolution.identity.market
+        or rs_run.as_of_date != resolution.identity.as_of_date
+        or rs_run.eligible_symbol_count != resolution.universe_size
+    ):
+        return None
+    return resolution
