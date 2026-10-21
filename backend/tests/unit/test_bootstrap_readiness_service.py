@@ -34,6 +34,7 @@ from app.services.bootstrap_readiness_service import (
     PRE_BOOTSTRAP_SEED_IMPORT_SCHEMA_VERSION,
     BootstrapReadinessService,
 )
+from app.services.feature_run_rs_identity import resolve_published_balanced_publication
 
 
 # Rows the database still holds from before the single-formula cutover.
@@ -668,6 +669,34 @@ def test_market_readiness_rejects_an_incomplete_publication(
 
     assert result.rs_ready is False
     assert result.ready is False
+
+
+def test_market_readiness_rejects_a_pointer_to_another_markets_publication(
+    readiness_db,
+) -> None:
+    seed_balanced_publication(readiness_db, market="HK")
+    hk_pointer = readiness_db.get(FeatureRunPointer, "latest_published_market:HK")
+    readiness_db.add(
+        FeatureRunPointer(key="latest_published_market:US", run_id=hk_pointer.run_id)
+    )
+    readiness_db.commit()
+    service = BootstrapReadinessService()
+
+    assert (
+        service.has_balanced_publication(readiness_db, "US"),
+        service.has_balanced_publication(readiness_db, "HK"),
+    ) == (False, True)
+
+
+def test_published_balanced_publication_normalizes_the_requested_market(
+    readiness_db,
+) -> None:
+    seed_balanced_publication(readiness_db, market="HK")
+
+    resolution = resolve_published_balanced_publication(readiness_db, " hk ")
+
+    assert resolution is not None
+    assert (resolution.identity.market, resolution.market_rs_run_id) == ("HK", 1)
 
 
 def test_runtime_bootstrap_status_stays_failed_until_the_publication_commits(

@@ -119,11 +119,12 @@ def resolve_published_balanced_publication(
     """The market's committed balanced publication, or None.
 
     Follows ``latest_published_market:<MARKET>`` to a published Feature run,
-    resolves its balanced RS identity, and requires the Market RS run that
+    resolves its balanced RS identity for that market, and requires the Market RS run that
     identity names to be completed, current-contract, and for the same market,
     date and universe size. A completed run alone is not a publication: the
     shadow backfill writes those before validation and the pointer move.
     """
+    market = str(market).strip().upper()
     pointer = db.get(FeatureRunPointer, f"latest_published_market:{market}")
     feature_run = db.get(FeatureRun, pointer.run_id) if pointer is not None else None
     if feature_run is None or feature_run.status != "published":
@@ -134,6 +135,8 @@ def resolve_published_balanced_publication(
             ranking_date=feature_run.as_of_date,
         )
     except FeatureRunRsIdentityError:
+        return None
+    if resolution.identity.market != market:
         return None
     rs_run = db.get(MarketRsRun, resolution.market_rs_run_id)
     if (
