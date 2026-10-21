@@ -73,9 +73,9 @@ def _build_market_step(name: str) -> dict:
     return next(step for step in _static_build_market_steps() if step.get("name") == name)
 
 
-def _export_branch(predicate: str) -> str:
-    """Return the shell lines guarded by ``predicate`` in the export step."""
-    run = _build_market_step("Export market static data bundle")["run"]
+def _step_branch(predicate: str, step: str = "Export market static data bundle") -> str:
+    """Return the shell lines guarded by ``predicate`` in a build-market step."""
+    run = _build_market_step(step)["run"]
     assert predicate in run, predicate
     return re.split(r"\n\s*(?:else|fi)\n", run.split(predicate, 1)[1], maxsplit=1)[0]
 
@@ -102,14 +102,14 @@ def test_market_export_failure_fails_the_job():
 
 
 def test_failed_rrg_restore_keeps_the_last_good_market_artifact():
-    branch = _export_branch('[ "$RRG_RESTORE_STATUS" = "failed" ]')
+    branch = _step_branch('[ "$RRG_RESTORE_STATUS" = "failed" ]')
     assert "has_artifact=false" in branch
     assert "exit 0" in branch
     assert "steps.export-market.outputs.has_artifact == 'true'" in _build_market_step("Upload market artifact")["if"]
 
 
 def test_rewound_export_never_publishes_rrg_history():
-    branch = _export_branch("using (benchmark-backed|previous-session) as-of date")
+    branch = _step_branch("using (benchmark-backed|previous-session) as-of date")
     assert "rrg_history_publishable=false" in branch
     publish = _build_market_step("Publish rolling RRG history")
     assert "steps.export-market.outputs.rrg_history_publishable == 'true'" in publish["if"]
@@ -117,6 +117,9 @@ def test_rewound_export_never_publishes_rrg_history():
 
 def test_incomplete_daily_price_bundle_is_never_uploaded():
     assert "--require-complete" in _build_market_step("Build daily price bundle")["run"]
+    branch = _step_branch("is below required", "Build daily price bundle")
+    assert "price_bundle_ready=false" in branch
+    assert "price_bundle_ready=true" not in branch
     upload = _build_market_step("Upload daily price assets")
     assert "steps.build-daily-price-bundle.outputs.price_bundle_ready == 'true'" in upload["if"]
 

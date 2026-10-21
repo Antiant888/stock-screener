@@ -937,6 +937,22 @@ def test_publisher_deploys_only_from_default_branch_dispatch() -> None:
     assert deploy["environment"]["name"] == "github-pages"
 
 
+def test_every_upload_path_wakes_the_publisher() -> None:
+    # The publisher has no schedule; these dispatches are its only trigger.
+    jobs = _site_workflow()["jobs"]
+    wake = "gh workflow run static-site-publish.yml"
+    for job, upload in (
+        ("build-cot", "Upload current global COT artifact"),
+        ("build-market", "Upload market artifact"),
+    ):
+        names = [step.get("name") for step in jobs[job]["steps"]]
+        assert names.index("Wake static-site publisher") > names.index(upload), job
+        assert wake in jobs[job]["steps"][names.index("Wake static-site publisher")]["run"], job
+    assert "always()" in jobs["build-market"]["steps"][-1]["if"]
+    assert "always()" in jobs["wake-publisher"]["if"]
+    assert wake in jobs["wake-publisher"]["steps"][0]["run"]
+
+
 def _workflow_script_args(run: str, module: str) -> list[str]:
     """Return the argv a workflow step passes to ``python -m <module>``."""
     command = run.split(f"python -m {module}", 1)[1].replace("\\\n", " ")
