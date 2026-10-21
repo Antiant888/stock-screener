@@ -583,6 +583,24 @@ class StaticDailyPriceRefreshService:
             missing_session_frames=missing_session_frames,
             stored_symbols=stored_symbols,
         )
+        # Checked here, after the RS-anchor repair has spent its time: a seed
+        # that would be the repair's only frame must not start a wait the
+        # deadline cannot cover, while joining a repair that runs anyway is free.
+        if (
+            primary_benchmark_retry["quote_repair_seed"] == "seeded"
+            and set(missing_session_frames) == {primary_benchmark}
+        ):
+            remaining = self._seconds_until_deadline()
+            needed = STATIC_SESSION_REPAIR_WAIT_SECONDS + sum(YAHOO_QUOTE_RETRY_BACKOFF_SECONDS)
+            if remaining is not None and remaining < needed:
+                missing_session_frames.pop(primary_benchmark)
+                primary_benchmark_retry["quote_repair_seed"] = "deadline"
+                print(
+                    f"[static-daily prices:{market}] Quote-repair seed for primary benchmark "
+                    f"{primary_benchmark}: deadline ({remaining:.0f}s left before the "
+                    f"price-stage deadline, {needed:.0f}s needed).",
+                    flush=True,
+                )
         session_repair = self._repair_missing_sessions(
             market=market,
             as_of_date=as_of_date,
@@ -1460,9 +1478,9 @@ class StaticDailyPriceRefreshService:
         when it is the latest stored: a quote describes one session, so an
         older frame would keep a hole. Not when the market's price plan has no
         quote repair, when a top-up found the stored history back-adjusted
-        (its basis is stale and the replacement refetch failed), or when the
-        deadline leaves less than the repair's wait plus the quote backoff.
-        Returns the outcome reported under ``primary_benchmark_retry``.
+        (its basis is stale and the replacement refetch failed). Returns the
+        outcome reported under ``primary_benchmark_retry``; ``_refresh`` may
+        still withdraw the seed for the deadline just before the repair.
         """
         label = f"[static-daily prices:{market}]"
 
@@ -1477,13 +1495,6 @@ class StaticDailyPriceRefreshService:
             return outcome("plan_disallows_quotes")
         if symbol in readjusted_symbols:
             return outcome("history_readjusted")
-        remaining = self._seconds_until_deadline()
-        needed = STATIC_SESSION_REPAIR_WAIT_SECONDS + sum(YAHOO_QUOTE_RETRY_BACKOFF_SECONDS)
-        if remaining is not None and remaining < needed:
-            return outcome(
-                "deadline",
-                f" ({remaining:.0f}s left before the price-stage deadline, {needed:.0f}s needed)",
-            )
         with self._session_factory() as db:
             latest_stored = (
                 db.query(func.max(StockPrice.date))
