@@ -770,7 +770,7 @@ def test_static_site_fallback_downloader_skips_damaged_advertised_assets(
     assert not (fallback_dir / "static-market-US").exists()
     assert (
         "static-market-US from run 333 was rejected (US fallback artifact "
-        "advertises Groups but groups.json is absent)." in result.stdout
+        "advertises GROUPS but groups.json is absent)." in result.stdout
     ), result.stdout
 
 
@@ -897,6 +897,54 @@ def test_static_site_fallback_downloader_rejects_multiple_market_manifests(
         artifact_name="static-market-AU",
         run_id=222,
     ) is None
+
+
+@pytest.mark.parametrize(
+    "relative_path, payload, reason",
+    [
+        pytest.param(
+            "scan/manifest.json",
+            {"rs_formula_version": "balanced-horizon-percentile-v2", "chunks": 7},
+            "scan manifest 'markets/hk/scan/manifest.json' must list chunks as objects",
+            id="chunks-as-number",
+        ),
+        pytest.param(
+            "scan/manifest.json",
+            {
+                "rs_formula_version": "balanced-horizon-percentile-v2",
+                "chunks": ["markets/hk/scan/chunks/chunk-0001.json"],
+            },
+            "scan manifest 'markets/hk/scan/manifest.json' must list chunks as objects",
+            id="chunks-as-strings",
+        ),
+        pytest.param(
+            "scan/manifest.json",
+            [],
+            "scan manifest 'markets/hk/scan/manifest.json' must list chunks as objects",
+            id="manifest-is-list",
+        ),
+        pytest.param(
+            "groups.json", [], "groups.json is not a JSON object", id="groups-is-list"
+        ),
+    ],
+)
+def test_static_site_fallback_downloader_rejects_a_malformed_payload(
+    tmp_path: Path, capsys, relative_path, payload, reason
+) -> None:
+    _write_selected_market(tmp_path, "HK", "balanced-horizon-percentile-v2")
+    target_dir = tmp_path / "static-market-HK"
+    (target_dir / relative_path).write_text(json.dumps(payload), encoding="utf-8")
+
+    assert inspect_downloaded_market(
+        target_dir,
+        market="HK",
+        artifact_name="static-market-HK",
+        run_id=333,
+    ) is None
+    assert capsys.readouterr().out == (
+        "::warning::Unable to download fallback market artifact: static-market-HK "
+        f"from run 333 was rejected (HK fallback {reason}).\n"
+    )
 
 
 def test_static_site_current_market_collection_rejects_swapped_artifact_name(

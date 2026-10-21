@@ -308,6 +308,14 @@ class StaticArtifactCombiner:
         if not isinstance(entry, dict):
             return f"{market} {source_label} metadata has no Market entry"
         try:
+            # Shape first: the formula and breadth checks read the payloads the
+            # advertised-asset check proves are present and parse.
+            asset_warnings = cls._validate_advertised_assets(
+                market=market,
+                source_label=source_label,
+                entry=entry,
+                market_dir=market_dir,
+            )
             cls._validate_formula(
                 market=market,
                 source_label=source_label,
@@ -319,12 +327,6 @@ class StaticArtifactCombiner:
                 market=market,
                 source_label=source_label,
                 metadata=metadata,
-                market_dir=market_dir,
-            )
-            asset_warnings = cls._validate_advertised_assets(
-                market=market,
-                source_label=source_label,
-                entry=entry,
                 market_dir=market_dir,
             )
         except StaticArtifactIncompatibleError as exc:
@@ -405,6 +407,13 @@ class StaticArtifactCombiner:
         except StaticBreadthContributorAssetError as exc:
             raise StaticArtifactFormulaError(str(exc)) from exc
 
+    @staticmethod
+    def _read_object(path: Path, label: str) -> dict:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            raise StaticArtifactFormulaError(f"{label} is not a JSON object")
+        return payload
+
     @classmethod
     def _validate_formula(
         cls,
@@ -429,11 +438,20 @@ class StaticArtifactCombiner:
                 "scan/manifest.json is absent"
             )
         if scan_manifest_path.is_file():
-            scan_manifest = json.loads(scan_manifest_path.read_text(encoding="utf-8"))
+            scan_manifest = cls._read_object(
+                scan_manifest_path, f"{market} {source_label} Scan manifest"
+            )
             observed["Scan manifest"] = scan_manifest.get("rs_formula_version")
+            chunk_refs = scan_manifest.get("chunks") or []
+            if not isinstance(chunk_refs, list) or not all(
+                isinstance(ref, dict) for ref in chunk_refs
+            ):
+                raise StaticArtifactFormulaError(
+                    f"{market} {source_label} Scan manifest must list chunks as objects"
+                )
             artifact_root = market_dir.resolve()
             published_market_prefix = Path("markets") / market.lower()
-            for chunk_ref in scan_manifest.get("chunks") or []:
+            for chunk_ref in chunk_refs:
                 advertised_path = str(chunk_ref.get("path") or "").strip()
                 relative_path = Path(advertised_path)
                 try:
@@ -455,7 +473,9 @@ class StaticArtifactCombiner:
                         f"{market} {source_label} Scan chunk is absent: "
                         f"{advertised_path!r}"
                     )
-                chunk = json.loads(chunk_path.read_text(encoding="utf-8"))
+                chunk = cls._read_object(
+                    chunk_path, f"{market} {source_label} Scan chunk {chunk_path.name}"
+                )
                 observed[f"Scan chunk {chunk_path.name}"] = chunk.get(
                     "rs_formula_version"
                 )
@@ -465,7 +485,9 @@ class StaticArtifactCombiner:
                 f"{market} {source_label} artifact advertises Groups but groups.json is absent"
             )
         if groups_path.is_file():
-            groups = json.loads(groups_path.read_text(encoding="utf-8"))
+            groups = cls._read_object(
+                groups_path, f"{market} {source_label} groups.json"
+            )
             if groups.get("available", True):
                 observed["Groups"] = groups.get("rs_formula_version")
         rrg_path = market_dir / "groups_rrg.json"
@@ -474,7 +496,7 @@ class StaticArtifactCombiner:
                 f"{market} {source_label} artifact advertises RRG but groups_rrg.json is absent"
             )
         if rrg_path.is_file():
-            rrg = json.loads(rrg_path.read_text(encoding="utf-8"))
+            rrg = cls._read_object(rrg_path, f"{market} {source_label} groups_rrg.json")
             if rrg.get("available", True):
                 observed["RRG"] = rrg.get("rs_formula_version")
         mismatches = {
@@ -516,7 +538,9 @@ class StaticArtifactCombiner:
                 f"{market} {source_label} artifact advertises breadth but "
                 "breadth.json is absent"
             )
-        breadth = json.loads(breadth_path.read_text(encoding="utf-8"))
+        breadth = StaticArtifactCombiner._read_object(
+            breadth_path, f"{market} {source_label} breadth.json"
+        )
         payload = breadth.get("payload")
         current = payload.get("current") if isinstance(payload, dict) else None
         observed_revision = (

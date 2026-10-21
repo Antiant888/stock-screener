@@ -776,7 +776,7 @@ def test_current_artifact_missing_a_scan_chunk_falls_back(tmp_path: Path) -> Non
 
     assert result.manifest["markets"]["HK"]["publication"]["source"] == "fallback"
     assert result.warnings[0] == (
-        "Ignored static market artifact: HK current Scan chunk is absent: "
+        "Ignored static market artifact: HK current advertised file is absent: "
         "'markets/hk/scan/chunks/chunk-0001.json'"
     )
 
@@ -801,8 +801,106 @@ def test_fallback_with_an_unparseable_scan_chunk_is_rejected_with_its_reason(
 
     assert str(exc_info.value) == (
         "No published compatible static artifact is available for required "
-        "Markets: HK. Rejected: HK fallback artifact is unreadable (Expecting "
-        "property name enclosed in double quotes: line 1 column 2 (char 1))."
+        "Markets: HK. Rejected: HK fallback advertised file "
+        "'markets/hk/scan/chunks/chunk-0001.json' does not parse: Expecting "
+        "property name enclosed in double quotes: line 1 column 2 (char 1)."
+    )
+
+
+_SCAN_CHUNKS_NOT_OBJECTS = (
+    "HK fallback scan manifest 'markets/hk/scan/manifest.json' must list chunks "
+    "as objects"
+)
+
+
+@pytest.mark.parametrize(
+    "relative_path, payload, entry_changes, reason",
+    [
+        pytest.param(
+            "scan/manifest.json",
+            {"rs_formula_version": BALANCED_RS_FORMULA_VERSION, "chunks": 7},
+            {},
+            _SCAN_CHUNKS_NOT_OBJECTS,
+            id="chunks-as-number",
+        ),
+        pytest.param(
+            "scan/manifest.json",
+            {
+                "rs_formula_version": BALANCED_RS_FORMULA_VERSION,
+                "chunks": ["markets/hk/scan/chunks/chunk-0001.json"],
+            },
+            {},
+            _SCAN_CHUNKS_NOT_OBJECTS,
+            id="chunks-as-strings",
+        ),
+        pytest.param(
+            "scan/manifest.json", [], {}, _SCAN_CHUNKS_NOT_OBJECTS, id="manifest-is-list"
+        ),
+        pytest.param(
+            "scan/manifest.json",
+            [],
+            {"pages": {}},
+            "HK fallback Scan manifest is not a JSON object",
+            id="unadvertised-manifest-is-list",
+        ),
+        pytest.param(
+            "scan/manifest.json",
+            {"rs_formula_version": BALANCED_RS_FORMULA_VERSION, "chunks": ["x"]},
+            {"pages": {}},
+            "HK fallback Scan manifest must list chunks as objects",
+            id="unadvertised-chunks-as-strings",
+        ),
+        pytest.param(
+            "scan/chunks/chunk-0001.json",
+            [],
+            {},
+            "HK fallback Scan chunk chunk-0001.json is not a JSON object",
+            id="chunk-is-list",
+        ),
+        pytest.param(
+            "groups.json", [], {}, "HK fallback groups.json is not a JSON object",
+            id="groups-is-list",
+        ),
+        pytest.param(
+            "groups_rrg.json",
+            [],
+            {},
+            "HK fallback groups_rrg.json is not a JSON object",
+            id="rrg-is-list",
+        ),
+        pytest.param(
+            "breadth.json", [], {}, "HK fallback breadth.json is not a JSON object",
+            id="breadth-is-list",
+        ),
+    ],
+)
+def test_fallback_with_a_malformed_payload_is_rejected_not_crashing(
+    tmp_path: Path, relative_path, payload, entry_changes, reason
+) -> None:
+    fallback = write_market_artifact(
+        tmp_path / "fallback",
+        market="HK",
+        formula=BALANCED_RS_FORMULA_VERSION,
+        breadth_revision=3,
+    )
+    if entry_changes:
+        _rewrite_entry(fallback, "HK", **entry_changes)
+    (fallback / "static-market-HK" / relative_path).write_text(
+        json.dumps(payload), encoding="utf-8"
+    )
+
+    with pytest.raises(NoPublishedStaticMarketArtifact) as exc_info:
+        combiner().combine(
+            artifacts_dir=tmp_path / "empty-current",
+            fallback_artifacts_dir=fallback,
+            output_dir=tmp_path / "out",
+            required_markets=["HK"],
+            clean=True,
+        )
+
+    assert str(exc_info.value) == (
+        "No published compatible static artifact is available for required "
+        f"Markets: HK. Rejected: {reason}."
     )
 
 
