@@ -9,7 +9,6 @@ from datetime import datetime, timezone
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.domain.relative_strength import BALANCED_RS_FORMULA_VERSION
 from app.services.bootstrap_readiness_service import BootstrapReadinessService
 from app.services.bootstrap_run_manifest import (
     BootstrapAlreadyRunning,
@@ -38,7 +37,7 @@ class BootstrapMarketCompletion:
     primary: bool
     failure_stage_key: str | None = None
     failure_message: str | None = None
-    expected_formula_version: str | None = None
+    requires_balanced_publication: bool = False
 
     @classmethod
     def ready(
@@ -46,13 +45,13 @@ class BootstrapMarketCompletion:
         *,
         market: str,
         primary: bool,
-        expected_formula_version: str | None = None,
+        requires_balanced_publication: bool = False,
     ) -> BootstrapMarketCompletion:
         return cls(
             market=market,
             succeeded=True,
             primary=primary,
-            expected_formula_version=expected_formula_version,
+            requires_balanced_publication=requires_balanced_publication,
         )
 
     @classmethod
@@ -133,7 +132,7 @@ class BootstrapDispatchLifecycle:
         market = str(completion.market).upper()
         previous_outcome: BootstrapMarketOutcome | None = None
         balanced_activation_completed = (
-            completion.expected_formula_version == BALANCED_RS_FORMULA_VERSION
+            completion.requires_balanced_publication
             and self.readiness.has_balanced_publication(db, market)
         )
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Mapping
+from typing import Iterable
 
 from sqlalchemy.orm import Session
 
@@ -331,14 +331,13 @@ class BootstrapReadinessService:
         *,
         enabled_markets: list[str],
         bootstrap_started_at: datetime | None = None,
-        expected_formula_versions: Mapping[str, str] | None = None,
+        balanced_publication_markets: Iterable[str] = (),
     ) -> BootstrapReadiness:
         normalized_markets = [
             self.normalize_market(market) for market in enabled_markets
         ]
-        normalized_expectations = {
-            self.normalize_market(market): formula_version
-            for market, formula_version in (expected_formula_versions or {}).items()
+        awaiting_publication = {
+            self.normalize_market(market) for market in balanced_publication_markets
         }
         return BootstrapReadiness(
             empty_system=self.is_empty_system(db),
@@ -352,7 +351,7 @@ class BootstrapReadinessService:
                         bootstrap_started_at=bootstrap_started_at,
                     ),
                     rs_ready=(
-                        market not in normalized_expectations
+                        market not in awaiting_publication
                         or self.has_balanced_publication(db, market)
                     ),
                 )

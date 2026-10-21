@@ -213,7 +213,7 @@ def test_balanced_completion_consumes_pending_activation_in_same_transition(
         completion=BootstrapMarketCompletion.ready(
             market="US",
             primary=True,
-            expected_formula_version=BALANCED_RS_FORMULA_VERSION,
+            requires_balanced_publication=True,
         ),
     )
 
@@ -243,7 +243,7 @@ def test_missing_balanced_publication_preserves_pending_activation(db_session) -
         completion=BootstrapMarketCompletion.ready(
             market="US",
             primary=True,
-            expected_formula_version=BALANCED_RS_FORMULA_VERSION,
+            requires_balanced_publication=True,
         ),
     )
 

@@ -409,9 +409,9 @@ def test_fresh_bootstrap_completion_fails_until_the_balanced_publication_commits
             *,
             enabled_markets,
             bootstrap_started_at=None,
-            expected_formula_versions=None,
+            balanced_publication_markets=(),
         ):
-            calls["expectations"] = expected_formula_versions
+            calls["publication_markets"] = list(balanced_publication_markets)
             return BootstrapReadiness(
                 empty_system=False,
                 market_results={
@@ -452,9 +452,7 @@ def test_fresh_bootstrap_completion_fails_until_the_balanced_publication_commits
     )
 
     assert result == expected_result
-    assert calls["expectations"] == {
-        "US": BALANCED_RS_FORMULA_VERSION,
-    }
+    assert calls["publication_markets"] == ["US"]
     assert completions[0].failure_stage_key == "market_rs"
     assert completions[0].failure_message == (
         "Balanced Market RS activation incomplete"

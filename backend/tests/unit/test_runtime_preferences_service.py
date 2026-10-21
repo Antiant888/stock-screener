@@ -42,10 +42,10 @@ class _FakeBootstrapReadinessService:
         *,
         enabled_markets,
         bootstrap_started_at=None,
-        expected_formula_versions=None,
+        balanced_publication_markets=(),
     ):
         self.calls.append((db, list(enabled_markets), bootstrap_started_at))
-        expectations = expected_formula_versions or {}
+        pending = set(balanced_publication_markets)
         return self._module.BootstrapReadiness(
             empty_system=self._empty_system,
             market_results={
@@ -54,7 +54,7 @@ class _FakeBootstrapReadinessService:
                     core_ready=core_ready,
                     scan_ready=scan_ready,
                     rs_ready=(
-                        market not in expectations
+                        market not in pending
                         or market in self._balanced_publications
                     ),
                 )

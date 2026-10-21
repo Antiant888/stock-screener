@@ -587,7 +587,6 @@ def test_pre_bootstrap_seed_import_rejects_bootstrap_outputs(
 def test_market_readiness_requires_a_committed_balanced_publication(readiness_db) -> None:
     seed_core_market_data(readiness_db)
     seed_scan(readiness_db)
-    expectation = {"US": BALANCED_RS_FORMULA_VERSION}
     # The shadow backfill's state: completed balanced runs, nothing published.
     readiness_db.add(
         MarketRsRun(
@@ -612,7 +611,7 @@ def test_market_readiness_requires_a_committed_balanced_publication(readiness_db
     before = BootstrapReadinessService().evaluate(
         readiness_db,
         enabled_markets=["US"],
-        expected_formula_versions=expectation,
+        balanced_publication_markets=["US"],
     ).market_results["US"]
 
     assert before.core_ready is True
@@ -625,7 +624,7 @@ def test_market_readiness_requires_a_committed_balanced_publication(readiness_db
     after = BootstrapReadinessService().evaluate(
         readiness_db,
         enabled_markets=["US"],
-        expected_formula_versions=expectation,
+        balanced_publication_markets=["US"],
     ).market_results["US"]
 
     assert after.rs_ready is True
@@ -658,7 +657,7 @@ def test_market_readiness_rejects_an_incomplete_publication(
     result = BootstrapReadinessService().evaluate(
         readiness_db,
         enabled_markets=["US"],
-        expected_formula_versions={"US": BALANCED_RS_FORMULA_VERSION},
+        balanced_publication_markets=["US"],
     ).market_results["US"]
 
     assert result.rs_ready is False
