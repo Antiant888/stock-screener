@@ -112,6 +112,25 @@ def test_appended_adj_close_keeps_last_yahoo_adjustment_ratio():
     assert results["0700.HK"]["price_data"].loc["2026-09-28", "Adj Close"] == pytest.approx(219.9)
 
 
+@pytest.mark.parametrize(
+    "anchor_adj_close", [None, 0.0, float("nan")], ids=["null", "zero", "nan"]
+)
+def test_appended_adj_close_falls_back_to_close_without_a_usable_anchor(anchor_adj_close):
+    results = {
+        "0700.HK": _ok(
+            _yahoo([("2026-09-25", 433.8, 437.2, 431.2, 436.6, anchor_adj_close, 9, 0.0)])
+        )
+    }
+    sina = _sina([("2026-09-28", 441.4, 447.0, 438.6, 439.8, 15)])
+
+    repair_missing_latest_sessions(
+        results, expected_session=date(2026, 9, 28), fetch_recent=lambda _s: sina
+    )
+
+    assert results["0700.HK"]["price_data"].loc["2026-09-28", "Adj Close"] == pytest.approx(439.8)
+    assert results["0700.HK"]["repaired_sessions"] == ["2026-09-28"]
+
+
 def test_current_frames_and_yahoo_failures_do_not_call_sina():
     calls = []
     results = {
