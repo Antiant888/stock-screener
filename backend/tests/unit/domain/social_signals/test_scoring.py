@@ -124,7 +124,9 @@ def test_reposts_empty_quotes_copied_claims_and_canonical_urls_do_not_inflate():
 
 
 def test_a_post_whose_claims_about_the_ticker_are_all_flagged_copies_does_not_count():
-    row = score(evidence((post("1", "alice"), post("2", "bob", age=2)), duplicate_post_keys=("xui:2",)))
+    shared = {"canonical_url": "https://example.com/claim", "canonical_claim_key": "claim"}
+    row = score(evidence((post("1", "alice", **shared), post("2", "bob", age=2, **shared)),
+                         duplicate_post_keys=("xui:2",)))
     assert row.mention_count == 1
     assert row.exclusions == (("xui:2", "flagged_duplicate"),)
     assert components(row)["authors"].observed_count == 1
