@@ -23,7 +23,7 @@ def social_fixture(tmp_path):
     from app.services.social_company_identity_service import SocialCompanyIdentityService
     engine = create_engine(f"sqlite:///{tmp_path / 'themes.sqlite'}")
     Base.metadata.create_all(engine)
-    factory = sessionmaker(engine, expire_on_commit=False)
+    factory = sessionmaker(engine, expire_on_commit=False, autoflush=False)
     with factory.begin() as db:
         db.add(SocialSourceRegistry(id=1, mode="validation", provider="official"))
         for symbol, market in [("AAA", "US"), ("BBB", "US"), ("CCC", "US"), ("0005.HK", "HK")]:
