@@ -44,6 +44,14 @@ class _FakeLock:
         return self._tasks.get(market)
 
 
+def _activity_status(db_session, monkeypatch, *, lock_tasks=None, **bootstrap):
+    from app.services import market_activity_service as module
+
+    monkeypatch.setattr(module, "get_runtime_bootstrap_status", lambda _db: _bootstrap_status(**bootstrap))
+    monkeypatch.setattr(module, "get_data_fetch_lock", lambda: _FakeLock(lock_tasks))
+    return module.get_runtime_activity_status(db_session)
+
+
 def test_runtime_activity_status_reports_primary_bootstrap_progress(
     db_session, monkeypatch
 ):
@@ -58,29 +66,14 @@ def test_runtime_activity_status_reports_primary_bootstrap_progress(
         task_id="task-us",
         message="Refreshing prices",
     )
-    monkeypatch.setattr(
-        module,
-        "get_runtime_bootstrap_status",
-        lambda _db: _bootstrap_status(
-            required=True, enabled=["US", "HK"], state="running"
-        ),
+    payload = _activity_status(
+        db_session,
+        monkeypatch,
+        required=True,
+        enabled=["US", "HK"],
+        state="running",
+        lock_tasks={"US": {"task_id": "task-us", "current": 50, "total": 100, "progress": 50.0}},
     )
-    monkeypatch.setattr(
-        module,
-        "get_data_fetch_lock",
-        lambda: _FakeLock(
-            {
-                "US": {
-                    "task_id": "task-us",
-                    "current": 50,
-                    "total": 100,
-                    "progress": 50.0,
-                }
-            }
-        ),
-    )
-
-    payload = module.get_runtime_activity_status(db_session)
 
     assert payload["bootstrap"]["state"] == "running"
     assert payload["bootstrap"]["app_ready"] is False
@@ -121,16 +114,9 @@ def test_runtime_activity_status_exposes_bootstrap_run_task_manifest(
         ),
     )
     db_session.commit()
-    monkeypatch.setattr(
-        module,
-        "get_runtime_bootstrap_status",
-        lambda _db: _bootstrap_status(
-            required=True, enabled=["US", "HK", "TW"], state="running"
-        ),
+    payload = _activity_status(
+        db_session, monkeypatch, required=True, enabled=["US", "HK", "TW"], state="running"
     )
-    monkeypatch.setattr(module, "get_data_fetch_lock", lambda: _FakeLock())
-
-    payload = module.get_runtime_activity_status(db_session)
 
     assert payload["bootstrap"]["queue_state"] == "queued"
     assert module._load_runtime_bootstrap_run(db_session)["fresh_install"] is True
@@ -159,14 +145,7 @@ def test_runtime_activity_status_marks_running_stage_without_real_percent_as_ind
         task_id="task-us",
         message="Refreshing fundamentals",
     )
-    monkeypatch.setattr(
-        module,
-        "get_runtime_bootstrap_status",
-        lambda _db: _bootstrap_status(required=True, enabled=["US"], state="running"),
-    )
-    monkeypatch.setattr(module, "get_data_fetch_lock", lambda: _FakeLock())
-
-    payload = module.get_runtime_activity_status(db_session)
+    payload = _activity_status(db_session, monkeypatch, required=True, enabled=["US"], state="running")
 
     assert payload["bootstrap"]["current_stage"] == "Fundamentals Refresh"
     assert payload["bootstrap"]["progress_mode"] == "indeterminate"
@@ -294,14 +273,7 @@ def test_mark_market_activity_progress_updates_running_record_with_determinate_p
         percent=25.0,
         message="Refreshing fundamentals",
     )
-    monkeypatch.setattr(
-        module,
-        "get_runtime_bootstrap_status",
-        lambda _db: _bootstrap_status(required=True, enabled=["US"], state="running"),
-    )
-    monkeypatch.setattr(module, "get_data_fetch_lock", lambda: _FakeLock())
-
-    payload = module.get_runtime_activity_status(db_session)
+    payload = _activity_status(db_session, monkeypatch, required=True, enabled=["US"], state="running")
 
     us_market = next(item for item in payload["markets"] if item["market"] == "US")
     assert us_market["status"] == "running"
@@ -337,14 +309,7 @@ def test_runtime_activity_counts_without_percent_are_still_determinate(
         percent=None,
         message="Refreshing fundamentals",
     )
-    monkeypatch.setattr(
-        module,
-        "get_runtime_bootstrap_status",
-        lambda _db: _bootstrap_status(required=True, enabled=["US"], state="running"),
-    )
-    monkeypatch.setattr(module, "get_data_fetch_lock", lambda: _FakeLock())
-
-    payload = module.get_runtime_activity_status(db_session)
+    payload = _activity_status(db_session, monkeypatch, required=True, enabled=["US"], state="running")
 
     us_market = next(item for item in payload["markets"] if item["market"] == "US")
     assert us_market["progress_mode"] == "determinate"
@@ -429,27 +394,14 @@ def test_runtime_activity_prefers_persisted_progress_over_heartbeat_overlay(
         percent=40.0,
         message="Batch 1/2 · refreshing prices",
     )
-    monkeypatch.setattr(
-        module,
-        "get_runtime_bootstrap_status",
-        lambda _db: _bootstrap_status(required=True, enabled=["US"], state="running"),
+    payload = _activity_status(
+        db_session,
+        monkeypatch,
+        required=True,
+        enabled=["US"],
+        state="running",
+        lock_tasks={"US": {"task_id": "task-us", "current": 10, "total": 100, "progress": 10.0}},
     )
-    monkeypatch.setattr(
-        module,
-        "get_data_fetch_lock",
-        lambda: _FakeLock(
-            {
-                "US": {
-                    "task_id": "task-us",
-                    "current": 10,
-                    "total": 100,
-                    "progress": 10.0,
-                }
-            }
-        ),
-    )
-
-    payload = module.get_runtime_activity_status(db_session)
 
     us_market = next(item for item in payload["markets"] if item["market"] == "US")
     assert us_market["progress_mode"] == "determinate"
@@ -487,14 +439,7 @@ def test_mark_market_activity_progress_does_not_overwrite_completed_record(
         percent=99.0,
         message="Refreshing fundamentals",
     )
-    monkeypatch.setattr(
-        module,
-        "get_runtime_bootstrap_status",
-        lambda _db: _bootstrap_status(required=False, enabled=["US"], state="ready"),
-    )
-    monkeypatch.setattr(module, "get_data_fetch_lock", lambda: _FakeLock())
-
-    payload = module.get_runtime_activity_status(db_session)
+    payload = _activity_status(db_session, monkeypatch, required=False, enabled=["US"], state="ready")
 
     us_market = next(item for item in payload["markets"] if item["market"] == "US")
     assert us_market["status"] == "completed"
@@ -528,14 +473,7 @@ def test_mark_market_activity_progress_does_not_overwrite_newer_running_task(
         percent=25.0,
         message="Refreshing fundamentals",
     )
-    monkeypatch.setattr(
-        module,
-        "get_runtime_bootstrap_status",
-        lambda _db: _bootstrap_status(required=True, enabled=["US"], state="running"),
-    )
-    monkeypatch.setattr(module, "get_data_fetch_lock", lambda: _FakeLock())
-
-    payload = module.get_runtime_activity_status(db_session)
+    payload = _activity_status(db_session, monkeypatch, required=True, enabled=["US"], state="running")
 
     us_market = next(item for item in payload["markets"] if item["market"] == "US")
     assert us_market["status"] == "running"
@@ -573,14 +511,7 @@ def test_mark_market_activity_completed_still_advances_same_task_running_record(
         total=100,
         message="Fundamentals refresh completed",
     )
-    monkeypatch.setattr(
-        module,
-        "get_runtime_bootstrap_status",
-        lambda _db: _bootstrap_status(required=False, enabled=["US"], state="ready"),
-    )
-    monkeypatch.setattr(module, "get_data_fetch_lock", lambda: _FakeLock())
-
-    payload = module.get_runtime_activity_status(db_session)
+    payload = _activity_status(db_session, monkeypatch, required=False, enabled=["US"], state="ready")
 
     us_market = next(item for item in payload["markets"] if item["market"] == "US")
     assert us_market["status"] == "completed"
@@ -618,14 +549,7 @@ def test_mark_market_activity_started_allows_new_same_stage_run_after_completion
         percent=5.0,
         message="Refreshing prices",
     )
-    monkeypatch.setattr(
-        module,
-        "get_runtime_bootstrap_status",
-        lambda _db: _bootstrap_status(required=False, enabled=["US"], state="ready"),
-    )
-    monkeypatch.setattr(module, "get_data_fetch_lock", lambda: _FakeLock())
-
-    payload = module.get_runtime_activity_status(db_session)
+    payload = _activity_status(db_session, monkeypatch, required=False, enabled=["US"], state="ready")
 
     us_market = next(item for item in payload["markets"] if item["market"] == "US")
     assert us_market["status"] == "running"
@@ -664,14 +588,7 @@ def test_mark_market_activity_started_allows_next_stage_after_completion(
         percent=5.0,
         message="Refreshing prices",
     )
-    monkeypatch.setattr(
-        module,
-        "get_runtime_bootstrap_status",
-        lambda _db: _bootstrap_status(required=True, enabled=["US"], state="running"),
-    )
-    monkeypatch.setattr(module, "get_data_fetch_lock", lambda: _FakeLock())
-
-    payload = module.get_runtime_activity_status(db_session)
+    payload = _activity_status(db_session, monkeypatch, required=True, enabled=["US"], state="running")
 
     us_market = next(item for item in payload["markets"] if item["market"] == "US")
     assert us_market["status"] == "running"
@@ -702,16 +619,9 @@ def test_failed_activity_is_sticky_against_later_stage_updates(db_session, monke
         task_id="groups-task",
         message="Calculating groups",
     )
-    monkeypatch.setattr(
-        module,
-        "get_runtime_bootstrap_status",
-        lambda _db: _bootstrap_status(
-            required=True, enabled=["HK"], primary="HK", state="failed"
-        ),
+    payload = _activity_status(
+        db_session, monkeypatch, required=True, enabled=["HK"], primary="HK", state="failed"
     )
-    monkeypatch.setattr(module, "get_data_fetch_lock", lambda: _FakeLock())
-
-    payload = module.get_runtime_activity_status(db_session)
 
     hk_market = next(item for item in payload["markets"] if item["market"] == "HK")
     assert hk_market["status"] == "failed"
@@ -744,16 +654,9 @@ def test_failed_group_activity_is_replaced_when_bootstrap_scan_starts(
         total=100,
         message="Running market scan",
     )
-    monkeypatch.setattr(
-        module,
-        "get_runtime_bootstrap_status",
-        lambda _db: _bootstrap_status(
-            required=True, enabled=["HK"], primary="HK", state="running"
-        ),
+    payload = _activity_status(
+        db_session, monkeypatch, required=True, enabled=["HK"], primary="HK", state="running"
     )
-    monkeypatch.setattr(module, "get_data_fetch_lock", lambda: _FakeLock())
-
-    payload = module.get_runtime_activity_status(db_session)
 
     hk_market = next(item for item in payload["markets"] if item["market"] == "HK")
     assert hk_market["status"] == "running"
@@ -791,16 +694,9 @@ def test_failed_hard_activity_is_not_replaced_when_bootstrap_scan_starts(
         total=100,
         message="Running market scan",
     )
-    monkeypatch.setattr(
-        module,
-        "get_runtime_bootstrap_status",
-        lambda _db: _bootstrap_status(
-            required=True, enabled=["HK"], primary="HK", state="failed"
-        ),
+    payload = _activity_status(
+        db_session, monkeypatch, required=True, enabled=["HK"], primary="HK", state="failed"
     )
-    monkeypatch.setattr(module, "get_data_fetch_lock", lambda: _FakeLock())
-
-    payload = module.get_runtime_activity_status(db_session)
 
     hk_market = next(item for item in payload["markets"] if item["market"] == "HK")
     assert hk_market["status"] == "failed"
@@ -829,16 +725,9 @@ def test_failed_activity_can_replace_completed_record(db_session, monkeypatch):
         task_id=None,
         message="Bootstrap scan did not publish",
     )
-    monkeypatch.setattr(
-        module,
-        "get_runtime_bootstrap_status",
-        lambda _db: _bootstrap_status(
-            required=True, enabled=["HK"], primary="HK", state="failed"
-        ),
+    payload = _activity_status(
+        db_session, monkeypatch, required=True, enabled=["HK"], primary="HK", state="failed"
     )
-    monkeypatch.setattr(module, "get_data_fetch_lock", lambda: _FakeLock())
-
-    payload = module.get_runtime_activity_status(db_session)
 
     hk_market = next(item for item in payload["markets"] if item["market"] == "HK")
     assert hk_market["status"] == "failed"
@@ -872,16 +761,9 @@ def test_runtime_activity_status_reports_active_background_bootstrap_progress_af
         total=3750,
         message="Refreshing fundamentals",
     )
-    monkeypatch.setattr(
-        module,
-        "get_runtime_bootstrap_status",
-        lambda _db: _bootstrap_status(
-            required=False, enabled=["US", "HK"], state="ready"
-        ),
+    payload = _activity_status(
+        db_session, monkeypatch, required=False, enabled=["US", "HK"], state="ready"
     )
-    monkeypatch.setattr(module, "get_data_fetch_lock", lambda: _FakeLock())
-
-    payload = module.get_runtime_activity_status(db_session)
 
     assert payload["bootstrap"]["state"] == "ready"
     assert payload["bootstrap"]["app_ready"] is True
@@ -926,16 +808,9 @@ def test_runtime_activity_status_does_not_stage_weight_running_price_refresh_at_
         total=3750,
         message="Refreshing market prices",
     )
-    monkeypatch.setattr(
-        module,
-        "get_runtime_bootstrap_status",
-        lambda _db: _bootstrap_status(
-            required=False, enabled=["US", "JP"], state="ready"
-        ),
+    payload = _activity_status(
+        db_session, monkeypatch, required=False, enabled=["US", "JP"], state="ready"
     )
-    monkeypatch.setattr(module, "get_data_fetch_lock", lambda: _FakeLock())
-
-    payload = module.get_runtime_activity_status(db_session)
 
     assert payload["bootstrap"]["state"] == "ready"
     assert payload["bootstrap"]["app_ready"] is True
@@ -975,29 +850,14 @@ def test_runtime_activity_status_ignores_non_bootstrap_secondary_progress_after_
         total=100,
         message="Refreshing daily prices",
     )
-    monkeypatch.setattr(
-        module,
-        "get_runtime_bootstrap_status",
-        lambda _db: _bootstrap_status(
-            required=False, enabled=["US", "HK"], state="ready"
-        ),
+    payload = _activity_status(
+        db_session,
+        monkeypatch,
+        required=False,
+        enabled=["US", "HK"],
+        state="ready",
+        lock_tasks={"HK": {"task_id": "task-hk", "current": 50, "total": 100, "progress": 50.0}},
     )
-    monkeypatch.setattr(
-        module,
-        "get_data_fetch_lock",
-        lambda: _FakeLock(
-            {
-                "HK": {
-                    "task_id": "task-hk",
-                    "current": 50,
-                    "total": 100,
-                    "progress": 50.0,
-                }
-            }
-        ),
-    )
-
-    payload = module.get_runtime_activity_status(db_session)
 
     assert payload["bootstrap"]["state"] == "ready"
     assert payload["bootstrap"]["progress_mode"] == "determinate"
@@ -1013,21 +873,9 @@ def test_runtime_activity_status_uses_bootstrap_queue_copy_for_secondary_markets
     db_session,
     monkeypatch,
 ):
-    from app.services import market_activity_service as module
-
-    monkeypatch.setattr(
-        module,
-        "get_runtime_bootstrap_status",
-        lambda _db: _bootstrap_status(
-            required=True,
-            enabled=["US", "HK"],
-            primary="US",
-            state="running",
-        ),
+    payload = _activity_status(
+        db_session, monkeypatch, required=True, enabled=["US", "HK"], primary="US", state="running"
     )
-    monkeypatch.setattr(module, "get_data_fetch_lock", lambda: _FakeLock())
-
-    payload = module.get_runtime_activity_status(db_session)
 
     hk_market = next(item for item in payload["markets"] if item["market"] == "HK")
     assert hk_market["status"] == "queued"
@@ -1058,16 +906,9 @@ def test_mark_market_activity_queued_does_not_overwrite_newer_state_for_same_tas
         task_id="secondary-task-123",
         message="Queued bootstrap for HK",
     )
-    monkeypatch.setattr(
-        module,
-        "get_runtime_bootstrap_status",
-        lambda _db: _bootstrap_status(
-            required=False, enabled=["US", "HK"], state="ready"
-        ),
+    payload = _activity_status(
+        db_session, monkeypatch, required=False, enabled=["US", "HK"], state="ready"
     )
-    monkeypatch.setattr(module, "get_data_fetch_lock", lambda: _FakeLock())
-
-    payload = module.get_runtime_activity_status(db_session)
 
     hk_market = next(item for item in payload["markets"] if item["market"] == "HK")
     assert hk_market["status"] == "running"
@@ -1096,35 +937,17 @@ def test_runtime_activity_status_surfaces_concurrent_market_refreshes(
         task_name="smart_refresh_cache",
         task_id="task-hk",
     )
-    monkeypatch.setattr(
-        module,
-        "get_runtime_bootstrap_status",
-        lambda _db: _bootstrap_status(
-            required=False, enabled=["US", "HK"], state="ready"
-        ),
+    payload = _activity_status(
+        db_session,
+        monkeypatch,
+        required=False,
+        enabled=["US", "HK"],
+        state="ready",
+        lock_tasks={
+            "US": {"task_id": "task-us", "current": 20, "total": 100, "progress": 20.0},
+            "HK": {"task_id": "task-hk", "current": 80, "total": 100, "progress": 80.0},
+        },
     )
-    monkeypatch.setattr(
-        module,
-        "get_data_fetch_lock",
-        lambda: _FakeLock(
-            {
-                "US": {
-                    "task_id": "task-us",
-                    "current": 20,
-                    "total": 100,
-                    "progress": 20.0,
-                },
-                "HK": {
-                    "task_id": "task-hk",
-                    "current": 80,
-                    "total": 100,
-                    "progress": 80.0,
-                },
-            }
-        ),
-    )
-
-    payload = module.get_runtime_activity_status(db_session)
 
     assert payload["summary"]["status"] == "active"
     assert payload["summary"]["active_market_count"] == 2
@@ -1148,16 +971,9 @@ def test_runtime_activity_status_surfaces_failed_market_stage(db_session, monkey
         task_id="task-jp",
         message="Group ranking failed",
     )
-    monkeypatch.setattr(
-        module,
-        "get_runtime_bootstrap_status",
-        lambda _db: _bootstrap_status(
-            required=False, enabled=["JP"], primary="JP", state="ready"
-        ),
+    payload = _activity_status(
+        db_session, monkeypatch, required=False, enabled=["JP"], primary="JP", state="ready"
     )
-    monkeypatch.setattr(module, "get_data_fetch_lock", lambda: _FakeLock())
-
-    payload = module.get_runtime_activity_status(db_session)
 
     assert payload["summary"]["status"] == "warning"
     jp_market = next(item for item in payload["markets"] if item["market"] == "JP")
@@ -1180,16 +996,9 @@ def test_runtime_activity_supports_scan_stage_progress(db_session, monkeypatch):
         total=100,
         message="Running market scan",
     )
-    monkeypatch.setattr(
-        module,
-        "get_runtime_bootstrap_status",
-        lambda _db: _bootstrap_status(
-            required=False, enabled=["HK"], primary="HK", state="ready"
-        ),
+    payload = _activity_status(
+        db_session, monkeypatch, required=False, enabled=["HK"], primary="HK", state="ready"
     )
-    monkeypatch.setattr(module, "get_data_fetch_lock", lambda: _FakeLock())
-
-    payload = module.get_runtime_activity_status(db_session)
 
     hk_market = next(item for item in payload["markets"] if item["market"] == "HK")
     assert hk_market["stage_key"] == "scan"
@@ -1201,16 +1010,7 @@ def test_runtime_activity_supports_scan_stage_progress(db_session, monkeypatch):
 def test_runtime_activity_status_exposes_bootstrap_stage_metadata(
     db_session, monkeypatch
 ):
-    from app.services import market_activity_service as module
-
-    monkeypatch.setattr(
-        module,
-        "get_runtime_bootstrap_status",
-        lambda _db: _bootstrap_status(required=True, enabled=["US"], state="running"),
-    )
-    monkeypatch.setattr(module, "get_data_fetch_lock", lambda: _FakeLock())
-
-    payload = module.get_runtime_activity_status(db_session)
+    payload = _activity_status(db_session, monkeypatch, required=True, enabled=["US"], state="running")
 
     assert payload["bootstrap"]["stages"] == [
         {"key": "universe", "label": "Universe Refresh"},
@@ -1240,18 +1040,9 @@ def test_completed_market_rs_stage_contributes_bootstrap_progress() -> None:
 def test_runtime_activity_status_returns_idle_markets_without_activity(
     db_session, monkeypatch
 ):
-    from app.services import market_activity_service as module
-
-    monkeypatch.setattr(
-        module,
-        "get_runtime_bootstrap_status",
-        lambda _db: _bootstrap_status(
-            required=False, enabled=["US", "HK"], state="ready"
-        ),
+    payload = _activity_status(
+        db_session, monkeypatch, required=False, enabled=["US", "HK"], state="ready"
     )
-    monkeypatch.setattr(module, "get_data_fetch_lock", lambda: _FakeLock())
-
-    payload = module.get_runtime_activity_status(db_session)
 
     assert payload["summary"]["status"] == "idle"
     assert payload["summary"]["active_market_count"] == 0
@@ -1273,16 +1064,9 @@ def test_runtime_activity_status_hides_background_warning_when_secondary_work_is
         task_id="task-us",
         message="Primary bootstrap complete",
     )
-    monkeypatch.setattr(
-        module,
-        "get_runtime_bootstrap_status",
-        lambda _db: _bootstrap_status(
-            required=False, enabled=["US", "HK"], state="ready"
-        ),
+    payload = _activity_status(
+        db_session, monkeypatch, required=False, enabled=["US", "HK"], state="ready"
     )
-    monkeypatch.setattr(module, "get_data_fetch_lock", lambda: _FakeLock())
-
-    payload = module.get_runtime_activity_status(db_session)
 
     assert payload["bootstrap"]["background_warning"] is None
 
