@@ -123,6 +123,7 @@ def _prepare(evidence: SocialEvidenceInput, window_days: int, now: datetime) -> 
     accepted = []
     authors = defaultdict(deque)
     urls, claims = set(), set()
+    duplicates = set(evidence.duplicate_post_keys)
     for post in unique:
         key = _post_key(post)
         reason = None
@@ -134,6 +135,8 @@ def _prepare(evidence: SocialEvidenceInput, window_days: int, now: datetime) -> 
             reason = "repeated_canonical_url"
         elif post.canonical_claim_key and post.canonical_claim_key in claims:
             reason = "copied_claim"
+        elif key in duplicates:
+            reason = "flagged_duplicate"
         recent = authors[post.author_handle.casefold().lstrip("@")]
         while recent and recent[0] <= post.created_at - timedelta(hours=24):
             recent.popleft()
