@@ -13,10 +13,11 @@ from sqlalchemy.orm import sessionmaker
 from app.database import Base
 from app.domain.relative_strength import (
     BALANCED_RS_FORMULA_VERSION,
-    LEGACY_RS_FORMULA_VERSION,
+    BALANCED_RS_PRICE_BASIS,
+    BALANCED_RS_SNAPSHOT_SCHEMA_VERSION,
 )
-from app.infra.db.models.feature_store import FeatureRun
-from app.infra.db.models.relative_strength import MarketRsFormulaPointer, MarketRsRun
+from app.infra.db.models.feature_store import FeatureRun, FeatureRunPointer
+from app.infra.db.models.relative_strength import MarketRsRun
 from app.models.app_settings import AppSetting
 from app.models.industry import IBDGroupRank
 from app.models.market_breadth import MarketBreadth
@@ -33,6 +34,11 @@ from app.services.bootstrap_readiness_service import (
     PRE_BOOTSTRAP_SEED_IMPORT_SCHEMA_VERSION,
     BootstrapReadinessService,
 )
+from app.services.feature_run_rs_identity import resolve_published_balanced_publication
+
+
+# Rows the database still holds from before the single-formula cutover.
+STORED_LEGACY_FORMULA = "legacy-linear-v1"
 
 
 class FakeBootstrapReadinessService(BootstrapReadinessService):
@@ -130,6 +136,66 @@ def seed_scan(
     db.commit()
 
 
+def seed_balanced_publication(
+    db,
+    *,
+    market: str = "US",
+    rs_status: str = "completed",
+    feature_status: str = "published",
+    snapshot_contract: bool = True,
+    with_run_id: bool = True,
+    rs_as_of_date: date = date(2026, 5, 1),
+    eligible_symbol_count: int = 1,
+) -> None:
+    published_at = datetime(2026, 5, 1, 21, 0, tzinfo=timezone.utc)
+    rs_run = MarketRsRun(
+        market=market,
+        as_of_date=rs_as_of_date,
+        formula_version=BALANCED_RS_FORMULA_VERSION,
+        status=rs_status,
+        benchmark_symbol="SPY",
+        benchmark_as_of_date=date(2026, 5, 1),
+        universe_hash="hash",
+        expected_symbol_count=eligible_symbol_count,
+        eligible_symbol_count=eligible_symbol_count,
+        excluded_symbol_count=0,
+        diagnostics_json=(
+            {
+                "price_basis": BALANCED_RS_PRICE_BASIS,
+                "rs_snapshot_schema_version": BALANCED_RS_SNAPSHOT_SCHEMA_VERSION,
+            }
+            if snapshot_contract
+            else {}
+        ),
+    )
+    db.add(rs_run)
+    db.flush()
+    config = {
+        "market": market,
+        "rs_formula_version": BALANCED_RS_FORMULA_VERSION,
+        "rs_as_of_date": "2026-05-01",
+        "rs_universe_size": 1,
+    }
+    if with_run_id:
+        config["market_rs_run_id"] = rs_run.id
+    feature_run = FeatureRun(
+        as_of_date=date(2026, 5, 1),
+        run_type="daily_snapshot",
+        status=feature_status,
+        published_at=published_at if feature_status == "published" else None,
+        config_json=config,
+    )
+    db.add(feature_run)
+    db.flush()
+    db.add(
+        FeatureRunPointer(
+            key=f"latest_published_market:{market}",
+            run_id=feature_run.id,
+        )
+    )
+    db.commit()
+
+
 def test_readiness_requires_core_data_and_auto_scan_for_every_enabled_market() -> None:
     service = FakeBootstrapReadinessService(
         core_ready={"US": True, "HK": True},
@@ -216,18 +282,6 @@ def test_sql_service_ignores_inactive_universe_rows_for_core_readiness(readiness
     assert result.market_results["US"].scan_ready is True
 
 
-def test_pristine_installation_ignores_formula_pointer_provisioning(readiness_db) -> None:
-    readiness_db.add(
-        MarketRsFormulaPointer(
-            market="US",
-            formula_version=LEGACY_RS_FORMULA_VERSION,
-        )
-    )
-    readiness_db.commit()
-
-    assert BootstrapReadinessService().is_pristine_installation(readiness_db) is True
-
-
 def test_pristine_installation_rejects_inactive_universe_rows(readiness_db) -> None:
     readiness_db.add(
         StockUniverse(
@@ -282,12 +336,12 @@ def test_pristine_installation_rejects_inactive_universe_rows(readiness_db) -> N
             date=date(2026, 5, 1),
             rank=1,
             avg_rs_rating=90,
-            rs_formula_version=LEGACY_RS_FORMULA_VERSION,
+            rs_formula_version=STORED_LEGACY_FORMULA,
         ),
         MarketRsRun(
             market="US",
             as_of_date=date(2026, 5, 1),
-            formula_version=LEGACY_RS_FORMULA_VERSION,
+            formula_version=STORED_LEGACY_FORMULA,
             status="completed",
             benchmark_symbol="SPY",
             benchmark_as_of_date=date(2026, 5, 1),
@@ -490,12 +544,12 @@ def test_pre_bootstrap_seed_import_keeps_valid_old_startup_marker(
             date=date(2026, 5, 1),
             rank=1,
             avg_rs_rating=90,
-            rs_formula_version=LEGACY_RS_FORMULA_VERSION,
+            rs_formula_version=STORED_LEGACY_FORMULA,
         ),
         MarketRsRun(
             market="US",
             as_of_date=date(2026, 5, 1),
-            formula_version=LEGACY_RS_FORMULA_VERSION,
+            formula_version=STORED_LEGACY_FORMULA,
             status="completed",
             benchmark_symbol="SPY",
             benchmark_as_of_date=date(2026, 5, 1),
@@ -533,41 +587,173 @@ def test_pre_bootstrap_seed_import_rejects_bootstrap_outputs(
     assert service.is_pre_bootstrap_seed_import_installation(readiness_db) is False
 
 
-def test_market_readiness_rejects_formula_pointer_mismatch(readiness_db) -> None:
+def test_market_readiness_requires_a_committed_balanced_publication(readiness_db) -> None:
     seed_core_market_data(readiness_db)
     seed_scan(readiness_db)
+    # The shadow backfill's state: completed balanced runs, nothing published.
     readiness_db.add(
-        MarketRsFormulaPointer(
+        MarketRsRun(
             market="US",
-            formula_version=LEGACY_RS_FORMULA_VERSION,
+            as_of_date=date(2026, 4, 30),
+            formula_version=BALANCED_RS_FORMULA_VERSION,
+            status="completed",
+            benchmark_symbol="SPY",
+            benchmark_as_of_date=date(2026, 4, 30),
+            universe_hash="hash",
+            expected_symbol_count=1,
+            eligible_symbol_count=1,
+            excluded_symbol_count=0,
+            diagnostics_json={
+                "price_basis": BALANCED_RS_PRICE_BASIS,
+                "rs_snapshot_schema_version": BALANCED_RS_SNAPSHOT_SCHEMA_VERSION,
+            },
         )
     )
     readiness_db.commit()
+
+    before = BootstrapReadinessService().evaluate(
+        readiness_db,
+        enabled_markets=["US"],
+        balanced_publication_markets=["US"],
+    ).market_results["US"]
+
+    assert before.core_ready is True
+    assert before.scan_ready is True
+    assert before.rs_ready is False
+    assert before.ready is False
+
+    seed_balanced_publication(readiness_db)
+
+    after = BootstrapReadinessService().evaluate(
+        readiness_db,
+        enabled_markets=["US"],
+        balanced_publication_markets=["US"],
+    ).market_results["US"]
+
+    assert after.rs_ready is True
+    assert after.ready is True
+
+
+@pytest.mark.parametrize(
+    "publication_kwargs",
+    [
+        {"feature_status": "completed"},
+        {"rs_status": "failed"},
+        {"snapshot_contract": False},
+        {"with_run_id": False},
+        {"rs_as_of_date": date(2026, 4, 30)},
+        {"eligible_symbol_count": 2},
+    ],
+    ids=[
+        "feature-run-not-published",
+        "market-rs-run-not-completed",
+        "old-snapshot-contract",
+        "no-market-rs-run-id",
+        "market-rs-run-for-another-date",
+        "universe-size-differs",
+    ],
+)
+def test_market_readiness_rejects_an_incomplete_publication(
+    readiness_db,
+    publication_kwargs,
+) -> None:
+    seed_core_market_data(readiness_db)
+    seed_scan(readiness_db)
+    seed_balanced_publication(readiness_db, **publication_kwargs)
 
     result = BootstrapReadinessService().evaluate(
         readiness_db,
         enabled_markets=["US"],
-        expected_formula_versions={"US": BALANCED_RS_FORMULA_VERSION},
+        balanced_publication_markets=["US"],
     ).market_results["US"]
 
-    assert result.core_ready is True
-    assert result.scan_ready is True
     assert result.rs_ready is False
     assert result.ready is False
 
 
-def test_market_readiness_keeps_legacy_compatibility_without_expectation(
+def test_market_readiness_rejects_a_pointer_to_another_markets_publication(
     readiness_db,
 ) -> None:
+    seed_balanced_publication(readiness_db, market="HK")
+    hk_pointer = readiness_db.get(FeatureRunPointer, "latest_published_market:HK")
+    readiness_db.add(
+        FeatureRunPointer(key="latest_published_market:US", run_id=hk_pointer.run_id)
+    )
+    readiness_db.commit()
+    service = BootstrapReadinessService()
+
+    assert (
+        service.has_balanced_publication(readiness_db, "US"),
+        service.has_balanced_publication(readiness_db, "HK"),
+    ) == (False, True)
+
+
+def test_published_balanced_publication_normalizes_the_requested_market(
+    readiness_db,
+) -> None:
+    seed_balanced_publication(readiness_db, market="HK")
+
+    resolution = resolve_published_balanced_publication(readiness_db, " hk ")
+
+    assert resolution is not None
+    assert (resolution.identity.market, resolution.market_rs_run_id) == ("HK", 1)
+
+
+def test_runtime_bootstrap_status_stays_failed_until_the_publication_commits(
+    readiness_db,
+    monkeypatch,
+) -> None:
+    from types import SimpleNamespace
+
+    from app.services import runtime_preferences_service as module
+
     seed_core_market_data(readiness_db)
     seed_scan(readiness_db)
     readiness_db.add(
-        MarketRsFormulaPointer(
+        MarketRsRun(
             market="US",
-            formula_version=LEGACY_RS_FORMULA_VERSION,
+            as_of_date=date(2026, 4, 30),
+            formula_version=BALANCED_RS_FORMULA_VERSION,
+            status="completed",
+            benchmark_symbol="SPY",
+            benchmark_as_of_date=date(2026, 4, 30),
+            universe_hash="hash",
+            expected_symbol_count=1,
+            eligible_symbol_count=1,
+            excluded_symbol_count=0,
+            diagnostics_json={},
         )
     )
     readiness_db.commit()
+    prefs = module.RuntimePreferences(
+        primary_market="US",
+        enabled_markets=["US"],
+        bootstrap_state="failed",
+    )
+    manifest = SimpleNamespace(pending_balanced_activation_markets=("US",))
+    monkeypatch.setattr(module, "get_runtime_preferences", lambda _db: prefs)
+    monkeypatch.setattr(
+        module,
+        "BootstrapRunManifestRepository",
+        lambda: SimpleNamespace(load=lambda _db: manifest),
+    )
+
+    status = module.get_runtime_bootstrap_status(readiness_db)
+
+    assert status.bootstrap_state == "failed"
+    assert status.bootstrap_required is True
+
+    seed_balanced_publication(readiness_db)
+
+    status = module.get_runtime_bootstrap_status(readiness_db)
+
+    assert status.bootstrap_state == "ready"
+    assert status.bootstrap_required is False
+
+
+def test_market_readiness_is_rs_ready_without_expectation(readiness_db) -> None:
+    seed_core_market_data(readiness_db)
+    seed_scan(readiness_db)
 
     result = BootstrapReadinessService().evaluate(
         readiness_db,

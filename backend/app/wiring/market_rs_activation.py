@@ -30,7 +30,6 @@ def build_balanced_feature_snapshot(*, market: str, through_date: date) -> int:
         static_daily_mode=True,
         ignore_runtime_market_gate=True,
         skip_if_published=False,
-        rs_formula_version_override=BALANCED_RS_FORMULA_VERSION,
     )
     if not isinstance(result, dict) or result.get("status") != "published":
         raise MarketRsActivationExecutionError(
@@ -57,7 +56,6 @@ def export_static_v3(
         static_staging_dir,
         clean=True,
         markets=(market,),
-        rs_formula_version_overrides={market: BALANCED_RS_FORMULA_VERSION},
         feature_run_ids_by_market={market: feature_run_id},
     )
 
@@ -75,10 +73,7 @@ def publish_live_groups(identity: GroupSnapshotIdentity) -> None:
             },
         )
         return
-    safe_publish_groups_bootstrap(
-        expected_formula_version=identity.formula_version,
-        expected_through_date=identity.as_of_date,
-    )
+    safe_publish_groups_bootstrap(expected_through_date=identity.as_of_date)
 
 
 def create_market_rs_activation_executor(

@@ -10,7 +10,6 @@ from sqlalchemy.orm import Session
 
 from ..domain.markets import normalize_market_codes
 from ..domain.markets.catalog import get_market_catalog
-from ..domain.relative_strength import BALANCED_RS_FORMULA_VERSION
 from ..models.app_settings import AppSetting
 from .bootstrap_readiness_service import (
     BootstrapReadiness,  # noqa: F401 - compatibility export for tests and callers
@@ -273,18 +272,18 @@ def get_runtime_bootstrap_status(db: Session) -> RuntimeBootstrapStatus:
     enabled_markets = list(prefs.enabled_markets)
     manifest = BootstrapRunManifestRepository().load(db)
     enabled_market_set = set(enabled_markets)
-    expected_formula_versions = {
-        market: BALANCED_RS_FORMULA_VERSION
+    balanced_publication_markets = [
+        market
         for market in (
             manifest.pending_balanced_activation_markets if manifest is not None else ()
         )
         if market in enabled_market_set
-    }
+    ]
     readiness = get_bootstrap_readiness_service().evaluate(
         db,
         enabled_markets=enabled_markets,
         bootstrap_started_at=prefs.bootstrap_started_at,
-        expected_formula_versions=expected_formula_versions or None,
+        balanced_publication_markets=balanced_publication_markets,
     )
     empty_system = readiness.empty_system
 

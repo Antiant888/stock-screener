@@ -188,7 +188,6 @@ class FeatureRunGroupEnrichmentService:
                 "missing_industry_rows": missing_industry_rows,
                 "missing_rank_rows": missing_rank_rows,
                 "rs_formula_version": identity.formula_version,
-                "identity_source": resolution.identity_source,
             }
             if not group_rankings_supported:
                 result["status"] = "skipped"

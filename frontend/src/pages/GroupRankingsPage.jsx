@@ -75,7 +75,6 @@ const GroupMatrixPanel = lazy(() => import('../features/groups/matrix/GroupMatri
 
 const EMPTY_AS_OF_ARGS = [];
 const REASON_HINTS = {
-  warmup_incomplete: 'Wait for the post-close cache warmup to finish, then retry.',
   missing_ibd_mappings: 'Load IBD industry group mappings into the database first.',
   no_groups_ranked: 'Run a price-data backfill so stocks have at least 252 days of history.',
   invalid_date: 'Provide a valid YYYY-MM-DD date.',

@@ -18,7 +18,8 @@ from app.config import settings
 from app.database import Base
 from app.domain.relative_strength import (
     BALANCED_RS_FORMULA_VERSION,
-    LEGACY_RS_FORMULA_VERSION,
+    BALANCED_RS_PRICE_BASIS,
+    BALANCED_RS_SNAPSHOT_SCHEMA_VERSION,
 )
 from app.domain.scanning.defaults import (
     get_bootstrap_scan_profile,
@@ -29,6 +30,7 @@ from app.infra.db.models.feature_store import (
     FeatureRunPointer,
     StockFeatureDaily,
 )
+from app.infra.db.models.relative_strength import MarketRsRun
 from app.interfaces.tasks.feature_store_tasks import (
     BOOTSTRAP_SCAN_COVERAGE_MAX_RETRIES,
     FEATURE_SNAPSHOT_TOTAL_MAX_RETRIES,
@@ -47,6 +49,45 @@ from app.models.industry import IBDGroupRank, IBDIndustryGroup
 from app.models.scan_result import Scan
 from app.schemas.universe import UniverseType
 from app.services.market_taxonomy_service import MarketTaxonomyEntry
+
+
+_EXACT_RS_RUN = SimpleNamespace(
+    id=42,
+    eligible_symbol_count=2,
+    diagnostics_json={
+        "price_basis": BALANCED_RS_PRICE_BASIS,
+        "rs_snapshot_schema_version": BALANCED_RS_SNAPSHOT_SCHEMA_VERSION,
+    },
+)
+
+
+def _completed_rs_run(market: str, as_of: date) -> MarketRsRun:
+    """The completed run ``_EXACT_RS_RUN`` stands for, as a persisted row."""
+    return MarketRsRun(
+        id=_EXACT_RS_RUN.id,
+        market=market,
+        as_of_date=as_of,
+        formula_version=BALANCED_RS_FORMULA_VERSION,
+        status="completed",
+        benchmark_symbol="SPY",
+        benchmark_as_of_date=as_of,
+        universe_hash="hash",
+        expected_symbol_count=_EXACT_RS_RUN.eligible_symbol_count,
+        eligible_symbol_count=_EXACT_RS_RUN.eligible_symbol_count,
+        excluded_symbol_count=0,
+        diagnostics_json=dict(_EXACT_RS_RUN.diagnostics_json),
+    )
+
+
+def _published_rs_config(market: str, as_of: str) -> dict:
+    """Feature run metadata that matches ``_EXACT_RS_RUN`` on ``as_of``."""
+    return {
+        "market": market,
+        "rs_formula_version": BALANCED_RS_FORMULA_VERSION,
+        "market_rs_run_id": _EXACT_RS_RUN.id,
+        "rs_as_of_date": as_of,
+        "rs_universe_size": _EXACT_RS_RUN.eligible_symbol_count,
+    }
 
 
 class _FakeTask:
@@ -79,12 +120,12 @@ _TASK_BODY = inspect.unwrap(build_daily_snapshot.run)
 
 @pytest.fixture(autouse=True)
 def _default_task_rs_dependencies(request, monkeypatch):
-    """Keep unrelated task tests on the explicit legacy compatibility path."""
-    monkeypatch.setattr(
-        "app.infra.db.repositories.market_rs_repo.MarketRsRunRepository.active_formula",
-        lambda self, db, *, market: LEGACY_RS_FORMULA_VERSION,
-    )
+    """Give snapshot-task tests an exact completed balanced run for every market."""
     if request.node.name.startswith("test_build_daily_snapshot"):
+        monkeypatch.setattr(
+            "app.infra.db.repositories.market_rs_repo.MarketRsRunRepository.get_completed_exact",
+            lambda self, db, *, market, as_of_date, formula_version, load_rows=True: _EXACT_RS_RUN,
+        )
         monkeypatch.setattr(
             "app.interfaces.tasks.feature_store_tasks._enrich_feature_run_with_ibd_metadata",
             lambda **_kwargs: {"updated_rows": 0},
@@ -154,10 +195,7 @@ def test_build_daily_snapshot_normalizes_default_active_universe():
     ) as mock_date:
         mock_date.today.return_value = date(2026, 3, 16)
 
-        result = _TASK_BODY(
-            _FakeTask(),
-            rs_formula_version_override=BALANCED_RS_FORMULA_VERSION,
-        )
+        result = _TASK_BODY(_FakeTask())
 
     assert result["status"] == "published"
     assert result["row_count"] == 2
@@ -165,10 +203,6 @@ def test_build_daily_snapshot_normalizes_default_active_universe():
     assert fake_use_case.received_cmd is not None
     assert fake_use_case.received_cmd.universe_def.type == UniverseType.MARKET
     assert fake_use_case.received_cmd.universe_def.market.value == "US"
-    assert (
-        fake_use_case.received_cmd.rs_formula_version_override
-        == BALANCED_RS_FORMULA_VERSION
-    )
 
 
 def test_build_daily_snapshot_returns_failure_diagnostics(monkeypatch):
@@ -371,7 +405,7 @@ def test_build_daily_snapshot_skip_if_published_requires_exact_signature_match()
                     SimpleNamespace(
                         id=41,
                         as_of_date=date(2026, 3, 16),
-                        config_json={"market": "US"},
+                        config_json=_published_rs_config("US", "2026-03-16"),
                     ),
                 )[1]
             )
@@ -443,7 +477,7 @@ def test_build_daily_snapshot_bootstrap_skip_if_published_uses_cache_only_suppor
                     SimpleNamespace(
                         id=51,
                         as_of_date=date(2026, 3, 16),
-                        config_json={"market": "US"},
+                        config_json=_published_rs_config("US", "2026-03-16"),
                     ),
                 )[1] if kwargs["universe_hash"] == "AAPL,MSFT" else None
             )
@@ -516,7 +550,7 @@ def test_build_daily_snapshot_skip_if_published_repairs_requested_pointer():
                 find_latest_published_exact=lambda **_kwargs: SimpleNamespace(
                     id=84,
                     as_of_date=date(2026, 3, 16),
-                    config_json={"market": "HK"},
+                    config_json=_published_rs_config("HK", "2026-03-16"),
                 )
             )
 
@@ -963,6 +997,7 @@ def test_enrich_feature_run_with_ibd_metadata_updates_details_json():
             StockFeatureDaily.__table__,
             IBDIndustryGroup.__table__,
             IBDGroupRank.__table__,
+            MarketRsRun.__table__,
         ],
     )
     session_factory = sessionmaker(bind=engine, autocommit=False, autoflush=False)
@@ -974,9 +1009,13 @@ def test_enrich_feature_run_with_ibd_metadata_updates_details_json():
                 as_of_date=date(2026, 4, 2),
                 run_type="daily_snapshot",
                 status="published",
-                config_json={"universe": {"market": "US"}},
+                config_json={
+                    "universe": {"market": "US"},
+                    **_published_rs_config("US", "2026-04-02"),
+                },
             )
         )
+        db.add(_completed_rs_run("US", date(2026, 4, 2)))
         db.add_all(
             [
                 StockFeatureDaily(
@@ -1009,7 +1048,8 @@ def test_enrich_feature_run_with_ibd_metadata_updates_details_json():
                     date=date(2026, 4, 2),
                     rank=1,
                     avg_rs_rating=95.0,
-                    rs_formula_version=LEGACY_RS_FORMULA_VERSION,
+                    rs_formula_version=BALANCED_RS_FORMULA_VERSION,
+                    market_rs_run_id=_EXACT_RS_RUN.id,
                 ),
             ]
         )
@@ -1047,6 +1087,7 @@ def test_enrich_feature_run_with_ibd_metadata_batches_feature_rows():
             StockFeatureDaily.__table__,
             IBDIndustryGroup.__table__,
             IBDGroupRank.__table__,
+            MarketRsRun.__table__,
         ],
     )
     session_factory = sessionmaker(bind=engine, autocommit=False, autoflush=False)
@@ -1058,9 +1099,13 @@ def test_enrich_feature_run_with_ibd_metadata_batches_feature_rows():
                 as_of_date=date(2026, 4, 2),
                 run_type="daily_snapshot",
                 status="published",
-                config_json={"universe": {"market": "US"}},
+                config_json={
+                    "universe": {"market": "US"},
+                    **_published_rs_config("US", "2026-04-02"),
+                },
             )
         )
+        db.add(_completed_rs_run("US", date(2026, 4, 2)))
         feature_rows = [
             StockFeatureDaily(
                 run_id=24,
@@ -1085,7 +1130,8 @@ def test_enrich_feature_run_with_ibd_metadata_batches_feature_rows():
                 date=date(2026, 4, 2),
                 rank=1,
                 avg_rs_rating=90.0,
-                rs_formula_version=LEGACY_RS_FORMULA_VERSION,
+                rs_formula_version=BALANCED_RS_FORMULA_VERSION,
+                market_rs_run_id=_EXACT_RS_RUN.id,
             )
         )
         db.commit()
@@ -1131,6 +1177,7 @@ def test_enrich_feature_run_with_ibd_metadata_uses_market_taxonomy_for_non_us_ru
             StockFeatureDaily.__table__,
             IBDIndustryGroup.__table__,
             IBDGroupRank.__table__,
+            MarketRsRun.__table__,
         ],
     )
     session_factory = sessionmaker(bind=engine, autocommit=False, autoflush=False)
@@ -1142,9 +1189,13 @@ def test_enrich_feature_run_with_ibd_metadata_uses_market_taxonomy_for_non_us_ru
                 as_of_date=date(2026, 4, 2),
                 run_type="daily_snapshot",
                 status="published",
-                config_json={"universe": {"market": "HK"}},
+                config_json={
+                    "universe": {"market": "HK"},
+                    **_published_rs_config("HK", "2026-04-02"),
+                },
             )
         )
+        db.add(_completed_rs_run("HK", date(2026, 4, 2)))
         db.add(
             StockFeatureDaily(
                 run_id=22,
@@ -1163,7 +1214,8 @@ def test_enrich_feature_run_with_ibd_metadata_uses_market_taxonomy_for_non_us_ru
                 date=date(2026, 4, 2),
                 rank=1,
                 avg_rs_rating=91.0,
-                rs_formula_version=LEGACY_RS_FORMULA_VERSION,
+                rs_formula_version=BALANCED_RS_FORMULA_VERSION,
+                market_rs_run_id=_EXACT_RS_RUN.id,
             ),
             IBDGroupRank(
                 market="HK",
@@ -1171,7 +1223,8 @@ def test_enrich_feature_run_with_ibd_metadata_uses_market_taxonomy_for_non_us_ru
                 date=date(2026, 4, 2),
                 rank=2,
                 avg_rs_rating=88.0,
-                rs_formula_version=LEGACY_RS_FORMULA_VERSION,
+                rs_formula_version=BALANCED_RS_FORMULA_VERSION,
+                market_rs_run_id=_EXACT_RS_RUN.id,
             ),
         ])
         db.commit()
@@ -1219,9 +1272,13 @@ def test_enrich_feature_run_with_ibd_metadata_overrides_non_us_sector():
                 as_of_date=date(2026, 4, 2),
                 run_type="daily_snapshot",
                 status="published",
-                config_json={"universe": {"market": "JP"}},
+                config_json={
+                    "universe": {"market": "JP"},
+                    **_published_rs_config("JP", "2026-04-02"),
+                },
             )
         )
+        db.add(_completed_rs_run("JP", date(2026, 4, 2)))
         db.add(
             StockFeatureDaily(
                 run_id=23,
@@ -1243,7 +1300,8 @@ def test_enrich_feature_run_with_ibd_metadata_overrides_non_us_sector():
                 date=date(2026, 4, 2),
                 rank=1,
                 avg_rs_rating=90.0,
-                rs_formula_version=LEGACY_RS_FORMULA_VERSION,
+                rs_formula_version=BALANCED_RS_FORMULA_VERSION,
+                market_rs_run_id=_EXACT_RS_RUN.id,
             )
         )
         db.commit()
@@ -1287,6 +1345,7 @@ def test_repair_current_us_group_metadata_updates_latest_published_run_and_repub
             StockFeatureDaily.__table__,
             IBDIndustryGroup.__table__,
             IBDGroupRank.__table__,
+            MarketRsRun.__table__,
             Scan.__table__,
         ],
     )
@@ -1299,9 +1358,13 @@ def test_repair_current_us_group_metadata_updates_latest_published_run_and_repub
                 as_of_date=date(2026, 4, 2),
                 run_type="daily_snapshot",
                 status="published",
-                config_json={"universe": {"market": "US"}},
+                config_json={
+                    "universe": {"market": "US"},
+                    **_published_rs_config("US", "2026-04-02"),
+                },
             )
         )
+        db.add(_completed_rs_run("US", date(2026, 4, 2)))
         db.add(FeatureRunPointer(key="latest_published_market:US", run_id=31))
         db.add(
             StockFeatureDaily(
@@ -1329,6 +1392,7 @@ def test_repair_current_us_group_metadata_updates_latest_published_run_and_repub
                 date=date(2026, 4, 2),
                 rank=1,
                 avg_rs_rating=95.0,
+                market_rs_run_id=_EXACT_RS_RUN.id,
             )
         )
         db.commit()
@@ -1803,18 +1867,14 @@ _STALE_RUN_31 = dict(run_id=31, rs_date="2026-09-18", pointer="latest_published_
             32,
             id="prefers_the_newest_run_that_serves_the_ranking_date",
         ),
-        # Legacy runs keep working: the resolver encodes "any date is fine".
-        # This is about *serving*, not about *coverage*. A hand-written
-        # ``rs_as_of_date`` comparison would silently drop these runs, which is why
-        # the identity check delegates to the identity resolver. The run still has
-        # to cover the ranking date via ``as_of_date``, which is set explicitly
-        # here; ``does_not_reach_an_old_legacy_run_through_the_batch`` is the
-        # counter-case that pins it.
+        # A run with no RS identity cannot serve any ranking date. Enrichment picks
+        # the group snapshot by the run's Market RS identity, so a run that never
+        # recorded one is skipped even though its ``as_of_date`` covers the date.
         pytest.param(
             [dict(run_id=33, rs_date=None, pointer="latest_published_market:US", as_of_date=date(2026, 9, 24))],
             date(2026, 9, 24),
-            33,
-            id="accepts_a_legacy_run_without_rs_metadata",
+            None,
+            id="skips_a_run_without_rs_metadata",
         ),
         pytest.param(
             [dict(run_id=34, rs_date="2026-09-24", pointer="latest_published_market:US", market="DE")],
@@ -1833,11 +1893,10 @@ _STALE_RUN_31 = dict(run_id=31, rs_date="2026-09-18", pointer="latest_published_
             12,
             id="falls_through_stale_pointers_to_the_published_batch",
         ),
-        # A months-old legacy run must not be picked for a later ranking date.
-        # Legacy runs carry no ``rs_as_of_date`` and therefore *serve* any date, so
-        # a date-blind batch scan reached a pre-migration run from months ago.
-        # Enrichment would then write today's group ranks into that run's rows and
-        # republish that run's scan. Today's snapshot does not exist yet.
+        # A months-old run must not be picked for a later ranking date. A date-blind
+        # batch scan reached a pre-cutover run from months ago. Enrichment would then
+        # write today's group ranks into that run's rows and republish that run's
+        # scan. Today's snapshot does not exist yet.
         pytest.param(
             [
                 # Pre-migration run: no RS metadata, covers its own long-past date.
@@ -1858,23 +1917,16 @@ _STALE_RUN_31 = dict(run_id=31, rs_date="2026-09-18", pointer="latest_published_
             ],
             date(2026, 9, 22),
             None,
-            id="does_not_reach_an_old_legacy_run_through_the_batch",
-        ),
-        # The coverage rule must not drop a legacy run for the date actually asked for.
-        pytest.param(
-            [dict(run_id=5, rs_date=None, pointer="latest_published_market:US", as_of_date=date(2026, 9, 22))],
-            date(2026, 9, 22),
-            5,
-            id="keeps_a_legacy_run_that_covers_the_ranking_date",
+            id="does_not_reach_an_old_run_through_the_batch",
         ),
         # A pointer naming a run from another date must be skipped. The batch filter
         # cannot help here: the pointer is collected first, so the old run never
-        # passes through the date-limited query. Legacy runs serve any date, so only
-        # the coverage check keeps it out. Without it the resolver returns a run from
-        # months ago and enrichment writes today's group ranks into that run's rows.
+        # passes through the date-limited query. The coverage check keeps it out.
+        # Without it the resolver returns a run from months ago and enrichment
+        # writes today's group ranks into that run's rows.
         pytest.param(
             [
-                # Pointer names a legacy run that covers a long-past date.
+                # Pointer names an old run that covers a long-past date.
                 dict(
                     run_id=5,
                     rs_date=None,
@@ -1928,6 +1980,7 @@ def test_metadata_repair_skips_instead_of_enriching_a_stale_run():
             StockFeatureDaily.__table__,
             IBDIndustryGroup.__table__,
             IBDGroupRank.__table__,
+            MarketRsRun.__table__,
             Scan.__table__,
         ],
     )

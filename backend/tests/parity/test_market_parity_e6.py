@@ -255,30 +255,6 @@ class TestNonUSMixedMarketPolicy:
         assert all(item.is_mixed_market is True for item in results.values())
 
 
-class TestNonUSRSUniverse:
-    """T6.2: RS universe partitions by market; US and HK don't share a bucket."""
-
-    def test_market_scoped_rs_universe(self):
-        # Structural partitioning: 3 US inputs and 2 HK inputs must land
-        # in separate market buckets, each with its own performance list.
-        # If the computation ever pooled markets we'd see only one key
-        # or a single merged list of length 5.
-        prep = DataPreparationLayer.__new__(DataPreparationLayer)
-        universe = prep._compute_market_rs_universe_performances([
-            _make_stock_with_benchmark("AAPL", market="US"),
-            _make_stock_with_benchmark("MSFT", market="US"),
-            _make_stock_with_benchmark("NVDA", market="US"),
-            _make_stock_with_benchmark("0700.HK", market="HK"),
-            _make_stock_with_benchmark("9988.HK", market="HK"),
-        ])
-        assert set(universe.keys()) == {"US", "HK"}
-        assert "weighted" in universe["US"] and "weighted" in universe["HK"]
-        # Bucket cardinality proves partitioning without relying on
-        # numeric coincidence: US has 3 inputs, HK has 2.
-        assert len(universe["US"]["weighted"]) == 3
-        assert len(universe["HK"]["weighted"]) == 2
-
-
 class TestNonUSAnalyticsScope:
     """T6.4: only the still-US-scoped analytics features are rejected."""
 
@@ -404,35 +380,4 @@ def _build_stock_data(
         fundamentals=fundamentals,
         market=market,
         is_mixed_market=is_mixed,
-    )
-
-
-def _make_stock_with_benchmark(symbol: str, *, market: str) -> StockData:
-    """Build StockData + benchmark for the RS-universe partitioning test.
-
-    Shape of the price / benchmark series is not load-bearing — the
-    partitioning test only checks that entries land in the correct
-    market bucket. The series needs enough history for the RS calc's
-    longest lookback (252 days) and some non-zero return so the weighted
-    performance is recorded.
-    """
-    days = 260
-    idx = pd.date_range("2024-01-01", periods=days, freq="B")
-    closes_stock = [100.0 * (1.0015 ** i) for i in range(days)]   # ~47% over 260 days
-    closes_bench = [100.0 * (1.0005 ** i) for i in range(days)]   # ~14% over 260 days
-    stock_df = pd.DataFrame(
-        {"Open": closes_stock, "High": closes_stock, "Low": closes_stock,
-         "Close": closes_stock, "Volume": [1_000_000] * days},
-        index=idx,
-    )
-    bench_df = pd.DataFrame(
-        {"Open": closes_bench, "High": closes_bench, "Low": closes_bench,
-         "Close": closes_bench, "Volume": [1_000_000] * days},
-        index=idx,
-    )
-    return StockData(
-        symbol=symbol,
-        price_data=stock_df,
-        benchmark_data=bench_df,
-        market=market,
     )

@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
 from app.database import Base
+from app.domain.relative_strength import BALANCED_RS_FORMULA_VERSION
 from app.infra.db.models.feature_store import (
     FeatureRun,
     FeatureRunPointer,
@@ -50,7 +51,13 @@ def add_run(db, run_id, market, symbols, status="published"):
         run_type="daily_snapshot",
         status=status,
         published_at=datetime(2026, 9, 12, tzinfo=UTC),
-        config_json={"universe": {"market": market}},
+        config_json={
+            "universe": {"market": market},
+            "rs_formula_version": BALANCED_RS_FORMULA_VERSION,
+            "market_rs_run_id": run_id,
+            "rs_as_of_date": "2026-09-11",
+            "rs_universe_size": len(symbols),
+        },
     )
     db.add(run)
     for symbol in symbols:
@@ -134,13 +141,6 @@ def test_partial_identity_and_unpublished_runs_fail_closed(db):
     run = add_run(db, 1, "US", ["A"])
     run.config_json = {
         "universe": {"market": "US"},
-        "rs_formula_version": "balanced-quartile-v1",
-    }
-    # Use the actual canonical identifier so partial metadata is rejected.
-    from app.domain.relative_strength import BALANCED_RS_FORMULA_VERSION
-
-    run.config_json = {
-        **run.config_json,
         "rs_formula_version": BALANCED_RS_FORMULA_VERSION,
     }
     db.commit()

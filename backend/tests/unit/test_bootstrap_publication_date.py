@@ -4,19 +4,16 @@ from datetime import date
 from types import SimpleNamespace
 
 from app.domain.relative_strength import (
-    BALANCED_RS_FORMULA_VERSION,
     BALANCED_RS_PRICE_BASIS,
     BALANCED_RS_SNAPSHOT_SCHEMA_VERSION,
-    LEGACY_RS_FORMULA_VERSION,
 )
 from app.services.bootstrap_publication_date import (
     resolve_bootstrap_publication_date,
 )
 
 
-def test_bootstrap_publication_date_uses_recent_active_balanced_run() -> None:
+def test_bootstrap_publication_date_uses_recent_balanced_run() -> None:
     repository = SimpleNamespace(
-        active_formula=lambda _db, *, market: BALANCED_RS_FORMULA_VERSION,
         list_completed_runs=lambda _db, **_kwargs: (
             SimpleNamespace(
                 id=42,
@@ -49,7 +46,6 @@ def test_bootstrap_publication_date_uses_recent_active_balanced_run() -> None:
 
 def test_bootstrap_publication_date_skips_incompatible_newer_balanced_run() -> None:
     repository = SimpleNamespace(
-        active_formula=lambda _db, *, market: BALANCED_RS_FORMULA_VERSION,
         list_completed_runs=lambda _db, **_kwargs: (
             SimpleNamespace(
                 id=43,
@@ -100,7 +96,6 @@ def test_bootstrap_publication_date_counts_lag_in_market_sessions() -> None:
         return (run,) if kwargs["start_date"] <= selected_date else ()
 
     repository = SimpleNamespace(
-        active_formula=lambda _db, *, market: BALANCED_RS_FORMULA_VERSION,
         list_completed_runs=list_completed_runs,
         get_latest_completed=lambda *_args, **_kwargs: run,
     )
@@ -123,30 +118,8 @@ def test_bootstrap_publication_date_counts_lag_in_market_sessions() -> None:
     assert resolution.reason_code == "balanced_run_selected"
 
 
-def test_bootstrap_publication_date_keeps_legacy_formula_on_requested_date() -> None:
-    calls = []
-    repository = SimpleNamespace(
-        active_formula=lambda _db, *, market: LEGACY_RS_FORMULA_VERSION,
-        list_completed_runs=lambda *_args, **_kwargs: calls.append("unexpected"),
-        get_latest_completed=lambda *_args, **_kwargs: calls.append("unexpected"),
-    )
-
-    resolution = resolve_bootstrap_publication_date(
-        object(),
-        market="US",
-        requested_date=date(2026, 4, 10),
-        repository=repository,
-        max_lag_days=3,
-    )
-
-    assert resolution.selected_date == date(2026, 4, 10)
-    assert resolution.reason_code == "active_formula_not_balanced"
-    assert calls == []
-
-
 def test_bootstrap_publication_date_rejects_stale_balanced_run() -> None:
     repository = SimpleNamespace(
-        active_formula=lambda _db, *, market: BALANCED_RS_FORMULA_VERSION,
         list_completed_runs=lambda _db, **_kwargs: (),
         get_latest_completed=lambda _db, **_kwargs: SimpleNamespace(
             id=42,
@@ -174,7 +147,6 @@ def test_bootstrap_publication_date_rejects_stale_balanced_run() -> None:
 
 def test_bootstrap_publication_date_rejects_incompatible_window_runs() -> None:
     repository = SimpleNamespace(
-        active_formula=lambda _db, *, market: BALANCED_RS_FORMULA_VERSION,
         list_completed_runs=lambda _db, **_kwargs: (
             SimpleNamespace(
                 id=42,
@@ -201,7 +173,6 @@ def test_bootstrap_publication_date_rejects_incompatible_window_runs() -> None:
 
 def test_bootstrap_publication_date_rejects_incompatible_latest_fallback_run() -> None:
     repository = SimpleNamespace(
-        active_formula=lambda _db, *, market: BALANCED_RS_FORMULA_VERSION,
         list_completed_runs=lambda _db, **_kwargs: (),
         get_latest_completed=lambda _db, **_kwargs: SimpleNamespace(
             id=42,

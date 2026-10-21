@@ -1,4 +1,4 @@
-"""Formula-aware Group snapshot coordinator for history repair."""
+"""Group snapshot coordinator for history repair."""
 
 from __future__ import annotations
 
@@ -14,7 +14,6 @@ from app.services.market_rs_snapshot_service import MarketRsSnapshotService
 def build_group_history_snapshot_coordinator(
     *,
     universe_resolver,
-    legacy_group_service,
     calendar_service: MarketCalendarService | None = None,
     market_rs_repository: MarketRsRunRepository | None = None,
 ) -> GroupRankSnapshotCoordinator:
@@ -31,7 +30,6 @@ def build_group_history_snapshot_coordinator(
         reader=GroupRankSnapshotReader(),
         market_rs_snapshot_service=snapshot_service,
         canonical_group_service=CanonicalGroupRankingService(repository=repository),
-        legacy_group_service=legacy_group_service,
     )
 
 

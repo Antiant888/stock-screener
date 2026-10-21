@@ -7,7 +7,6 @@ from enum import Enum
 from typing import Any, Mapping
 
 from app.domain.markets import SUPPORTED_MARKET_CODES
-from app.domain.relative_strength import LEGACY_RS_FORMULA_VERSION
 from app.services.market_rs_result_contract import (
     MARKET_RS_REASON_BENCHMARK_ADJUSTED_ANCHOR_MISSING,
     MARKET_RS_REASON_CURRENT_ADJUSTED_PRICE_COVERAGE_BELOW_THRESHOLD,
@@ -123,10 +122,6 @@ def classify_static_market_rs_artifact_result(
         formula_version=formula_version,
     )
     if parsed is None:
-        return StaticMarketRsArtifactState.HARD_FAILURE
-    if parsed.formula_version == LEGACY_RS_FORMULA_VERSION:
-        if parsed.status == "selected":
-            return StaticMarketRsArtifactState.READY
         return StaticMarketRsArtifactState.HARD_FAILURE
     if parsed.status == "completed" and parsed.market_rs_run_id is not None:
         return StaticMarketRsArtifactState.READY

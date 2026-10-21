@@ -21,11 +21,10 @@ from app.domain.relative_strength import (
     BALANCED_RS_FORMULA_VERSION,
     BALANCED_RS_PRICE_BASIS,
     BALANCED_RS_SNAPSHOT_SCHEMA_VERSION,
-    LEGACY_RS_FORMULA_VERSION,
 )
 from app.domain.scanning.filter_expression_model import FilterExpression
 from app.infra.db.models.feature_store import FeatureRun, FeatureRunPointer
-from app.infra.db.models.relative_strength import MarketRsFormulaPointer, MarketRsRun
+from app.infra.db.models.relative_strength import MarketRsRun
 from app.models.breadth_contributor import (
     MarketBreadthContributor,
     MarketBreadthContributorSnapshot,
@@ -35,6 +34,7 @@ from app.models.market_breadth import MarketBreadth
 from app.models.market_exposure import MarketExposure
 from app.models.stock import StockPrice
 from app.models.stock_universe import StockUniverse
+from app.services.feature_run_rs_identity import FeatureRunRsIdentityError
 from app.services.breadth.contributors import (
     BREADTH_CONTRIBUTOR_SIGNALS,
     contributor_calculation_signature,
@@ -50,7 +50,7 @@ from app.services.breadth.types import (
 from app.services.breadth.universe import breadth_eligibility_signature
 from app.services.group_ranking_history import select_market_run_series
 from app.services.key_market_history import build_key_market_entries
-from app.services.static_artifact_combiner import StaticArtifactFormulaError
+from app.services.static_artifact_combiner import StaticArtifactIncompatibleError
 from app.services.static_breadth_contributor_exporter import (
     StaticBreadthContributorUnavailable,
 )
@@ -88,7 +88,6 @@ def service_and_session_factory():
             FeatureRunPointer.__table__,
             StockPrice.__table__,
             MarketExposure.__table__,
-            MarketRsFormulaPointer.__table__,
             MarketRsRun.__table__,
             IBDGroupRank.__table__,
             StockUniverse.__table__,
@@ -103,15 +102,6 @@ def service_and_session_factory():
         autoflush=False,
         expire_on_commit=False,
     )
-    with session_factory() as db:
-        db.add_all(
-            MarketRsFormulaPointer(
-                market=market,
-                formula_version=LEGACY_RS_FORMULA_VERSION,
-            )
-            for market in ("US", "HK", "IN", "JP", "TW")
-        )
-        db.commit()
     try:
         yield StaticSiteExportService(
             session_factory,
@@ -373,7 +363,10 @@ def test_static_export_uses_persisted_breadth_after_price_cache_changes(
             published_at=datetime(2026, 8, 21, 21, 30, 0, tzinfo=UTC),
             config_json={
                 "universe": {"market": "US"},
-                "rs_formula_version": LEGACY_RS_FORMULA_VERSION,
+                "rs_formula_version": BALANCED_RS_FORMULA_VERSION,
+                "market_rs_run_id": 1,
+                "rs_as_of_date": calculation_date.isoformat(),
+                "rs_universe_size": 1,
             },
         ),
         pointer_run_id=run_id,
@@ -483,8 +476,8 @@ def test_static_export_uses_persisted_breadth_after_price_cache_changes(
         "generated_at": "2026-08-21T22:00:00Z",
         "as_of_date": calculation_date.isoformat(),
         "run_id": run_id,
-        "rs_formula_version": LEGACY_RS_FORMULA_VERSION,
-        "market_rs_run_id": None,
+        "rs_formula_version": BALANCED_RS_FORMULA_VERSION,
+        "market_rs_run_id": 1,
         "rs_as_of_date": calculation_date.isoformat(),
         "rs_universe_size": 1,
         "rows_total": 1,
@@ -538,7 +531,6 @@ def test_static_export_uses_persisted_breadth_after_price_cache_changes(
     result = service.export(
         tmp_path / "static-data",
         markets=("US",),
-        rs_formula_version_overrides={"US": LEGACY_RS_FORMULA_VERSION},
         feature_run_ids_by_market={"US": run_id},
     )
 
@@ -590,7 +582,14 @@ def _export_zero_row_feature_run(
             run_type="daily_snapshot",
             status="published",
             published_at=datetime(2026, 8, 21, 21, 30, 0),
-            config_json={"universe": {"market": "US"}, **config_json},
+            config_json={
+                "universe": {"market": "US"},
+                "rs_formula_version": BALANCED_RS_FORMULA_VERSION,
+                "market_rs_run_id": 42,
+                "rs_as_of_date": "2026-08-21",
+                "rs_universe_size": 1,
+                **config_json,
+            },
         ),
         pointer_run_id=run_id,
         pointer_key="latest_published_market:US",
@@ -662,12 +661,12 @@ def _export_zero_row_feature_run(
     return root_manifest, scan_manifest
 
 
-def test_explicit_legacy_run_hides_static_opportunity_workflow(
+def test_explicit_run_without_opportunity_state_hides_static_opportunity_workflow(
     service_and_session_factory,
     monkeypatch,
     tmp_path,
 ):
-    """Break caught: advertising capability or its preset for exact legacy run metadata."""
+    """Break caught: advertising capability or its preset for a run that never materialized it."""
     service, session_factory = service_and_session_factory
 
     root_manifest, scan_manifest = _export_zero_row_feature_run(
@@ -837,7 +836,7 @@ def test_get_latest_published_run_ignores_market_pointer_for_wrong_market(
     assert run.id == 4
 
 
-def test_export_rejects_formula_override_that_mismatches_feature_run(
+def test_export_rejects_feature_run_without_a_balanced_rs_identity(
     service_and_session_factory,
     monkeypatch,
     tmp_path,
@@ -851,7 +850,11 @@ def test_export_rejects_formula_override_that_mismatches_feature_run(
             run_type="daily_snapshot",
             status="published",
             published_at=datetime(2026, 3, 31, 21, 30, 0),
-            config_json={"universe": {"market": "US"}},
+            config_json={
+                "universe": {"market": "US"},
+                "rs_formula_version": "legacy-linear-v1",
+                "rs_as_of_date": "2026-03-31",
+            },
         ),
         pointer_run_id=6,
         pointer_key="latest_published_market:US",
@@ -864,11 +867,10 @@ def test_export_rejects_formula_override_that_mismatches_feature_run(
         ),
     )
 
-    with pytest.raises(StaticArtifactFormulaError, match="does not match Feature run 6"):
+    with pytest.raises(FeatureRunRsIdentityError, match="'legacy-linear-v1' is not"):
         service.export(
             tmp_path / "static-data",
             markets=("US",),
-            rs_formula_version_overrides={"US": BALANCED_RS_FORMULA_VERSION},
             feature_run_ids_by_market={"US": 6},
         )
 
@@ -984,7 +986,6 @@ def test_export_writes_serializable_manifest_and_page_bundles(
     output_dir = tmp_path / "static-data"
     result = service.export(
         output_dir,
-        rs_formula_version_overrides={"US": BALANCED_RS_FORMULA_VERSION},
         feature_run_ids_by_market={"US": 7},
     )
 
@@ -1065,7 +1066,13 @@ def test_export_writes_india_market_bundle_and_root_manifest(
             run_type="daily_snapshot",
             status="published",
             published_at=datetime(2026, 4, 4, 21, 30, 0),
-            config_json={"universe": {"market": "IN"}},
+            config_json={
+                "universe": {"market": "IN"},
+                "rs_formula_version": BALANCED_RS_FORMULA_VERSION,
+                "market_rs_run_id": 42,
+                "rs_as_of_date": "2026-04-04",
+                "rs_universe_size": 2,
+            },
         ),
         pointer_run_id=70,
         pointer_key="latest_published_market:IN",
@@ -1164,7 +1171,13 @@ def test_export_can_write_single_market_artifact_without_root_manifest(
             run_type="daily_snapshot",
             status="published",
             published_at=datetime(2026, 3, 31, 21, 30, 0),
-            config_json={"universe": {"market": "HK"}},
+            config_json={
+                "universe": {"market": "HK"},
+                "rs_formula_version": BALANCED_RS_FORMULA_VERSION,
+                "market_rs_run_id": 42,
+                "rs_as_of_date": "2026-03-31",
+                "rs_universe_size": 1,
+            },
         ),
         pointer_run_id=8,
         pointer_key="latest_published_market:HK",
@@ -1251,6 +1264,10 @@ def test_export_scan_bundle_chunks_large_result_sets(service_and_session_factory
             config_json={
                 "market": "US",
                 "materialization_versions": {"opportunity_state": 1},
+                "rs_formula_version": BALANCED_RS_FORMULA_VERSION,
+                "market_rs_run_id": 42,
+                "rs_as_of_date": "2026-03-31",
+                "rs_universe_size": 5000,
             },
             published_at=datetime(2026, 3, 31, 21, 30, 0),
         ),
@@ -1478,7 +1495,13 @@ def test_export_scan_bundle_uses_sg_threshold_for_sg_market(
             as_of_date=date(2026, 3, 31),
             run_type="daily_snapshot",
             status="published",
-            config_json={"market": "SG"},
+            config_json={
+                "market": "SG",
+                "rs_formula_version": BALANCED_RS_FORMULA_VERSION,
+                "market_rs_run_id": 42,
+                "rs_as_of_date": "2026-03-31",
+                "rs_universe_size": 5000,
+            },
             published_at=datetime(2026, 3, 31, 21, 30, 0),
         ),
         pointer_run_id=21,
@@ -1548,7 +1571,13 @@ def test_export_scan_bundle_unknown_market_disables_volume_filter(
             as_of_date=date(2026, 3, 31),
             run_type="daily_snapshot",
             status="published",
-            config_json={"market": "ZZ"},
+            config_json={
+                "market": "ZZ",
+                "rs_formula_version": BALANCED_RS_FORMULA_VERSION,
+                "market_rs_run_id": 42,
+                "rs_as_of_date": "2026-03-31",
+                "rs_universe_size": 5000,
+            },
             published_at=datetime(2026, 3, 31, 21, 30, 0),
         ),
         pointer_run_id=22,
@@ -1614,7 +1643,13 @@ def test_export_scan_bundle_sorts_composite_score_across_scan_modes(
             as_of_date=date(2026, 3, 31),
             run_type="daily_snapshot",
             status="published",
-            config_json={"market": "US"},
+            config_json={
+                "market": "US",
+                "rs_formula_version": BALANCED_RS_FORMULA_VERSION,
+                "market_rs_run_id": 42,
+                "rs_as_of_date": "2026-03-31",
+                "rs_universe_size": 5000,
+            },
             published_at=datetime(2026, 3, 31, 21, 30, 0),
         ),
         pointer_run_id=12,
@@ -1762,16 +1797,28 @@ def test_serialize_scan_row_preserves_compact_opportunity_evidence_only(
 def _materialize_advertised_files(root: Path) -> None:
     """Write minimal JSON for advertised page/asset paths a fixture omits.
 
-    The combiner rejects artifacts whose advertised files are missing; these
-    combine tests exercise selection, not that validation.
+    The combiner rejects artifacts whose advertised files are missing or that
+    name no RS formula; these combine tests exercise selection, not that
+    validation, so a fixture that names no formula gets the balanced one. A
+    formula the fixture does name is left alone.
     """
     for metadata_path in root.rglob(STATIC_MARKET_METADATA_FILENAME):
         try:
-            entry = json.loads(metadata_path.read_text(encoding="utf-8")).get("entry")
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
         except ValueError:
             continue
+        entry = metadata.get("entry") if isinstance(metadata, dict) else None
         if not isinstance(entry, dict):
             continue
+        if "rs_formula_version" not in entry:
+            entry["rs_formula_version"] = BALANCED_RS_FORMULA_VERSION
+            metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+        scan_manifest = metadata_path.parent / "scan" / "manifest.json"
+        if scan_manifest.is_file():
+            scan = json.loads(scan_manifest.read_text(encoding="utf-8"))
+            if "rs_formula_version" not in scan:
+                scan["rs_formula_version"] = BALANCED_RS_FORMULA_VERSION
+                scan_manifest.write_text(json.dumps(scan), encoding="utf-8")
         market = str(entry.get("market") or "").lower()
         descriptors = [
             *(entry.get("pages") or {}).values(),
@@ -1887,13 +1934,20 @@ def test_combine_rejects_live_only_keys_copied_from_market_artifact(tmp_path):
     market_dir = artifacts_dir / "job-us" / "markets" / "us"
     (market_dir / "scan").mkdir(parents=True)
     (market_dir / "scan" / "manifest.json").write_text(
-        json.dumps({"rows_total": 0, "source_metrics": {"posts": 2}}),
+        json.dumps(
+            {
+                "rows_total": 0,
+                "source_metrics": {"posts": 2},
+                "rs_formula_version": BALANCED_RS_FORMULA_VERSION,
+            }
+        ),
         encoding="utf-8",
     )
     entry = {
         "market": "US",
         "display_name": "United States",
         "as_of_date": "2026-04-04",
+        "rs_formula_version": BALANCED_RS_FORMULA_VERSION,
         "features": {"scan": True},
         "pages": {"scan": {"path": "markets/us/scan/manifest.json"}},
         "assets": {},
@@ -2105,10 +2159,12 @@ def test_combine_market_artifacts_uses_fallback_only_for_missing_markets(tmp_pat
     assert manifest["markets"]["US"]["as_of_date"] == "2026-04-05"
     assert manifest["markets"]["HK"]["as_of_date"] == "2026-04-03"
     assert json.loads((output_dir / "markets" / "us" / "scan" / "manifest.json").read_text(encoding="utf-8")) == {
-        "source": str(current_us_dir)
+        "source": str(current_us_dir),
+        "rs_formula_version": BALANCED_RS_FORMULA_VERSION,
     }
     assert json.loads((output_dir / "markets" / "hk" / "scan" / "manifest.json").read_text(encoding="utf-8")) == {
-        "source": str(fallback_hk_dir)
+        "source": str(fallback_hk_dir),
+        "rs_formula_version": BALANCED_RS_FORMULA_VERSION,
     }
     assert "HK reused from a previous static-site market artifact because the current run produced no artifact." in manifest["warnings"]
     assert not any(warning.startswith("US reused from previous") for warning in manifest["warnings"])
@@ -2172,7 +2228,8 @@ def test_combine_market_artifacts_uses_newer_fallback_for_rewound_current_market
     manifest = result.manifest
     assert manifest["markets"]["US"]["as_of_date"] == "2026-08-03"
     assert json.loads((output_dir / "markets" / "us" / "scan" / "manifest.json").read_text(encoding="utf-8")) == {
-        "source": str(fallback_us_dir)
+        "source": str(fallback_us_dir),
+        "rs_formula_version": BALANCED_RS_FORMULA_VERSION,
     }
     assert (
         "US reused from a previous static-site market artifact because it is newer "
@@ -2180,7 +2237,9 @@ def test_combine_market_artifacts_uses_newer_fallback_for_rewound_current_market
     ) in manifest["warnings"]
 
 
-def test_combine_market_artifacts_keeps_current_override_when_newer_fallback_uses_other_formula(tmp_path):
+def test_combine_market_artifacts_rejects_a_legacy_current_before_selecting_a_newer_fallback(
+    tmp_path,
+):
     current_dir = tmp_path / "current"
     fallback_dir = tmp_path / "fallback"
     output_dir = tmp_path / "combined"
@@ -2188,7 +2247,7 @@ def test_combine_market_artifacts_keeps_current_override_when_newer_fallback_use
     current_us_dir = current_dir / "static-market-US" / "markets" / "us"
     fallback_us_dir = fallback_dir / "static-market-US" / "markets" / "us"
     for market_dir, formula_version in (
-        (current_us_dir, LEGACY_RS_FORMULA_VERSION),
+        (current_us_dir, "legacy-linear-v1"),
         (fallback_us_dir, BALANCED_RS_FORMULA_VERSION),
     ):
         (market_dir / "scan").mkdir(parents=True)
@@ -2201,7 +2260,7 @@ def test_combine_market_artifacts_keeps_current_override_when_newer_fallback_use
         "market": "US",
         "display_name": "United States",
         "as_of_date": "2026-08-03",
-        "rs_formula_version": LEGACY_RS_FORMULA_VERSION,
+        "rs_formula_version": "legacy-linear-v1",
         "features": {"scan": True, "breadth": False, "groups": False, "charts": True},
         "pages": {"scan": {"path": "markets/us/scan/manifest.json"}},
         "assets": {"charts": {"path": "markets/us/charts/index.json", "limit": 200, "symbols_total": 1}},
@@ -2234,26 +2293,18 @@ def test_combine_market_artifacts_keeps_current_override_when_newer_fallback_use
         )
 
     _materialize_advertised_files(tmp_path)
-    result = StaticSiteExportService.combine_market_artifacts(
-        current_dir,
-        output_dir,
-        fallback_artifacts_dir=fallback_dir,
-        rs_formula_version_overrides={"US": LEGACY_RS_FORMULA_VERSION},
-    )
+    with pytest.raises(StaticArtifactIncompatibleError, match="US current artifact uses incompatible RS formula"):
+        StaticSiteExportService.combine_market_artifacts(
+            current_dir,
+            output_dir,
+            fallback_artifacts_dir=fallback_dir,
+            required_markets={"US"},
+        )
 
-    manifest = result.manifest
-    assert manifest["markets"]["US"]["rs_formula_version"] == LEGACY_RS_FORMULA_VERSION
-    assert manifest["markets"]["US"]["as_of_date"] == "2026-08-03"
-    assert json.loads((output_dir / "markets" / "us" / "scan" / "manifest.json").read_text(encoding="utf-8")) == {
-        "rs_formula_version": LEGACY_RS_FORMULA_VERSION
-    }
-    assert not any(
-        "US reused from a previous static-site market artifact" in warning
-        for warning in manifest["warnings"]
-    )
+    assert not output_dir.exists()
 
 
-def test_combine_market_artifacts_rejects_incompatible_fallback_when_current_missing(tmp_path):
+def test_combine_market_artifacts_rejects_legacy_fallback_when_current_missing(tmp_path):
     current_dir = tmp_path / "current"
     fallback_dir = tmp_path / "fallback"
     output_dir = tmp_path / "combined"
@@ -2261,14 +2312,14 @@ def test_combine_market_artifacts_rejects_incompatible_fallback_when_current_mis
     fallback_us_dir = fallback_dir / "static-market-US" / "markets" / "us"
     (fallback_us_dir / "scan").mkdir(parents=True)
     (fallback_us_dir / "scan" / "manifest.json").write_text(
-        json.dumps({"rs_formula_version": BALANCED_RS_FORMULA_VERSION}),
+        json.dumps({"rs_formula_version": "legacy-linear-v1"}),
         encoding="utf-8",
     )
     fallback_us_entry = {
         "market": "US",
         "display_name": "United States",
         "as_of_date": "2026-08-04",
-        "rs_formula_version": BALANCED_RS_FORMULA_VERSION,
+        "rs_formula_version": "legacy-linear-v1",
         "features": {"scan": True, "breadth": True, "groups": False, "charts": True},
         "pages": {"scan": {"path": "markets/us/scan/manifest.json"}},
         "assets": {"charts": {"path": "markets/us/charts/index.json", "limit": 200, "symbols_total": 1}},
@@ -2292,7 +2343,7 @@ def test_combine_market_artifacts_rejects_incompatible_fallback_when_current_mis
             current_dir,
             output_dir,
             fallback_artifacts_dir=fallback_dir,
-            rs_formula_version_overrides={"US": LEGACY_RS_FORMULA_VERSION},
+            required_markets={"US"},
         )
 
     assert not output_dir.exists()
@@ -2418,7 +2469,7 @@ def test_collect_market_artifacts_rejects_cross_formula_fallback(tmp_path):
                 "entry": {
                     "market": "JP",
                     "as_of_date": "2026-04-03",
-                    "rs_formula_version": LEGACY_RS_FORMULA_VERSION,
+                    "rs_formula_version": "legacy-linear-v1",
                 },
                 "warnings": [],
             }
@@ -2426,11 +2477,11 @@ def test_collect_market_artifacts_rejects_cross_formula_fallback(tmp_path):
         encoding="utf-8",
     )
 
-    with pytest.raises(StaticArtifactFormulaError, match="incompatible RS formula"):
+    with pytest.raises(StaticArtifactIncompatibleError, match="incompatible RS formula"):
         StaticSiteExportService.combine_market_artifacts(
             artifacts_dir,
             tmp_path / "combined",
-            rs_formula_version_overrides={"JP": BALANCED_RS_FORMULA_VERSION},
+            required_markets={"JP"},
         )
 
 
@@ -2593,10 +2644,7 @@ def test_export_marks_optional_sections_unavailable_without_aborting(
     )
 
     output_dir = tmp_path / "static-data"
-    result = service.export(
-        output_dir,
-        rs_formula_version_overrides={"US": BALANCED_RS_FORMULA_VERSION},
-    )
+    result = service.export(output_dir)
 
     manifest = json.loads((output_dir / "manifest.json").read_text(encoding="utf-8"))
     breadth = json.loads((output_dir / "markets" / "us" / "breadth.json").read_text(encoding="utf-8"))
@@ -3393,7 +3441,7 @@ def test_build_groups_rrg_payload_emits_available_scopes(service_and_session_fac
     builder = StaticGroupsRRGPayloadBuilder(
         schema_version=STATIC_SITE_SCHEMA_VERSION,
         rrg_service=_FakeRRGService(),
-        rs_formula_version=LEGACY_RS_FORMULA_VERSION,
+        rs_formula_version=BALANCED_RS_FORMULA_VERSION,
     )
 
     with session_factory() as db:
@@ -3405,7 +3453,7 @@ def test_build_groups_rrg_payload_emits_available_scopes(service_and_session_fac
         )
 
     assert payload["available_scopes"] == ["groups"]
-    assert payload["rs_formula_version"] == LEGACY_RS_FORMULA_VERSION
+    assert payload["rs_formula_version"] == BALANCED_RS_FORMULA_VERSION
     assert payload["payload"]["groups"]["groups"][0]["industry_group"] == "Internet Services"
 
 
@@ -3452,7 +3500,7 @@ def test_build_groups_rrg_payload_rejects_date_mismatch(
     builder = StaticGroupsRRGPayloadBuilder(
         schema_version=STATIC_SITE_SCHEMA_VERSION,
         rrg_service=_FakeRRGService(),
-        rs_formula_version=LEGACY_RS_FORMULA_VERSION,
+        rs_formula_version=BALANCED_RS_FORMULA_VERSION,
     )
 
     with session_factory() as db, pytest.raises(
@@ -3506,7 +3554,7 @@ def test_build_groups_rrg_payload_requests_only_market_supported_scopes(
     builder = StaticGroupsRRGPayloadBuilder(
         schema_version=STATIC_SITE_SCHEMA_VERSION,
         rrg_service=_FakeRRGService(),
-        rs_formula_version=LEGACY_RS_FORMULA_VERSION,
+        rs_formula_version=BALANCED_RS_FORMULA_VERSION,
     )
 
     with session_factory() as db:
@@ -3526,7 +3574,7 @@ def test_static_rrg_preflight_needs_no_database_tables_for_group_only_markets(ma
     builder = StaticGroupsRRGPayloadBuilder(
         schema_version=STATIC_SITE_SCHEMA_VERSION,
         rrg_service=object(),
-        rs_formula_version=LEGACY_RS_FORMULA_VERSION,
+        rs_formula_version=BALANCED_RS_FORMULA_VERSION,
     )
 
     assert builder._required_table_names(market) == ()  # noqa: SLF001
@@ -3550,7 +3598,7 @@ def test_static_groups_rrg_builder_propagates_sql_errors_after_preflight(
     builder = StaticGroupsRRGPayloadBuilder(
         schema_version=STATIC_SITE_SCHEMA_VERSION,
         rrg_service=_FakeRRGService(),
-        rs_formula_version=LEGACY_RS_FORMULA_VERSION,
+        rs_formula_version=BALANCED_RS_FORMULA_VERSION,
     )
 
     with session_factory() as db, pytest.raises(SQLAlchemyError, match="feature_runs"):
@@ -3582,7 +3630,7 @@ def test_rrg_payload_source_propagates_non_missing_table_sql_errors(
             generated_at="2026-04-18T22:00:00Z",
             expected_as_of_date=date(2026, 4, 18),
             market="HK",
-            formula_version=LEGACY_RS_FORMULA_VERSION,
+            formula_version=BALANCED_RS_FORMULA_VERSION,
         )
 
 
@@ -4379,7 +4427,6 @@ def test_build_groups_payload_uses_exact_stored_snapshot_and_matches_live(
             db,
             market="US",
             calculation_date=date(2026, 4, 10),
-            formula_version=BALANCED_RS_FORMULA_VERSION,
         )
         artifact = _build_balanced_groups_payload(service, db, latest_run)
 

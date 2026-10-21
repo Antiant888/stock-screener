@@ -4,15 +4,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from app.domain.relative_strength import (
-    BALANCED_RS_FORMULA_VERSION,
-    LEGACY_RS_FORMULA_VERSION,
-)
-from app.domain.scanning.ports import (
-    CanonicalStockRsSource,
-    LegacyStockRsSource,
-    MarketRsResolution,
-)
+from app.domain.relative_strength import BALANCED_RS_FORMULA_VERSION
+from app.domain.scanning.ports import CanonicalStockRsSource, MarketRsResolution
 from app.scanners.base_screener import StockData
 from app.scanners.canslim_scanner import CANSLIMScanner
 from app.scanners.custom_scanner import CustomScanner
@@ -28,14 +21,21 @@ from app.scanners.scan_orchestrator import ScanOrchestrator
 from app.scanners.screener_registry import ScreenerRegistry
 from app.scanners.setup_engine_screener import SetupEngineScanner
 
+RATINGS = {
+    "rs_rating": 87,
+    "rs_rating_1m": 42,
+    "rs_rating_3m": 91,
+    "rs_rating_12m": 98,
+}
 
-def _stock_data() -> StockData:
+
+def _stock_data(symbol: str = "TEST", market: str = "US") -> StockData:
     dates = pd.bdate_range(end="2026-07-17", periods=320)
     close = np.linspace(50.0, 160.0, len(dates))
     benchmark_close = np.linspace(300.0, 360.0, len(dates))
     return StockData(
-        symbol="TEST",
-        market="US",
+        symbol=symbol,
+        market=market,
         price_data=pd.DataFrame(
             {
                 "Open": close,
@@ -65,17 +65,23 @@ def _canonical_stock_data() -> StockData:
         formula_version=BALANCED_RS_FORMULA_VERSION,
         run_id=42,
         universe_size=5000,
-        ratings={
-            "rs_rating": 87,
-            "rs_rating_1m": 42,
-            "rs_rating_3m": 91,
-            "rs_rating_12m": 98,
-        },
+        ratings=dict(RATINGS),
     )
     return data
 
 
-def test_market_rs_resolution_creates_one_discriminated_stock_source():
+def _ineligible_stock_data() -> StockData:
+    data = _stock_data()
+    data.rs_source = CanonicalStockRsSource(
+        formula_version=BALANCED_RS_FORMULA_VERSION,
+        run_id=42,
+        universe_size=5000,
+        ratings=None,
+    )
+    return data
+
+
+def test_market_rs_resolution_creates_one_stock_source_per_symbol():
     canonical = MarketRsResolution.canonical(
         market="US",
         as_of_date=pd.Timestamp("2026-07-17").date(),
@@ -84,161 +90,101 @@ def test_market_rs_resolution_creates_one_discriminated_stock_source():
         universe_size=5000,
         ratings_by_symbol={"TEST": {"rs_rating": 87}},
     )
-    legacy = MarketRsResolution.legacy(
-        market="US",
-        as_of_date=None,
-        formula_version=LEGACY_RS_FORMULA_VERSION,
-    )
 
-    canonical_stock = canonical.stock_source("TEST")
-    assert isinstance(canonical_stock, CanonicalStockRsSource)
-    assert canonical_stock.ratings == {"rs_rating": 87}
-    assert canonical_stock.audit_fields() == {
+    stock = canonical.stock_source("TEST")
+    assert isinstance(stock, CanonicalStockRsSource)
+    assert stock.ratings == {"rs_rating": 87}
+    assert stock.audit_fields() == {
         "rs_formula_version": BALANCED_RS_FORMULA_VERSION,
         "market_rs_run_id": 42,
         "rs_universe_size": 5000,
     }
-    assert isinstance(legacy.stock_source("TEST"), LegacyStockRsSource)
+    assert canonical.stock_source("OTHER").ratings is None
 
 
-def test_balanced_mode_returns_canonical_ratings_without_calling_legacy():
+def test_resolve_returns_the_canonical_ratings():
     data = _canonical_stock_data()
 
-    def legacy_factory():
-        raise AssertionError("balanced mode must not call the legacy calculator")
-
-    assert resolve_stock_rs(data, legacy_factory) == data.rs_source.ratings
+    assert resolve_stock_rs(data) == RATINGS
 
 
-def test_balanced_mode_fails_closed_for_stock_outside_eligible_set():
-    data = _stock_data()
-    data.rs_source = CanonicalStockRsSource(
-        formula_version=BALANCED_RS_FORMULA_VERSION,
-        run_id=42,
-        universe_size=5000,
-        ratings=None,
-    )
-
+def test_resolve_fails_closed_for_stock_outside_eligible_set():
     with pytest.raises(CanonicalStockRsUnavailable, match="TEST"):
-        resolve_stock_rs(data, lambda: {"rs_rating": 99})
+        resolve_stock_rs(_ineligible_stock_data())
 
 
-def test_legacy_mode_calls_legacy_factory():
-    data = _stock_data()
-    data.rs_source = LegacyStockRsSource()
-    expected = {
-        "rs_rating": 73,
-        "rs_rating_1m": 80,
-        "rs_rating_3m": 76,
-        "rs_rating_12m": 69,
-    }
-
-    assert resolve_stock_rs(data, lambda: expected) == expected
+def test_resolve_fails_closed_without_a_market_rs_resolution():
+    with pytest.raises(CanonicalStockRsUnavailable, match="TEST"):
+        resolve_stock_rs(_stock_data())
 
 
-def test_precomputed_context_uses_canonical_balanced_values(monkeypatch):
+def test_precomputed_context_uses_canonical_balanced_values():
     data = _canonical_stock_data()
-
-    def legacy_calculation(*args, **kwargs):
-        raise AssertionError("balanced precomputation must not invoke legacy RS")
-
-    monkeypatch.setattr(
-        "app.scanners.scan_orchestrator.RelativeStrengthCalculator.calculate_all_rs_ratings",
-        legacy_calculation,
-    )
 
     context = _build_precomputed_scan_context(data)
 
     assert context is not None
-    assert context.rs_ratings == data.rs_source.ratings
+    assert context.rs_ratings == RATINGS
 
 
-def test_precomputed_context_rejects_balanced_ineligible_stock(monkeypatch):
-    data = _stock_data()
-    data.rs_source = CanonicalStockRsSource(
-        formula_version=BALANCED_RS_FORMULA_VERSION,
-        run_id=42,
-        universe_size=5000,
-        ratings=None,
-    )
-
-    def legacy_calculation(*args, **kwargs):
-        raise AssertionError("balanced precomputation must not invoke legacy RS")
-
-    monkeypatch.setattr(
-        "app.scanners.scan_orchestrator.RelativeStrengthCalculator.calculate_all_rs_ratings",
-        legacy_calculation,
-    )
-
+def test_precomputed_context_rejects_balanced_ineligible_stock():
     with pytest.raises(CanonicalStockRsUnavailable, match="TEST"):
-        _build_precomputed_scan_context(data)
+        _build_precomputed_scan_context(_ineligible_stock_data())
 
 
-def test_minervini_direct_path_uses_canonical_ratings(monkeypatch):
-    data = _canonical_stock_data()
-    scanner = MinerviniScanner()
-    monkeypatch.setattr(
-        scanner.rs_calc,
-        "calculate_all_rs_ratings",
-        lambda *args, **kwargs: (_ for _ in ()).throw(
-            AssertionError("legacy RS must not run")
-        ),
+def test_precomputed_context_without_resolution_carries_no_ratings():
+    context = _build_precomputed_scan_context(_stock_data())
+
+    assert context.rs_ratings is None
+
+
+def test_minervini_direct_path_uses_canonical_ratings():
+    result = MinerviniScanner().scan_stock(
+        "TEST", _canonical_stock_data(), criteria={"include_vcp": False}
     )
-
-    result = scanner.scan_stock("TEST", data, criteria={"include_vcp": False})
 
     assert result.rating != "Error"
     assert result.details["rs_rating"] == 87
     assert result.details["rs_rating_1m"] == 42
     assert result.details["rs_rating_3m"] == 91
     assert result.details["rs_rating_12m"] == 98
+    assert result.details["full_analysis"]["rs"] == {"rs_rating": 87}
 
 
-def test_canslim_direct_path_uses_canonical_ratings(monkeypatch):
-    data = _canonical_stock_data()
-    scanner = CANSLIMScanner()
-    monkeypatch.setattr(
-        scanner.rs_calc,
-        "calculate_rs_rating",
-        lambda *args, **kwargs: (_ for _ in ()).throw(
-            AssertionError("legacy RS must not run")
-        ),
-    )
-    monkeypatch.setattr(
-        scanner.rs_calc,
-        "calculate_all_rs_ratings",
-        lambda *args, **kwargs: (_ for _ in ()).throw(
-            AssertionError("legacy RS must not run")
-        ),
+def test_minervini_without_resolution_is_insufficient_data():
+    result = MinerviniScanner().scan_stock(
+        "TEST", _stock_data(), criteria={"include_vcp": False}
     )
 
-    result = scanner.scan_stock("TEST", data)
+    assert result.rating == "Insufficient Data"
+    assert "No Market RS resolution" in result.details["error"]
+
+
+def test_canslim_direct_path_uses_canonical_ratings():
+    result = CANSLIMScanner().scan_stock("TEST", _canonical_stock_data())
 
     assert result.rating != "Error"
     assert result.details["rs_rating"] == 87
     assert result.details["rs_rating_1m"] == 42
     assert result.details["rs_rating_3m"] == 91
     assert result.details["rs_rating_12m"] == 98
+    assert result.breakdown["leader"] == 15
 
 
-def test_custom_direct_path_uses_canonical_rating(monkeypatch):
-    data = _canonical_stock_data()
-    scanner = CustomScanner()
-    monkeypatch.setattr(
-        scanner.rs_calc,
-        "calculate_rs_rating",
-        lambda *args, **kwargs: (_ for _ in ()).throw(
-            AssertionError("legacy RS must not run")
-        ),
-    )
-
-    result = scanner.scan_stock(
+def test_custom_direct_path_uses_canonical_rating():
+    result = CustomScanner().scan_stock(
         "TEST",
-        data,
+        _canonical_stock_data(),
         criteria={"custom_filters": {"rs_rating_min": 80}},
     )
 
-    assert result.details["filter_results"]["rs_rating"]["rs_rating"] == 87
+    assert result.details["filter_results"]["rs_rating"] == {
+        "passes": True,
+        "points": 13.5,
+        "max_points": 15.0,
+        "rs_rating": 87.0,
+        "rs_min": 80.0,
+    }
 
 
 def test_custom_canonical_rs_does_not_require_benchmark_history():
@@ -255,53 +201,48 @@ def test_custom_canonical_rs_does_not_require_benchmark_history():
     assert result.details["filter_results"]["rs_rating"]["rs_rating"] == 87
 
 
-def test_custom_legacy_rs_still_requires_benchmark_history():
-    data = _stock_data()
-    data.rs_source = LegacyStockRsSource()
-    data.benchmark_data = pd.DataFrame()
-
+def test_custom_rs_filter_without_resolution_is_insufficient_data():
     result = CustomScanner().scan_stock(
         "TEST",
-        data,
+        _stock_data(),
         criteria={"custom_filters": {"rs_rating_min": 80}},
     )
 
     assert result.rating == "Insufficient Data"
-    assert "benchmark Close history" in result.details["reason"]
+    assert "No Market RS resolution" in result.details["reason"]
 
 
-def test_setup_engine_direct_path_uses_canonical_rating(monkeypatch):
-    data = _canonical_stock_data()
-    scanner = SetupEngineScanner()
-    monkeypatch.setattr(
-        scanner._rs_calc,
-        "calculate_rs_rating",
-        lambda *args, **kwargs: (_ for _ in ()).throw(
-            AssertionError("legacy RS must not run")
-        ),
-    )
-
-    result = scanner.scan_stock("TEST", data)
+def test_setup_engine_direct_path_uses_canonical_rating():
+    result = SetupEngineScanner().scan_stock("TEST", _canonical_stock_data())
 
     assert result.rating != "Error"
     assert result.details["setup_engine"]["rs_rating"] == 87
 
 
-def test_partial_history_uses_all_canonical_rating_fields(monkeypatch):
-    data = _canonical_stock_data()
-    monkeypatch.setattr(
-        "app.scanners.partial_history_metrics.RelativeStrengthCalculator.calculate_period_rs_rating",
-        lambda *args, **kwargs: (_ for _ in ()).throw(
-            AssertionError("legacy RS must not run")
-        ),
-    )
+def test_setup_engine_without_resolution_has_no_rs_rating():
+    result = SetupEngineScanner().scan_stock("TEST", _stock_data())
 
-    metrics = partial_history_metrics(data)
+    assert result.rating != "Error"
+    assert result.details["setup_engine"]["rs_rating"] is None
+
+
+def test_partial_history_uses_all_canonical_rating_fields():
+    metrics = partial_history_metrics(_canonical_stock_data())
 
     assert metrics["rs_rating"] == 87
     assert metrics["rs_rating_1m"] == 42
     assert metrics["rs_rating_3m"] == 91
     assert metrics["rs_rating_12m"] == 98
+
+
+def test_partial_history_without_resolution_leaves_every_rating_empty():
+    metrics = partial_history_metrics(_stock_data())
+
+    assert metrics["rs_rating"] is None
+    assert metrics["rs_rating_1m"] is None
+    assert metrics["rs_rating_3m"] is None
+    assert metrics["rs_rating_12m"] is None
+    assert metrics["rs_sparkline_data"] is not None
 
 
 class _DirectProvider:
@@ -326,18 +267,7 @@ class _CanonicalReader:
 
     def get(self, **kwargs) -> MarketRsResolution:
         self.calls.append(kwargs)
-        ratings = (
-            {
-                "TEST": {
-                    "rs_rating": 87,
-                    "rs_rating_1m": 42,
-                    "rs_rating_3m": 91,
-                    "rs_rating_12m": 98,
-                }
-            }
-            if self.include_symbol
-            else {}
-        )
+        ratings = {"TEST": dict(RATINGS)} if self.include_symbol else {}
         return MarketRsResolution.canonical(
             market="US",
             as_of_date=pd.Timestamp("2026-07-17").date(),
@@ -348,27 +278,17 @@ class _CanonicalReader:
         )
 
 
-def _minervini_registry() -> tuple[ScreenerRegistry, MinerviniScanner]:
+def _minervini_registry() -> ScreenerRegistry:
     registry = ScreenerRegistry()
     registry.register(MinerviniScanner)
-    scanner = registry.get("minervini")
-    return registry, scanner
+    return registry
 
 
-def test_single_stock_orchestrator_hydrates_latest_canonical_rs(monkeypatch):
-    data = _stock_data()
+def test_single_stock_orchestrator_hydrates_latest_canonical_rs():
     reader = _CanonicalReader()
-    registry, scanner = _minervini_registry()
-    monkeypatch.setattr(
-        scanner.rs_calc,
-        "calculate_all_rs_ratings",
-        lambda *args, **kwargs: (_ for _ in ()).throw(
-            AssertionError("legacy RS must not run")
-        ),
-    )
     orchestrator = ScanOrchestrator(
-        data_provider=_DirectProvider(data),
-        registry=registry,
+        data_provider=_DirectProvider(_stock_data()),
+        registry=_minervini_registry(),
         market_rs_reader=reader,
     )
 
@@ -397,13 +317,10 @@ def test_single_stock_orchestrator_hydrates_latest_canonical_rs(monkeypatch):
 
 
 def test_orchestrator_maps_balanced_ineligible_stock_to_insufficient_history():
-    data = _stock_data()
-    reader = _CanonicalReader(include_symbol=False)
-    registry, _ = _minervini_registry()
     orchestrator = ScanOrchestrator(
-        data_provider=_DirectProvider(data),
-        registry=registry,
-        market_rs_reader=reader,
+        data_provider=_DirectProvider(_stock_data()),
+        registry=_minervini_registry(),
+        market_rs_reader=_CanonicalReader(include_symbol=False),
     )
 
     result = orchestrator.scan_stock_multi("TEST", ["minervini"])
@@ -414,15 +331,10 @@ def test_orchestrator_maps_balanced_ineligible_stock_to_insufficient_history():
     assert "eligible universe" in result["reason"]
 
 
-def test_balanced_resolution_bypasses_scan_local_percentile_universe(monkeypatch):
+def test_apply_market_rs_resolution_hydrates_only_the_resolutions_market():
     layer = DataPreparationLayer.__new__(DataPreparationLayer)
-    data = _stock_data()
-    calls = []
-    monkeypatch.setattr(
-        layer,
-        "_attach_market_rs_universe_performances",
-        lambda results: calls.append(results),
-    )
+    us = _stock_data("TEST", "US")
+    hk = _stock_data("0700.HK", "HK")
     resolution = _CanonicalReader().get(
         market="US",
         symbols=("TEST",),
@@ -430,29 +342,8 @@ def test_balanced_resolution_bypasses_scan_local_percentile_universe(monkeypatch
         formula_version=None,
     )
 
-    layer.apply_market_rs_resolution({"TEST": data}, resolution)
+    layer.apply_market_rs_resolution({"TEST": us, "0700.HK": hk}, resolution)
 
-    assert calls == []
-    assert isinstance(data.rs_source, CanonicalStockRsSource)
-    assert data.rs_source.ratings["rs_rating"] == 87
-
-
-def test_legacy_resolution_retains_scan_local_percentile_universe(monkeypatch):
-    layer = DataPreparationLayer.__new__(DataPreparationLayer)
-    data = _stock_data()
-    calls = []
-    monkeypatch.setattr(
-        layer,
-        "_attach_market_rs_universe_performances",
-        lambda results: calls.append(results),
-    )
-    resolution = MarketRsResolution.legacy(
-        market="US",
-        as_of_date=None,
-        formula_version=LEGACY_RS_FORMULA_VERSION,
-    )
-
-    layer.apply_market_rs_resolution({"TEST": data}, resolution)
-
-    assert calls == [{"TEST": data}]
-    assert isinstance(data.rs_source, LegacyStockRsSource)
+    assert isinstance(us.rs_source, CanonicalStockRsSource)
+    assert us.rs_source.ratings["rs_rating"] == 87
+    assert hk.rs_source is None

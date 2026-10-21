@@ -11,7 +11,6 @@ from sqlalchemy.orm import sessionmaker
 
 import app.models.app_settings  # noqa: F401
 from app.database import Base
-from app.domain.relative_strength import BALANCED_RS_FORMULA_VERSION
 from app.services.bootstrap_dispatch_lifecycle import (
     BootstrapDispatchLifecycle,
     BootstrapMarketCompletion,
@@ -20,6 +19,7 @@ from app.services.bootstrap_run_manifest import (
     BootstrapRunManifest,
     BootstrapRunManifestRepository,
 )
+from app.services.runtime_bootstrap_readiness import BALANCED_PUBLICATION_MISSING
 from app.services.runtime_preferences_service import get_runtime_preferences
 
 
@@ -145,11 +145,6 @@ def test_primary_failure_is_one_atomic_dispatch_transition(
 def test_balanced_completion_consumes_pending_activation_in_same_transition(
     db_session,
 ) -> None:
-    class _BalancedFormulaReader:
-        def active_formula(self, _db, *, market: str) -> str:
-            assert market == "US"
-            return BALANCED_RS_FORMULA_VERSION
-
     repository = BootstrapRunManifestRepository()
     BootstrapDispatchLifecycle().claim(
         db_session,
@@ -162,16 +157,13 @@ def test_balanced_completion_consumes_pending_activation_in_same_transition(
         ),
     )
 
-    BootstrapDispatchLifecycle(
-        repository=repository,
-        formula_reader=_BalancedFormulaReader(),
-    ).finish_market(
+    BootstrapDispatchLifecycle(repository=repository).finish_market(
         db_session,
         dispatch_id="dispatch-current",
         completion=BootstrapMarketCompletion.ready(
             market="US",
             primary=True,
-            expected_formula_version=BALANCED_RS_FORMULA_VERSION,
+            balanced_publication_committed=True,
         ),
     )
 
@@ -181,45 +173,11 @@ def test_balanced_completion_consumes_pending_activation_in_same_transition(
     assert manifest.completed_markets == ("US",)
 
 
-def test_balanced_completion_requires_formula_reader(db_session) -> None:
+def test_missing_balanced_publication_fails_the_market_and_keeps_it_pending(
+    db_session,
+) -> None:
     repository = BootstrapRunManifestRepository()
     lifecycle = BootstrapDispatchLifecycle(repository=repository)
-    lifecycle.claim(
-        db_session,
-        manifest=BootstrapRunManifest.create(
-            primary_market="US",
-            enabled_markets=("US",),
-            dispatch_id="dispatch-current",
-            fresh_install=True,
-            queue_state="queued",
-        ),
-    )
-
-    with pytest.raises(
-        RuntimeError,
-        match="Balanced activation completion requires a formula reader",
-    ):
-        lifecycle.finish_market(
-            db_session,
-            dispatch_id="dispatch-current",
-            completion=BootstrapMarketCompletion.ready(
-                market="US",
-                primary=True,
-                expected_formula_version=BALANCED_RS_FORMULA_VERSION,
-            ),
-        )
-
-
-def test_missing_active_formula_preserves_pending_activation(db_session) -> None:
-    class _MissingFormulaReader:
-        def active_formula(self, _db, *, market: str) -> str:
-            raise LookupError(market)
-
-    repository = BootstrapRunManifestRepository()
-    lifecycle = BootstrapDispatchLifecycle(
-        repository=repository,
-        formula_reader=_MissingFormulaReader(),
-    )
     lifecycle.claim(
         db_session,
         manifest=BootstrapRunManifest.create(
@@ -234,14 +192,18 @@ def test_missing_active_formula_preserves_pending_activation(db_session) -> None
     updated = lifecycle.finish_market(
         db_session,
         dispatch_id="dispatch-current",
-        completion=BootstrapMarketCompletion.ready(
+        completion=BootstrapMarketCompletion.failed(
             market="US",
             primary=True,
-            expected_formula_version=BALANCED_RS_FORMULA_VERSION,
+            stage_key=BALANCED_PUBLICATION_MISSING.stage_key,
+            message=BALANCED_PUBLICATION_MISSING.activity_message,
         ),
     )
 
     assert updated.pending_balanced_activation_markets == ("US",)
+    assert updated.completed_markets == ()
+    assert updated.failed_markets == ("US",)
+    assert get_runtime_preferences(db_session).bootstrap_state == "failed"
 
 
 def test_first_terminal_market_outcome_wins_on_contradictory_redelivery(

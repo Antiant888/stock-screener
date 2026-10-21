@@ -9,10 +9,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from app.database import Base
-from app.domain.relative_strength import (
-    BALANCED_RS_FORMULA_VERSION,
-    LEGACY_RS_FORMULA_VERSION,
-)
+from app.domain.relative_strength import BALANCED_RS_FORMULA_VERSION
 from app.domain.scanning.filter_spec import (
     BooleanFilter,
     CategoricalFilter,
@@ -22,7 +19,6 @@ from app.domain.scanning.filter_spec import (
     SortSpec,
 )
 from app.domain.scanning.ports import ScanResultRsAudit
-from app.infra.db.models.relative_strength import MarketRsFormulaPointer
 from app.infra.db.repositories.scan_result_repo import SqlScanResultRepository
 from app.models.industry import IBDGroupRank, IBDIndustryGroup
 from app.models.scan_result import Scan, ScanResult
@@ -34,20 +30,16 @@ from app.services.market_taxonomy_service import MarketTaxonomyEntry
 pytestmark = pytest.mark.integration
 
 
+# Rows the database still holds from before the single-formula cutover.
+STORED_LEGACY_FORMULA = "legacy-linear-v1"
+
+
 @pytest.fixture
 def session():
     """Create an isolated in-memory DB with full schema."""
     engine = create_engine("sqlite:///:memory:")
     Base.metadata.create_all(engine)
     with Session(engine) as sess:
-        sess.add_all(
-            MarketRsFormulaPointer(
-                market=market,
-                formula_version=LEGACY_RS_FORMULA_VERSION,
-            )
-            for market in ("US", "HK", "JP", "TW", "IN")
-        )
-        sess.commit()
         yield sess
 
 
@@ -259,10 +251,7 @@ def test_persist_orchestrator_results_enriches_reference_fields(session: Session
     assert ScanResultItem.from_domain(page.items[0]).ibd_group_rank_date == "2026-02-19"
 
 
-def test_scan_enrichment_uses_only_the_markets_active_group_formula(session: Session):
-    pointer = session.get(MarketRsFormulaPointer, "US")
-    assert pointer is not None
-    pointer.formula_version = BALANCED_RS_FORMULA_VERSION
+def test_scan_enrichment_uses_only_balanced_group_rows(session: Session):
     session.add(
         IBDIndustryGroup(
             symbol="NVDA",
@@ -285,7 +274,7 @@ def test_scan_enrichment_uses_only_the_markets_active_group_formula(session: Ses
                 date=date(2026, 6, 18),
                 rank=91,
                 avg_rs_rating=99.0,
-                rs_formula_version=LEGACY_RS_FORMULA_VERSION,
+                rs_formula_version=STORED_LEGACY_FORMULA,
             ),
         ]
     )
@@ -307,9 +296,6 @@ def test_scan_enrichment_uses_only_the_markets_active_group_formula(session: Ses
 
 
 def test_scan_enrichment_uses_pinned_row_rs_identity(session: Session):
-    pointer = session.get(MarketRsFormulaPointer, "US")
-    assert pointer is not None
-    pointer.formula_version = LEGACY_RS_FORMULA_VERSION
     session.add(
         IBDIndustryGroup(
             symbol="NVDA",
@@ -342,7 +328,7 @@ def test_scan_enrichment_uses_pinned_row_rs_identity(session: Session):
                 date=date(2026, 6, 19),
                 rank=91,
                 avg_rs_rating=50.0,
-                rs_formula_version=LEGACY_RS_FORMULA_VERSION,
+                rs_formula_version=STORED_LEGACY_FORMULA,
             ),
         ]
     )
@@ -420,7 +406,7 @@ def test_persist_orchestrator_results_enriches_non_us_market_taxonomy(session: S
                 date=date(2026, 6, 14),
                 rank=4,
                 avg_rs_rating=81.0,
-                rs_formula_version=LEGACY_RS_FORMULA_VERSION,
+                rs_formula_version=BALANCED_RS_FORMULA_VERSION,
             ),
         ]
     )
@@ -471,7 +457,7 @@ def test_non_us_rank_enrichment_honors_explicit_ranking_date(session: Session):
                 date=date(2026, 2, 19),
                 rank=7,
                 avg_rs_rating=74.0,
-                rs_formula_version=LEGACY_RS_FORMULA_VERSION,
+                rs_formula_version=BALANCED_RS_FORMULA_VERSION,
             ),
         ]
     )
@@ -539,7 +525,7 @@ def test_persist_orchestrator_results_overrides_non_us_sector_and_industry_with_
                 date=date(2026, 6, 14),
                 rank=3,
                 avg_rs_rating=86.0,
-                rs_formula_version=LEGACY_RS_FORMULA_VERSION,
+                rs_formula_version=BALANCED_RS_FORMULA_VERSION,
             ),
         ]
     )
@@ -668,7 +654,7 @@ def test_persist_orchestrator_results_strips_market_before_rank_map_lookup(sessi
                 date=date(2026, 6, 14),
                 rank=4,
                 avg_rs_rating=81.0,
-                rs_formula_version=LEGACY_RS_FORMULA_VERSION,
+                rs_formula_version=BALANCED_RS_FORMULA_VERSION,
             ),
         ]
     )

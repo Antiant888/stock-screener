@@ -15,7 +15,6 @@ from app.scanners.base_screener import (
     fifty_two_week_range,
 )
 from app.scanners.canslim_scanner import CANSLIMScanner
-from app.scanners.criteria.relative_strength import RelativeStrengthCalculator
 from app.scanners.minervini_scanner import MinerviniScanner
 from app.scanners.scan_orchestrator import ScanOrchestrator
 from app.scanners.screener_registry import ScreenerRegistry
@@ -62,12 +61,12 @@ def _manual_precomputed_context(data: StockData) -> SimpleNamespace:
     volume_rev = volume_chrono[::-1].reset_index(drop=True)
     benchmark_close_rev = benchmark_close_chrono[::-1].reset_index(drop=True)
     ma_200_series = close_chrono.rolling(window=200, min_periods=200).mean()
-    rs_ratings = RelativeStrengthCalculator().calculate_all_rs_ratings(
-        data.symbol,
-        close_rev,
-        benchmark_close_rev,
-        data.rs_universe_performances,
-    )
+    rs_ratings = {
+        "rs_rating": 87,
+        "rs_rating_1m": 42,
+        "rs_rating_3m": 91,
+        "rs_rating_12m": 98,
+    }
     return SimpleNamespace(
         close_chrono=close_chrono,
         close_rev=close_rev,
@@ -170,15 +169,10 @@ def test_orchestrator_attaches_shared_precomputed_scan_context():
     assert alpha_details["context_id"] == beta_details["context_id"] == id(context)
 
 
-def test_minervini_uses_precomputed_context_for_rs_ratings(monkeypatch):
+def test_minervini_uses_precomputed_context_for_rs_ratings():
     stock_data = _make_stock_data()
     stock_data.precomputed_scan_context = _manual_precomputed_context(stock_data)
     scanner = MinerviniScanner()
-
-    def _raise_if_called(*args, **kwargs):
-        raise AssertionError("relative strength should come from precomputed context")
-
-    monkeypatch.setattr(scanner.rs_calc, "calculate_all_rs_ratings", _raise_if_called)
 
     result = scanner.scan_stock(stock_data.symbol, stock_data, criteria={"include_vcp": False})
 
@@ -189,16 +183,10 @@ def test_minervini_uses_precomputed_context_for_rs_ratings(monkeypatch):
     assert result.details["rs_rating_12m"] == stock_data.precomputed_scan_context.rs_ratings["rs_rating_12m"]
 
 
-def test_canslim_uses_precomputed_context_for_rs_ratings(monkeypatch):
+def test_canslim_uses_precomputed_context_for_rs_ratings():
     stock_data = _make_stock_data()
     stock_data.precomputed_scan_context = _manual_precomputed_context(stock_data)
     scanner = CANSLIMScanner()
-
-    def _raise_if_called(*args, **kwargs):
-        raise AssertionError("relative strength should come from precomputed context")
-
-    monkeypatch.setattr(scanner.rs_calc, "calculate_rs_rating", _raise_if_called)
-    monkeypatch.setattr(scanner.rs_calc, "calculate_all_rs_ratings", _raise_if_called)
 
     result = scanner.scan_stock(stock_data.symbol, stock_data)
 
@@ -208,15 +196,10 @@ def test_canslim_uses_precomputed_context_for_rs_ratings(monkeypatch):
     assert result.details["rs_rating_12m"] == stock_data.precomputed_scan_context.rs_ratings["rs_rating_12m"]
 
 
-def test_setup_engine_uses_precomputed_context_for_rs_rating(monkeypatch):
+def test_setup_engine_uses_precomputed_context_for_rs_rating():
     stock_data = _make_stock_data()
     stock_data.precomputed_scan_context = _manual_precomputed_context(stock_data)
     scanner = SetupEngineScanner()
-
-    def _raise_if_called(*args, **kwargs):
-        raise AssertionError("relative strength should come from precomputed context")
-
-    monkeypatch.setattr(scanner._rs_calc, "calculate_rs_rating", _raise_if_called)
 
     result = scanner.scan_stock(stock_data.symbol, stock_data)
 

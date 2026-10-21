@@ -106,7 +106,6 @@ def test_runtime_market_rs_default_input_loader_remains_strict_for_fresh_import_
     runtime = CanonicalRsRuntime(
         session_factory=lambda: db_session,
         market_calendar=_MarketRsCalendarStub(),
-        legacy_group_service_provider=lambda: object(),
     )
 
     with pytest.raises(MarketRsInputUnavailable) as exc_info:
@@ -132,7 +131,6 @@ def test_rollout_market_rs_uses_current_active_fallback_for_fresh_import_history
     runtime = CanonicalRsRuntime(
         session_factory=lambda: db_session,
         market_calendar=_MarketRsCalendarStub(),
-        legacy_group_service_provider=lambda: object(),
     )
 
     inputs = runtime.rollout_service().backfill_service.input_loader.load(
@@ -374,7 +372,7 @@ def test_fresh_bootstrap_signature_routes_activation_to_market_queue() -> None:
                 "status": "failed",
                 "primary_market": "US",
                 "market": "US",
-                "reason": "balanced market rs formula not active",
+                "reason": "no committed balanced market rs publication",
             },
         ),
         (
@@ -383,12 +381,12 @@ def test_fresh_bootstrap_signature_routes_activation_to_market_queue() -> None:
             {
                 "status": "failed",
                 "market": "US",
-                "reason": "balanced market rs formula not active",
+                "reason": "no committed balanced market rs publication",
             },
         ),
     ],
 )
-def test_fresh_bootstrap_completion_rejects_legacy_formula_pointer(
+def test_fresh_bootstrap_completion_fails_until_the_balanced_publication_commits(
     monkeypatch,
     completion_task_name,
     task_kwargs,
@@ -411,9 +409,9 @@ def test_fresh_bootstrap_completion_rejects_legacy_formula_pointer(
             *,
             enabled_markets,
             bootstrap_started_at=None,
-            expected_formula_versions=None,
+            balanced_publication_markets=(),
         ):
-            calls["expectations"] = expected_formula_versions
+            calls["publication_markets"] = list(balanced_publication_markets)
             return BootstrapReadiness(
                 empty_system=False,
                 market_results={
@@ -454,13 +452,92 @@ def test_fresh_bootstrap_completion_rejects_legacy_formula_pointer(
     )
 
     assert result == expected_result
-    assert calls["expectations"] == {
-        "US": BALANCED_RS_FORMULA_VERSION,
-    }
+    assert calls["publication_markets"] == ["US"]
     assert completions[0].failure_stage_key == "market_rs"
     assert completions[0].failure_message == (
-        "Balanced Market RS activation incomplete"
+        "Balanced Market RS publication not committed"
     )
     assert completions[0].primary is (
         completion_task_name == "complete_local_runtime_bootstrap"
     )
+
+
+@pytest.mark.parametrize(
+    ("completion_task_name", "task_kwargs", "expected_result", "expected_manifest"),
+    [
+        (
+            "complete_local_runtime_bootstrap",
+            {"primary_market": "US"},
+            {"status": "ready", "primary_market": "US", "market": "US"},
+            ((), ("US",), ("HK",), "ready"),
+        ),
+        (
+            "complete_background_market_bootstrap",
+            {"market": "HK"},
+            {"status": "ready", "market": "HK"},
+            ((), ("HK",), ("US",), "running"),
+        ),
+    ],
+)
+def test_ready_completion_records_the_answer_readiness_gave(
+    monkeypatch,
+    completion_task_name,
+    task_kwargs,
+    expected_result,
+    expected_manifest,
+):
+    """Readiness saw the publication, which is gone by the manifest update."""
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from sqlalchemy.pool import StaticPool
+
+    from app.database import Base
+    from app.services.bootstrap_dispatch_lifecycle import BootstrapDispatchLifecycle
+    from app.services.bootstrap_run_manifest import (
+        BootstrapRunManifest,
+        BootstrapRunManifestRepository,
+    )
+    from app.services.runtime_bootstrap_readiness import MarketReadinessCompletion
+    from app.services.runtime_preferences_service import get_runtime_preferences
+    from app.tasks import runtime_bootstrap_tasks as module
+
+    engine = create_engine("sqlite://", poolclass=StaticPool)
+    Base.metadata.create_all(engine)
+    session_factory = sessionmaker(bind=engine)
+    with session_factory() as db:
+        BootstrapDispatchLifecycle().claim(
+            db,
+            manifest=BootstrapRunManifest.create(
+                primary_market="US",
+                enabled_markets=("US", "HK"),
+                dispatch_id="dispatch-current",
+                fresh_install=True,
+                queue_state="queued",
+            ),
+        )
+    monkeypatch.setattr(module, "SessionLocal", session_factory)
+    monkeypatch.setattr(
+        module,
+        "_evaluate_market_readiness",
+        lambda _db, *, market, **_kwargs: MarketReadinessCompletion(
+            market=market, ready=True
+        ),
+    )
+
+    result = getattr(module, completion_task_name).run(
+        **task_kwargs,
+        expected_formula_version=BALANCED_RS_FORMULA_VERSION,
+        dispatch_id="dispatch-current",
+    )
+
+    with session_factory() as db:
+        manifest = BootstrapRunManifestRepository().load(db)
+        recorded = (
+            manifest.failed_markets,
+            manifest.completed_markets,
+            manifest.pending_balanced_activation_markets,
+            get_runtime_preferences(db).bootstrap_state,
+        )
+    engine.dispose()
+    assert result == expected_result
+    assert recorded == expected_manifest

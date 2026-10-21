@@ -291,12 +291,7 @@ def _balanced_activation_state_at_dispatch(
 
 
 def _bootstrap_dispatch_lifecycle() -> BootstrapDispatchLifecycle:
-    from ..infra.db.repositories.market_rs_repo import MarketRsRunRepository
-
-    return BootstrapDispatchLifecycle(
-        repository=BootstrapRunManifestRepository(),
-        formula_reader=MarketRsRunRepository(),
-    )
+    return BootstrapDispatchLifecycle(repository=BootstrapRunManifestRepository())
 
 
 def _is_current_bootstrap_dispatch(db, *, dispatch_id: str | None) -> bool:
@@ -441,6 +436,10 @@ def complete_local_runtime_bootstrap(
     del (
         enabled_markets
     )  # Legacy Celery payload compatibility; readiness is primary-only.
+    # The dispatch sets the formula kwarg only for a market awaiting its
+    # balanced publication; its value is kept for payload compatibility.
+    # Readiness then answers ready only once that publication is committed.
+    requires_balanced_publication = expected_formula_version is not None
     primary_market = normalize_market(primary_market)
     db = SessionLocal()
     try:
@@ -455,7 +454,7 @@ def complete_local_runtime_bootstrap(
             db,
             market=primary_market,
             bootstrap_started_at=prefs.bootstrap_started_at,
-            expected_formula_version=expected_formula_version,
+            requires_balanced_publication=requires_balanced_publication,
         )
         if not completion.ready:
             failure = completion.failure or _readiness_failure(None)
@@ -487,7 +486,7 @@ def complete_local_runtime_bootstrap(
             completion=BootstrapMarketCompletion.ready(
                 market=completion.market,
                 primary=True,
-                expected_formula_version=expected_formula_version,
+                balanced_publication_committed=requires_balanced_publication,
             ),
         )
         if not finished:
@@ -523,6 +522,8 @@ def complete_background_market_bootstrap(
 ) -> dict:
     from ..services.runtime_preferences_service import get_runtime_preferences
 
+    # See complete_local_runtime_bootstrap.
+    requires_balanced_publication = expected_formula_version is not None
     db = SessionLocal()
     try:
         normalized_market = normalize_market(market)
@@ -533,7 +534,7 @@ def complete_background_market_bootstrap(
             db,
             market=market,
             bootstrap_started_at=prefs.bootstrap_started_at,
-            expected_formula_version=expected_formula_version,
+            requires_balanced_publication=requires_balanced_publication,
         )
         if completion.ready:
             finished = _finish_bootstrap_market(
@@ -542,7 +543,7 @@ def complete_background_market_bootstrap(
                 completion=BootstrapMarketCompletion.ready(
                     market=completion.market,
                     primary=False,
-                    expected_formula_version=expected_formula_version,
+                    balanced_publication_committed=requires_balanced_publication,
                 ),
             )
             if not finished:

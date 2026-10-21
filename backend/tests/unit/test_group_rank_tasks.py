@@ -9,17 +9,13 @@ from celery.exceptions import Retry, SoftTimeLimitExceeded
 
 from app.services.daily_group_rank_runner import (
     DailyGroupRankOutcome,
-    GroupRankWarmupIncomplete,
 )
 from app.services.group_rank_models import (
     GroupRankCalculationResult,
     GroupRanking,
     GroupRankPrefetchStats,
 )
-from app.services.ibd_group_rank_service import (
-    IncompleteGroupRankingCacheError,
-    MissingIBDIndustryMappingsError,
-)
+from app.services.ibd_group_rank_service import MissingIBDIndustryMappingsError
 
 
 def _prefetch_stats(
@@ -126,36 +122,6 @@ def _patch_calendar_service(
         lambda: fake,
     )
     return fake
-
-
-def test_daily_group_rankings_refuse_to_publish_when_cache_only_inputs_missing(monkeypatch):
-    import app.tasks.group_rank_tasks as module
-
-    fake_db = MagicMock()
-    monkeypatch.setattr(module, "SessionLocal", lambda: fake_db)
-    _patch_serialized_lock(monkeypatch)
-    _patch_calendar_service(monkeypatch, datetime(2026, 3, 20, 17, 40, 0))
-
-    fake_price_cache = MagicMock()
-    fake_price_cache.get_warmup_metadata.return_value = {
-        "status": "completed",
-        "count": 10000,
-        "total": 10000,
-        "completed_at": datetime.now().isoformat(),
-    }
-    fake_service = MagicMock()
-    fake_service.price_cache = fake_price_cache
-    fake_service.calculate_group_rankings.side_effect = IncompleteGroupRankingCacheError(
-        _prefetch_stats(misses=1)
-    )
-
-    monkeypatch.setattr(module, "get_group_rank_service", lambda: fake_service)
-
-    result = module.calculate_daily_group_rankings.run()
-
-    assert result["cache_only"] is True
-    assert result["prefetch_stats"]["cache_miss_symbols"] == 1
-    assert "missing cached price data" in result["error"].lower()
 
 
 def test_bootstrap_group_rankings_use_balanced_publication_date(monkeypatch):
@@ -444,6 +410,14 @@ def test_bootstrap_current_only_group_task_targets_last_completed_session(monkey
         is_trading_day=False,
     )
     calendar.last_completed_trading_day.return_value = date(2026, 3, 20)
+    monkeypatch.setattr(
+        module,
+        "resolve_bootstrap_publication_date_with_session",
+        lambda *_args, **kwargs: SimpleNamespace(
+            selected_date=kwargs["requested_date"],
+            reason_code="requested_date_ready",
+        ),
+    )
     monkeypatch.setattr(
         "app.services.runtime_preferences_service.is_market_enabled_now",
         lambda _market: True,
@@ -979,9 +953,7 @@ def test_orchestrator_marks_failed_when_inner_daily_result_has_error(monkeypatch
         module,
         "run_daily_group_rankings",
         MagicMock(
-            side_effect=GroupRankWarmupIncomplete(
-                "Cache warmup not complete"
-            )
+            side_effect=MissingIBDIndustryMappingsError()
         ),
     )
 
@@ -992,13 +964,13 @@ def test_orchestrator_marks_failed_when_inner_daily_result_has_error(monkeypatch
 
     result = module.calculate_daily_group_rankings_with_gapfill.run(market="US")
 
-    assert result["error"] == "Daily group ranking failed: Cache warmup not complete"
-    assert result["today"]["error"] == "Cache warmup not complete"
+    assert result["error"] == "Daily group ranking failed: IBD industry mappings are not loaded"
+    assert result["today"]["error"] == "IBD industry mappings are not loaded"
     completed.assert_not_called()
     failed.assert_called_once()
 
 
-def test_bootstrap_orchestrator_marks_failed_when_inner_daily_warmup_incomplete(monkeypatch):
+def test_bootstrap_orchestrator_marks_failed_when_inner_daily_result_has_error(monkeypatch):
     import app.tasks.group_rank_tasks as module
 
     fake_db = MagicMock()
@@ -1026,9 +998,7 @@ def test_bootstrap_orchestrator_marks_failed_when_inner_daily_warmup_incomplete(
         module,
         "run_daily_group_rankings",
         MagicMock(
-            side_effect=GroupRankWarmupIncomplete(
-                "Cache warmup not complete"
-            )
+            side_effect=MissingIBDIndustryMappingsError()
         ),
     )
 
@@ -1040,8 +1010,8 @@ def test_bootstrap_orchestrator_marks_failed_when_inner_daily_warmup_incomplete(
         activity_lifecycle="bootstrap",
     )
 
-    assert result["error"] == "Daily group ranking failed: Cache warmup not complete"
-    assert result["today"]["error"] == "Cache warmup not complete"
+    assert result["error"] == "Daily group ranking failed: IBD industry mappings are not loaded"
+    assert result["today"]["error"] == "IBD industry mappings are not loaded"
     failed.assert_called_once()
 
 

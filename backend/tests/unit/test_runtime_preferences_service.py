@@ -6,8 +6,6 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.domain.relative_strength import LEGACY_RS_FORMULA_VERSION
-
 
 @pytest.fixture(autouse=True)
 def _no_bootstrap_manifest(monkeypatch):
@@ -29,13 +27,13 @@ class _FakeBootstrapReadinessService:
         *,
         empty_system,
         market_results,
-        formula_versions=None,
         calls=None,
+        balanced_publications=frozenset(),
     ):
         self._module = module
         self._empty_system = empty_system
         self._market_results = market_results
-        self._formula_versions = formula_versions or {}
+        self._balanced_publications = frozenset(balanced_publications)
         self.calls = calls if calls is not None else []
 
     def evaluate(
@@ -44,10 +42,10 @@ class _FakeBootstrapReadinessService:
         *,
         enabled_markets,
         bootstrap_started_at=None,
-        expected_formula_versions=None,
+        balanced_publication_markets=(),
     ):
         self.calls.append((db, list(enabled_markets), bootstrap_started_at))
-        expectations = expected_formula_versions or {}
+        pending = set(balanced_publication_markets)
         return self._module.BootstrapReadiness(
             empty_system=self._empty_system,
             market_results={
@@ -56,8 +54,8 @@ class _FakeBootstrapReadinessService:
                     core_ready=core_ready,
                     scan_ready=scan_ready,
                     rs_ready=(
-                        market not in expectations
-                        or self._formula_versions.get(market) == expectations[market]
+                        market not in pending
+                        or market in self._balanced_publications
                     ),
                 )
                 for market, core_ready, scan_ready in self._market_results
@@ -116,7 +114,6 @@ def test_failed_fresh_activation_requires_pending_balanced_formula(monkeypatch):
             module,
             empty_system=False,
             market_results=[("US", True, True)],
-            formula_versions={"US": LEGACY_RS_FORMULA_VERSION},
         ),
     )
 
@@ -124,6 +121,39 @@ def test_failed_fresh_activation_requires_pending_balanced_formula(monkeypatch):
 
     assert status.bootstrap_state == "failed"
     assert status.bootstrap_required is True
+
+
+def test_failed_fresh_activation_is_ready_once_the_publication_commits(monkeypatch):
+    from app.services import runtime_preferences_service as module
+
+    prefs = module.RuntimePreferences(
+        primary_market="US",
+        enabled_markets=["US"],
+        bootstrap_state="failed",
+    )
+    manifest = SimpleNamespace(pending_balanced_activation_markets=("US",))
+    monkeypatch.setattr(module, "get_runtime_preferences", lambda _db: prefs)
+    monkeypatch.setattr(
+        module,
+        "BootstrapRunManifestRepository",
+        lambda: SimpleNamespace(load=lambda _db: manifest),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        module,
+        "get_bootstrap_readiness_service",
+        lambda: _FakeBootstrapReadinessService(
+            module,
+            empty_system=False,
+            market_results=[("US", True, True)],
+            balanced_publications={"US"},
+        ),
+    )
+
+    status = module.get_runtime_bootstrap_status(object())
+
+    assert status.bootstrap_state == "ready"
+    assert status.bootstrap_required is False
 
 
 def test_running_bootstrap_becomes_ready_when_primary_market_has_scan(monkeypatch):

@@ -16,10 +16,9 @@ from app.domain.relative_strength import (
     BALANCED_RS_FORMULA_VERSION,
     BALANCED_RS_PRICE_BASIS,
     BALANCED_RS_SNAPSHOT_SCHEMA_VERSION,
-    LEGACY_RS_FORMULA_VERSION,
 )
 from app.infra.db.models.feature_store import FeatureRun
-from app.infra.db.models.relative_strength import MarketRsFormulaPointer, MarketRsRun
+from app.infra.db.models.relative_strength import MarketRsRun
 from app.models.industry import IBDGroupRank
 from app.models.market_breadth import MarketBreadth
 from app.models.scan_result import Scan, ScanResult
@@ -34,43 +33,10 @@ from app.models.theme import (
 )
 from app.models.ui_view_snapshot import UIViewSnapshot
 from app.services.ui_snapshot_service import (
-    GROUPS_VIEW_KEY,
     UISnapshotService,
     _force_forget_snapshot_tables,
     market_breadth_to_dict,
 )
-
-
-def test_groups_publication_locks_formula_pointer_through_snapshot_write():
-    service = UISnapshotService(Mock())
-    db = Mock()
-    pointer = MarketRsFormulaPointer(
-        market="US",
-        formula_version=BALANCED_RS_FORMULA_VERSION,
-    )
-    pointer_query = db.query.return_value
-    pointer_query.filter.return_value = pointer_query
-    pointer_query.with_for_update.return_value = pointer_query
-    pointer_query.one_or_none.return_value = pointer
-    service._resolve_groups_source_revision = Mock(return_value="groups-rev")
-    service._build_groups_payload = Mock(return_value={"rankings": []})
-    expected = Mock()
-    service._publish = Mock(return_value=expected)
-
-    result = service._publish_groups_bootstrap_with_db(
-        db,
-        expected_formula_version=BALANCED_RS_FORMULA_VERSION,
-    )
-
-    assert result is expected
-    pointer_query.with_for_update.assert_called_once_with()
-    service._publish.assert_called_once_with(
-        db=db,
-        view_key=GROUPS_VIEW_KEY,
-        variant_key="default",
-        source_revision="groups-rev",
-        payload={"rankings": []},
-    )
 
 
 def test_ui_snapshot_service_marks_outdated_pointer_reads_as_stale_and_prunes_old_revisions():
@@ -368,52 +334,36 @@ def test_publish_groups_bootstrap_returns_none_when_no_rankings_exist():
     Session = sessionmaker(bind=engine)
     service = UISnapshotService(Session)
 
-    with Session() as db:
-        db.add(
-            MarketRsFormulaPointer(
-                market="US",
-                formula_version=LEGACY_RS_FORMULA_VERSION,
-            )
-        )
-        db.commit()
-
     snapshot = service.publish_groups_bootstrap()
 
     assert snapshot is None
     assert service.get_groups_bootstrap() is None
 
 
-def test_groups_source_revision_changes_when_active_rs_identity_changes():
+def test_groups_source_revision_tracks_the_latest_balanced_publication():
     engine = create_engine("sqlite:///:memory:")
     Base.metadata.create_all(engine)
     Session = sessionmaker(bind=engine)
     service = UISnapshotService(Session)
 
     with Session() as db:
-        pointer = MarketRsFormulaPointer(
-            market="US",
-            formula_version=LEGACY_RS_FORMULA_VERSION,
-        )
-        db.add_all(
-            [
-                pointer,
-                IBDGroupRank(
-                    market="US",
-                    industry_group="Software",
-                    date=date(2026, 3, 28),
-                    rank=1,
-                    avg_rs_rating=90,
-                    median_rs_rating=90,
-                    weighted_avg_rs_rating=90,
-                    rs_std_dev=0,
-                    num_stocks=10,
-                    num_stocks_rs_above_80=8,
-                    rs_formula_version=LEGACY_RS_FORMULA_VERSION,
-                ),
-            ]
+        db.add(
+            IBDGroupRank(
+                market="US",
+                industry_group="Software",
+                date=date(2026, 3, 28),
+                rank=1,
+                avg_rs_rating=90,
+                median_rs_rating=90,
+                weighted_avg_rs_rating=90,
+                rs_std_dev=0,
+                num_stocks=10,
+                num_stocks_rs_above_80=8,
+                rs_formula_version="legacy-linear-v1",
+            )
         )
         db.commit()
-        legacy_revision = service._resolve_groups_source_revision(db)  # noqa: SLF001
+        before = service._resolve_groups_source_revision(db)  # noqa: SLF001
 
         run = MarketRsRun(
             market="US",
@@ -446,12 +396,11 @@ def test_groups_source_revision_changes_when_active_rs_identity_changes():
                 market_rs_run_id=run.id,
             )
         )
-        pointer.formula_version = BALANCED_RS_FORMULA_VERSION
         db.commit()
-        balanced_revision = service._resolve_groups_source_revision(db)  # noqa: SLF001
+        after = service._resolve_groups_source_revision(db)  # noqa: SLF001
 
-    assert legacy_revision == "2026-03-28|legacy-linear-v1|none"
-    assert balanced_revision == f"2026-03-28|balanced-horizon-percentile-v2|{run_id}"
+    assert before == "none|balanced-horizon-percentile-v2|none"
+    assert after == f"2026-03-28|balanced-horizon-percentile-v2|{run_id}"
 
 
 def test_publish_all_skips_groups_when_rankings_are_missing(monkeypatch):
@@ -638,6 +587,84 @@ def test_breadth_source_revision_includes_calculation_revision():
     assert revision == "2026-08-21|breadth-r3"
 
 
+def _seed_balanced_groups(db, *, day: date, universe_hash: str) -> int:
+    run = MarketRsRun(
+        market="US",
+        as_of_date=day,
+        formula_version=BALANCED_RS_FORMULA_VERSION,
+        status="completed",
+        benchmark_symbol="SPY",
+        benchmark_as_of_date=day,
+        universe_hash=universe_hash,
+        expected_symbol_count=5000,
+        eligible_symbol_count=5000,
+        excluded_symbol_count=0,
+        diagnostics_json={
+            "price_basis": BALANCED_RS_PRICE_BASIS,
+            "rs_snapshot_schema_version": BALANCED_RS_SNAPSHOT_SCHEMA_VERSION,
+        },
+    )
+    db.add(run)
+    db.flush()
+    db.add(
+        IBDGroupRank(
+            market="US",
+            industry_group="Software",
+            date=day,
+            rank=1,
+            avg_rs_rating=95.5,
+            median_rs_rating=95.0,
+            weighted_avg_rs_rating=95.2,
+            rs_std_dev=1.0,
+            num_stocks=12,
+            num_stocks_rs_above_80=10,
+            top_symbol="MSFT",
+            top_rs_rating=99.0,
+            rs_formula_version=BALANCED_RS_FORMULA_VERSION,
+            market_rs_run_id=run.id,
+        )
+    )
+    db.commit()
+    return run.id
+
+
+def test_older_groups_build_does_not_overwrite_a_newer_publication(tmp_path):
+    engine = create_engine(f"sqlite:///{tmp_path / 'ui.sqlite'}")
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(bind=engine)
+    with Session() as db:
+        _seed_balanced_groups(db, day=date(2026, 3, 27), universe_hash="hash-27")
+
+    older = UISnapshotService(Session)
+    real_build = older._build_groups_payload
+
+    def build_then_lose_the_race(db):
+        payload = real_build(db)
+        with Session() as other:
+            newer_run_id = _seed_balanced_groups(
+                other, day=date(2026, 3, 28), universe_hash="hash-28"
+            )
+        newer = UISnapshotService(Session).publish_groups_bootstrap()
+        assert newer.source_revision == (
+            f"2026-03-28|{BALANCED_RS_FORMULA_VERSION}|{newer_run_id}"
+        )
+        return payload
+
+    older._build_groups_payload = build_then_lose_the_race
+
+    result = older.publish_groups_bootstrap()
+
+    assert result.payload["rankings"]["date"] == "2026-03-28"
+    with Session() as db:
+        stored = (
+            db.query(UIViewSnapshot.source_revision)
+            .filter(UIViewSnapshot.view_key == "groups_bootstrap")
+            .all()
+        )
+    assert [revision for (revision,) in stored] == [result.source_revision]
+    assert older.get_groups_bootstrap().payload["rankings"]["date"] == "2026-03-28"
+
+
 def test_publish_groups_bootstrap_serializes_rankings_when_available():
     engine = create_engine("sqlite:///:memory:")
     Base.metadata.create_all(engine, tables=[IBDGroupRank.__table__])
@@ -662,15 +689,7 @@ def test_publish_groups_bootstrap_serializes_rankings_when_available():
                 "rs_snapshot_schema_version": BALANCED_RS_SNAPSHOT_SCHEMA_VERSION,
             },
         )
-        db.add_all(
-            [
-                MarketRsFormulaPointer(
-                    market="US",
-                    formula_version=BALANCED_RS_FORMULA_VERSION,
-                ),
-                run,
-            ]
-        )
+        db.add(run)
         db.flush()
         db.add(
             IBDGroupRank(
@@ -714,17 +733,7 @@ def test_publish_groups_bootstrap_serializes_rankings_when_available():
     assert rankings_payload["rankings"][0]["avg_rs_rating_6m"] == 72.5
 
     assert (
-        service.publish_groups_bootstrap(
-            expected_formula_version=LEGACY_RS_FORMULA_VERSION,
-            expected_through_date=date(2026, 3, 28),
-        )
-        is None
-    )
-    assert (
-        service.publish_groups_bootstrap(
-            expected_formula_version=BALANCED_RS_FORMULA_VERSION,
-            expected_through_date=date(2026, 3, 27),
-        )
+        service.publish_groups_bootstrap(expected_through_date=date(2026, 3, 27))
         is None
     )
 

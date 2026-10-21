@@ -6,11 +6,7 @@ from typing import Iterable
 
 from sqlalchemy.orm import Session
 
-from app.domain.relative_strength import (
-    BALANCED_RS_FORMULA_VERSION,
-    LEGACY_RS_FORMULA_VERSION,
-    GroupSnapshotIdentity,
-)
+from app.domain.relative_strength import GroupSnapshotIdentity
 
 
 class GroupSnapshotStatus(StrEnum):
@@ -56,19 +52,16 @@ class GroupRankSnapshotCoordinator:
         reader,
         market_rs_snapshot_service,
         canonical_group_service,
-        legacy_group_service,
     ) -> None:
         self.reader = reader
         self.market_rs_snapshot_service = market_rs_snapshot_service
         self.canonical_group_service = canonical_group_service
-        self.legacy_group_service = legacy_group_service
 
     def ensure_snapshot(
         self,
         db: Session,
         *,
         identity: GroupSnapshotIdentity,
-        universe_symbols: Iterable[str] | None = None,
     ) -> GroupSnapshotResult:
         existing = self.reader.load_exact(
             db,
@@ -78,47 +71,29 @@ class GroupRankSnapshotCoordinator:
         if existing:
             return self._result(identity, GroupSnapshotStatus.EXISTING, existing)
 
-        if identity.formula_version == BALANCED_RS_FORMULA_VERSION:
-            run = self.market_rs_snapshot_service.calculate(
-                db,
-                market=identity.market,
-                as_of_date=identity.as_of_date,
-                formula_version=identity.formula_version,
-                rebuild_incompatible=True,
-            )
-            rankings = self.canonical_group_service.calculate_and_store(
-                db,
-                market=identity.market,
-                as_of_date=identity.as_of_date,
-                formula_version=identity.formula_version,
-            )
-            if not rankings:
-                raise RuntimeError("Balanced Group calculation produced no rankings")
-            rows = self.reader.load_exact(
-                db,
-                identity=identity,
-                include_top_symbol_names=False,
-            )
-            if rows and {row.get("market_rs_run_id") for row in rows} != {run.id}:
-                raise RuntimeError(
-                    "Group snapshot does not reference the exact Market RS run"
-                )
-        elif identity.formula_version == LEGACY_RS_FORMULA_VERSION:
-            self.legacy_group_service.calculate_group_rankings(
-                db,
-                identity.as_of_date,
-                market=identity.market,
-                formula_version=LEGACY_RS_FORMULA_VERSION,
-                **self._legacy_universe_kwargs(universe_symbols),
-            )
-            rows = self.reader.load_exact(
-                db,
-                identity=identity,
-                include_top_symbol_names=False,
-            )
-        else:
-            raise ValueError(
-                f"Unsupported Group RS formula: {identity.formula_version}"
+        run = self.market_rs_snapshot_service.calculate(
+            db,
+            market=identity.market,
+            as_of_date=identity.as_of_date,
+            formula_version=identity.formula_version,
+            rebuild_incompatible=True,
+        )
+        rankings = self.canonical_group_service.calculate_and_store(
+            db,
+            market=identity.market,
+            as_of_date=identity.as_of_date,
+            formula_version=identity.formula_version,
+        )
+        if not rankings:
+            raise RuntimeError("Balanced Group calculation produced no rankings")
+        rows = self.reader.load_exact(
+            db,
+            identity=identity,
+            include_top_symbol_names=False,
+        )
+        if rows and {row.get("market_rs_run_id") for row in rows} != {run.id}:
+            raise RuntimeError(
+                "Group snapshot does not reference the exact Market RS run"
             )
 
         status = GroupSnapshotStatus.PROCESSED if rows else GroupSnapshotStatus.EMPTY
@@ -129,58 +104,30 @@ class GroupRankSnapshotCoordinator:
         db: Session,
         *,
         identity: GroupSnapshotIdentity,
-        universe_symbols: Iterable[str] | None = None,
     ) -> GroupSnapshotResult:
         """Recalculate one integrity-invalid snapshot identity in place."""
-        if identity.formula_version == BALANCED_RS_FORMULA_VERSION:
-            run = self.market_rs_snapshot_service.rebuild_incompatible_staged(
-                db,
-                market=identity.market,
-                as_of_date=identity.as_of_date,
-                formula_version=identity.formula_version,
-            )
-            rankings = self.canonical_group_service.calculate_and_stage(
-                db,
-                market=identity.market,
-                as_of_date=identity.as_of_date,
-                formula_version=identity.formula_version,
-            )
-            if not rankings:
-                raise RuntimeError("Balanced Group repair produced no rankings")
-            rows = self.reader.load_exact(
-                db,
-                identity=identity,
-                include_top_symbol_names=False,
-            )
-            if rows and {row.get("market_rs_run_id") for row in rows} != {run.id}:
-                raise RuntimeError(
-                    "Repaired Group snapshot does not reference the exact Market RS run"
-                )
-        elif identity.formula_version == LEGACY_RS_FORMULA_VERSION:
-            self.legacy_group_service.ranking_repository.delete_range(
-                db,
-                start_date=identity.as_of_date,
-                end_date=identity.as_of_date,
-                market=identity.market,
-                formula_version=LEGACY_RS_FORMULA_VERSION,
-            )
-            calculation = self.legacy_group_service.calculate_group_rankings(
-                db,
-                identity.as_of_date,
-                market=identity.market,
-                formula_version=LEGACY_RS_FORMULA_VERSION,
-                **self._legacy_universe_kwargs(universe_symbols),
-            )
-            if not calculation.rankings:
-                raise RuntimeError("Legacy Group repair produced no rankings")
-            rows = self.reader.load_exact(
-                db,
-                identity=identity,
-                include_top_symbol_names=False,
-            )
-        else:
-            raise ValueError(
-                f"Unsupported Group RS formula: {identity.formula_version}"
+        run = self.market_rs_snapshot_service.rebuild_incompatible_staged(
+            db,
+            market=identity.market,
+            as_of_date=identity.as_of_date,
+            formula_version=identity.formula_version,
+        )
+        rankings = self.canonical_group_service.calculate_and_stage(
+            db,
+            market=identity.market,
+            as_of_date=identity.as_of_date,
+            formula_version=identity.formula_version,
+        )
+        if not rankings:
+            raise RuntimeError("Balanced Group repair produced no rankings")
+        rows = self.reader.load_exact(
+            db,
+            identity=identity,
+            include_top_symbol_names=False,
+        )
+        if rows and {row.get("market_rs_run_id") for row in rows} != {run.id}:
+            raise RuntimeError(
+                "Repaired Group snapshot does not reference the exact Market RS run"
             )
 
         status = GroupSnapshotStatus.PROCESSED if rows else GroupSnapshotStatus.EMPTY
@@ -212,14 +159,6 @@ class GroupRankSnapshotCoordinator:
                     )
                 )
         return GroupBackfillReport(results=tuple(results))
-
-    @staticmethod
-    def _legacy_universe_kwargs(
-        universe_symbols: Iterable[str] | None,
-    ) -> dict[str, tuple[str, ...]]:
-        if universe_symbols is None:
-            return {}
-        return {"universe_symbols": tuple(universe_symbols)}
 
     @staticmethod
     def _result(identity, status, rows) -> GroupSnapshotResult:

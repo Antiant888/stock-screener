@@ -22,7 +22,6 @@ class DataPrepStockDataProvider(StockDataProvider):
             fundamentals_cache=cache_bundle.fundamentals,
             max_retries=max_retries,
             retry_base_delay=retry_base_delay,
-            defer_market_rs_resolution=True,
         )
 
     def prepare_data(
@@ -52,5 +51,5 @@ class DataPrepStockDataProvider(StockDataProvider):
         )
 
     def apply_market_rs_resolution(self, results, resolution) -> None:
-        """Hydrate canonical fields or attach legacy scan-local inputs."""
+        """Attach the Market's stock RS sources to the items it covers."""
         self._layer.apply_market_rs_resolution(results, resolution)

@@ -1,139 +1,22 @@
-"""Persistence and query operations for group-ranking rows."""
+"""Query operations for stored balanced group-ranking rows."""
 
 from __future__ import annotations
 
 from datetime import date, timedelta
-from typing import Any, Mapping, Sequence
+from typing import Mapping, Sequence
 
 from sqlalchemy import and_, desc
-from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
-from app.domain.relative_strength import GROUP_AVG_RS_FIELDS, LEGACY_RS_FORMULA_VERSION
+from app.domain.relative_strength import BALANCED_RS_FORMULA_VERSION
 
 from ..models.industry import IBDGroupRank
 from .group_rank_history_policy import (
     CALENDAR_DAY_GROUP_RANK_LOOKUP_TOLERANCE_DAYS,
 )
-from .group_rank_models import GroupRanking
-
-GROUP_RANK_UPSERT_IDENTITY_FIELDS = frozenset(
-    {
-        "market",
-        "industry_group",
-        "date",
-        "rs_formula_version",
-    }
-)
 
 
 class GroupRankingRepository:
-    def store_rankings(
-        self,
-        db: Session,
-        *,
-        calculation_date: date,
-        rankings: Sequence[GroupRanking],
-        market: str,
-    ) -> None:
-        formula_versions = {ranking.rs_formula_version for ranking in rankings}
-        if len(formula_versions) > 1:
-            raise ValueError("One Group ranking write cannot mix RS formulas")
-        for ranking in rankings:
-            if ranking.date != calculation_date:
-                raise ValueError(
-                    "Ranking date does not match calculation date: "
-                    f"{ranking.date} != {calculation_date}"
-                )
-        values = [
-            self._ranking_values(
-                calculation_date,
-                ranking,
-                market=market,
-            )
-            for ranking in rankings
-        ]
-        if not values:
-            return
-
-        bind = db.get_bind()
-        if bind is not None and bind.dialect.name == "postgresql":
-            stmt = pg_insert(IBDGroupRank).values(values)
-            update_fields = self._postgres_upsert_update_fields(
-                stmt.excluded,
-                values[0].keys(),
-            )
-            db.execute(
-                stmt.on_conflict_do_update(
-                    index_elements=[
-                        "industry_group",
-                        "date",
-                        "market",
-                        "rs_formula_version",
-                    ],
-                    set_=update_fields,
-                )
-            )
-            return
-
-        self._store_rankings_sqlalchemy_fallback(
-            db,
-            calculation_date,
-            values,
-            market=market,
-            formula_version=next(iter(formula_versions)),
-        )
-
-    def delete_range(
-        self,
-        db: Session,
-        *,
-        start_date: date,
-        end_date: date,
-        market: str,
-        formula_version: str = LEGACY_RS_FORMULA_VERSION,
-    ) -> int:
-        normalized_market = (market or "US").upper()
-        return (
-            db.query(IBDGroupRank)
-            .filter(
-                and_(
-                    IBDGroupRank.date >= start_date,
-                    IBDGroupRank.date <= end_date,
-                    IBDGroupRank.market == normalized_market,
-                    IBDGroupRank.rs_formula_version == formula_version,
-                )
-            )
-            .delete(synchronize_session=False)
-        )
-
-    def replace_rankings_for_date(
-        self,
-        db: Session,
-        *,
-        calculation_date: date,
-        rankings: Sequence[GroupRanking],
-        market: str,
-        formula_version: str = LEGACY_RS_FORMULA_VERSION,
-    ) -> int:
-        normalized_market = (market or "US").upper()
-        deleted = (
-            db.query(IBDGroupRank)
-            .filter(
-                IBDGroupRank.date == calculation_date,
-                IBDGroupRank.market == normalized_market,
-                IBDGroupRank.rs_formula_version == formula_version,
-            )
-            .delete(synchronize_session=False)
-        )
-        self.store_rankings(
-            db,
-            calculation_date=calculation_date,
-            rankings=rankings,
-            market=normalized_market,
-        )
-        return deleted
-
     def current_rank_rows(
         self,
         db: Session,
@@ -141,7 +24,6 @@ class GroupRankingRepository:
         limit: int,
         market: str,
         calculation_date: date | None,
-        formula_version: str = LEGACY_RS_FORMULA_VERSION,
     ) -> list[IBDGroupRank]:
         normalized_market = (market or "US").upper()
         if calculation_date is not None:
@@ -151,7 +33,7 @@ class GroupRankingRepository:
                 db.query(IBDGroupRank)
                 .filter(
                     IBDGroupRank.market == normalized_market,
-                    IBDGroupRank.rs_formula_version == formula_version,
+                    IBDGroupRank.rs_formula_version == BALANCED_RS_FORMULA_VERSION,
                 )
                 .order_by(desc(IBDGroupRank.date))
                 .first()
@@ -165,7 +47,7 @@ class GroupRankingRepository:
             .filter(
                 IBDGroupRank.date == latest_date,
                 IBDGroupRank.market == normalized_market,
-                IBDGroupRank.rs_formula_version == formula_version,
+                IBDGroupRank.rs_formula_version == BALANCED_RS_FORMULA_VERSION,
             )
             .order_by(IBDGroupRank.rank)
             .limit(limit)
@@ -179,7 +61,6 @@ class GroupRankingRepository:
         start_date: date,
         end_date: date,
         market: str,
-        formula_version: str = LEGACY_RS_FORMULA_VERSION,
     ) -> frozenset[date]:
         rows = (
             db.query(IBDGroupRank.date)
@@ -189,7 +70,7 @@ class GroupRankingRepository:
                     IBDGroupRank.date >= start_date,
                     IBDGroupRank.date <= end_date,
                     IBDGroupRank.market == (market or "US").upper(),
-                    IBDGroupRank.rs_formula_version == formula_version,
+                    IBDGroupRank.rs_formula_version == BALANCED_RS_FORMULA_VERSION,
                 )
             )
             .all()
@@ -204,7 +85,6 @@ class GroupRankingRepository:
         current_date: date,
         period_days: Mapping[str, int],
         market: str,
-        formula_version: str = LEGACY_RS_FORMULA_VERSION,
     ) -> dict[tuple[str, str], int]:
         if not group_names or not period_days:
             return {}
@@ -225,7 +105,7 @@ class GroupRankingRepository:
                     IBDGroupRank.date >= earliest_date,
                     IBDGroupRank.date < current_date,
                     IBDGroupRank.market == (market or "US").upper(),
-                    IBDGroupRank.rs_formula_version == formula_version,
+                    IBDGroupRank.rs_formula_version == BALANCED_RS_FORMULA_VERSION,
                 )
             )
             .all()
@@ -282,7 +162,6 @@ class GroupRankingRepository:
         industry_group: str,
         start_date: date,
         market: str,
-        formula_version: str = LEGACY_RS_FORMULA_VERSION,
     ) -> list[IBDGroupRank]:
         return (
             db.query(IBDGroupRank)
@@ -291,80 +170,9 @@ class GroupRankingRepository:
                     IBDGroupRank.industry_group == industry_group,
                     IBDGroupRank.date >= start_date,
                     IBDGroupRank.market == (market or "US").upper(),
-                    IBDGroupRank.rs_formula_version == formula_version,
+                    IBDGroupRank.rs_formula_version == BALANCED_RS_FORMULA_VERSION,
                 )
             )
             .order_by(IBDGroupRank.date.desc())
             .all()
         )
-
-    @staticmethod
-    def _ranking_values(
-        calculation_date: date,
-        ranking: GroupRanking,
-        *,
-        market: str,
-    ) -> dict[str, Any]:
-        return {
-            "market": market,
-            "industry_group": ranking.industry_group,
-            "date": calculation_date,
-            "rank": ranking.rank,
-            "avg_rs_rating": ranking.avg_rs_rating,
-            "median_rs_rating": ranking.median_rs_rating,
-            "weighted_avg_rs_rating": (ranking.weighted_avg_rs_rating),
-            "rs_std_dev": ranking.rs_std_dev,
-            "num_stocks": ranking.num_stocks,
-            "num_stocks_rs_above_80": (ranking.num_stocks_rs_above_80),
-            "top_symbol": ranking.top_symbol,
-            "top_rs_rating": ranking.top_rs_rating,
-            "rs_formula_version": ranking.rs_formula_version,
-            "market_rs_run_id": ranking.market_rs_run_id,
-            **{field: getattr(ranking, field) for field in GROUP_AVG_RS_FIELDS},
-        }
-
-    @staticmethod
-    def _postgres_upsert_update_fields(
-        excluded: Any,
-        value_fields: Sequence[str],
-    ) -> dict[str, Any]:
-        return {
-            field: getattr(excluded, field)
-            for field in value_fields
-            if field not in GROUP_RANK_UPSERT_IDENTITY_FIELDS
-        }
-
-    @staticmethod
-    def _store_rankings_sqlalchemy_fallback(
-        db: Session,
-        calculation_date: date,
-        values: Sequence[Mapping[str, Any]],
-        *,
-        market: str,
-        formula_version: str,
-    ) -> None:
-        group_names = [value["industry_group"] for value in values]
-        existing_records = (
-            db.query(IBDGroupRank)
-            .filter(
-                and_(
-                    IBDGroupRank.industry_group.in_(group_names),
-                    IBDGroupRank.date == calculation_date,
-                    IBDGroupRank.market == market,
-                    IBDGroupRank.rs_formula_version == formula_version,
-                )
-            )
-            .all()
-        )
-        existing_by_group = {
-            record.industry_group: record for record in existing_records
-        }
-
-        for value in values:
-            existing = existing_by_group.get(value["industry_group"])
-            if existing:
-                for field, field_value in value.items():
-                    if field not in GROUP_RANK_UPSERT_IDENTITY_FIELDS:
-                        setattr(existing, field, field_value)
-            else:
-                db.add(IBDGroupRank(**dict(value)))

@@ -5,6 +5,14 @@ lack the ``setup_engine`` key in ``details_json``.  This script computes
 setup_engine payloads using historical price data and surgically merges them
 into existing rows without disturbing other screener data.
 
+Each row's RS rating comes from the Market RS run its Feature run's balanced
+RS identity names, read through the same reader the scanner uses. A run
+without that identity, such as one published under the retired legacy
+formula, is skipped and counted, as is a row whose run cannot be read or
+whose symbol is outside that run's eligible universe. Those rows are dropped
+before any price is fetched. The Setup Engine's RS gate is never bypassed
+with a missing rating.
+
 Usage:
     cd backend
     source venv/bin/activate
@@ -46,6 +54,7 @@ import pandas as pd
 
 from app.analysis.patterns.models import SETUP_ENGINE_DEFAULT_SCHEMA_VERSION
 from app.database import SessionLocal
+from app.domain.scanning.ports import CanonicalStockRsSource, MarketRsResolution
 from app.infra.db.models.feature_store import (
     FeatureRun,
     StockFeatureDaily,
@@ -54,6 +63,14 @@ from app.infra.db.models.feature_store import (
 from app.scanners.base_screener import DataRequirements, StockData
 from app.scanners.setup_engine_scanner import attach_setup_engine
 from app.scanners.setup_engine_screener import SetupEngineScanner
+from app.services.feature_run_rs_identity import (
+    FeatureRunRsIdentityError,
+    resolve_feature_run_rs_identity,
+)
+from app.services.market_rs_reader import (
+    CanonicalMarketRsUnavailable,
+    SqlMarketRsReader,
+)
 from app.wiring.bootstrap import get_benchmark_cache, initialize_process_runtime_services
 
 logging.basicConfig(
@@ -180,6 +197,56 @@ def _build_query(
 
 
 # ───────────────────────────────────────────────────────────────────────────
+# Market RS publication per Feature run
+# ───────────────────────────────────────────────────────────────────────────
+
+def _resolve_market_rs_by_run(
+    db,
+    reader,
+    rows: List[Tuple[int, str, date, Any]],
+) -> Tuple[Dict[int, Optional[MarketRsResolution]], int]:
+    """Read each run's own Market RS run once; None when it cannot be read.
+
+    A run is read only by the ``market_rs_run_id`` its balanced RS identity
+    names. A run without one (every run published under the legacy formula)
+    is skipped and counted: the date alone could match an unpublished shadow
+    run. Returns the resolutions and the count of runs without an identity.
+    """
+    symbols_by_run: Dict[int, set] = {}
+    for run_id, symbol, _as_of_date, _details in rows:
+        symbols_by_run.setdefault(run_id, set()).add(symbol)
+    runs = {
+        run.id: run
+        for run in db.query(FeatureRun).filter(FeatureRun.id.in_(symbols_by_run))
+    }
+    resolutions: Dict[int, Optional[MarketRsResolution]] = {}
+    runs_without_identity = 0
+    for run_id, symbols in symbols_by_run.items():
+        run = runs[run_id]
+        try:
+            rs = resolve_feature_run_rs_identity(run, ranking_date=run.as_of_date)
+        except FeatureRunRsIdentityError as exc:
+            logger.warning("No balanced RS identity for run %d: %s", run_id, exc)
+            resolutions[run_id] = None
+            runs_without_identity += 1
+            continue
+        try:
+            resolutions[run_id] = reader.get(
+                market=rs.identity.market,
+                symbols=sorted(symbols),
+                as_of_date=rs.identity.as_of_date,
+                run_id=rs.market_rs_run_id,
+            )
+        except CanonicalMarketRsUnavailable as exc:
+            logger.warning(
+                "No published Market RS for run %d (%s @ %s): %s",
+                run_id, rs.identity.market, rs.identity.as_of_date, exc,
+            )
+            resolutions[run_id] = None
+    return resolutions, runs_without_identity
+
+
+# ───────────────────────────────────────────────────────────────────────────
 # Spot-check verification
 # ───────────────────────────────────────────────────────────────────────────
 
@@ -230,8 +297,8 @@ def _spot_check(
 # Main backfill logic
 # ───────────────────────────────────────────────────────────────────────────
 
-def run_backfill(args: argparse.Namespace) -> None:
-    """Execute the backfill pipeline."""
+def run_backfill(args: argparse.Namespace) -> Optional[Dict[str, int]]:
+    """Execute the backfill pipeline; return its row counts once it ran."""
     db = SessionLocal()
 
     try:
@@ -267,35 +334,52 @@ def run_backfill(args: argparse.Namespace) -> None:
             logger.info("All rows already have setup_engine at schema %s. Done.", CURRENT_SCHEMA)
             return
 
-        # ── 3. Dry-run exit ───────────────────────────────────────────
-        if args.dry_run:
-            # Show breakdown by symbol count
-            sym_set = {sym for _, sym, _, _ in rows_needing_backfill}
-            logger.info(
-                "[DRY RUN] Would backfill %d rows across %d symbols. No writes performed.",
-                len(rows_needing_backfill), len(sym_set),
-            )
-            return
-
-        # ── 4. Confirmation ───────────────────────────────────────────
-        if not args.yes:
-            sym_set = {sym for _, sym, _, _ in rows_needing_backfill}
-            answer = input(
-                f"\nBackfill {len(rows_needing_backfill)} rows across "
-                f"{len(sym_set)} symbols? [y/N] "
-            )
-            if answer.strip().lower() not in ("y", "yes"):
-                logger.info("Aborted by user.")
-                return
-
-        # ── 5. Group by symbol ────────────────────────────────────────
-        symbol_groups: Dict[str, List[Tuple[int, date, Any]]] = {}
+        # ── 3. Keep rows with a published rating, grouped by symbol ───
+        rs_by_run, runs_without_rs_identity = _resolve_market_rs_by_run(
+            db, SqlMarketRsReader(SessionLocal), rows_needing_backfill
+        )
+        symbol_groups: Dict[str, List[Tuple[int, date, Any, CanonicalStockRsSource]]] = {}
+        skipped_no_rs = 0
         for run_id, symbol, as_of_date, details_json in rows_needing_backfill:
-            symbol_groups.setdefault(symbol, []).append((run_id, as_of_date, details_json))
+            resolution = rs_by_run[run_id]
+            rs_source = resolution.stock_source(symbol) if resolution is not None else None
+            if rs_source is None or rs_source.ratings is None:
+                skipped_no_rs += 1
+                continue
+            symbol_groups.setdefault(symbol, []).append(
+                (run_id, as_of_date, details_json, rs_source)
+            )
 
         symbols_list = sorted(symbol_groups.keys())
         total_symbols = len(symbols_list)
-        total_rows = len(rows_needing_backfill)
+        total_rows = len(rows_needing_backfill) - skipped_no_rs
+        counts = (
+            f"{total_rows} rows across {total_symbols} symbols and skip "
+            f"{skipped_no_rs} rows without published Market RS "
+            f"({runs_without_rs_identity} runs without a balanced RS identity)"
+        )
+
+        # ── 4. Dry-run exit ───────────────────────────────────────────
+        if args.dry_run:
+            logger.info("[DRY RUN] Would backfill %s. No writes performed.", counts)
+            return
+
+        if not symbol_groups:
+            logger.info("No row has a published Market RS rating. Would backfill %s.", counts)
+            return {
+                "processed": 0,
+                "skipped": 0,
+                "skipped_no_rs": skipped_no_rs,
+                "runs_without_rs_identity": runs_without_rs_identity,
+                "errors": 0,
+            }
+
+        # ── 5. Confirmation ───────────────────────────────────────────
+        if not args.yes:
+            answer = input(f"\nBackfill {counts}? [y/N] ")
+            if answer.strip().lower() not in ("y", "yes"):
+                logger.info("Aborted by user.")
+                return
 
         logger.info(
             "Processing %d rows across %d symbols (chunk_size=%d)",
@@ -335,7 +419,7 @@ def run_backfill(args: argparse.Namespace) -> None:
                         continue
 
                     # Process each (run_id, as_of_date) for this symbol
-                    for run_id, as_of_date, existing_details in symbol_groups[symbol]:
+                    for run_id, as_of_date, existing_details, rs_source in symbol_groups[symbol]:
                         try:
                             # Truncate price + SPY to as_of_date
                             truncated_prices = _truncate_to_date(price_data, as_of_date)
@@ -354,6 +438,7 @@ def run_backfill(args: argparse.Namespace) -> None:
                                 symbol=symbol,
                                 price_data=truncated_prices,
                                 benchmark_data=truncated_spy if not truncated_spy.empty else pd.DataFrame(),
+                                rs_source=rs_source,
                             )
                             result = scanner.scan_stock(symbol, stock_data)
 
@@ -411,11 +496,11 @@ def run_backfill(args: argparse.Namespace) -> None:
 
             logger.info(
                 "Progress: %d/%d symbols (%.1f%%) | "
-                "rows: %d processed, %d skipped, %d errors | "
+                "rows: %d processed, %d skipped, %d without Market RS, %d errors | "
                 "%.1f sym/s, ETA %s",
                 symbols_done, total_symbols,
                 100.0 * symbols_done / total_symbols,
-                processed, skipped, errors,
+                processed, skipped, skipped_no_rs, errors,
                 throughput, eta_str,
             )
 
@@ -429,6 +514,8 @@ def run_backfill(args: argparse.Namespace) -> None:
         logger.info("Backfill complete in %.1fs", elapsed)
         logger.info("  Processed: %d rows", processed)
         logger.info("  Skipped:   %d rows", skipped)
+        logger.info("  Skipped (no published Market RS): %d rows", skipped_no_rs)
+        logger.info("  Runs without a balanced RS identity: %d", runs_without_rs_identity)
         logger.info("  Errors:    %d rows", errors)
         if failed_symbols:
             logger.info(
@@ -439,6 +526,13 @@ def run_backfill(args: argparse.Namespace) -> None:
             if len(set(failed_symbols)) > 20:
                 logger.info("    ... and %d more", len(set(failed_symbols)) - 20)
         logger.info("=" * 60)
+        return {
+            "processed": processed,
+            "skipped": skipped,
+            "skipped_no_rs": skipped_no_rs,
+            "runs_without_rs_identity": runs_without_rs_identity,
+            "errors": errors,
+        }
 
     except Exception:
         logger.exception("Fatal error during backfill")

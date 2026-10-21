@@ -5,17 +5,13 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Mapping
+from typing import Iterable
 
 from sqlalchemy.orm import Session
 
 from ..domain.markets.catalog import get_market_catalog
 from ..infra.db.models.feature_store import FeatureRun
 from ..infra.db.models.relative_strength import MarketRsRun
-from ..infra.db.repositories.market_rs_repo import (
-    MarketRsFormulaNotConfigured,
-    MarketRsRunRepository,
-)
 from ..models.app_settings import AppSetting
 from ..models.industry import IBDGroupRank
 from ..models.market_breadth import MarketBreadth
@@ -23,6 +19,7 @@ from ..models.market_exposure import MarketExposure
 from ..models.scan_result import SCAN_TRIGGER_SOURCE_AUTO, Scan
 from ..models.stock import StockFundamental, StockPrice
 from ..models.stock_universe import StockUniverse
+from .feature_run_rs_identity import resolve_published_balanced_publication
 
 PRE_BOOTSTRAP_SEED_IMPORT_KEY = "runtime.bootstrap.pre_bootstrap_seed_import"
 PRE_BOOTSTRAP_SEED_IMPORT_CATEGORY = "runtime_activity"
@@ -327,14 +324,13 @@ class BootstrapReadinessService:
         *,
         enabled_markets: list[str],
         bootstrap_started_at: datetime | None = None,
-        expected_formula_versions: Mapping[str, str] | None = None,
+        balanced_publication_markets: Iterable[str] = (),
     ) -> BootstrapReadiness:
         normalized_markets = [
             self.normalize_market(market) for market in enabled_markets
         ]
-        normalized_expectations = {
-            self.normalize_market(market): formula_version
-            for market, formula_version in (expected_formula_versions or {}).items()
+        awaiting_publication = {
+            self.normalize_market(market) for market in balanced_publication_markets
         }
         return BootstrapReadiness(
             empty_system=self.is_empty_system(db),
@@ -347,10 +343,9 @@ class BootstrapReadinessService:
                         market,
                         bootstrap_started_at=bootstrap_started_at,
                     ),
-                    rs_ready=self._has_expected_formula(
-                        db,
-                        market=market,
-                        expected_formula_version=normalized_expectations.get(market),
+                    rs_ready=(
+                        market not in awaiting_publication
+                        or self.has_balanced_publication(db, market)
                     ),
                 )
                 for market in normalized_markets
@@ -423,23 +418,11 @@ class BootstrapReadinessService:
             ),
         }
 
-    def _has_expected_formula(
-        self,
-        db: Session,
-        *,
-        market: str,
-        expected_formula_version: str | None,
-    ) -> bool:
-        if expected_formula_version is None:
-            return True
-        try:
-            active_formula = MarketRsRunRepository().active_formula(
-                db,
-                market=market,
-            )
-        except MarketRsFormulaNotConfigured:
-            return False
-        return active_formula == expected_formula_version
+    def has_balanced_publication(self, db: Session, market: str) -> bool:
+        return (
+            resolve_published_balanced_publication(db, self.normalize_market(market))
+            is not None
+        )
 
     def _has_active_universe_rows(
         self,

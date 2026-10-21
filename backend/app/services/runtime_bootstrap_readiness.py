@@ -21,6 +21,13 @@ class ReadinessFailure:
     result_reason: str
 
 
+BALANCED_PUBLICATION_MISSING = ReadinessFailure(
+    stage_key="market_rs",
+    activity_message="Balanced Market RS publication not committed",
+    result_reason="no committed balanced market rs publication",
+)
+
+
 @dataclass(frozen=True)
 class MarketReadinessCompletion:
     market: str
@@ -43,11 +50,7 @@ def readiness_failure(
             activity_message="Bootstrap scan did not publish",
             result_reason="missing published auto scan",
         )
-    return ReadinessFailure(
-        stage_key="market_rs",
-        activity_message="Balanced Market RS activation incomplete",
-        result_reason="balanced market rs formula not active",
-    )
+    return BALANCED_PUBLICATION_MISSING
 
 
 def evaluate_market_readiness(
@@ -55,20 +58,19 @@ def evaluate_market_readiness(
     *,
     market: str,
     bootstrap_started_at: datetime | None = None,
-    expected_formula_version: str | None = None,
+    requires_balanced_publication: bool = False,
 ) -> MarketReadinessCompletion:
     from app.services.bootstrap_readiness_service import BootstrapReadinessService
 
     market_code = normalize_market(market)
-    readiness_kwargs = {
-        "enabled_markets": [market_code],
-        "bootstrap_started_at": bootstrap_started_at,
-    }
-    if expected_formula_version is not None:
-        readiness_kwargs["expected_formula_versions"] = {
-            market_code: expected_formula_version,
-        }
-    readiness = BootstrapReadinessService().evaluate(db, **readiness_kwargs)
+    readiness = BootstrapReadinessService().evaluate(
+        db,
+        enabled_markets=[market_code],
+        bootstrap_started_at=bootstrap_started_at,
+        balanced_publication_markets=(
+            [market_code] if requires_balanced_publication else ()
+        ),
+    )
     market_result = readiness.market_results.get(market_code)
     result_market = market_result.market if market_result else market_code
     if market_result and market_result.ready:
@@ -81,6 +83,7 @@ def evaluate_market_readiness(
 
 
 __all__ = [
+    "BALANCED_PUBLICATION_MISSING",
     "MarketReadinessCompletion",
     "ReadinessFailure",
     "evaluate_market_readiness",

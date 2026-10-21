@@ -5,12 +5,10 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
-from typing import Protocol
 
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.domain.relative_strength import BALANCED_RS_FORMULA_VERSION
 from app.services.bootstrap_run_manifest import (
     BootstrapAlreadyRunning,
     BootstrapMarketOutcome,
@@ -28,10 +26,6 @@ from app.services.runtime_preferences_service import (
 )
 
 
-class ActiveFormulaReader(Protocol):
-    def active_formula(self, db: Session, *, market: str) -> str: ...
-
-
 SessionFactory = Callable[[], Session]
 
 
@@ -42,7 +36,8 @@ class BootstrapMarketCompletion:
     primary: bool
     failure_stage_key: str | None = None
     failure_message: str | None = None
-    expected_formula_version: str | None = None
+    # Readiness's answer, so the manifest records what the task reports.
+    balanced_publication_committed: bool = False
 
     @classmethod
     def ready(
@@ -50,13 +45,13 @@ class BootstrapMarketCompletion:
         *,
         market: str,
         primary: bool,
-        expected_formula_version: str | None = None,
+        balanced_publication_committed: bool = False,
     ) -> BootstrapMarketCompletion:
         return cls(
             market=market,
             succeeded=True,
             primary=primary,
-            expected_formula_version=expected_formula_version,
+            balanced_publication_committed=balanced_publication_committed,
         )
 
     @classmethod
@@ -91,10 +86,8 @@ class BootstrapDispatchLifecycle:
         self,
         *,
         repository: BootstrapRunManifestRepository | None = None,
-        formula_reader: ActiveFormulaReader | None = None,
     ) -> None:
         self.repository = repository or BootstrapRunManifestRepository()
-        self.formula_reader = formula_reader
 
     def claim(
         self,
@@ -136,20 +129,6 @@ class BootstrapDispatchLifecycle:
     ) -> BootstrapRunManifest:
         market = str(completion.market).upper()
         previous_outcome: BootstrapMarketOutcome | None = None
-        balanced_activation_completed = False
-        if completion.expected_formula_version == BALANCED_RS_FORMULA_VERSION:
-            if self.formula_reader is None:
-                raise RuntimeError(
-                    "Balanced activation completion requires a formula reader."
-                )
-            try:
-                balanced_activation_completed = (
-                    self.formula_reader.active_formula(db, market=market)
-                    == BALANCED_RS_FORMULA_VERSION
-                )
-            except LookupError:
-                balanced_activation_completed = False
-
         try:
 
             def finish(current: BootstrapRunManifest) -> BootstrapRunManifest:
@@ -158,7 +137,9 @@ class BootstrapDispatchLifecycle:
                 return current.finish_market(
                     market=market,
                     succeeded=completion.succeeded,
-                    balanced_activation_completed=balanced_activation_completed,
+                    balanced_activation_completed=(
+                        completion.balanced_publication_committed
+                    ),
                 )
 
             updated = self.repository.update_dispatch(

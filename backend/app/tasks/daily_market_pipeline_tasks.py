@@ -13,10 +13,7 @@ from celery import chain
 from app.celery_app import celery_app
 from app.database import SessionLocal
 from app.domain.markets.catalog import get_market_catalog
-from app.domain.relative_strength import (
-    BALANCED_RS_FORMULA_VERSION,
-    LEGACY_RS_FORMULA_VERSION,
-)
+from app.domain.relative_strength import BALANCED_RS_FORMULA_VERSION
 from app.services.market_calendar_service import MarketCalendarService
 from app.tasks.market_queues import (
     data_fetch_queue_for_market,
@@ -38,19 +35,6 @@ def _normalize_pipeline_market(market: str | None) -> str:
 
 def _daily_pipeline_universe_name(market: str) -> str:
     return f"market:{market.upper()}"
-
-
-def _active_formula_for_market(market: str) -> str:
-    from app.wiring.bootstrap import get_market_rs_snapshot_service
-
-    db = SessionLocal()
-    try:
-        return get_market_rs_snapshot_service().repository.active_formula(
-            db,
-            market=_normalize_pipeline_market(market),
-        )
-    finally:
-        db.close()
 
 
 def _pipeline_chain_claims():
@@ -138,7 +122,6 @@ def guard_market_rs_result(
     calculation_date: str,
 ) -> dict:
     market_code = _normalize_pipeline_market(market)
-    active_formula = _active_formula_for_market(market_code)
     exact_completed = (
         isinstance(result, dict)
         and result.get("status") == "completed"
@@ -148,42 +131,18 @@ def guard_market_rs_result(
         and result.get("market_rs_run_id") is not None
     )
 
-    if active_formula == BALANCED_RS_FORMULA_VERSION:
-        if not exact_completed:
-            raise RuntimeError(
-                f"Canonical Market RS failed for {market_code} on "
-                f"{calculation_date}: {result}"
-            )
-        return {
-            "status": "ok",
-            "market": market_code,
-            "stage": "market_rs",
-            "as_of_date": calculation_date,
-            "formula_version": BALANCED_RS_FORMULA_VERSION,
-            "market_rs_run_id": result["market_rs_run_id"],
-        }
-
-    if active_formula != LEGACY_RS_FORMULA_VERSION:
-        raise RuntimeError(
-            f"Unsupported active Market RS formula for {market_code}: {active_formula}"
-        )
-
     if not exact_completed:
-        logger.warning(
-            "Balanced Market RS shadow failed for %s on %s; legacy pipeline continues: %s",
-            market_code,
-            calculation_date,
-            result,
+        raise RuntimeError(
+            f"Canonical Market RS failed for {market_code} on "
+            f"{calculation_date}: {result}"
         )
     return {
-        "status": "ok" if exact_completed else "skipped",
+        "status": "ok",
         "market": market_code,
-        "stage": "market_rs_shadow",
+        "stage": "market_rs",
         "as_of_date": calculation_date,
         "formula_version": BALANCED_RS_FORMULA_VERSION,
-        "market_rs_run_id": (
-            result.get("market_rs_run_id") if exact_completed else None
-        ),
+        "market_rs_run_id": result["market_rs_run_id"],
     }
 
 

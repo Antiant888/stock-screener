@@ -192,11 +192,7 @@ def calculate_market_rs_snapshot(
     activity_lifecycle: str | None = None,
     rebuild_incompatible: bool = True,
 ) -> dict[str, object]:
-    """Idempotently publish one exact-date balanced Market RS snapshot.
-
-    This task deliberately does not update the active formula pointer. During
-    rollout it can therefore run as a shadow stage for legacy Markets.
-    """
+    """Idempotently publish one exact-date balanced Market RS snapshot."""
     raw_market = "" if market is None else str(market).strip().upper()
     try:
         market_code = normalize_market(market)

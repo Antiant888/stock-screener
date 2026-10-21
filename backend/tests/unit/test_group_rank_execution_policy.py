@@ -5,7 +5,6 @@ from datetime import date, datetime
 from unittest.mock import MagicMock
 
 from app.services.daily_group_rank_runner import DailyGroupRankOutcome
-from app.services.group_rank_cache_policy import GroupRankCacheRequirement
 from app.services.group_rank_models import (
     GroupRankCalculationResult,
     GroupRankPrefetchStats,
@@ -181,69 +180,7 @@ def _setup_group_wrapper(monkeypatch):
     return module, fake_db, fake_service
 
 
-def test_same_day_group_rankings_require_complete_warmup(monkeypatch):
-    module, _, fake_service = _setup_daily_task(
-        monkeypatch,
-        now=datetime(2026, 3, 20, 17, 40),
-        warmup_metadata={
-            "status": "partial",
-            "count": 9000,
-            "total": 10000,
-            "completed_at": datetime.now().isoformat(),
-        },
-    )
-
-    result = module.calculate_daily_group_rankings.run()
-
-    assert "warmup not complete" in result["error"].lower()
-    fake_service.calculate_group_rankings.assert_not_called()
-
-
-def test_partial_warmup_is_accepted_above_market_threshold(monkeypatch):
-    module, _, fake_service = _setup_daily_task(
-        monkeypatch,
-        now=datetime(2026, 6, 10, 17, 40),
-        warmup_metadata={
-            "status": "partial",
-            "count": 1081,
-            "total": 1969,
-            "completed_at": datetime.now().isoformat(),
-        },
-    )
-
-    result = module.calculate_daily_group_rankings.run(market="TW")
-
-    assert result["groups_ranked"] == 1
-    call_kwargs = fake_service.calculate_group_rankings.call_args.kwargs
-    assert call_kwargs["policy"].mode.value == "auto"
-    assert call_kwargs["policy"].cache_only is True
-    assert call_kwargs["cache_requirement"] == (
-        GroupRankCacheRequirement.minimum(
-            0.50,
-            reason="partial_warmup",
-        )
-    )
-
-
-def test_stale_partial_warmup_is_rejected(monkeypatch):
-    module, _, fake_service = _setup_daily_task(
-        monkeypatch,
-        now=datetime(2026, 6, 10, 17, 40),
-        warmup_metadata={
-            "status": "partial",
-            "count": 1081,
-            "total": 1969,
-            "completed_at": "2020-01-01T00:00:00",
-        },
-    )
-
-    result = module.calculate_daily_group_rankings.run(market="TW")
-
-    assert "stale" in result["error"].lower()
-    fake_service.calculate_group_rankings.assert_not_called()
-
-
-def test_in_process_same_day_bypass_keeps_strict_cache_requirement(
+def test_in_process_same_day_bypass_skips_warmup_metadata(
     monkeypatch,
 ):
     module, _, fake_service = _setup_daily_task(
@@ -259,9 +196,6 @@ def test_in_process_same_day_bypass_keeps_strict_cache_requirement(
     call_kwargs = fake_service.calculate_group_rankings.call_args.kwargs
     assert call_kwargs["policy"].mode.value == "auto"
     assert call_kwargs["policy"].requires_warmup_metadata is False
-    assert call_kwargs["cache_requirement"] == (
-        GroupRankCacheRequirement.strict()
-    )
 
 
 def test_manual_historical_group_rankings_allow_provider_reads(monkeypatch):
@@ -277,9 +211,6 @@ def test_manual_historical_group_rankings_allow_provider_reads(monkeypatch):
     call_kwargs = fake_service.calculate_group_rankings.call_args.kwargs
     assert call_kwargs["policy"].mode.value == "auto"
     assert call_kwargs["policy"].cache_only is False
-    assert call_kwargs["cache_requirement"] == (
-        GroupRankCacheRequirement.disabled()
-    )
 
 
 def test_manual_strict_cache_only_remains_supported(monkeypatch):
@@ -297,9 +228,6 @@ def test_manual_strict_cache_only_remains_supported(monkeypatch):
     assert result["cache_only"] is True
     call_kwargs = fake_service.calculate_group_rankings.call_args.kwargs
     assert call_kwargs["policy"].mode.value == "strict_cache_only"
-    assert call_kwargs["cache_requirement"] == (
-        GroupRankCacheRequirement.strict()
-    )
 
 
 def test_strict_no_groups_response_includes_cache_only(monkeypatch):
@@ -398,9 +326,6 @@ def test_guarded_historical_group_rankings_use_tolerant_cache_only_policy(
     assert result["prefetch_stats"]["cache_miss_symbols"] == 30
     call_kwargs = fake_service.calculate_group_rankings.call_args.kwargs
     assert call_kwargs["policy"].mode.value == "refresh_guarded"
-    assert call_kwargs["cache_requirement"] == (
-        GroupRankCacheRequirement.disabled()
-    )
 
 
 def test_strict_legacy_flag_wins_over_guarded_tolerance(monkeypatch):
@@ -418,9 +343,6 @@ def test_strict_legacy_flag_wins_over_guarded_tolerance(monkeypatch):
 
     call_kwargs = fake_service.calculate_group_rankings.call_args.kwargs
     assert call_kwargs["policy"].mode.value == "strict_cache_only"
-    assert call_kwargs["cache_requirement"] == (
-        GroupRankCacheRequirement.strict()
-    )
 
 
 def test_guarded_group_wrapper_propagates_policy_to_gapfill_and_target(

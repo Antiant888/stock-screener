@@ -171,7 +171,6 @@ def test_legacy_policy_names_do_not_branch_below_task_boundary():
     for relative_path in (
         "app/services/breadth_calculator_service.py",
         "app/services/ibd_group_rank_service.py",
-        "app/services/group_rank_input_loader.py",
     ):
         source = (BACKEND_ROOT / relative_path).read_text()
         for legacy_name in LEGACY_NAMES:
@@ -204,7 +203,6 @@ def test_legacy_policy_names_do_not_branch_below_task_boundary():
 def test_group_ranking_core_has_no_arbitrary_mapping_contract():
     for relative_path in (
         "app/services/group_rank_models.py",
-        "app/services/group_ranking_calculator.py",
         "app/services/group_ranking_repository.py",
     ):
         source = (BACKEND_ROOT / relative_path).read_text()

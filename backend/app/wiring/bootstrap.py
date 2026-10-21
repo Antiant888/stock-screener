@@ -204,58 +204,21 @@ class RuntimeServices:
 
     def group_rank_service(self) -> IBDGroupRankService:
         def build():
-            from app.scanners.criteria.relative_strength import (
-                RelativeStrengthCalculator,
-            )
-            from app.services.group_rank_historical_calculator import (
-                GroupRankHistoricalCalculator,
-            )
-            from app.services.group_rank_input_loader import GroupRankInputLoader
             from app.services.group_rank_input_sources import (
-                IBDIndustryTaxonomySource,
-                SqlGroupRankMarketCapSource,
                 StockUniverseGroupRankSource,
             )
-            from app.services.group_rank_legacy_adapter import (
-                LegacyGroupRankPrefetchAdapter,
-            )
-            from app.services.group_ranking_calculator import GroupRankingCalculator
-            from app.services.group_ranking_repository import GroupRankingRepository
             from app.services.ibd_group_rank_service import IBDGroupRankService
 
-            cache_bundle = self.cache_bundle()
-            input_loader = GroupRankInputLoader(
-                price_cache=cache_bundle.price,
-                benchmark_cache=cache_bundle.benchmark,
-                universe_source=StockUniverseGroupRankSource(
-                    self.stock_universe_service()
-                ),
-                taxonomy_source=IBDIndustryTaxonomySource(),
-                market_cap_source=SqlGroupRankMarketCapSource(),
-            )
-            ranking_calculator = GroupRankingCalculator(RelativeStrengthCalculator())
-            ranking_repository = GroupRankingRepository()
-            legacy_adapter = LegacyGroupRankPrefetchAdapter()
-            historical_calculator = GroupRankHistoricalCalculator(
-                input_loader=input_loader,
-                ranking_calculator=ranking_calculator,
-                repository=ranking_repository,
-                calendar_service=self.market_calendar_service(),
-                legacy_adapter=legacy_adapter,
-            )
             return IBDGroupRankService(
-                price_cache=cache_bundle.price,
-                benchmark_cache=cache_bundle.benchmark,
                 canonical_group_service=self.canonical_group_ranking_service(),
                 market_rs_repository=self.market_rs_run_repository(),
                 market_rs_snapshot_service=(
                     self.canonical_rs_runtime().snapshot_service()
                 ),
-                input_loader=input_loader,
-                ranking_calculator=ranking_calculator,
-                ranking_repository=ranking_repository,
-                historical_calculator=historical_calculator,
-                legacy_prefetch_adapter=legacy_adapter,
+                universe_source=StockUniverseGroupRankSource(
+                    self.stock_universe_service()
+                ),
+                calendar_service=self.market_calendar_service(),
             )
 
         return self._lazy("_group_rank_service", build)
@@ -270,7 +233,6 @@ class RuntimeServices:
             return CanonicalRsRuntime(
                 session_factory=self._session_factory,
                 market_calendar=self.market_calendar_service(),
-                legacy_group_service_provider=self.group_rank_service,
             )
 
         return self._lazy("_canonical_rs_runtime", build)
@@ -280,14 +242,11 @@ class RuntimeServices:
             from app.services.market_taxonomy_service import (
                 get_market_taxonomy_service,
             )
-            from app.services.rrg_history_provider import build_rrg_history_provider
+            from app.services.rrg_history_provider import StoredGroupRankHistoryProvider
             from app.services.rrg_service import RRGService
 
             return RRGService(
-                history_provider=build_rrg_history_provider(
-                    group_rank_service=self.group_rank_service(),
-                    market_rs_repository=self.market_rs_run_repository(),
-                ),
+                history_provider=StoredGroupRankHistoryProvider(),
                 taxonomy_service=get_market_taxonomy_service(),
             )
 
@@ -558,21 +517,6 @@ def reset_runtime_services(token: Token[RuntimeServices | None]) -> None:
     runtime_context.reset_runtime_services(token)
 
 
-def _provision_market_rs_formula_pointers(
-    session_factory: SessionFactory,
-) -> None:
-    """Provision newly cataloged markets before any runtime reader is exposed."""
-    from app.domain.markets import market_registry
-    from app.infra.db.repositories.market_rs_repo import MarketRsRunRepository
-
-    with session_factory() as db:
-        MarketRsRunRepository().provision_formula_pointers(
-            db,
-            markets=market_registry.supported_market_codes(),
-        )
-        db.commit()
-
-
 def initialize_process_runtime_services(
     *,
     session_factory: SessionFactory = SessionLocal,
@@ -580,12 +524,8 @@ def initialize_process_runtime_services(
 ) -> RuntimeServices:
     """Ensure one process-scoped runtime container exists and bind it to context."""
 
-    def _factory() -> RuntimeServices:
-        _provision_market_rs_formula_pointers(session_factory)
-        return build_runtime_services(session_factory=session_factory)
-
     return runtime_context.initialize_process_runtime_services(
-        _factory,
+        lambda: build_runtime_services(session_factory=session_factory),
         force=force,
     )
 

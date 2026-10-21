@@ -7,10 +7,7 @@ from datetime import date
 import pytest
 
 from app.domain.feature_store.models import FeatureRowWrite, RunStats, RunType
-from app.domain.relative_strength.calculator import (
-    BALANCED_RS_FORMULA_VERSION,
-    LEGACY_RS_FORMULA_VERSION,
-)
+from app.domain.relative_strength.calculator import BALANCED_RS_FORMULA_VERSION
 from app.domain.scanning.signature import build_scan_signature_payload, hash_scan_signature
 from app.use_cases.scanning.create_scan import (
     ActiveScanConflictError,
@@ -28,6 +25,10 @@ from tests.unit.use_cases.conftest import (
 
 SESSION = date(2026, 10, 2)
 PROFILE = dict(screeners=["minervini", "canslim"], composite_method="weighted_average", criteria=None)
+
+
+# Rows the database still holds from before the single-formula cutover.
+STORED_LEGACY_FORMULA = "legacy-linear-v1"
 
 
 def _row(symbol: str, *, passes: bool, price: float = 100.0) -> FeatureRowWrite:
@@ -70,7 +71,7 @@ def _publish(
             "signature": signature,
             "market": market,
             "rs_formula_version": rs_formula,
-            "market_rs_run_id": 7 if rs_formula != LEGACY_RS_FORMULA_VERSION else None,
+            "market_rs_run_id": 7 if rs_formula != STORED_LEGACY_FORMULA else None,
         },
     )
     runs.set_run_covered_symbols(run.id, [r.symbol for r in rows])
@@ -187,7 +188,7 @@ class TestCurrentModeFallsBackToCompute:
         "world_kwargs, symbols, markets",
         [
             ({"as_of": date(2026, 10, 1)}, ["AAPL"], None),  # older than last session
-            ({"rs_formula": LEGACY_RS_FORMULA_VERSION}, ["AAPL"], None),
+            ({"rs_formula": STORED_LEGACY_FORMULA}, ["AAPL"], None),
             ({}, ["AAPL", "ZZZZ"], None),  # ZZZZ has no feature row
             ({}, ["AAPL", "0700.HK"], {"AAPL": "US", "0700.HK": "HK"}),
             ({}, ["AAPL", "GONE"], {"AAPL": "US"}),  # unknown listing
@@ -272,7 +273,7 @@ class TestLastPublishedMode:
         [
             (["AAPL", "0700.HK"], {"AAPL": "US", "0700.HK": "HK"}, {}, "mixed_market_universe"),
             (["AAPL", "ZZZZ"], None, {}, "incomplete_coverage"),
-            (["AAPL"], None, {"rs_formula": LEGACY_RS_FORMULA_VERSION}, "rs_not_canonical"),
+            (["AAPL"], None, {"rs_formula": STORED_LEGACY_FORMULA}, "rs_not_canonical"),
             (["AAPL", "GONE"], {"AAPL": "US"}, {}, "unresolved_symbols"),
             (["0700.HK"], {"0700.HK": "HK"}, {}, "no_published_run"),
         ],
@@ -481,7 +482,7 @@ class TestLastPublishedIgnoresExactShortcut:
         assert result.published_source["feature_run_id"] == pointer_id != exact_id
 
     def test_legacy_rs_exact_run_is_not_served(self):
-        uow, _ = self._exact_world(rs_formula=LEGACY_RS_FORMULA_VERSION)
+        uow, _ = self._exact_world(rs_formula=STORED_LEGACY_FORMULA)
         uow.feature_runs._pointers.pop("latest_published_market:US")
 
         with pytest.raises(SnapshotUnavailableError) as exc:

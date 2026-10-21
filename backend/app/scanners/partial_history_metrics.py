@@ -6,7 +6,6 @@ import math
 
 import pandas as pd
 
-from app.domain.scanning.ports import CanonicalStockRsSource
 from app.analysis.patterns.rs_line import (
     DEFAULT_BLUE_DOT_RECENT_DAYS,
     DEFAULT_LOOKBACK,
@@ -16,7 +15,6 @@ from app.analysis.patterns.rs_line import (
 from app.scanners.base_screener import StockData
 from app.scanners.criteria.adr_calculator import ADRCalculator
 from app.scanners.criteria.price_sparkline import PriceSparklineCalculator
-from app.scanners.criteria.relative_strength import RelativeStrengthCalculator
 from app.scanners.criteria.rs_resolution import (
     CanonicalStockRsUnavailable,
     resolve_stock_rs,
@@ -52,13 +50,6 @@ def partial_history_metrics(stock_data: StockData) -> dict[str, object]:
         if price_data is not None and not price_data.empty and "Close" in price_data.columns
         else None
     )
-    close_rev = (
-        precomputed.close_rev
-        if precomputed is not None and precomputed.close_rev is not None
-        else close_chrono[::-1].reset_index(drop=True)
-        if close_chrono is not None
-        else None
-    )
     benchmark_close_chrono = (
         precomputed.benchmark_close_chrono
         if precomputed is not None and precomputed.benchmark_close_chrono is not None
@@ -68,13 +59,6 @@ def partial_history_metrics(stock_data: StockData) -> dict[str, object]:
             and not stock_data.benchmark_data.empty
             and "Close" in stock_data.benchmark_data.columns
         )
-        else None
-    )
-    benchmark_close_rev = (
-        precomputed.benchmark_close_rev
-        if precomputed is not None and precomputed.benchmark_close_rev is not None
-        else benchmark_close_chrono[::-1].reset_index(drop=True)
-        if benchmark_close_chrono is not None
         else None
     )
 
@@ -99,7 +83,7 @@ def partial_history_metrics(stock_data: StockData) -> dict[str, object]:
     }
 
     try:
-        resolved_rs = resolve_stock_rs(stock_data, lambda: {})
+        resolved_rs = resolve_stock_rs(stock_data)
     except CanonicalStockRsUnavailable:
         resolved_rs = {}
     for field in ("rs_rating", "rs_rating_1m", "rs_rating_3m", "rs_rating_12m"):
@@ -137,27 +121,6 @@ def partial_history_metrics(stock_data: StockData) -> dict[str, object]:
                     lookback=DEFAULT_LOOKBACK,
                     recent_days=DEFAULT_BLUE_DOT_RECENT_DAYS,
                 ).as_scan_fields()
-            )
-
-    if (
-        not resolved_rs
-        and not isinstance(stock_data.rs_source, CanonicalStockRsSource)
-        and close_rev is not None
-        and benchmark_close_rev is not None
-        and len(close_rev) >= 21
-        and len(benchmark_close_rev) >= 21
-    ):
-        rs_calc = RelativeStrengthCalculator()
-        stock_return = rs_calc.calculate_return(close_rev, 21)
-        benchmark_return = rs_calc.calculate_return(benchmark_close_rev, 21)
-        if stock_return is not None and benchmark_return is not None:
-            metrics["rs_rating_1m"] = rs_calc.calculate_period_rs_rating(
-                21,
-                close_rev,
-                benchmark_close_rev,
-                stock_data.rs_universe_performances.get(21)
-                if stock_data.rs_universe_performances
-                else None,
             )
 
     if price_data is not None and not price_data.empty:

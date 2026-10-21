@@ -138,7 +138,7 @@ def test_daily_refresh_returns_before_market_rs_when_prices_are_resumable(monkey
     )
     monkeypatch.setattr(
         export_script,
-        "_prepare_static_rs_formula",
+        "_prepare_balanced_static_rs",
         lambda **_kwargs: pytest.fail("Market RS must wait for a complete price stage"),
     )
 

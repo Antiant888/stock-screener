@@ -2,15 +2,11 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from datetime import date
-from typing import Any, Mapping, Optional
+from typing import Any, Mapping
 
-import pandas as pd
-
-from app.domain.relative_strength import GROUP_AVG_RS_FIELDS, LEGACY_RS_FORMULA_VERSION
-
-from .group_rank_cache_policy import GroupRankCacheRequirement
+from app.domain.relative_strength import BALANCED_RS_FORMULA_VERSION, GROUP_AVG_RS_FIELDS
 
 
 @dataclass(frozen=True)
@@ -27,20 +23,6 @@ class GroupRankPrefetchStats:
     market: str
     cache_only: bool
     skipped_unsupported_symbols: int
-    cache_coverage_min: float | None = None
-    cache_requirement_reason: str | None = None
-
-    def with_cache_requirement(
-        self,
-        requirement: GroupRankCacheRequirement,
-    ) -> "GroupRankPrefetchStats":
-        if not requirement.enabled:
-            return self
-        return replace(
-            self,
-            cache_coverage_min=requirement.min_coverage,
-            cache_requirement_reason=requirement.reason,
-        )
 
     def to_dict(self) -> dict[str, Any]:
         result = {
@@ -57,39 +39,7 @@ class GroupRankPrefetchStats:
             "cache_only": self.cache_only,
             "skipped_unsupported_symbols": (self.skipped_unsupported_symbols),
         }
-        if self.cache_coverage_min is not None:
-            result["cache_coverage_min"] = self.cache_coverage_min
-        if self.cache_requirement_reason is not None:
-            result["cache_requirement_reason"] = self.cache_requirement_reason
         return result
-
-
-@dataclass(frozen=True)
-class GroupRankPrefetchData:
-    benchmark_prices: Optional[pd.DataFrame]
-    prices_by_symbol: Mapping[str, Optional[pd.DataFrame]]
-    active_symbols: frozenset[str]
-    market_caps: Mapping[str, float]
-    stats: GroupRankPrefetchStats
-    symbols_by_group: Mapping[str, tuple[str, ...]]
-    group_names: tuple[str, ...]
-
-    def __post_init__(self) -> None:
-        if not isinstance(self.prices_by_symbol, Mapping):
-            raise TypeError("prices_by_symbol must be a mapping")
-        if not isinstance(self.active_symbols, frozenset):
-            raise TypeError("active_symbols must be frozenset[str]")
-        if not isinstance(self.market_caps, Mapping):
-            raise TypeError("market_caps must be a mapping")
-        if not isinstance(self.stats, GroupRankPrefetchStats):
-            raise TypeError("stats must be GroupRankPrefetchStats")
-        if not isinstance(self.symbols_by_group, Mapping):
-            raise TypeError("symbols_by_group must be a mapping")
-        if not isinstance(self.group_names, tuple):
-            raise TypeError("group_names must be tuple[str, ...]")
-        for group, symbols in self.symbols_by_group.items():
-            if not isinstance(symbols, tuple):
-                raise TypeError(f"symbols_by_group[{group!r}] must be tuple[str, ...]")
 
 
 @dataclass(frozen=True)
@@ -110,7 +60,7 @@ class GroupRanking:
     avg_rs_rating_1m: float | None = None
     avg_rs_rating_3m: float | None = None
     avg_rs_rating_6m: float | None = None
-    rs_formula_version: str = LEGACY_RS_FORMULA_VERSION
+    rs_formula_version: str = BALANCED_RS_FORMULA_VERSION
     market_rs_run_id: int | None = None
 
     @classmethod
@@ -128,7 +78,7 @@ class GroupRanking:
             top_symbol=row.get("top_symbol"),
             top_rs_rating=row.get("top_rs_rating"),
             rs_formula_version=str(
-                row.get("rs_formula_version") or LEGACY_RS_FORMULA_VERSION
+                row.get("rs_formula_version") or BALANCED_RS_FORMULA_VERSION
             ),
             market_rs_run_id=row.get("market_rs_run_id"),
             **{field: row.get(field) for field in GROUP_AVG_RS_FIELDS},

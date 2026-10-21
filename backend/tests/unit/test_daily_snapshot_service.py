@@ -9,6 +9,11 @@ import app.services.key_market_history as key_market_history
 import app.services.snapshot_date_coherence as snapshot_date_coherence
 import pytest
 from app.api.v1.market_scan import _if_none_match_matches
+from app.domain.relative_strength import (
+    BALANCED_RS_FORMULA_VERSION,
+    BALANCED_RS_PRICE_BASIS,
+    BALANCED_RS_SNAPSHOT_SCHEMA_VERSION,
+)
 from app.domain.scanning.leadership_policy import (
     LEADERS_MAX_GROUP_RANK,
     LEADERS_MIN_RS_RATING,
@@ -421,6 +426,20 @@ def test_shared_leadership_policy_keeps_existing_thresholds_and_stable_order() -
     ]
 
 
+def _balanced_group_run(as_of_date: date) -> SimpleNamespace:
+    return SimpleNamespace(
+        market="US",
+        formula_version=BALANCED_RS_FORMULA_VERSION,
+        as_of_date=as_of_date,
+        status="completed",
+        eligible_symbol_count=5000,
+        diagnostics_json={
+            "price_basis": BALANCED_RS_PRICE_BASIS,
+            "rs_snapshot_schema_version": BALANCED_RS_SNAPSHOT_SCHEMA_VERSION,
+        },
+    )
+
+
 class TestDailySnapshotDateCoherence:
     def test_key_market_date_summary_is_typed_date_boundary(self):
         summary = snapshot_date_coherence.key_market_date_summary(
@@ -500,6 +519,10 @@ class TestDailySnapshotDateCoherence:
             def query(self, *_args):
                 return breadth_query
 
+            def get(self, _model, run_id):
+                assert run_id == 7
+                return _balanced_group_run(date(2026, 6, 11))
+
         class FakeGroupService:
             def get_current_rankings(self, db, limit=10, calculation_date=None, market="US"):
                 assert calculation_date == date(2026, 6, 11)
@@ -517,8 +540,8 @@ class TestDailySnapshotDateCoherence:
                         "top_symbol_name": "AppLovin",
                         "top_rs_rating": 98,
                         "date": "2026-06-11",
-                        "rs_formula_version": "legacy-linear-v1",
-                        "market_rs_run_id": None,
+                        "rs_formula_version": BALANCED_RS_FORMULA_VERSION,
+                        "market_rs_run_id": 7,
                     }
                 ]
 
@@ -590,6 +613,10 @@ class TestDailySnapshotDateCoherence:
             def query(self, *_args):
                 return FakeBreadthQuery()
 
+            def get(self, _model, run_id):
+                assert run_id == 7
+                return _balanced_group_run(date(2026, 6, 11))
+
         class FakeGroupService:
             def get_current_rankings(self, db, limit=10, calculation_date=None, market="US"):
                 return [
@@ -605,8 +632,8 @@ class TestDailySnapshotDateCoherence:
                         "top_symbol_name": "AppLovin",
                         "top_rs_rating": 98,
                         "date": "2026-06-11",
-                        "rs_formula_version": "legacy-linear-v1",
-                        "market_rs_run_id": None,
+                        "rs_formula_version": BALANCED_RS_FORMULA_VERSION,
+                        "market_rs_run_id": 7,
                     }
                 ]
 
@@ -681,6 +708,10 @@ class TestDailySnapshotDateCoherence:
             def query(self, *_args):
                 return FakeBreadthQuery()
 
+            def get(self, _model, run_id):
+                assert run_id == 7
+                return _balanced_group_run(date(2026, 6, 12))
+
         class FakeGroupService:
             def get_current_rankings(self, db, limit=10, calculation_date=None, market="US"):
                 assert calculation_date is None
@@ -698,8 +729,8 @@ class TestDailySnapshotDateCoherence:
                         "top_symbol_name": "AppLovin",
                         "top_rs_rating": 98,
                         "date": "2026-06-12",
-                        "rs_formula_version": "legacy-linear-v1",
-                        "market_rs_run_id": None,
+                        "rs_formula_version": BALANCED_RS_FORMULA_VERSION,
+                        "market_rs_run_id": 7,
                     }
                 ]
 

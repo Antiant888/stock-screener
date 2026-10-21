@@ -51,7 +51,6 @@ from app.infra.db.models.feature_store import (
     FeatureRun, FeatureRunUniverseSymbol, StockFeatureDaily, FeatureRunPointer,
 )
 from app.infra.db.models.relative_strength import (
-    MarketRsFormulaPointer,
     MarketRsRun,
     StockRsSnapshot,
 )
@@ -326,7 +325,6 @@ __all__ = [
     # Canonical market relative strength
     "MarketRsRun",
     "StockRsSnapshot",
-    "MarketRsFormulaPointer",
     "OptionsAnalyticsRun",
     "OptionsAnalyticsRunItem",
     "OptionsAnalyticsStrikePoint",

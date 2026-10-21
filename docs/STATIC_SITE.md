@@ -44,13 +44,13 @@ Use the live app when you need interactive backend workflows.
 
 Static exports use the `static-site-v3` schema and consume the same stored canonical Market RS snapshots as the live app. A Scan row carries overall, 1M, 3M, and 12M RS from `balanced-horizon-percentile-v2`; it does not recalculate RS from the exported subset. The Market manifest records the RS formula version, as-of date, eligible-universe size, and Market RS run ID.
 
-Scheduled and normal manual Static Site workflows select the balanced formula independently for every Market in their fresh private build databases before Feature, Group, and RRG generation. The workflow's `rs_formula_overrides` JSON input exists only for coordinated per-Market rollback; omitted Markets remain balanced.
+Scheduled and manual Static Site workflows calculate balanced Market RS independently for every Market in their fresh private build databases before Feature, Group, and RRG generation.
 
 Balanced activation validates every declared Scan chunk and requires exact formula, Market RS run, RS date, and universe-size metadata on the Scan manifest, chunks, and rows. Its approval fingerprint covers the root manifest and complete `markets/<market>` tree, rather than only `manifest.json`.
 
 `markets/<market>/groups.json` is an exact export of the stored Group snapshot for that formula/run. It includes Group overall, 1M, and 3M RS, with Group Rank based only on overall RS. The static Group table exposes separate **1M RS** and **3M RS** columns, matching the live table.
 
-RRG rolling-history assets use `static-rrg-history-v4` and identify their RS formula version. The weekly RS-Ratio/RS-Momentum transformation is unchanged, but history from different formulas is never merged. A fallback market artifact or RRG-history bundle is rejected when its schema or formula does not match the requested export, so the site cannot silently combine legacy and balanced rankings. Until enough balanced history exists, RRG can correctly report insufficient history rather than falling back to legacy coordinates.
+RRG rolling-history assets use `static-rrg-history-v4` and identify their RS formula version. The weekly RS-Ratio/RS-Momentum transformation is unchanged, but history from different formulas is never merged. A fallback market artifact or RRG-history bundle is rejected when its schema does not match or it does not use `balanced-horizon-percentile-v2`. The fallback downloader (`backend/app/scripts/download_static_market_fallbacks.py`) skips such an artifact and keeps the market's newest balanced one. Until enough balanced history exists, RRG reports insufficient history.
 
 ## Breadth Data Contract
 

@@ -16,6 +16,7 @@ from sqlalchemy.orm import sessionmaker
 from app.contracts.filter_expression import expression_from_payload
 from app.database import Base
 from app.domain.common.query import SortOrder, SortSpec
+from app.domain.relative_strength import BALANCED_RS_FORMULA_VERSION
 from app.domain.scanning.filter_expression_evaluator import evaluate_expression
 from app.domain.scanning.filter_expression_model import FilterExpression
 from app.domain.scanning.legacy_filter_expression import legacy_filters_to_expression
@@ -311,6 +312,10 @@ def build_parity_snapshot(database_path: Path) -> OpportunityStateParitySnapshot
                 config_json={
                     "market": "US",
                     "materialization_versions": {"opportunity_state": 1},
+                    "rs_formula_version": BALANCED_RS_FORMULA_VERSION,
+                    "market_rs_run_id": 42,
+                    "rs_as_of_date": AS_OF_DATE.isoformat(),
+                    "rs_universe_size": 5000,
                 },
                 published_at=datetime(2026, 8, 21, 22, 0, 0),
             )

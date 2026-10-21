@@ -96,7 +96,6 @@ class StaticGroupSectionBuilder:
             identity.as_of_date,
             CALENDAR_DAY_GROUP_RANK_CHANGE_WINDOWS,
             market=identity.market,
-            formula_version=identity.formula_version,
         )
         apply_calendar_rank_changes(
             rankings,

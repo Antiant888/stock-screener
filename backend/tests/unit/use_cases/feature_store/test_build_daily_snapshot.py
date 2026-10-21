@@ -407,10 +407,7 @@ class TestHappyPath:
 
         result = use_case.execute(
             uow,
-            _make_cmd(
-                market="US",
-                rs_formula_version_override=BALANCED_RS_FORMULA_VERSION,
-            ),
+            _make_cmd(market="US"),
             FakeProgressSink(),
             FakeCancellationToken(),
         )
@@ -420,7 +417,6 @@ class TestHappyPath:
                 "market": "US",
                 "symbols": ("AAPL", "MSFT"),
                 "as_of_date": AS_OF,
-                "formula_version": BALANCED_RS_FORMULA_VERSION,
             }
         ]
         assert len(captured_data) == 2
@@ -500,10 +496,7 @@ class TestHappyPath:
 
         result = use_case.execute(
             uow,
-            _make_cmd(
-                market="US",
-                rs_formula_version_override=BALANCED_RS_FORMULA_VERSION,
-            ),
+            _make_cmd(market="US"),
             FakeProgressSink(),
             FakeCancellationToken(),
         )

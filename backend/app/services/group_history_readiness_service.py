@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from app.analysis.rrg_weekly import bucket_rrg_weekly
 from app.domain.group_history import GroupHistoryTarget
 from app.domain.markets import get_market_catalog
+from app.domain.relative_strength import BALANCED_RS_FORMULA_VERSION
 from app.services.group_rank_history_policy import (
     CALENDAR_DAY_GROUP_RANK_CHANGE_WINDOWS,
     CALENDAR_DAY_GROUP_RANK_LOOKUP_TOLERANCE_DAYS,
@@ -95,7 +96,7 @@ class GroupHistoryReadinessService:
             return GroupHistoryReadinessReport(
                 market=target.market,
                 through_date=target.through_date,
-                formula_version=target.formula_version,
+                formula_version=BALANCED_RS_FORMULA_VERSION,
                 supported=False,
                 ready=True,
                 reason="group_rankings_not_supported",
@@ -118,7 +119,7 @@ class GroupHistoryReadinessService:
         window = self._snapshot_reader.inspect_window(
             db,
             market=target.market,
-            formula_version=target.formula_version,
+            formula_version=BALANCED_RS_FORMULA_VERSION,
             dates=desired_dates,
             include_top_symbol_names=False,
         )
@@ -146,7 +147,6 @@ class GroupHistoryReadinessService:
             rrg_usable_weeks, rrg_plottable_series = self._rrg_readiness(
                 db,
                 market=target.market,
-                formula_version=target.formula_version,
                 through_date=target.through_date,
             )
 
@@ -166,7 +166,7 @@ class GroupHistoryReadinessService:
         return GroupHistoryReadinessReport(
             market=target.market,
             through_date=target.through_date,
-            formula_version=target.formula_version,
+            formula_version=BALANCED_RS_FORMULA_VERSION,
             supported=True,
             desired_dates=desired_dates,
             valid_dates=tuple(valid),
@@ -202,7 +202,6 @@ class GroupHistoryReadinessService:
         db: Session,
         *,
         market: str,
-        formula_version: str,
         through_date: date,
     ) -> tuple[int, int]:
         try:
@@ -212,7 +211,6 @@ class GroupHistoryReadinessService:
                     market=market,
                     days=DEFAULT_LOOKBACK_DAYS,
                     as_of_date=through_date,
-                    formula_version=formula_version,
                 )
             )
         except (GroupSnapshotIntegrityError, LookupError, ValueError):

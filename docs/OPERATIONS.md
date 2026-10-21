@@ -71,12 +71,12 @@ Bootstrap stages:
 1. **Universe refresh** — seeds the market symbol list. US uses S&P 500 / Russell / NDX via `refresh_stock_universe`; HK / IN / JP / KR / TW / CN / CA / DE / SG / MY / AU use official exchange feeds via `refresh_official_market_universe`.
 2. **Benchmark + price refresh** — imports the GitHub daily price bundle first, accepts recent stale bundles during bootstrap, then live-fetches missing/current-session gaps (`7d` top-up for stale symbols, `2y` for no-history symbols). Under `live_only` this stage skips the bundle and fetches live — see [Market Data Source Mode](#market-data-source-mode).
 3. **Fundamentals refresh** — loads quarterly and annual financials.
-4. **Market RS publication** — on a pristine installation, backfills balanced-horizon RS, validates a staged static export, and activates it atomically. Any other database stays in shadow mode until an operator activates it ([Balanced Market RS Rollout](#balanced-market-rs-rollout)).
+4. **Market RS publication** — on a pristine installation, backfills balanced Market RS, validates the balanced Feature snapshot and Group rows, and repoints the Market's Feature pointer atomically. It stages no static export (`bootstrap_balanced_market_rs` runs with `MarketRsActivationArtifactPolicy.LIVE_RUNTIME` in `backend/app/tasks/market_rs_tasks.py`). Existing databases publish through the operator procedure ([Balanced Market RS Publication](#balanced-market-rs-publication)).
 5. **Breadth calculation** — computes StockBee-style advance/decline data with gap-fill.
 6. **Market exposure** — derives the market-regime exposure state from the refreshed breadth data.
-7. **Group rankings** — averages canonical constituent RS values for each group, using the active formula for that market.
+7. **Group rankings** — averages canonical constituent RS values for each group.
 8. **Feature snapshot** — daily Setup Engine feature rollup for each enabled Market, using that Market's universe and publication pointer.
-9. **Group history** — after activation, seeds formula-compatible history used by 1W/1M/3M/6M rank changes, movers, and RRG.
+9. **Group history** — after Market RS publication, seeds the balanced history used by 1W/1M/3M/6M rank changes, movers, and RRG.
 10. **Initial autoscan** — publishes the first default-profile scan.
 
 Selecting many enabled markets multiplies this work. On smaller hosts, start with one primary market and add markets after the workspace is ready.
@@ -274,62 +274,59 @@ Options analytics are US-only and off by default; enable them with `OPTIONS_ANAL
 - Net GEX, gamma flip, call wall and put wall are labeled **Estimated**: they are model outputs, not observed dealer positions.
 - Activity metrics are descriptive. Don't read them as premium inflow, buying or selling, or a directional signal.
 
-## Balanced Market RS Rollout
+## Balanced Market RS Publication
 
-`balanced-horizon-percentile-v2` is activated independently for each Market. Its five same-set excess-return percentiles are weighted **1M 20%**, **3M 30%**, **6M 20%**, **9M 15%**, and **12M 15%** before the composite is re-ranked. Keep the prior `legacy-linear-v1` Market formula pointer and legacy Feature-run ID until the rollout is accepted.
+`balanced-horizon-percentile-v2` is the only Market RS formula. Its five same-set excess-return percentiles are weighted **1M 20%**, **3M 30%**, **6M 20%**, **9M 15%**, and **12M 15%** before the composite is re-ranked. Each Market publishes independently: a completed Market RS run, the Group rows that reference it, and the `latest_published_market:<MARKET>` Feature pointer.
 
-### Fresh database activation
+### Fresh database bootstrap
 
 Bootstrap decides once, before dispatch, whether the database is **pristine**, and records the decision in the bootstrap manifest.
 
-- **Pristine** means only formula pointers and application settings exist. Any universe, price, fundamental, breadth, exposure, scan, Feature run, Group rank or Market RS row makes the database non-pristine.
-- **One exception:** startup Group-history reconciliation may import raw seed rows before bootstrap starts, provided it first records a valid `runtime.bootstrap.pre_bootstrap_seed_import` marker while the database is still pristine. The first dispatch can then still use fresh activation, as long as no bootstrap output rows exist. A failed reconciliation dispatch clears the marker it created.
-- **The fresh marker** survives an interrupted initial bootstrap, and is consumed once every enabled Market has activated balanced RS. A later repair bootstrap or explicit rollback therefore can't silently re-activate balanced RS.
+- **Pristine** means only application settings exist. Any universe, price, fundamental, breadth, exposure, scan, Feature run, Group rank or Market RS row makes the database non-pristine.
+- **One exception:** startup Group-history reconciliation may import raw seed rows before bootstrap starts, provided it first records a valid `runtime.bootstrap.pre_bootstrap_seed_import` marker while the database is still pristine. The first dispatch can then still use the fresh bootstrap, as long as no bootstrap output rows exist. A failed reconciliation dispatch clears the marker it created.
+- **The fresh marker** survives an interrupted initial bootstrap, and is consumed once every enabled Market has published balanced RS. A later repair bootstrap runs only the daily stages.
 - **Duplicate starts:** each bootstrap dispatch owns a persisted generation for 24 hours, renewed while its market workflows are published, and duplicate starts are rejected by that generation (not by the display-only bootstrap preference). If the API dies mid-dispatch or callbacks are lost, start bootstrap again once the generation has expired; no database edit is needed. Lease expiry alone doesn't invalidate callbacks: the still-current generation may finish until a replacement claims ownership, and callbacks from a superseded generation are ignored.
 
-On a pristine installation, balanced Market RS backfill and guarded activation is a required stage for every enabled Market:
+On a pristine installation, balanced Market RS backfill and guarded publication is a required stage for every enabled Market:
 
 - **Window:** it materializes sessions from 187 calendar days before the latest completed session through that session. That covers the 6M Group-rank lookup plus tolerance, exceeds the 12-week RRG minimum, and includes the current daily Feature snapshot used by the latest scan. It does not calculate every historical session.
-- **Requirements:** backfill, balanced Feature publication, staged static parity validation and the two-pointer transaction must all succeed. The primary Market isn't marked ready unless its formula pointer is `balanced-horizon-percentile-v2`.
-- **Failure:** both active pointers stay unchanged and that bootstrap chain fails. Correct the reported input or coverage problem and resume bootstrap.
-- **Group history** runs after activation, so 1W/1M/3M/6M rank changes, movers and RRG snapshots use the balanced formula. Where point-in-time membership is unavailable, bootstrap may use the current active universe for past dates; that avoids an empty 12-week window, at the cost of survivor bias.
+- **Requirements:** backfill, balanced Feature publication, validation and the Feature pointer repoint must all succeed. Bootstrap stages no static export; static parity is checked by the operator command below and by the Static Site workflows. A Market isn't marked ready until its `latest_published_market:<MARKET>` pointer names a published Feature run whose balanced Market RS run is completed (`BootstrapReadinessService.has_balanced_publication`). A completed run alone, which the backfill writes before publication, does not count.
+- **Failure:** the Feature pointer stays unchanged and that bootstrap chain fails. Correct the reported input or coverage problem and resume bootstrap.
+- **Group history** runs after publication, so 1W/1M/3M/6M rank changes, movers and RRG snapshots have balanced history. Where point-in-time membership is unavailable, bootstrap may use the current active universe for past dates; that avoids an empty 12-week window, at the cost of survivor bias.
 
-After bootstrap reports ready, verify the pointer and populated Group components:
+After bootstrap reports ready, verify the completed run and populated Group components:
 
 ```sql
-SELECT market, formula_version
-FROM market_rs_formula_pointers
-WHERE market = 'US';
+SELECT id, as_of_date, eligible_symbol_count
+FROM market_rs_runs
+WHERE market = 'US' AND status = 'completed'
+ORDER BY as_of_date DESC
+LIMIT 1;
 
-SELECT rs_formula_version,
-       MAX(date) AS latest_date,
+SELECT MAX(date) AS latest_date,
        COUNT(*) FILTER (WHERE avg_rs_rating_1m IS NOT NULL) AS rows_with_1m,
        COUNT(*) FILTER (WHERE avg_rs_rating_3m IS NOT NULL) AS rows_with_3m
 FROM ibd_group_ranks
 WHERE market = 'US'
-GROUP BY rs_formula_version;
+  AND rs_formula_version = 'balanced-horizon-percentile-v2';
 ```
 
-A non-pristine database is never auto-activated, even one holding only inactive or historical rows and no startup seed marker. Use the shadow backfill and activation procedure below; it keeps existing data and pointers until every guard passes.
+A non-pristine database never reruns the bootstrap backfill, even one holding only inactive or historical rows and no startup seed marker. Use the procedure below; it keeps existing data and the Feature pointer until every guard passes.
 
-### Existing database rollout
+### Existing database backfill and publication
 
-#### 1. Record the rollback state
+#### 1. Record the current publication
 
-Before activation, record both active pointers. Substitute the target Market in both predicates:
+Before publishing, record the Market's Feature pointer so the change can be inspected afterwards:
 
 ```sql
-SELECT market, formula_version
-FROM market_rs_formula_pointers
-WHERE market = 'US';
-
 SELECT p.key, p.run_id, r.status, r.as_of_date, r.config_json
 FROM feature_run_pointers AS p
 JOIN feature_runs AS r ON r.id = p.run_id
 WHERE p.key = 'latest_published_market:US';
 ```
 
-The saved Feature run must remain present with status `published`; activation does not delete it.
+Publication does not delete the previously published Feature run.
 
 #### 2. Run the resumable shadow backfill
 
@@ -341,11 +338,11 @@ python -m app.scripts.backfill_market_rs \
   --through-date 2026-07-17
 ```
 
-This leaves the active pointers unchanged. Inspect the JSON report: `formula_version` must be `balanced-horizon-percentile-v2`, `failed_count` and `validation_errors` must be empty/zero, every required trading date must be completed, and the latest run must reach `through_date`. A failed date is isolated for repair and the command exits nonzero.
+This leaves the Feature pointer unchanged. Inspect the JSON report: `formula_version` must be `balanced-horizon-percentile-v2`, `failed_count` and `validation_errors` must be empty/zero, every required trading date must be completed, and the latest run must reach `through_date`. A failed date is isolated for repair and the command exits nonzero.
 
-#### 3. Validate and activate atomically
+#### 3. Validate and publish atomically
 
-Choose an absolute, empty directory that is not `STATIC_EXPORT_OUTPUT_DIR` and is not served by nginx or another web server. The activation command refuses a relative, non-empty, or configured serving directory.
+Choose an absolute, empty directory that is not `STATIC_EXPORT_OUTPUT_DIR` and is not served by nginx or another web server. The command refuses a relative, non-empty, or configured serving directory.
 
 ```bash
 python -m app.scripts.backfill_market_rs \
@@ -357,93 +354,51 @@ python -m app.scripts.backfill_market_rs \
 
 The command:
 
-- calculates and validates the 187-day activation window, and builds a balanced Feature snapshot for `through-date`;
-- stages `static-site-v3` and checks stock and Group coverage, 1–99 ranges, contiguous deterministic Group ranks, exact formula/run/universe metadata on every Scan shard and row, live/static stock and Group parity, and formula-isolated RRG state;
+- calculates and validates the 187-day window, and builds a balanced Feature snapshot for `through-date`;
+- stages `static-site-v3` and checks stock and Group coverage, 1–99 ranges, contiguous deterministic Group ranks, exact formula/run/universe metadata on every Scan shard and row, live/static stock and Group parity, and RRG state;
 - records a fingerprint of the root manifest plus the complete staged Market tree, so any file change invalidates approval;
-- on success, updates the Market formula pointer and the `latest_published_market:<MARKET>` Feature pointer in one database transaction, then invalidates Group caches.
+- on success, repoints `latest_published_market:<MARKET>` to the balanced Feature run in one database transaction, then invalidates Group caches.
 
-Any failed gate exits nonzero without changing either pointer. `--start-date` is for shadow backfill only and is rejected with `--activate`. For US, the live Group bootstrap snapshot is republished best-effort after activation; a failure is logged, and the request path can rebuild it without reverting the pointers.
+Any failed gate exits nonzero without changing the pointer. `--start-date` is for shadow backfill only and is rejected with `--activate`. For US, the live Group bootstrap snapshot is republished best-effort after publication; a failure is logged, and the request path can rebuild it without reverting the pointer.
 
-After success, verify the JSON has `activated: true`, the expected formula/run IDs, and no validation errors. In the live app, refresh Groups and a Scan and confirm:
+After success, verify the JSON has `activated: true`, the expected run IDs, and no validation errors. In the live app, refresh Groups and a Scan and confirm:
 
-- the response metadata names `balanced-horizon-percentile-v2` and the activation date;
+- the response metadata names `balanced-horizon-percentile-v2` and the publication date;
 - Scan overall/1M/3M/12M RS matches the staged sample;
 - Group overall/1M/3M RS and ranks match staged `markets/<market>/groups.json`;
 - the Group page shows 1M RS and 3M RS columns; and
-- RRG either uses balanced history or explicitly reports insufficient balanced history.
+- RRG either uses balanced history or explicitly reports insufficient history.
 
 #### 4. Promote static artifacts
 
-Do not copy an unvalidated staging directory into the serving directory. After the code and Market activation are on the default branch, run the Static Site export workflow. Each Market it exports wakes the **Static Site Publish** workflow (`static-site-publish.yml`), which selects the newest valid artifact per Market and keeps the artifact-validation, combine, frontend-build and Pages deployment gates in force:
+Do not copy an unvalidated staging directory into the serving directory. After the code and Market publication are on the default branch, run the Static Site export workflow. Each Market it exports wakes the **Static Site Publish** workflow (`static-site-publish.yml`), which selects the newest valid artifact per Market and keeps the artifact-validation, combine, frontend-build and Pages deployment gates in force:
 
 ```bash
 gh workflow run static-site.yml -f market_group=us
-# Use market_group=asia or market_group=all for the corresponding rollout set.
+# Use market_group=asia or market_group=all for the corresponding set.
 ```
 
 Confirm the export run publishes `static-site-v3` artifacts and updates the Market's `static-rrg-history-v4` release asset where applicable, then confirm the following Static Site Publish run deploys Pages successfully. A publish can be re-run at any time without re-exporting: `gh workflow run static-site-publish.yml`.
 
-#### 5. Roll back one Market
+### Upgrade refused by migration 0068
 
-Rollback is explicit and preserves all balanced and legacy history. Do not roll back while the initial bootstrap or another activation command is running. Once a fresh bootstrap has completed, its fresh-install marker has already been consumed, so a later bootstrap will not undo this rollback.
-
-Restore both saved pointers together. First verify the recorded legacy Feature run is still `published` and its `config_json` names `legacy-linear-v1`, then replace `<LEGACY_FEATURE_RUN_ID>` in this transaction:
-
-```sql
-BEGIN;
-
-DO $$
-DECLARE
-  changed_rows integer;
-BEGIN
-  UPDATE market_rs_formula_pointers
-  SET formula_version = 'legacy-linear-v1', updated_at = CURRENT_TIMESTAMP
-  WHERE market = 'US';
-  GET DIAGNOSTICS changed_rows = ROW_COUNT;
-  IF changed_rows <> 1 THEN
-    RAISE EXCEPTION 'Expected one Market RS pointer, changed %', changed_rows;
-  END IF;
-
-  UPDATE feature_run_pointers
-  SET run_id = <LEGACY_FEATURE_RUN_ID>, updated_at = CURRENT_TIMESTAMP
-  WHERE key = 'latest_published_market:US';
-  GET DIAGNOSTICS changed_rows = ROW_COUNT;
-  IF changed_rows <> 1 THEN
-    RAISE EXCEPTION 'Expected one Feature pointer, changed %', changed_rows;
-  END IF;
-END $$;
-
-COMMIT;
-```
-
-The block aborts before commit unless each pointer update affects exactly one row. If it raises, issue `ROLLBACK` and investigate rather than leaving split pointers.
-
-After commit, invalidate the affected Market's Group-ranking cache. For US, also republish the live Groups bootstrap snapshot:
+Migration `20261021_0068` drops `market_rs_formula_pointers` and refuses with "Markets served under a retired RS formula" while a pointer names another formula for a Market that is still served: one with a `latest_published_market:<MARKET>` Feature pointer, or one whose `ibd_group_ranks` rows carry that formula (`backend/alembic/versions/20261021_0068_drop_market_rs_formula_pointers.py`). The database stays at the previous revision. Go back to the previous release and publish balanced RS for each listed Market from `backend`, once per Market. On that release `--activate` requires `--static-staging-dir`, refuses a non-empty one (`validate_static_staging_directory` in `backend/app/services/market_rs_rollout_executor.py`), and leaves its staged bundle there, so each run needs a new, empty absolute directory for each Market that nothing serves. For example, when the refusal lists HK and JP:
 
 ```bash
-python - <<'PY'
-from app.services.group_rankings_cache import bump_group_rankings_epoch
-from app.services.ui_snapshot_service import safe_publish_groups_bootstrap
+python -m app.scripts.backfill_market_rs \
+  --market HK \
+  --through-date <YYYY-MM-DD> \
+  --static-staging-dir /var/tmp/stockscreen-rs-hk-<YYYY-MM-DD> \
+  --activate
 
-bump_group_rankings_epoch("US")
-safe_publish_groups_bootstrap()
-PY
+python -m app.scripts.backfill_market_rs \
+  --market JP \
+  --through-date <YYYY-MM-DD> \
+  --static-staging-dir /var/tmp/stockscreen-rs-jp-<YYYY-MM-DD> \
+  --activate
 ```
 
-For a non-US Market, change the argument to `bump_group_rankings_epoch()` and omit `safe_publish_groups_bootstrap()`. Restarting the API is not a substitute for the cache epoch bump when Redis is retained.
-
-Regenerate rollback artifacts with the workflow's explicit formula input (and the appropriate `market_group`):
-
-```bash
-gh workflow run static-site.yml \
-  -f market_group=us \
-  -f 'rs_formula_overrides={"US":"legacy-linear-v1"}'
-```
-
-- **Per Market:** Markets omitted from the JSON map stay on `balanced-horizon-percentile-v2`, so one Market rolls back without changing other current or fallback artifacts.
-- **Publishing:** the rollback export's wake-up publishes it. Static Site Publish always selects each Market's newest valid artifact, so the legacy-formula export becomes the published one. The publisher deliberately has no formula input, since the next wake-up would undo a publish-time override; choose the formula in the export run.
-- **Verify** that live and static metadata say `legacy-linear-v1` for the restored Market. Keep the balanced rows for diagnosis: rollback changes pointers, not history.
-- **Returning to balanced** static output needs a newly validated live activation, with that Market omitted from `rs_formula_overrides`.
+Then upgrade again. If a listed Market is no longer enabled, delete its row from `market_rs_formula_pointers` instead.
 
 ## Static Price-Stage Checkpoints
 

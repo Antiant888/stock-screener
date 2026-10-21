@@ -4,13 +4,11 @@ from pathlib import Path
 
 import pytest
 
-from app.domain.relative_strength import (
-    BALANCED_RS_FORMULA_VERSION,
-    LEGACY_RS_FORMULA_VERSION,
-)
+from app.domain.relative_strength import BALANCED_RS_FORMULA_VERSION
 from app.services.static_artifact_combiner import (
     StaticArtifactCombiner,
-    StaticArtifactFormulaError,
+    StaticArtifactDamagedError,
+    StaticArtifactIncompatibleError,
     annotate_publication_lag,
 )
 from app.services.static_options_section import StaticOptionsSection
@@ -21,6 +19,10 @@ from app.services.static_site_export_service import (
     STATIC_SITE_SCHEMA_VERSION,
     STATIC_SUPPORTED_MARKETS,
 )
+
+
+# An artifact built before the single-formula cutover.
+STORED_LEGACY_FORMULA = "legacy-linear-v1"
 
 
 def write_market_artifact(
@@ -132,7 +134,7 @@ def test_combiner_accepts_downloaded_market_artifact_layout(tmp_path):
         artifacts_dir=current,
         fallback_artifacts_dir=None,
         output_dir=tmp_path / "out",
-        required_formula_by_market={"US": BALANCED_RS_FORMULA_VERSION},
+        required_markets=["US"],
         clean=True,
     )
 
@@ -146,7 +148,7 @@ def test_combiner_accepts_downloaded_market_artifact_layout(tmp_path):
 
 def test_combiner_rejects_wrong_formula_current_without_using_fallback(tmp_path):
     current = write_market_artifact(
-        tmp_path / "current", market="US", formula=LEGACY_RS_FORMULA_VERSION
+        tmp_path / "current", market="US", formula=STORED_LEGACY_FORMULA
     )
     fallback = write_market_artifact(
         tmp_path / "fallback", market="US", formula=BALANCED_RS_FORMULA_VERSION
@@ -155,29 +157,63 @@ def test_combiner_rejects_wrong_formula_current_without_using_fallback(tmp_path)
     output.mkdir()
     sentinel = output / "sentinel"
     sentinel.write_text("last-good", encoding="utf-8")
-    with pytest.raises(StaticArtifactFormulaError, match="US current"):
+    with pytest.raises(StaticArtifactIncompatibleError, match="US current"):
         combiner().combine(
             artifacts_dir=current,
             fallback_artifacts_dir=fallback,
             output_dir=output,
-            required_formula_by_market={"US": BALANCED_RS_FORMULA_VERSION},
+            required_markets=["US"],
             clean=True,
         )
     assert sentinel.read_text(encoding="utf-8") == "last-good"
 
 
-def test_combiner_rejects_wrong_formula_fallback(tmp_path):
+def test_combiner_rejects_wrong_formula_fallback_and_says_why(tmp_path):
     fallback = write_market_artifact(
-        tmp_path / "fallback", market="HK", formula=LEGACY_RS_FORMULA_VERSION
+        tmp_path / "fallback", market="HK", formula=STORED_LEGACY_FORMULA
     )
-    with pytest.raises(NoPublishedStaticMarketArtifact, match="HK"):
+    with pytest.raises(NoPublishedStaticMarketArtifact) as exc_info:
         combiner().combine(
             artifacts_dir=tmp_path / "empty-current",
             fallback_artifacts_dir=fallback,
             output_dir=tmp_path / "out",
-            required_formula_by_market={"HK": BALANCED_RS_FORMULA_VERSION},
+            required_markets=["HK"],
             clean=True,
         )
+    assert exc_info.value.markets == ("HK",)
+    assert str(exc_info.value) == (
+        "No published compatible static artifact is available for required "
+        "Markets: HK. Rejected: HK fallback artifact uses incompatible RS "
+        f"formula: Scan chunk chunk-0001.json={STORED_LEGACY_FORMULA!r}, "
+        f"Scan manifest={STORED_LEGACY_FORMULA!r}, market entry={STORED_LEGACY_FORMULA!r}; "
+        f"expected {BALANCED_RS_FORMULA_VERSION!r}."
+    )
+
+
+def test_combiner_omits_an_optional_market_whose_only_artifact_is_stale(tmp_path):
+    (tmp_path / "empty").mkdir()
+    selection = write_market_artifact(
+        tmp_path / "selection", market="US", formula=BALANCED_RS_FORMULA_VERSION
+    )
+    write_market_artifact(selection, market="HK", formula=STORED_LEGACY_FORMULA)
+
+    result = combiner().combine(
+        artifacts_dir=tmp_path / "empty",
+        fallback_artifacts_dir=selection,
+        output_dir=tmp_path / "out",
+        required_markets=["US"],
+        optional_markets=["HK"],
+        clean=True,
+    )
+
+    assert result.manifest["supported_markets"] == ["US"]
+    assert "HK" in result.manifest["unavailable_markets"]
+    assert result.warnings[0] == (
+        "Ignored static market artifact: HK fallback artifact uses incompatible "
+        f"RS formula: Scan chunk chunk-0001.json={STORED_LEGACY_FORMULA!r}, "
+        f"Scan manifest={STORED_LEGACY_FORMULA!r}, market entry={STORED_LEGACY_FORMULA!r}; "
+        f"expected {BALANCED_RS_FORMULA_VERSION!r}"
+    )
 
 
 def test_combiner_rejects_swapped_artifact_name_and_manifest_market(tmp_path):
@@ -198,41 +234,9 @@ def test_combiner_rejects_swapped_artifact_name_and_manifest_market(tmp_path):
             artifacts_dir=current,
             fallback_artifacts_dir=None,
             output_dir=tmp_path / "out",
-            required_formula_by_market={"AU": BALANCED_RS_FORMULA_VERSION},
+            required_markets=["AU"],
             clean=True,
         )
-
-
-def test_combiner_allows_legacy_fallback_outside_explicit_formula_policy(tmp_path):
-    current = write_market_artifact(
-        tmp_path / "current",
-        market="US",
-        formula=BALANCED_RS_FORMULA_VERSION,
-    )
-    fallback = write_market_artifact(
-        tmp_path / "fallback",
-        market="HK",
-        formula=LEGACY_RS_FORMULA_VERSION,
-    )
-
-    result = combiner().combine(
-        artifacts_dir=current,
-        fallback_artifacts_dir=fallback,
-        output_dir=tmp_path / "out",
-        required_formula_by_market={
-            "US": BALANCED_RS_FORMULA_VERSION,
-            "HK": BALANCED_RS_FORMULA_VERSION,
-        },
-        fallback_required_formula_by_market={},
-        clean=True,
-    )
-
-    assert result.manifest["markets"]["US"]["rs_formula_version"] == (
-        BALANCED_RS_FORMULA_VERSION
-    )
-    assert result.manifest["markets"]["HK"]["rs_formula_version"] == (
-        LEGACY_RS_FORMULA_VERSION
-    )
 
 
 def test_combiner_omits_optional_market_without_current_or_fallback_artifact(tmp_path):
@@ -246,10 +250,7 @@ def test_combiner_omits_optional_market_without_current_or_fallback_artifact(tmp
         artifacts_dir=current,
         fallback_artifacts_dir=tmp_path / "empty-fallback",
         output_dir=tmp_path / "out",
-        required_formula_by_market={
-            "US": BALANCED_RS_FORMULA_VERSION,
-            "CN": BALANCED_RS_FORMULA_VERSION,
-        },
+        required_markets=["US", "CN"],
         optional_markets={"CN"},
         clean=True,
     )
@@ -277,10 +278,7 @@ def test_combiner_removes_stale_optional_market_directory_on_incremental_publish
         artifacts_dir=current,
         fallback_artifacts_dir=tmp_path / "empty-fallback",
         output_dir=output_dir,
-        required_formula_by_market={
-            "US": BALANCED_RS_FORMULA_VERSION,
-            "CN": BALANCED_RS_FORMULA_VERSION,
-        },
+        required_markets=["US", "CN"],
         optional_markets={"CN"},
         clean=False,
     )
@@ -306,10 +304,7 @@ def test_combiner_surfaces_stale_optional_market_cleanup_errors(tmp_path):
             artifacts_dir=current,
             fallback_artifacts_dir=tmp_path / "empty-fallback",
             output_dir=output_dir,
-            required_formula_by_market={
-                "US": BALANCED_RS_FORMULA_VERSION,
-                "CN": BALANCED_RS_FORMULA_VERSION,
-            },
+            required_markets=["US", "CN"],
             optional_markets={"CN"},
             clean=False,
         )
@@ -322,15 +317,15 @@ def test_combiner_validates_optional_market_formula_when_artifact_exists(tmp_pat
     current = write_market_artifact(
         tmp_path / "current",
         market="CN",
-        formula=LEGACY_RS_FORMULA_VERSION,
+        formula=STORED_LEGACY_FORMULA,
     )
 
-    with pytest.raises(StaticArtifactFormulaError, match="CN current"):
+    with pytest.raises(StaticArtifactIncompatibleError, match="CN current"):
         combiner().combine(
             artifacts_dir=current,
             fallback_artifacts_dir=None,
             output_dir=tmp_path / "out",
-            required_formula_by_market={"CN": BALANCED_RS_FORMULA_VERSION},
+            required_markets=["CN"],
             optional_markets={"CN"},
             clean=True,
         )
@@ -341,18 +336,18 @@ def test_combiner_rejects_wrong_scan_manifest_formula(tmp_path):
         tmp_path / "current",
         market="US",
         formula=BALANCED_RS_FORMULA_VERSION,
-        scan_formula=LEGACY_RS_FORMULA_VERSION,
+        scan_formula=STORED_LEGACY_FORMULA,
     )
 
     with pytest.raises(
-        StaticArtifactFormulaError,
+        StaticArtifactIncompatibleError,
         match="Scan manifest='legacy-linear-v1'",
     ):
         combiner().combine(
             artifacts_dir=current,
             fallback_artifacts_dir=None,
             output_dir=tmp_path / "out",
-            required_formula_by_market={"US": BALANCED_RS_FORMULA_VERSION},
+            required_markets=["US"],
             clean=True,
         )
 
@@ -362,23 +357,23 @@ def test_combiner_rejects_wrong_scan_chunk_formula(tmp_path):
         tmp_path / "current",
         market="US",
         formula=BALANCED_RS_FORMULA_VERSION,
-        chunk_formula=LEGACY_RS_FORMULA_VERSION,
+        chunk_formula=STORED_LEGACY_FORMULA,
     )
 
     with pytest.raises(
-        StaticArtifactFormulaError,
+        StaticArtifactIncompatibleError,
         match="Scan chunk chunk-0001.json='legacy-linear-v1'",
     ):
         combiner().combine(
             artifacts_dir=current,
             fallback_artifacts_dir=None,
             output_dir=tmp_path / "out",
-            required_formula_by_market={"US": BALANCED_RS_FORMULA_VERSION},
+            required_markets=["US"],
             clean=True,
         )
 
 
-def test_combiner_requires_every_market_named_by_formula_map(tmp_path):
+def test_combiner_requires_every_required_market(tmp_path):
     current = write_market_artifact(
         tmp_path / "current", market="US", formula=BALANCED_RS_FORMULA_VERSION
     )
@@ -387,10 +382,7 @@ def test_combiner_requires_every_market_named_by_formula_map(tmp_path):
             artifacts_dir=current,
             fallback_artifacts_dir=None,
             output_dir=tmp_path / "out",
-            required_formula_by_market={
-                "US": BALANCED_RS_FORMULA_VERSION,
-                "HK": BALANCED_RS_FORMULA_VERSION,
-            },
+            required_markets=["US", "HK"],
             clean=True,
         )
     assert exc_info.value.markets == ("HK",)
@@ -408,7 +400,7 @@ def test_combiner_accepts_current_breadth_revision_three(tmp_path):
         artifacts_dir=current,
         fallback_artifacts_dir=None,
         output_dir=tmp_path / "out",
-        required_formula_by_market={"US": BALANCED_RS_FORMULA_VERSION},
+        required_markets=["US"],
         clean=True,
     )
 
@@ -423,33 +415,38 @@ def test_combiner_rejects_current_breadth_revision_two(tmp_path):
         breadth_revision=2,
     )
 
-    with pytest.raises(StaticArtifactFormulaError, match="breadth revision"):
+    with pytest.raises(StaticArtifactIncompatibleError, match="breadth revision"):
         combiner().combine(
             artifacts_dir=current,
             fallback_artifacts_dir=None,
             output_dir=tmp_path / "out",
-            required_formula_by_market={"US": BALANCED_RS_FORMULA_VERSION},
+            required_markets=["US"],
             clean=True,
         )
 
 
-def test_combiner_filters_revision_two_breadth_fallback_without_rs_policy(tmp_path):
+def test_combiner_filters_revision_two_breadth_fallback(tmp_path):
     fallback = write_market_artifact(
         tmp_path / "fallback",
         market="HK",
-        formula=LEGACY_RS_FORMULA_VERSION,
+        formula=BALANCED_RS_FORMULA_VERSION,
         breadth_revision=2,
     )
 
-    with pytest.raises(NoPublishedStaticMarketArtifact, match="HK"):
+    with pytest.raises(NoPublishedStaticMarketArtifact) as exc_info:
         combiner().combine(
             artifacts_dir=tmp_path / "empty-current",
             fallback_artifacts_dir=fallback,
             output_dir=tmp_path / "out",
-            required_formula_by_market={"HK": BALANCED_RS_FORMULA_VERSION},
-            fallback_required_formula_by_market={},
+            required_markets=["HK"],
             clean=True,
         )
+    assert str(exc_info.value) == (
+        "No published compatible static artifact is available for required "
+        "Markets: HK. Rejected: HK fallback artifact uses incompatible breadth "
+        "revision: revision=2, source_revision='2026-04-10|breadth-r2'; "
+        "expected 3 and marker '|breadth-r3'."
+    )
 
 
 def test_combiner_rejects_revision_three_with_revision_two_source_marker(tmp_path):
@@ -461,12 +458,12 @@ def test_combiner_rejects_revision_three_with_revision_two_source_marker(tmp_pat
         breadth_source_revision="2026-04-10|breadth-r2",
     )
 
-    with pytest.raises(StaticArtifactFormulaError, match="breadth revision"):
+    with pytest.raises(StaticArtifactIncompatibleError, match="breadth revision"):
         combiner().combine(
             artifacts_dir=current,
             fallback_artifacts_dir=None,
             output_dir=tmp_path / "out",
-            required_formula_by_market={"US": BALANCED_RS_FORMULA_VERSION},
+            required_markets=["US"],
             clean=True,
         )
 
@@ -510,7 +507,7 @@ def test_advertised_page_paths_must_exist_inside_root_and_parse(
     for name, text in files.items():
         (market_dir / name).write_text(text, encoding="utf-8")
 
-    with pytest.raises(StaticArtifactFormulaError, match=message):
+    with pytest.raises(StaticArtifactDamagedError, match=message):
         _validate_assets(market_dir)
 
 
@@ -527,7 +524,7 @@ def test_chart_index_symbol_paths_must_stay_inside_root(tmp_path: Path) -> None:
         tmp_path, "US", assets={"charts": {"path": "markets/us/charts/index.json"}}
     )
 
-    with pytest.raises(StaticArtifactFormulaError, match="escapes"):
+    with pytest.raises(StaticArtifactDamagedError, match="escapes"):
         _validate_assets(market_dir)
 
 
@@ -543,7 +540,7 @@ def test_chart_index_symbol_payload_must_exist(tmp_path: Path) -> None:
         tmp_path, "US", assets={"charts": {"path": "markets/us/charts/index.json"}}
     )
 
-    with pytest.raises(StaticArtifactFormulaError, match="X.json"):
+    with pytest.raises(StaticArtifactDamagedError, match="X.json"):
         _validate_assets(market_dir)
 
 
@@ -584,7 +581,7 @@ def test_combined_manifest_lists_unavailable_markets_and_sources(tmp_path: Path)
         artifacts_dir=current,
         fallback_artifacts_dir=fallback,
         output_dir=output,
-        required_formula_by_market={},
+        required_markets=[],
         optional_markets=[m for m in STATIC_SUPPORTED_MARKETS if m != "US"],
         clean=False,
     )
@@ -733,7 +730,7 @@ def test_advertised_path_with_nul_byte_is_rejected_not_crashing(tmp_path: Path) 
         tmp_path, "US", pages={"home": {"path": "markets/us/ho\x00me.json"}}
     )
 
-    with pytest.raises(StaticArtifactFormulaError, match="path is invalid"):
+    with pytest.raises(StaticArtifactDamagedError, match="path is invalid"):
         _validate_assets(market_dir)
 
 
@@ -750,7 +747,7 @@ def test_damaged_current_artifact_falls_back_instead_of_aborting(tmp_path: Path)
         artifacts_dir=current,
         fallback_artifacts_dir=fallback,
         output_dir=tmp_path / "out",
-        required_formula_by_market={},
+        required_markets=[],
         optional_markets=[m for m in STATIC_SUPPORTED_MARKETS if m != "US"],
         clean=True,
     )
@@ -758,6 +755,154 @@ def test_damaged_current_artifact_falls_back_instead_of_aborting(tmp_path: Path)
     assert result.manifest["markets"]["HK"]["publication"]["source"] == "fallback"
     assert result.manifest["markets"]["US"]["publication"]["source"] == "current"
     assert any("HK" in w and "home.json" in w for w in result.warnings)
+
+
+def test_current_artifact_missing_a_scan_chunk_falls_back(tmp_path: Path) -> None:
+    current = tmp_path / "current"
+    write_market_artifact(current, market="US", formula=BALANCED_RS_FORMULA_VERSION)
+    write_market_artifact(current, market="HK", formula=BALANCED_RS_FORMULA_VERSION)
+    (current / "static-market-HK" / "scan" / "chunks" / "chunk-0001.json").unlink()
+    fallback = write_market_artifact(
+        tmp_path / "fallback", market="HK", formula=BALANCED_RS_FORMULA_VERSION
+    )
+
+    result = combiner().combine(
+        artifacts_dir=current,
+        fallback_artifacts_dir=fallback,
+        output_dir=tmp_path / "out",
+        required_markets=["US"],
+        optional_markets=[m for m in STATIC_SUPPORTED_MARKETS if m != "US"],
+        clean=True,
+    )
+
+    assert result.manifest["markets"]["HK"]["publication"]["source"] == "fallback"
+    assert result.warnings[0] == (
+        "Ignored static market artifact: HK current advertised file is absent: "
+        "'markets/hk/scan/chunks/chunk-0001.json'"
+    )
+
+
+def test_fallback_with_an_unparseable_scan_chunk_is_rejected_with_its_reason(
+    tmp_path: Path,
+) -> None:
+    fallback = write_market_artifact(
+        tmp_path / "fallback", market="HK", formula=BALANCED_RS_FORMULA_VERSION
+    )
+    chunk = fallback / "static-market-HK" / "scan" / "chunks" / "chunk-0001.json"
+    chunk.write_text("{", encoding="utf-8")
+
+    with pytest.raises(NoPublishedStaticMarketArtifact) as exc_info:
+        combiner().combine(
+            artifacts_dir=tmp_path / "empty-current",
+            fallback_artifacts_dir=fallback,
+            output_dir=tmp_path / "out",
+            required_markets=["HK"],
+            clean=True,
+        )
+
+    assert str(exc_info.value) == (
+        "No published compatible static artifact is available for required "
+        "Markets: HK. Rejected: HK fallback advertised file "
+        "'markets/hk/scan/chunks/chunk-0001.json' does not parse: Expecting "
+        "property name enclosed in double quotes: line 1 column 2 (char 1)."
+    )
+
+
+_SCAN_CHUNKS_NOT_OBJECTS = (
+    "HK fallback scan manifest 'markets/hk/scan/manifest.json' must list chunks "
+    "as objects"
+)
+
+
+@pytest.mark.parametrize(
+    "relative_path, payload, entry_changes, reason",
+    [
+        pytest.param(
+            "scan/manifest.json",
+            {"rs_formula_version": BALANCED_RS_FORMULA_VERSION, "chunks": 7},
+            {},
+            _SCAN_CHUNKS_NOT_OBJECTS,
+            id="chunks-as-number",
+        ),
+        pytest.param(
+            "scan/manifest.json",
+            {
+                "rs_formula_version": BALANCED_RS_FORMULA_VERSION,
+                "chunks": ["markets/hk/scan/chunks/chunk-0001.json"],
+            },
+            {},
+            _SCAN_CHUNKS_NOT_OBJECTS,
+            id="chunks-as-strings",
+        ),
+        pytest.param(
+            "scan/manifest.json", [], {}, _SCAN_CHUNKS_NOT_OBJECTS, id="manifest-is-list"
+        ),
+        pytest.param(
+            "scan/manifest.json",
+            [],
+            {"pages": {}},
+            "HK fallback Scan manifest is not a JSON object",
+            id="unadvertised-manifest-is-list",
+        ),
+        pytest.param(
+            "scan/manifest.json",
+            {"rs_formula_version": BALANCED_RS_FORMULA_VERSION, "chunks": ["x"]},
+            {"pages": {}},
+            "HK fallback Scan manifest must list chunks as objects",
+            id="unadvertised-chunks-as-strings",
+        ),
+        pytest.param(
+            "scan/chunks/chunk-0001.json",
+            [],
+            {},
+            "HK fallback Scan chunk chunk-0001.json is not a JSON object",
+            id="chunk-is-list",
+        ),
+        pytest.param(
+            "groups.json", [], {}, "HK fallback groups.json is not a JSON object",
+            id="groups-is-list",
+        ),
+        pytest.param(
+            "groups_rrg.json",
+            [],
+            {},
+            "HK fallback groups_rrg.json is not a JSON object",
+            id="rrg-is-list",
+        ),
+        pytest.param(
+            "breadth.json", [], {}, "HK fallback breadth.json is not a JSON object",
+            id="breadth-is-list",
+        ),
+    ],
+)
+def test_fallback_with_a_malformed_payload_is_rejected_not_crashing(
+    tmp_path: Path, relative_path, payload, entry_changes, reason
+) -> None:
+    fallback = write_market_artifact(
+        tmp_path / "fallback",
+        market="HK",
+        formula=BALANCED_RS_FORMULA_VERSION,
+        breadth_revision=3,
+    )
+    if entry_changes:
+        _rewrite_entry(fallback, "HK", **entry_changes)
+    (fallback / "static-market-HK" / relative_path).write_text(
+        json.dumps(payload), encoding="utf-8"
+    )
+
+    with pytest.raises(NoPublishedStaticMarketArtifact) as exc_info:
+        combiner().combine(
+            artifacts_dir=tmp_path / "empty-current",
+            fallback_artifacts_dir=fallback,
+            output_dir=tmp_path / "out",
+            required_markets=["HK"],
+            clean=True,
+        )
+
+    assert str(exc_info.value) == (
+        "No published compatible static artifact is available for required "
+        f"Markets: HK. Rejected: {reason}."
+    )
 
 
 def test_damaged_required_current_without_fallback_names_the_defect(
@@ -773,7 +918,7 @@ def test_damaged_required_current_without_fallback_names_the_defect(
             artifacts_dir=current,
             fallback_artifacts_dir=None,
             output_dir=tmp_path / "out",
-            required_formula_by_market={"US": BALANCED_RS_FORMULA_VERSION},
+            required_markets=["US"],
             clean=True,
         )
 
@@ -783,7 +928,7 @@ def test_market_root_relative_paths_are_still_validated(tmp_path: Path) -> None:
     write_market_artifact(tmp_path, market="US", formula=BALANCED_RS_FORMULA_VERSION)
     market_dir = _rewrite_entry(tmp_path, "US", pages={"home": {"path": "home.json"}})
 
-    with pytest.raises(StaticArtifactFormulaError, match="absent.*home.json"):
+    with pytest.raises(StaticArtifactDamagedError, match="absent.*home.json"):
         _validate_assets(market_dir)
 
 
@@ -797,7 +942,7 @@ def test_market_root_relative_chart_payloads_are_still_validated(tmp_path: Path)
     )
     _rewrite_entry(tmp_path, "US", assets={"charts": {"path": "charts/index.json"}})
 
-    with pytest.raises(StaticArtifactFormulaError, match="X.json"):
+    with pytest.raises(StaticArtifactDamagedError, match="X.json"):
         _validate_assets(market_dir)
 
 
@@ -807,7 +952,7 @@ def test_another_markets_path_is_rejected(tmp_path: Path) -> None:
         tmp_path, "US", pages={"home": {"path": "markets/hk/home.json"}}
     )
 
-    with pytest.raises(StaticArtifactFormulaError, match="another market"):
+    with pytest.raises(StaticArtifactDamagedError, match="another market"):
         _validate_assets(market_dir)
 
 
@@ -827,7 +972,7 @@ def test_malformed_descriptors_are_rejected(tmp_path: Path, changes) -> None:
     write_market_artifact(tmp_path, market="US", formula=BALANCED_RS_FORMULA_VERSION)
     market_dir = _rewrite_entry(tmp_path, "US", **changes)
 
-    with pytest.raises(StaticArtifactFormulaError, match="descriptor|empty path"):
+    with pytest.raises(StaticArtifactDamagedError, match="descriptor|empty path"):
         _validate_assets(market_dir)
 
 
@@ -836,7 +981,7 @@ def test_non_object_page_and_asset_sections_are_rejected(tmp_path: Path, changes
     write_market_artifact(tmp_path, market="US", formula=BALANCED_RS_FORMULA_VERSION)
     market_dir = _rewrite_entry(tmp_path, "US", **changes)
 
-    with pytest.raises(StaticArtifactFormulaError, match="must be an object"):
+    with pytest.raises(StaticArtifactDamagedError, match="must be an object"):
         _validate_assets(market_dir)
 
 
@@ -870,36 +1015,59 @@ def test_unreadable_current_manifest_falls_back(tmp_path: Path, damage) -> None:
         artifacts_dir=current,
         fallback_artifacts_dir=fallback,
         output_dir=tmp_path / "out",
-        required_formula_by_market={},
+        required_markets=[],
         optional_markets=[m for m in STATIC_SUPPORTED_MARKETS if m != "US"],
         clean=True,
     )
 
     assert result.manifest["markets"]["HK"]["publication"]["source"] == "fallback"
-    assert any("Ignored damaged" in w and "HK" in w for w in result.warnings)
+    assert any("Ignored static market artifact" in w and "HK" in w for w in result.warnings)
 
 
-def test_asset_descriptor_without_path_is_left_to_its_own_validator(
-    tmp_path: Path,
-) -> None:
+def _with_pathless_contributor_asset(root: Path) -> Path:
     # breadth_contributors advertises index_path and has its own validator.
-    write_market_artifact(tmp_path, market="US", formula=BALANCED_RS_FORMULA_VERSION)
-    market_dir = _rewrite_entry(
-        tmp_path,
+    write_market_artifact(root, market="US", formula=BALANCED_RS_FORMULA_VERSION)
+    return _rewrite_entry(
+        root,
         "US",
         assets={"breadth_contributors": {"index_path": "markets/us/x/index.json"}},
     )
 
-    warnings = StaticArtifactCombiner._validate_advertised_assets(
-        market="US",
-        source_label="fallback",
-        entry=json.loads(
-            (market_dir / STATIC_MARKET_METADATA_FILENAME).read_text(encoding="utf-8")
-        )["entry"],
-        market_dir=market_dir,
+
+def test_rejection_reason_leaves_the_artifact_metadata_unchanged(
+    tmp_path: Path,
+) -> None:
+    market_dir = _with_pathless_contributor_asset(tmp_path)
+    metadata = json.loads(
+        (market_dir / STATIC_MARKET_METADATA_FILENAME).read_text(encoding="utf-8")
+    )
+    before = json.loads(json.dumps(metadata))
+
+    reason = StaticArtifactCombiner.rejection_reason(
+        market="US", source_label="fallback", metadata=metadata, market_dir=market_dir
     )
 
-    assert any("breadth contributor asset ignored" in w for w in warnings)
+    assert reason is None
+    assert metadata == before
+
+
+def test_broken_breadth_contributor_asset_is_dropped_with_a_warning(
+    tmp_path: Path,
+) -> None:
+    _with_pathless_contributor_asset(tmp_path / "current")
+
+    result = combiner().combine(
+        artifacts_dir=tmp_path / "current",
+        fallback_artifacts_dir=None,
+        output_dir=tmp_path / "out",
+        required_markets=["US"],
+        clean=True,
+    )
+
+    assert result.manifest["markets"]["US"]["assets"] == {}
+    assert [w for w in result.warnings if "breadth contributor" in w] == [
+        "US breadth contributor asset ignored: advertised index file is absent"
+    ]
 
 
 @pytest.mark.parametrize("chunk_text", [None, "{truncated"])
@@ -913,7 +1081,7 @@ def test_scan_chunks_are_validated_without_a_formula_override(
     else:
         chunk.write_text(chunk_text, encoding="utf-8")
 
-    with pytest.raises(StaticArtifactFormulaError, match="chunk-0001.json"):
+    with pytest.raises(StaticArtifactDamagedError, match="chunk-0001.json"):
         _validate_assets(tmp_path / "static-market-US")
 
 
@@ -930,7 +1098,7 @@ def test_malformed_chart_payload_is_rejected(tmp_path: Path) -> None:
         tmp_path, "US", assets={"charts": {"path": "markets/us/charts/index.json"}}
     )
 
-    with pytest.raises(StaticArtifactFormulaError, match="X.json.*does not parse"):
+    with pytest.raises(StaticArtifactDamagedError, match="X.json.*does not parse"):
         _validate_assets(market_dir)
 
 
@@ -944,7 +1112,7 @@ def test_malformed_chart_index_is_rejected_not_crashing(tmp_path: Path, index) -
         tmp_path, "US", assets={"charts": {"path": "markets/us/charts/index.json"}}
     )
 
-    with pytest.raises(StaticArtifactFormulaError, match="chart index"):
+    with pytest.raises(StaticArtifactDamagedError, match="chart index"):
         _validate_assets(market_dir)
 
 
@@ -956,14 +1124,13 @@ def test_publisher_selection_does_not_warn_per_market_reuse(tmp_path: Path) -> N
     selection = write_market_artifact(
         tmp_path / "selection", market="US", formula=BALANCED_RS_FORMULA_VERSION
     )
-    write_market_artifact(selection, market="HK", formula=LEGACY_RS_FORMULA_VERSION)
+    write_market_artifact(selection, market="HK", formula=BALANCED_RS_FORMULA_VERSION)
 
     result = combiner().combine(
         artifacts_dir=tmp_path / "empty",
         fallback_artifacts_dir=selection,
         output_dir=tmp_path / "out",
-        required_formula_by_market={"US": BALANCED_RS_FORMULA_VERSION},
-        fallback_required_formula_by_market={},
+        required_markets=["US"],
         optional_markets=[m for m in STATIC_SUPPORTED_MARKETS if m != "US"],
         clean=True,
     )
@@ -984,7 +1151,7 @@ def test_current_run_gap_still_warns_about_reuse(tmp_path: Path) -> None:
         artifacts_dir=current,
         fallback_artifacts_dir=fallback,
         output_dir=tmp_path / "out",
-        required_formula_by_market={},
+        required_markets=[],
         optional_markets=[m for m in STATIC_SUPPORTED_MARKETS if m != "US"],
         clean=True,
     )

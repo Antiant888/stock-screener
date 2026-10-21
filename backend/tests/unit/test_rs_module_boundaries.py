@@ -12,9 +12,6 @@ LIMITS = {
 }
 EXTRACTED_MODULES = (
     "app/services/bootstrap_publication_date.py",
-    "app/services/group_rank_input_loader.py",
-    "app/services/group_rank_historical_calculator.py",
-    "app/services/group_ranking_calculator.py",
     "app/services/group_ranking_repository.py",
     "app/services/static_chart_bundle_exporter.py",
     "app/services/static_breadth_section_builder.py",
@@ -50,25 +47,12 @@ def test_new_extracted_modules_stay_below_seven_hundred_lines():
         assert line_count <= 700, f"{relative_path} has {line_count} lines"
 
 
-def test_group_ranking_uses_composition_without_runtime_wiring_imports():
+def test_group_ranking_facade_has_no_runtime_wiring_imports():
     facade = (BACKEND_ROOT / "app/services/ibd_group_rank_service.py").read_text(
         encoding="utf-8"
     )
-    input_loader = (BACKEND_ROOT / "app/services/group_rank_input_loader.py").read_text(
-        encoding="utf-8"
-    )
-    historical = (
-        BACKEND_ROOT / "app/services/group_rank_historical_calculator.py"
-    ).read_text(
-        encoding="utf-8"
-    )
 
-    assert "LegacyGroupRankDataMixin" not in facade
-    assert "LegacyGroupRankBackfillMixin" not in facade
-    assert "wiring.bootstrap" not in input_loader
-    assert "wiring.bootstrap" not in historical
-    assert "self.input_loader" in facade
-    assert "self.historical_calculator" in facade
+    assert "wiring.bootstrap" not in facade
 
 
 def test_live_group_rankings_page_stays_bounded():

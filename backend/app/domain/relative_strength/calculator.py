@@ -5,7 +5,6 @@ from dataclasses import dataclass
 from typing import Mapping
 
 BALANCED_RS_FORMULA_VERSION = "balanced-horizon-percentile-v2"
-LEGACY_RS_FORMULA_VERSION = "legacy-linear-v1"
 
 
 @dataclass(frozen=True)

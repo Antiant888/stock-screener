@@ -8,7 +8,6 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from app.domain.relative_strength import (
-    BALANCED_RS_FORMULA_VERSION,
     GroupSnapshotIdentity,
     RsPublicationIdentity,
     balanced_run_has_current_snapshot_contract,
@@ -75,8 +74,6 @@ class GroupRankSnapshotReader:
             raise GroupSnapshotIntegrityError(
                 "Group rows do not reference the expected Market RS run"
             )
-        if publication.market_rs_run_id is None:
-            return rows
         run = db.get(MarketRsRun, publication.market_rs_run_id)
         if run is None or int(run.eligible_symbol_count) != publication.universe_size:
             raise GroupSnapshotIntegrityError(
@@ -285,8 +282,6 @@ class GroupRankSnapshotReader:
             for record in records
         ):
             raise GroupSnapshotIntegrityError("Group rows do not match their identity")
-        if identity.formula_version != BALANCED_RS_FORMULA_VERSION:
-            return
         run_ids = {record.market_rs_run_id for record in records}
         if None in run_ids or len(run_ids) != 1:
             raise GroupSnapshotIntegrityError(

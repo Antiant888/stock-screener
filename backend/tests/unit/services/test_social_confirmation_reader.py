@@ -66,11 +66,23 @@ def test_listing_and_market_calendars_are_independent():
     assert reader.freshness("US", utc("2026-07-02T19:00:00"), date(2026, 7, 2)).fresh
 
 
+RS_RUN_ID = 42
+
+
 def seed_snapshot(db):
+    from app.domain.relative_strength import (
+        BALANCED_RS_FORMULA_VERSION, BALANCED_RS_PRICE_BASIS, BALANCED_RS_SNAPSHOT_SCHEMA_VERSION)
     from app.infra.db.models.feature_store import FeatureRun, FeatureRunPointer, StockFeatureDaily
+    from app.infra.db.models.relative_strength import MarketRsRun
     from app.models.market_exposure import MarketExposure
+    db.add(MarketRsRun(id=RS_RUN_ID, market="US", as_of_date=date(2026, 7, 2), status="completed",
+        formula_version=BALANCED_RS_FORMULA_VERSION, benchmark_symbol="SPY", benchmark_as_of_date=date(2026, 7, 2),
+        universe_hash="social-test", expected_symbol_count=5000, eligible_symbol_count=5000, excluded_symbol_count=0,
+        diagnostics_json={"price_basis": BALANCED_RS_PRICE_BASIS,
+                          "rs_snapshot_schema_version": BALANCED_RS_SNAPSHOT_SCHEMA_VERSION}))
     run = FeatureRun(as_of_date=date(2026, 7, 2), run_type="daily_snapshot", status="published",
-                     config_json={"universe": {"market": "US"}},
+                     config_json={"universe": {"market": "US"}, "rs_formula_version": BALANCED_RS_FORMULA_VERSION,
+                                  "market_rs_run_id": RS_RUN_ID, "rs_as_of_date": "2026-07-02", "rs_universe_size": 5000},
                      completed_at=utc("2026-07-02T18:00:00"), published_at=utc("2026-07-02T18:01:00"))
     db.add(run)
     db.flush()
@@ -112,6 +124,7 @@ def test_incoherent_or_future_snapshots_are_unavailable(db_session, calendar, mu
 
 
 def seed_batch(db):
+    from app.domain.relative_strength import BALANCED_RS_FORMULA_VERSION
     from app.infra.db.models.feature_store import StockFeatureDaily
     from app.models.stock_universe import StockUniverse
     from app.models.industry import IBDGroupRank
@@ -123,12 +136,14 @@ def seed_batch(db):
     db.add_all([StockUniverse(symbol=s, market="US", exchange="NYSE", is_active=True) for s in ("AAA", "BBB")])
     db.add(StockFeatureDaily(run_id=run.id, symbol="BBB", as_of_date=run.as_of_date,
         details_json={**feature.details_json, "setup_engine": {"setup_score": 55, "setup_ready": False}}))
-    for market, day, groups in (("US", date(2026, 7, 2), ("Energy", "Chips", "Retail")),
-                               ("HK", date(2026, 7, 2), ("Chips",)),
-                               ("US", date(2026, 7, 1), ("Chips",))):
+    # Each cohort references its own Market RS run; only the pinned run's cohort is validated.
+    for market, day, groups, run_id in (("US", date(2026, 7, 2), ("Energy", "Chips", "Retail"), RS_RUN_ID),
+                                       ("HK", date(2026, 7, 2), ("Chips",), RS_RUN_ID + 1),
+                                       ("US", date(2026, 7, 1), ("Chips",), RS_RUN_ID + 2)):
         for rank, group in enumerate(groups, 1):
-            db.add(IBDGroupRank(market=market, date=day, industry_group=group, rank=rank,
-                avg_rs_rating=80, rs_formula_version="legacy-linear-v1", created_at=utc("2026-07-02T18:00:00")))
+            db.add(IBDGroupRank(market=market, date=day, industry_group=group, rank=rank, avg_rs_rating=80,
+                rs_formula_version=BALANCED_RS_FORMULA_VERSION, market_rs_run_id=run_id,
+                created_at=utc("2026-07-02T18:00:00")))
     db.flush()
     return run, feature, exposure
 

@@ -15,7 +15,7 @@ from typing import Any, Dict, Optional
 import pandas as pd
 
 from app.analysis.patterns.rs_line import RsLineLeadershipSnapshot
-from app.domain.scanning.ports import StockRsSource
+from app.domain.scanning.ports import CanonicalStockRsSource
 
 
 @dataclass
@@ -159,8 +159,7 @@ class StockData:
     currency: Optional[str] = None
     timezone: Optional[str] = None
     local_code: Optional[str] = None
-    rs_universe_performances: Optional[Dict[int | str, list[float]]] = None
-    rs_source: StockRsSource | None = None
+    rs_source: CanonicalStockRsSource | None = None
     precomputed_scan_context: Optional[PrecomputedScanContext] = None
     # See app.domain.scanning.mixed_market_policy.
     is_mixed_market: bool = False

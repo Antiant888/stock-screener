@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from app.domain.relative_strength import (
     BALANCED_RS_FORMULA_VERSION,
-    LEGACY_RS_FORMULA_VERSION,
 )
 from app.services.static_market_publish_policy import (
     StaticMarketRsArtifactState,
@@ -54,46 +53,6 @@ def test_market_rs_balanced_completed_result_is_ready():
             formula_version=BALANCED_RS_FORMULA_VERSION,
         )
         is StaticMarketRsArtifactState.READY
-    )
-
-
-def test_market_rs_legacy_selected_result_is_ready():
-    result = {
-        "status": "selected",
-        "market": "DE",
-        "as_of_date": "2026-07-27",
-        "formula_version": LEGACY_RS_FORMULA_VERSION,
-        "market_rs_run_id": None,
-    }
-
-    assert (
-        classify_static_market_rs_artifact_result(
-            result,
-            market="DE",
-            as_of_date="2026-07-27",
-            formula_version=LEGACY_RS_FORMULA_VERSION,
-        )
-        is StaticMarketRsArtifactState.READY
-    )
-
-
-def test_market_rs_legacy_non_selected_result_is_hard_failure():
-    result = {
-        "status": "failed",
-        "market": "DE",
-        "as_of_date": "2026-07-27",
-        "formula_version": LEGACY_RS_FORMULA_VERSION,
-        "market_rs_run_id": None,
-    }
-
-    assert (
-        classify_static_market_rs_artifact_result(
-            result,
-            market="DE",
-            as_of_date="2026-07-27",
-            formula_version=LEGACY_RS_FORMULA_VERSION,
-        )
-        is StaticMarketRsArtifactState.HARD_FAILURE
     )
 
 

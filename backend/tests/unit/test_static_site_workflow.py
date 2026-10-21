@@ -14,7 +14,7 @@ import yaml
 from app.scripts import download_static_market_fallbacks as fallback_script
 from app.scripts.download_static_market_fallbacks import (
     collect_current_markets,
-    downloaded_market_is_compatible,
+    inspect_downloaded_market,
 )
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -323,9 +323,9 @@ def test_market_fallback_prefers_newer_session_over_newer_upload(
 
 
 def test_same_session_reruns_resolve_to_the_latest_upload(tmp_path, monkeypatch) -> None:
-    # A corrected rerun or an RS rollback re-exports the same session on the
-    # same day. The API order is not a contract, so the listing arrives
-    # oldest-first here; the later upload must still win.
+    # A corrected rerun re-exports the same session on the same day. The API
+    # order is not a contract, so the listing arrives oldest-first here; the
+    # later upload must still win.
     listings = {
         "static-market-US": [
             _artifact(500, "2026-09-05T09:00:00Z"),
@@ -520,7 +520,10 @@ def test_static_site_fallback_downloader_keeps_newest_candidate_for_current_mark
             (target_dir / "manifest.market.json").write_text(json.dumps({{
                 "market": artifact_name.rsplit("-", 1)[1],
                 "schema_version": "static-site-v3",
-                "entry": {{"as_of_date": as_of_date_by_run.get(run_id, "2026-08-02")}},
+                "entry": {{
+                    "as_of_date": as_of_date_by_run.get(run_id, "2026-08-02"),
+                    "rs_formula_version": "balanced-horizon-percentile-v2",
+                }},
             }}))
             with downloads_log.open("a", encoding="utf-8") as handle:
                 handle.write(json.dumps({{"run": run_id, "artifact": artifact_name}}) + "\\n")
@@ -571,8 +574,24 @@ def test_static_site_fallback_downloader_keeps_newest_candidate_for_current_mark
     assert "exit 7. Details: stderr: download denied for HK" in result.stdout
 
 
-def test_static_site_fallback_downloader_keeps_formula_compatible_candidate(
-    tmp_path,
+@pytest.mark.parametrize(
+    ("newer_defect", "reason"),
+    [
+        (
+            "legacy formula",
+            "US fallback artifact uses incompatible RS formula: "
+            "Scan manifest='legacy-linear-v1', market entry='legacy-linear-v1'; "
+            "expected 'balanced-horizon-percentile-v2'",
+        ),
+        (
+            "breadth r2",
+            "US fallback artifact uses incompatible breadth revision: revision=2, "
+            "source_revision='2026-08-04|breadth-r2'; expected 3 and marker '|breadth-r3'",
+        ),
+    ],
+)
+def test_static_site_fallback_downloader_keeps_newest_accepted_candidate(
+    tmp_path, newer_defect, reason
 ) -> None:
     current_dir = tmp_path / "current"
     fallback_dir = tmp_path / "fallback"
@@ -601,15 +620,20 @@ def test_static_site_fallback_downloader_keeps_formula_compatible_candidate(
             target_dir = pathlib.Path(args[args.index("--dir") + 1])
             market_dir = target_dir / "markets" / "us"
             (market_dir / "scan").mkdir(parents=True, exist_ok=True)
-            formula_by_run = {{
-                "333": "balanced-horizon-percentile-v2",
-                "222": "legacy-linear-v1",
-            }}
             date_by_run = {{
                 "333": "2026-08-04",
                 "222": "2026-08-03",
             }}
-            formula = formula_by_run[run_id]
+            formula = "balanced-horizon-percentile-v2"
+            features = {{"scan": True}}
+            if run_id == "333" and {newer_defect!r} == "legacy formula":
+                formula = "legacy-linear-v1"
+            elif run_id == "333":
+                features["breadth"] = True
+                (market_dir / "breadth.json").write_text(json.dumps({{
+                    "source_revision": "2026-08-04|breadth-r2",
+                    "payload": {{"current": {{"calculation_revision": 2}}}},
+                }}))
             (market_dir / "scan" / "manifest.json").write_text(
                 json.dumps({{"rs_formula_version": formula}})
             )
@@ -620,7 +644,7 @@ def test_static_site_fallback_downloader_keeps_formula_compatible_candidate(
                     "market": "US",
                     "as_of_date": date_by_run[run_id],
                     "rs_formula_version": formula,
-                    "features": {{"scan": True}},
+                    "features": features,
                     "pages": {{"scan": {{"path": "markets/us/scan/manifest.json"}}}},
                 }},
             }}))
@@ -641,8 +665,6 @@ def test_static_site_fallback_downloader_keeps_formula_compatible_candidate(
             str(current_dir),
             "--fallback-dir",
             str(fallback_dir),
-            "--fallback-rs-formula-overrides-json",
-            '{"US":"legacy-linear-v1"}',
         ],
         check=True,
         capture_output=True,
@@ -660,6 +682,9 @@ def test_static_site_fallback_downloader_keeps_formula_compatible_candidate(
         {"run": "333", "artifact": "static-market-US"},
         {"run": "222", "artifact": "static-market-US"},
     ]
+    assert (
+        f"static-market-US from run 333 was rejected ({reason})." in result.stdout
+    ), result.stdout
     manifest = json.loads(
         (
             fallback_dir
@@ -669,7 +694,8 @@ def test_static_site_fallback_downloader_keeps_formula_compatible_candidate(
             / "manifest.market.json"
         ).read_text(encoding="utf-8")
     )
-    assert manifest["entry"]["rs_formula_version"] == "legacy-linear-v1"
+    assert manifest["entry"]["rs_formula_version"] == "balanced-horizon-percentile-v2"
+    assert manifest["entry"]["as_of_date"] == "2026-08-03"
 
 
 def test_static_site_fallback_downloader_skips_damaged_advertised_assets(
@@ -742,7 +768,10 @@ def test_static_site_fallback_downloader_skips_damaged_advertised_assets(
     )
 
     assert not (fallback_dir / "static-market-US").exists()
-    assert "advertises GROUPS but groups.json is absent" in result.stdout
+    assert (
+        "static-market-US from run 333 was rejected (US fallback artifact "
+        "advertises GROUPS but groups.json is absent)." in result.stdout
+    ), result.stdout
 
 
 def test_static_site_fallback_downloader_skips_incompatible_schema_and_keeps_searching(
@@ -776,7 +805,14 @@ def test_static_site_fallback_downloader_skips_incompatible_schema_and_keeps_sea
             target_dir.mkdir(parents=True, exist_ok=True)
             schema_version = "static-site-v2" if run_id == "333" else "static-site-v3"
             (target_dir / "manifest.market.json").write_text(
-                json.dumps({{"market": "AU", "schema_version": schema_version}})
+                json.dumps({{
+                    "market": "AU",
+                    "schema_version": schema_version,
+                    "entry": {{
+                        "as_of_date": "2026-08-03",
+                        "rs_formula_version": "balanced-horizon-percentile-v2",
+                    }},
+                }})
             )
             with downloads_log.open("a", encoding="utf-8") as handle:
                 handle.write(json.dumps({{"run": run_id, "artifact": artifact_name}}) + "\\n")
@@ -831,12 +867,12 @@ def test_static_site_fallback_downloader_rejects_missing_manifest_market(
         encoding="utf-8",
     )
 
-    assert not downloaded_market_is_compatible(
+    assert inspect_downloaded_market(
         target_dir,
         market="AU",
         artifact_name="static-market-AU",
         run_id=222,
-    )
+    ) is None
 
 
 def test_static_site_fallback_downloader_rejects_multiple_market_manifests(
@@ -855,11 +891,59 @@ def test_static_site_fallback_downloader_rejects_multiple_market_manifests(
         encoding="utf-8",
     )
 
-    assert not downloaded_market_is_compatible(
+    assert inspect_downloaded_market(
         target_dir,
         market="AU",
         artifact_name="static-market-AU",
         run_id=222,
+    ) is None
+
+
+@pytest.mark.parametrize(
+    "relative_path, payload, reason",
+    [
+        pytest.param(
+            "scan/manifest.json",
+            {"rs_formula_version": "balanced-horizon-percentile-v2", "chunks": 7},
+            "scan manifest 'markets/hk/scan/manifest.json' must list chunks as objects",
+            id="chunks-as-number",
+        ),
+        pytest.param(
+            "scan/manifest.json",
+            {
+                "rs_formula_version": "balanced-horizon-percentile-v2",
+                "chunks": ["markets/hk/scan/chunks/chunk-0001.json"],
+            },
+            "scan manifest 'markets/hk/scan/manifest.json' must list chunks as objects",
+            id="chunks-as-strings",
+        ),
+        pytest.param(
+            "scan/manifest.json",
+            [],
+            "scan manifest 'markets/hk/scan/manifest.json' must list chunks as objects",
+            id="manifest-is-list",
+        ),
+        pytest.param(
+            "groups.json", [], "groups.json is not a JSON object", id="groups-is-list"
+        ),
+    ],
+)
+def test_static_site_fallback_downloader_rejects_a_malformed_payload(
+    tmp_path: Path, capsys, relative_path, payload, reason
+) -> None:
+    _write_selected_market(tmp_path, "HK", "balanced-horizon-percentile-v2")
+    target_dir = tmp_path / "static-market-HK"
+    (target_dir / relative_path).write_text(json.dumps(payload), encoding="utf-8")
+
+    assert inspect_downloaded_market(
+        target_dir,
+        market="HK",
+        artifact_name="static-market-HK",
+        run_id=333,
+    ) is None
+    assert capsys.readouterr().out == (
+        "::warning::Unable to download fallback market artifact: static-market-HK "
+        f"from run 333 was rejected (HK fallback {reason}).\n"
     )
 
 
@@ -998,24 +1082,22 @@ def _write_selected_market(root: Path, market: str, formula: str) -> None:
     )
 
 
-def test_publisher_combine_arguments_accept_last_good_legacy_artifacts(
+def test_publisher_combine_arguments_reject_a_stale_formula_artifact_with_a_reason(
     tmp_path, monkeypatch
 ) -> None:
     """Run the publisher's own combine arguments end to end.
 
-    The publisher selects stored artifacts, so they must get the last-good
-    policy: an RS rollback (legacy formula) still publishes instead of failing
-    every market's publish.
+    The downloader only hands over balanced artifacts, so a stale one here
+    means every stored artifact for that market predates the cutover. An
+    optional market is then left out with the reason in the manifest
+    warnings; a required one fails the publish with the same reason.
     """
-    from app.domain.relative_strength import (
-        BALANCED_RS_FORMULA_VERSION,
-        LEGACY_RS_FORMULA_VERSION,
-    )
+    from app.domain.relative_strength import BALANCED_RS_FORMULA_VERSION
     from app.scripts import export_static_site as export_script
 
     selection = tmp_path / "selection"
     _write_selected_market(selection, "US", BALANCED_RS_FORMULA_VERSION)
-    _write_selected_market(selection, "HK", LEGACY_RS_FORMULA_VERSION)
+    _write_selected_market(selection, "HK", "legacy-linear-v1")
     paths = {
         "/tmp/static-market-artifacts": selection,
         "/tmp/static-empty": tmp_path / "empty",
@@ -1038,10 +1120,14 @@ def test_publisher_combine_arguments_accept_last_good_legacy_artifacts(
     assert export_script.main() == 0
 
     manifest = json.loads((tmp_path / "out" / "manifest.json").read_text(encoding="utf-8"))
-    assert manifest["supported_markets"] == ["US", "HK"]
-    assert manifest["markets"]["HK"]["rs_formula_version"] == LEGACY_RS_FORMULA_VERSION
-    scan_path = manifest["markets"]["HK"]["pages"]["scan"]["path"]
-    assert (tmp_path / "out" / manifest["data_root"] / scan_path).is_file()
+    assert manifest["supported_markets"] == ["US"]
+    assert "HK" in manifest["unavailable_markets"]
+    assert [w for w in manifest["warnings"] if w.startswith("Ignored static market")] == [
+        "Ignored static market artifact: HK fallback artifact uses incompatible "
+        "RS formula: Scan chunk chunk-0001.json='legacy-linear-v1', "
+        "Scan manifest='legacy-linear-v1', market entry='legacy-linear-v1'; "
+        f"expected {BALANCED_RS_FORMULA_VERSION!r}"
+    ]
 
 
 @pytest.mark.parametrize(

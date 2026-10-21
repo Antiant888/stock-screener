@@ -11,10 +11,10 @@ from sqlalchemy.orm import Session
 
 from app.analysis.patterns.report import validate_setup_engine_report_payload
 from app.domain.common.query import PageSpec, SortSpec
+from app.domain.relative_strength import BALANCED_RS_FORMULA_VERSION
 from app.domain.scanning.filter_expression_model import FilterExpression, QuerySpec
 from app.domain.scanning.models import FilterOptions, ResultPage, ScanResultItemDomain
 from app.domain.scanning.ports import ScanResultRepository, ScanResultRsAudit
-from app.infra.db.repositories.market_rs_repo import MarketRsRunRepository
 from app.infra.query.scan_result_query import (
     apply_filter_expression,
     apply_sort_all,
@@ -305,11 +305,9 @@ class SqlScanResultRepository(ScanResultRepository):
         session: Session,
         *,
         taxonomy_service: MarketTaxonomyService | None = None,
-        market_rs_repository: MarketRsRunRepository | None = None,
     ) -> None:
         self._session = session
         self._taxonomy_service = taxonomy_service or get_market_taxonomy_service()
-        self._market_rs_repository = market_rs_repository or MarketRsRunRepository()
 
     def bulk_insert(self, rows: list[dict]) -> int:
         objects = [ScanResult(**row) for row in rows]
@@ -461,11 +459,7 @@ class SqlScanResultRepository(ScanResultRepository):
             market = str(d.get("market") or "US").strip().upper() or "US"
             pinned_identity = pinned_identities.get(symbol)
             if pinned_identity is None:
-                formula_version = self._market_rs_repository.active_formula(
-                    self._session,
-                    market=market,
-                )
-                rank_identity = (market, formula_version, None, False)
+                rank_identity = (market, BALANCED_RS_FORMULA_VERSION, None, False)
             else:
                 formula_version, market_rs_run_id = pinned_identity
                 rank_identity = (

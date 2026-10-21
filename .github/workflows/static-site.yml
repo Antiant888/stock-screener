@@ -21,10 +21,6 @@ on:
           - asia
           - china
           - us
-      rs_formula_overrides:
-        description: 'Optional per-market RS rollback JSON, e.g. {"HK":"legacy-linear-v1"}; all others use balanced-horizon-percentile-v2'
-        type: string
-        default: '{}'
       repair_price_history_market:
         description: 'Optional single market (e.g. AU) whose job checks and refetches every RS anchor session in the 252-session window; see docs/runbooks/static-price-history-repair.md'
         type: string
@@ -490,7 +486,6 @@ jobs:
       - name: Export market static data bundle
         id: export-market
         env:
-          RS_FORMULA_OVERRIDES: ${{ github.event.inputs.rs_formula_overrides || '{}' }}
           REPAIR_PRICE_HISTORY_MARKET: ${{ github.event.inputs.repair_price_history_market || '' }}
           # Operator override for the RS anchor-gap publication limit (#539).
           STATIC_RS_MAX_HISTORY_GAP_SHARE: ${{ vars.STATIC_RS_MAX_HISTORY_GAP_SHARE || '' }}
@@ -529,7 +524,6 @@ jobs:
             --skip-fundamentals-refresh \
             --skip-cot-refresh \
             --market "${{ matrix.market }}" \
-            --rs-formula-overrides-json "$RS_FORMULA_OVERRIDES" \
             --rrg-history-dir "$RRG_HISTORY_DIR" \
             "${breadth_metadata_args[@]}" "${repair_args[@]}" "${checkpoint_args[@]}" 2>&1 | tee "$EXPORT_LOG"
           pipeline_status=("${PIPESTATUS[@]}")

@@ -1,24 +1,15 @@
 from datetime import date, datetime, timezone
 
 import pytest
-from sqlalchemy import event
 from sqlalchemy.orm import sessionmaker
 
 from app.domain.relative_strength import (
     BALANCED_RS_FORMULA_VERSION,
     BALANCED_RS_PRICE_BASIS,
     BALANCED_RS_SNAPSHOT_SCHEMA_VERSION,
-    LEGACY_RS_FORMULA_VERSION,
 )
-from app.domain.scanning.ports import (
-    CanonicalMarketRsSource,
-    LegacyMarketRsSource,
-)
-from app.infra.db.models.relative_strength import (
-    MarketRsFormulaPointer,
-    MarketRsRun,
-    StockRsSnapshot,
-)
+from app.domain.scanning.ports import CanonicalMarketRsSource
+from app.infra.db.models.relative_strength import MarketRsRun, StockRsSnapshot
 from app.services.market_rs_reader import (
     CanonicalMarketRsUnavailable,
     SqlMarketRsReader,
@@ -95,10 +86,6 @@ def test_reader_returns_exact_market_snapshot_without_repercentiling_requested_s
     db_session,
 ):
     run = _seed_balanced_run(db_session)
-    db_session.add(
-        MarketRsFormulaPointer(market="US", formula_version=BALANCED_RS_FORMULA_VERSION)
-    )
-    db_session.commit()
     reader = _reader(db_session)
 
     resolution = reader.get(
@@ -132,10 +119,6 @@ def test_reader_returns_exact_market_snapshot_without_repercentiling_requested_s
 
 def test_reader_returns_exact_run_id_without_relying_on_active_date(db_session):
     run = _seed_balanced_run(db_session)
-    db_session.add(
-        MarketRsFormulaPointer(market="US", formula_version=BALANCED_RS_FORMULA_VERSION)
-    )
-    db_session.commit()
 
     resolution = _reader(db_session).get(
         market="US",
@@ -150,51 +133,6 @@ def test_reader_returns_exact_run_id_without_relying_on_active_date(db_session):
 
 
 def test_reader_fails_closed_when_balanced_exact_run_is_missing(db_session):
-    db_session.add(
-        MarketRsFormulaPointer(market="US", formula_version=BALANCED_RS_FORMULA_VERSION)
-    )
-    db_session.commit()
 
     with pytest.raises(CanonicalMarketRsUnavailable, match="2026-04-10"):
         _reader(db_session).get(market="US", symbols=("AAA",), as_of_date=AS_OF)
-
-
-def test_reader_legacy_mode_does_not_query_stock_snapshot_rows(db_session):
-    db_session.add(
-        MarketRsFormulaPointer(market="US", formula_version=LEGACY_RS_FORMULA_VERSION)
-    )
-    db_session.commit()
-    statements = []
-
-    def _capture(_connection, _cursor, statement, _parameters, _context, _many):
-        statements.append(statement.lower())
-
-    event.listen(db_session.get_bind(), "before_cursor_execute", _capture)
-    try:
-        resolution = _reader(db_session).get(
-            market="US", symbols=("AAA",), as_of_date=AS_OF
-        )
-    finally:
-        event.remove(db_session.get_bind(), "before_cursor_execute", _capture)
-
-    assert isinstance(resolution.source, LegacyMarketRsSource)
-    assert resolution.ratings_by_symbol == {}
-    assert not any("stock_rs_snapshots" in statement for statement in statements)
-
-
-def test_explicit_balanced_override_bypasses_legacy_pointer(db_session):
-    run = _seed_balanced_run(db_session)
-    db_session.add(
-        MarketRsFormulaPointer(market="US", formula_version=LEGACY_RS_FORMULA_VERSION)
-    )
-    db_session.commit()
-
-    resolution = _reader(db_session).get(
-        market="US",
-        symbols=("AAA",),
-        as_of_date=AS_OF,
-        formula_version=BALANCED_RS_FORMULA_VERSION,
-    )
-
-    assert resolution.run_id == run.id
-    assert isinstance(resolution.source, CanonicalMarketRsSource)

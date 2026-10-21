@@ -11,6 +11,7 @@ from app.celery_app import celery_app
 from app.database import SessionLocal
 from app.domain.group_history import GroupHistoryTarget
 from app.domain.markets import get_market_catalog
+from app.domain.relative_strength import BALANCED_RS_FORMULA_VERSION
 from app.services.bootstrap_readiness_service import BootstrapReadinessService
 from app.services.bootstrap_publication_date import (
     resolve_bootstrap_publication_date,
@@ -36,7 +37,7 @@ from app.services.market_activity_service import (
     mark_market_activity_started,
 )
 from app.services.point_in_time_universe_service import PointInTimeUniverseService
-from app.services.rrg_history_provider import build_rrg_history_provider
+from app.services.rrg_history_provider import StoredGroupRankHistoryProvider
 from app.services.runtime_preferences_service import get_runtime_preferences
 from app.services.ui_snapshot_service import safe_publish_groups_bootstrap
 from app.tasks.market_queues import (
@@ -45,7 +46,7 @@ from app.tasks.market_queues import (
     normalize_market,
 )
 from app.tasks.workload_coordination import serialized_market_workload
-from app.wiring.bootstrap import get_group_rank_service, get_market_calendar_service
+from app.wiring.bootstrap import get_market_calendar_service
 
 _PRE_BOOTSTRAP_SEED_IMPORT_SOURCE = "group_history_reconciliation"
 
@@ -55,20 +56,15 @@ def _build_group_history_components():
 
     calendar = get_market_calendar_service()
     repository = MarketRsRunRepository()
-    group_rank_service = get_group_rank_service()
     universe_resolver = GroupHistoryUniverseResolver(
         point_in_time_universe=PointInTimeUniverseService(market_calendar=calendar)
     )
     coordinator = build_group_history_snapshot_coordinator(
         universe_resolver=universe_resolver,
-        legacy_group_service=group_rank_service,
         calendar_service=calendar,
         market_rs_repository=repository,
     )
-    history_provider = build_rrg_history_provider(
-        group_rank_service=group_rank_service,
-        market_rs_repository=repository,
-    )
+    history_provider = StoredGroupRankHistoryProvider()
     readiness = GroupHistoryReadinessService(
         calendar_service=calendar,
         snapshot_reader=coordinator.reader,
@@ -92,7 +88,6 @@ def _build_group_history_execution_service() -> GroupHistoryExecutionService:
         reconciliation_repository=GroupHistoryReconciliationRepository(),
         bump_epoch=bump_group_rankings_epoch,
         publish_snapshot=lambda target: safe_publish_groups_bootstrap(
-            expected_formula_version=target.formula_version,
             expected_through_date=target.through_date,
         ),
         mark_started=mark_market_activity_started,
@@ -106,13 +101,6 @@ def _resolve_current_group_history_target(db, *, market: str) -> GroupHistoryTar
     from app.infra.db.repositories.market_rs_repo import MarketRsRunRepository
 
     market_code = normalize_market(market)
-    repository = MarketRsRunRepository()
-    formula_version = repository.active_formula(
-        db,
-        market=market_code,
-    )
-    if not formula_version:
-        raise RuntimeError(f"Active RS formula unavailable for {market_code}")
     requested_through_date = get_market_calendar_service().last_completed_trading_day(
         market_code
     )
@@ -120,12 +108,10 @@ def _resolve_current_group_history_target(db, *, market: str) -> GroupHistoryTar
         db,
         market=market_code,
         requested_date=requested_through_date,
-        formula_version=formula_version,
-        repository=repository,
+        repository=MarketRsRunRepository(),
     ).selected_date
     return GroupHistoryTarget(
         market=market_code,
-        formula_version=formula_version,
         through_date=through_date,
     )
 
@@ -184,7 +170,6 @@ def repair_group_history_reconciliation(
 ) -> dict:
     target = GroupHistoryTarget(
         market=market,
-        formula_version=formula_version,
         through_date=date.fromisoformat(through_date),
     )
     task_name = getattr(self, "name", "repair_group_history_reconciliation")
@@ -418,7 +403,7 @@ def discover_group_history_reconciliation() -> dict[str, str]:
                     )
                 dispatch(
                     market=target.market,
-                    formula_version=target.formula_version,
+                    formula_version=BALANCED_RS_FORMULA_VERSION,
                     through_date=target.through_date,
                     reservation_id=reservation.reservation_id,
                 )
@@ -484,7 +469,6 @@ def fail_group_history_reconciliation(
 ) -> dict:
     target = GroupHistoryTarget(
         market=market,
-        formula_version=formula_version,
         through_date=date.fromisoformat(through_date),
     )
     db = SessionLocal()
@@ -508,7 +492,7 @@ def fail_group_history_reconciliation(
         return {
             "status": "failed",
             "market": target.market,
-            "formula_version": target.formula_version,
+            "formula_version": BALANCED_RS_FORMULA_VERSION,
             "through_date": target.through_date.isoformat(),
         }
     finally:

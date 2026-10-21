@@ -200,8 +200,13 @@ def test_complete_local_runtime_bootstrap_evaluates_only_primary_market(monkeypa
             self.closed = True
 
     class _FakeReadinessService:
-        def evaluate(self, db, *, enabled_markets, bootstrap_started_at=None):
-            calls["evaluate"] = (db, enabled_markets, bootstrap_started_at)
+        def evaluate(
+            self, db, *, enabled_markets, bootstrap_started_at=None,
+            balanced_publication_markets=(),
+        ):
+            calls["evaluate"] = (
+                db, enabled_markets, bootstrap_started_at, balanced_publication_markets
+            )
             return BootstrapReadiness(
                 empty_system=False,
                 market_results={
@@ -250,7 +255,7 @@ def test_complete_local_runtime_bootstrap_evaluates_only_primary_market(monkeypa
         primary_market="US", dispatch_id="dispatch-current"
     )
 
-    assert calls["evaluate"] == (session, ["US"], "bootstrap-started-at")
+    assert calls["evaluate"] == (session, ["US"], "bootstrap-started-at", ())
     assert calls["completion"].primary is True
     assert calls["completion"].succeeded is True
     assert result == {
@@ -276,7 +281,10 @@ def test_complete_local_runtime_bootstrap_reports_primary_readiness_failure(
             pass
 
     class _FakeReadinessService:
-        def evaluate(self, db, *, enabled_markets, bootstrap_started_at=None):
+        def evaluate(
+            self, db, *, enabled_markets, bootstrap_started_at=None,
+            balanced_publication_markets=(),
+        ):
             return BootstrapReadiness(
                 empty_system=False,
                 market_results={
@@ -336,8 +344,13 @@ def test_complete_local_runtime_bootstrap_uses_requested_market_readiness(monkey
             pass
 
     class _FakeReadinessService:
-        def evaluate(self, db, *, enabled_markets, bootstrap_started_at=None):
-            calls["evaluate"] = (db, enabled_markets, bootstrap_started_at)
+        def evaluate(
+            self, db, *, enabled_markets, bootstrap_started_at=None,
+            balanced_publication_markets=(),
+        ):
+            calls["evaluate"] = (
+                db, enabled_markets, bootstrap_started_at, balanced_publication_markets
+            )
             return BootstrapReadiness(
                 empty_system=False,
                 market_results={

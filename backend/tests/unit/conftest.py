@@ -44,24 +44,31 @@ def stub_celery_task_dispatch(monkeypatch, request):
 
 
 @pytest.fixture
-def legacy_market_rs_runtime(runtime_services_context):
-    """Run pre-activation scanner integration tests in explicit legacy mode."""
-    from app.domain.relative_strength import LEGACY_RS_FORMULA_VERSION
+def canonical_market_rs_runtime(runtime_services_context):
+    """Give the process-scoped orchestrator a Market RS reader that rates every symbol."""
+    from app.domain.relative_strength import BALANCED_RS_FORMULA_VERSION
     from app.domain.scanning.ports import MarketRsResolution
 
-    class _LegacyReader:
-        def get(self, *, market, symbols, as_of_date, formula_version=None):
-            return MarketRsResolution.legacy(
+    class _CanonicalReader:
+        def get(self, *, market, symbols, as_of_date, formula_version=None, run_id=None):
+            return MarketRsResolution.canonical(
                 market=market,
                 as_of_date=as_of_date,
-                formula_version=LEGACY_RS_FORMULA_VERSION,
+                formula_version=BALANCED_RS_FORMULA_VERSION,
+                run_id=1,
+                universe_size=5000,
+                ratings_by_symbol={
+                    symbol: {
+                        "rs_rating": 85,
+                        "rs_rating_1m": 80,
+                        "rs_rating_3m": 82,
+                        "rs_rating_12m": 90,
+                    }
+                    for symbol in symbols
+                },
             )
 
-    # The runtime container now owns Market RS through CanonicalRsRuntime.
-    # These legacy scanner tests predate formula activation, so replace the
-    # reader on their process-scoped orchestrator explicitly instead of
-    # populating the removed ``_market_rs_services`` cache attribute.
-    runtime_services_context.scan_orchestrator()._market_rs_reader = _LegacyReader()
+    runtime_services_context.scan_orchestrator()._market_rs_reader = _CanonicalReader()
     return runtime_services_context
 
 

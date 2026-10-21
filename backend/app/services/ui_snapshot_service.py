@@ -18,8 +18,8 @@ from app.config import settings
 from app.database import is_corruption_error, safe_rollback
 from app.domain.analytics.scope import market_scope_tag
 from app.domain.common.query import PageSpec, SortOrder, SortSpec
+from app.domain.relative_strength import BALANCED_RS_FORMULA_VERSION
 from app.domain.scanning.filter_expression_model import QuerySpec
-from app.infra.db.models.relative_strength import MarketRsFormulaPointer
 from app.infra.db.uow import SqlUnitOfWork
 from app.infra.serialization import json_safe
 from app.models.industry import IBDGroupRank
@@ -277,7 +277,6 @@ class UISnapshotService:
     def publish_groups_bootstrap(
         self,
         *,
-        expected_formula_version: str | None = None,
         expected_through_date: date | None = None,
     ) -> SnapshotResult | None:
         self._ensure_schema()
@@ -285,7 +284,6 @@ class UISnapshotService:
             return self._run_with_storage_recovery(
                 lambda db: self._publish_groups_bootstrap_with_db(
                     db,
-                    expected_formula_version=expected_formula_version,
                     expected_through_date=expected_through_date,
                 )
             )
@@ -639,10 +637,7 @@ class UISnapshotService:
         )
 
     def _resolve_groups_source_revision(self, db: Session) -> str:
-        pointer = db.get(MarketRsFormulaPointer, "US")
-        formula_version = (
-            str(pointer.formula_version) if pointer is not None else "unconfigured"
-        )
+        formula_version = BALANCED_RS_FORMULA_VERSION
         latest = (
             db.query(IBDGroupRank.date, IBDGroupRank.market_rs_run_id)
             .filter(
@@ -900,34 +895,17 @@ class UISnapshotService:
         self,
         db: Session,
         *,
-        expected_formula_version: str | None = None,
         expected_through_date: date | None = None,
     ) -> SnapshotResult:
-        pointer = (
-            db.query(MarketRsFormulaPointer)
-            .filter(MarketRsFormulaPointer.market == "US")
-            .with_for_update()
-            .one_or_none()
-        )
-        formula_version = expected_formula_version
-        if formula_version is not None:
-            if pointer is None or str(pointer.formula_version) != formula_version:
-                raise GroupsBootstrapUnavailableError(
-                    "Active Group formula changed before publication"
-                )
-
+        # Lock before reading: the source revision names only the latest
+        # ranking date, but movers read older dates it does not cover.
+        self._lock_variant(db, GROUPS_VIEW_KEY, "default")
         if expected_through_date is not None:
-            if formula_version is None:
-                if pointer is None:
-                    raise GroupsBootstrapUnavailableError(
-                        "No active Group formula is available for publication"
-                    )
-                formula_version = str(pointer.formula_version)
             latest_date = (
                 db.query(func.max(IBDGroupRank.date))
                 .filter(
                     IBDGroupRank.market == "US",
-                    IBDGroupRank.rs_formula_version == formula_version,
+                    IBDGroupRank.rs_formula_version == BALANCED_RS_FORMULA_VERSION,
                 )
                 .scalar()
             )
@@ -936,12 +914,17 @@ class UISnapshotService:
                     "Group ranking date changed before publication"
                 )
 
+        source_revision = self._resolve_groups_source_revision(db)
+        payload = self._build_groups_payload(db)
         return self._publish(
             db=db,
             view_key=GROUPS_VIEW_KEY,
             variant_key="default",
-            source_revision=self._resolve_groups_source_revision(db),
-            payload=self._build_groups_payload(db),
+            source_revision=source_revision,
+            payload=payload,
+            still_current=lambda locked_db: (
+                self._resolve_groups_source_revision(locked_db) == source_revision
+            ),
         )
 
     def _build_groups_payload(self, db: Session) -> dict[str, Any]:
@@ -1284,7 +1267,6 @@ def safe_publish_breadth_bootstrap(market: str | None = "US") -> dict[str, Any] 
 
 def safe_publish_groups_bootstrap(
     *,
-    expected_formula_version: str | None = None,
     expected_through_date: date | None = None,
 ) -> dict[str, Any] | None:
     from app.wiring.bootstrap import get_ui_snapshot_service
@@ -1294,7 +1276,6 @@ def safe_publish_groups_bootstrap(
         view_key=GROUPS_VIEW_KEY,
         variant_key="default",
         fn=lambda: get_ui_snapshot_service().publish_groups_bootstrap(
-            expected_formula_version=expected_formula_version,
             expected_through_date=expected_through_date,
         ),
     )

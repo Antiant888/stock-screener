@@ -17,7 +17,6 @@ from typing import Callable, ContextManager, Mapping, Protocol, Sequence
 
 from app.domain.relative_strength import (
     BALANCED_RS_FORMULA_VERSION,
-    LEGACY_RS_FORMULA_VERSION,
 )
 
 from app.domain.common.query import PageSpec, SortSpec
@@ -293,22 +292,6 @@ class TaskDispatcher(abc.ABC):
 
 
 @dataclass(frozen=True)
-class LegacyStockRsSource:
-    formula_version: str = LEGACY_RS_FORMULA_VERSION
-
-    def __post_init__(self) -> None:
-        if self.formula_version != LEGACY_RS_FORMULA_VERSION:
-            raise ValueError("legacy stock RS source requires the legacy formula")
-
-    def audit_fields(self) -> dict[str, object]:
-        return {
-            "rs_formula_version": self.formula_version,
-            "market_rs_run_id": None,
-            "rs_universe_size": None,
-        }
-
-
-@dataclass(frozen=True)
 class CanonicalStockRsSource:
     formula_version: str
     run_id: int
@@ -331,18 +314,6 @@ class CanonicalStockRsSource:
             "market_rs_run_id": self.run_id,
             "rs_universe_size": self.universe_size,
         }
-
-
-StockRsSource = LegacyStockRsSource | CanonicalStockRsSource
-
-
-@dataclass(frozen=True)
-class LegacyMarketRsSource:
-    formula_version: str = LEGACY_RS_FORMULA_VERSION
-
-    def __post_init__(self) -> None:
-        if self.formula_version != LEGACY_RS_FORMULA_VERSION:
-            raise ValueError("legacy Market RS source requires the legacy formula")
 
 
 @dataclass(frozen=True)
@@ -369,34 +340,17 @@ class CanonicalMarketRsSource:
         )
 
 
-MarketRsSource = LegacyMarketRsSource | CanonicalMarketRsSource
-
-
 @dataclass(frozen=True)
 class MarketRsResolution:
     market: str
     as_of_date: date | None
-    source: MarketRsSource
+    source: CanonicalMarketRsSource
 
     def __post_init__(self) -> None:
         normalized_market = self.market.strip().upper()
         if not normalized_market:
             raise ValueError("Market RS market is required")
         object.__setattr__(self, "market", normalized_market)
-
-    @classmethod
-    def legacy(
-        cls,
-        *,
-        market: str,
-        as_of_date: date | None,
-        formula_version: str = LEGACY_RS_FORMULA_VERSION,
-    ) -> "MarketRsResolution":
-        return cls(
-            market=market,
-            as_of_date=as_of_date,
-            source=LegacyMarketRsSource(formula_version=formula_version),
-        )
 
     @classmethod
     def canonical(
@@ -425,28 +379,18 @@ class MarketRsResolution:
         return self.source.formula_version
 
     @property
-    def run_id(self) -> int | None:
-        return self.source.run_id if isinstance(self.source, CanonicalMarketRsSource) else None
+    def run_id(self) -> int:
+        return self.source.run_id
 
     @property
-    def universe_size(self) -> int | None:
-        return (
-            self.source.universe_size
-            if isinstance(self.source, CanonicalMarketRsSource)
-            else None
-        )
+    def universe_size(self) -> int:
+        return self.source.universe_size
 
     @property
     def ratings_by_symbol(self) -> Mapping[str, Mapping[str, int]]:
-        return (
-            self.source.ratings_by_symbol
-            if isinstance(self.source, CanonicalMarketRsSource)
-            else {}
-        )
+        return self.source.ratings_by_symbol
 
-    def stock_source(self, symbol: str) -> StockRsSource:
-        if isinstance(self.source, LegacyMarketRsSource):
-            return LegacyStockRsSource(formula_version=self.source.formula_version)
+    def stock_source(self, symbol: str) -> CanonicalStockRsSource:
         return CanonicalStockRsSource(
             formula_version=self.source.formula_version,
             run_id=self.source.run_id,

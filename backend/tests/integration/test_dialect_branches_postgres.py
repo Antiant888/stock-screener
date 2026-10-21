@@ -231,12 +231,14 @@ def _hold_projection_registry_lock(factory, on_locked):
         on_locked()
 
 
-def _wait_for_lock_waiter(timeout: float = 15.0) -> None:
+def _wait_for_lock_waiter(timeout: float = 15.0, until: threading.Event | None = None) -> None:
     probe = create_engine(engine.url, poolclass=NullPool)
     deadline = time.monotonic() + timeout
     try:
         with probe.connect() as connection:
             while time.monotonic() < deadline:
+                if until is not None and until.is_set():
+                    return
                 waiting = connection.scalar(text(
                     "SELECT count(*) FROM pg_stat_activity "
                     "WHERE datname = current_database() AND wait_event_type = 'Lock'"
@@ -492,6 +494,94 @@ def test_first_latest_publish_is_not_overwritten_by_an_older_build(isolated_scan
     assert resolves_by_a == ["zt-1", "zt-1"]
     current = service.get_scan_bootstrap(market="ZT")
     assert current.source_revision == "zt-2" and current.is_stale is False
+
+
+def _add_balanced_group_ranks(factory, day: date, ranks: dict[str, int]) -> None:
+    from app.domain.relative_strength import (
+        BALANCED_RS_FORMULA_VERSION,
+        BALANCED_RS_PRICE_BASIS,
+        BALANCED_RS_SNAPSHOT_SCHEMA_VERSION,
+    )
+    from app.infra.db.models.relative_strength import MarketRsRun
+    from app.models.industry import IBDGroupRank
+
+    with factory() as db:
+        run = MarketRsRun(
+            market="US", as_of_date=day, formula_version=BALANCED_RS_FORMULA_VERSION,
+            status="completed", benchmark_symbol="SPY", benchmark_as_of_date=day,
+            universe_hash=f"h{day}", expected_symbol_count=5000, eligible_symbol_count=5000,
+            excluded_symbol_count=0,
+            diagnostics_json={
+                "price_basis": BALANCED_RS_PRICE_BASIS,
+                "rs_snapshot_schema_version": BALANCED_RS_SNAPSHOT_SCHEMA_VERSION,
+            },
+        )
+        db.add(run)
+        db.flush()
+        for group, rank in ranks.items():
+            db.add(IBDGroupRank(
+                market="US", industry_group=group, date=day, rank=rank,
+                avg_rs_rating=90.0 - rank, median_rs_rating=90.0, weighted_avg_rs_rating=90.0,
+                rs_std_dev=1.0, num_stocks=12, num_stocks_rs_above_80=10, top_symbol="MSFT",
+                top_rs_rating=99.0, rs_formula_version=BALANCED_RS_FORMULA_VERSION,
+                market_rs_run_id=run.id,
+            ))
+        db.commit()
+
+
+def test_groups_publish_builds_under_the_variant_lock(lock_timeout):
+    """The Groups source revision names only the latest ranking date, but movers
+    read older dates. A builds; then history for a week earlier lands and B
+    publishes the same revision. B must wait for A's lock, so A's build never
+    overwrites B's (without it, B commits first and A then stores movers that
+    miss the new history)."""
+    from app.services.ui_snapshot_service import UISnapshotService
+
+    factory = sessionmaker(bind=engine)
+    _add_balanced_group_ranks(factory, date(2026, 3, 27), {"Software": 1, "Banks": 2})
+    a_built = threading.Event()
+    b_done = threading.Event()
+    errors: list[BaseException] = []
+    service_a = UISnapshotService(factory)
+    build = service_a._build_groups_payload
+
+    def build_then_pause(db):
+        payload = build(db)
+        a_built.set()
+        _wait_for_lock_waiter(until=b_done)
+        return payload
+
+    service_a._build_groups_payload = build_then_pause
+
+    def run_a():
+        try:
+            service_a.publish_groups_bootstrap()
+        except BaseException as exc:
+            errors.append(exc)
+
+    def run_b():
+        try:
+            if not a_built.wait(30):
+                raise TimeoutError("A never built its payload")
+            _add_balanced_group_ranks(factory, date(2026, 3, 20), {"Software": 1, "Banks": 40})
+            UISnapshotService(factory).publish_groups_bootstrap()
+        except BaseException as exc:
+            errors.append(exc)
+        finally:
+            b_done.set()
+
+    threads = [threading.Thread(target=fn, daemon=True) for fn in (run_a, run_b)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(60)
+
+    assert not any(thread.is_alive() for thread in threads)
+    assert errors == []
+    current = UISnapshotService(factory).get_groups_bootstrap()
+    assert current.source_revision == "2026-03-27|balanced-horizon-percentile-v2|1"
+    assert current.is_stale is False
+    assert [row["industry_group"] for row in current.payload["movers"]["gainers"]] == ["Banks"]
 
 
 def test_social_analysis_transaction_requires_the_seeded_registry():

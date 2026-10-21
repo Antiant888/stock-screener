@@ -100,16 +100,3 @@ class StockRsSnapshot(Base):
         ),
         Index("ix_stock_rs_symbol_run", "symbol", "run_id"),
     )
-
-
-class MarketRsFormulaPointer(Base):
-    __tablename__ = "market_rs_formula_pointers"
-
-    market = Column(String(8), primary_key=True)
-    formula_version = Column(String(64), nullable=False)
-    updated_at = Column(
-        DateTime(timezone=True),
-        server_default=func.now(),
-        onupdate=func.now(),
-        nullable=False,
-    )
