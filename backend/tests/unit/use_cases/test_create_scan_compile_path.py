@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from datetime import date
 
+import pytest
+
 from app.domain.feature_store.models import (
     FeatureRowWrite,
     RunStats,
@@ -385,419 +387,225 @@ class TestCompilePathHappyPath:
         persisted = sorted(sym for _, sym, _ in uow.scan_results._persisted_results)
         assert persisted == ["B"]
 
-    def test_multi_filter_partial_score_case_dispatches_async(self):
-        """Four binary filters are not equivalent to SQL hard gates.
-
-        CustomScanner would give this row 30/40 points because it passes
-        price, market cap, and sector, but fails industry exclusion. At the
-        default min_score=70, 75 points passes async. A SQL WHERE chain would
-        drop it, so the compile path must defer.
-        """
-        feature_runs = FakeFeatureRunRepository()
-        feature_store = FakeFeatureStoreRepository()
-        symbols = ["AAPL"]
-        _publish_run(
-            feature_runs,
-            feature_store,
-            symbols=symbols,
-            rows=[
-                _row(
-                    "AAPL",
-                    custom_score=85,
-                    current_price=150,
-                    market_cap_usd=2_000_000_000,
-                    gics_sector="Technology",
-                    gics_industry="Tobacco",
-                )
-            ],
-        )
-
-        uow = FakeUnitOfWork(
-            universe=FakeUniverseRepository(symbols),
-            feature_runs=feature_runs,
-            feature_store=feature_store,
-        )
-        dispatcher = FakeTaskDispatcher()
-        uc = CreateScanUseCase(dispatcher=dispatcher)
-
-        result = uc.execute(
-            uow,
-            _custom_command(
-                criteria={
-                    "custom_filters": {
-                        "price_min": 20,
-                        "market_cap_min": 1_000_000_000,
-                        "sectors": ["Technology"],
-                        "exclude_industries": ["Tobacco"],
-                    },
-                    "min_score": 70,
-                },
-            ),
-        )
-
-        assert result.status == "queued"
-        assert len(dispatcher.dispatched) == 1
-
-    def test_scaled_score_filter_dispatches_async(self):
-        """RS rating threshold has partial score semantics in CustomScanner.
-
-        A row exactly at rs_rating_min satisfies the hard SQL gate, but gets
-        10/15 points in CustomScanner and fails the default min_score=70.
-        """
-        feature_runs = FakeFeatureRunRepository()
-        feature_store = FakeFeatureStoreRepository()
-        symbols = ["AAPL"]
-        _publish_run(
-            feature_runs,
-            feature_store,
-            symbols=symbols,
-            rows=[_row("AAPL", custom_score=85, rs_rating=80)],
-        )
-
-        uow = FakeUnitOfWork(
-            universe=FakeUniverseRepository(symbols),
-            feature_runs=feature_runs,
-            feature_store=feature_store,
-        )
-        dispatcher = FakeTaskDispatcher()
-        uc = CreateScanUseCase(dispatcher=dispatcher)
-
-        result = uc.execute(
-            uow,
-            _custom_command(
-                criteria={
-                    "custom_filters": {"rs_rating_min": 80},
-                    "min_score": 70,
-                },
-            ),
-        )
-
-        assert result.status == "queued"
-        assert len(dispatcher.dispatched) == 1
-
-    def test_non_positive_volume_min_with_hard_gate_dispatches_async(self):
-        """``volume_min<=0`` contributes full async points without adding a
-        SQL predicate. With ``min_score=50``, a row can fail price but pass via
-        the volume filter, so strict SQL price filtering would false-negative.
-        """
-        feature_runs = FakeFeatureRunRepository()
-        feature_store = FakeFeatureStoreRepository()
-        symbols = ["AAPL"]
-        _publish_run(
-            feature_runs,
-            feature_store,
-            symbols=symbols,
-            rows=[_row("AAPL", custom_score=85, current_price=10)],
-        )
-
-        uow = FakeUnitOfWork(
-            universe=FakeUniverseRepository(symbols),
-            feature_runs=feature_runs,
-            feature_store=feature_store,
-        )
-        dispatcher = FakeTaskDispatcher()
-        uc = CreateScanUseCase(dispatcher=dispatcher)
-
-        result = uc.execute(
-            uow,
-            _custom_command(
-                criteria={
-                    "custom_filters": {"price_min": 20, "volume_min": 0},
-                    "min_score": 50,
-                },
-            ),
-        )
-
-        assert result.status == "queued"
-        assert len(dispatcher.dispatched) == 1
-
-    def test_empty_exclude_industries_with_hard_gate_dispatches_async(self):
-        """``exclude_industries=[]`` contributes full async points without a
-        SQL predicate. With ``min_score=50``, a row can fail price but pass via
-        the empty exclusion filter, so compile path must defer.
-        """
-        feature_runs = FakeFeatureRunRepository()
-        feature_store = FakeFeatureStoreRepository()
-        symbols = ["AAPL"]
-        _publish_run(
-            feature_runs,
-            feature_store,
-            symbols=symbols,
-            rows=[_row("AAPL", custom_score=85, current_price=10)],
-        )
-
-        uow = FakeUnitOfWork(
-            universe=FakeUniverseRepository(symbols),
-            feature_runs=feature_runs,
-            feature_store=feature_store,
-        )
-        dispatcher = FakeTaskDispatcher()
-        uc = CreateScanUseCase(dispatcher=dispatcher)
-
-        result = uc.execute(
-            uow,
-            _custom_command(
-                criteria={
-                    "custom_filters": {
-                        "price_min": 20,
-                        "exclude_industries": [],
-                    },
-                    "min_score": 50,
-                },
-            ),
-        )
-
-        assert result.status == "queued"
-        assert len(dispatcher.dispatched) == 1
-
-    def test_exclude_only_with_missing_industry_dispatches_async(self):
-        """An exclude-only scan cannot be hard-gate equivalent.
-
-        The SQL exclude predicate keeps NULL industries, but CustomScanner only
-        runs the industry-exclusion filter when fundamentals are present. A row
-        with no fundamental industry metadata would therefore pass compile-path
-        SQL while async execution has no active filters and returns non-passing.
-        """
-        feature_runs = FakeFeatureRunRepository()
-        feature_store = FakeFeatureStoreRepository()
-        symbols = ["AAPL"]
-        _publish_run(
-            feature_runs,
-            feature_store,
-            symbols=symbols,
-            rows=[_row("AAPL", custom_score=85, gics_industry=None)],
-        )
-
-        uow = FakeUnitOfWork(
-            universe=FakeUniverseRepository(symbols),
-            feature_runs=feature_runs,
-            feature_store=feature_store,
-        )
-        dispatcher = FakeTaskDispatcher()
-        uc = CreateScanUseCase(dispatcher=dispatcher)
-
-        result = uc.execute(
-            uow,
-            _custom_command(
-                criteria={
-                    "custom_filters": {
-                        "exclude_industries": ["Tobacco"],
-                    },
-                    "min_score": 70,
-                },
-            ),
-        )
-
-        assert result.status == "queued"
-        assert len(dispatcher.dispatched) == 1
-
-    def test_sector_only_with_snapshot_taxonomy_dispatches_async(self):
-        """A sector-only scan cannot be hard-gate equivalent.
-
-        Snapshot taxonomy can populate ``gics_sector`` even when async custom
-        scanning has no fundamentals. SQL would keep the row, while
-        CustomScanner would skip the sector filter and return non-passing.
-        """
-        feature_runs = FakeFeatureRunRepository()
-        feature_store = FakeFeatureStoreRepository()
-        symbols = ["AAPL"]
-        _publish_run(
-            feature_runs,
-            feature_store,
-            symbols=symbols,
-            rows=[_row("AAPL", custom_score=85, gics_sector="Technology")],
-        )
-
-        uow = FakeUnitOfWork(
-            universe=FakeUniverseRepository(symbols),
-            feature_runs=feature_runs,
-            feature_store=feature_store,
-        )
-        dispatcher = FakeTaskDispatcher()
-        uc = CreateScanUseCase(dispatcher=dispatcher)
-
-        result = uc.execute(
-            uow,
-            _custom_command(
-                criteria={
-                    "custom_filters": {
-                        "sectors": ["Technology"],
-                    },
-                    "min_score": 70,
-                },
-            ),
-        )
-
-        assert result.status == "queued"
-        assert len(dispatcher.dispatched) == 1
-
 
 class TestCompilePathFallsBack:
     """Non-applicable scans must defer to the async path."""
 
-    def test_ma_alignment_filter_dispatches_async(self):
-        """Stored ``ma_alignment`` has Minervini's stricter semantics, so
-        the compiler marks it unrepresentable and the scan goes async.
-        """
-        feature_runs = FakeFeatureRunRepository()
-        feature_store = FakeFeatureStoreRepository()
-        symbols = ["AAPL"]
-        _publish_run(
-            feature_runs,
-            feature_store,
-            symbols=symbols,
-            rows=[_row("AAPL", custom_score=85)],
-        )
-
-        uow = FakeUnitOfWork(
-            universe=FakeUniverseRepository(symbols),
-            feature_runs=feature_runs,
-            feature_store=feature_store,
-        )
-        dispatcher = FakeTaskDispatcher()
-        uc = CreateScanUseCase(dispatcher=dispatcher)
-
-        result = uc.execute(
-            uow,
-            _custom_command(
-                criteria={
-                    "custom_filters": {"price_min": 20, "ma_alignment": True},
-                    "min_score": 70,
-                },
-            ),
-        )
-
-        assert result.status == "queued"
-        assert len(dispatcher.dispatched) == 1
-
-    def test_empty_sectors_filter_dispatches_async(self):
-        """``sectors=[]`` makes every async stock fail; we can't express
-        "match nothing" cleanly in SQL, so defer to async.
-        """
-        feature_runs = FakeFeatureRunRepository()
-        feature_store = FakeFeatureStoreRepository()
-        symbols = ["AAPL"]
-        _publish_run(
-            feature_runs,
-            feature_store,
-            symbols=symbols,
-            rows=[_row("AAPL", custom_score=85)],
-        )
-
-        uow = FakeUnitOfWork(
-            universe=FakeUniverseRepository(symbols),
-            feature_runs=feature_runs,
-            feature_store=feature_store,
-        )
-        dispatcher = FakeTaskDispatcher()
-        uc = CreateScanUseCase(dispatcher=dispatcher)
-
-        result = uc.execute(
-            uow,
-            _custom_command(
-                criteria={
-                    "custom_filters": {"price_min": 20, "sectors": []},
-                    "min_score": 70,
-                },
-            ),
-        )
-
-        assert result.status == "queued"
-        assert len(dispatcher.dispatched) == 1
-
-    def test_unrepresentable_criteria_dispatches_async(self):
-        feature_runs = FakeFeatureRunRepository()
-        feature_store = FakeFeatureStoreRepository()
-        symbols = ["AAPL"]
-        _publish_run(
-            feature_runs,
-            feature_store,
-            symbols=symbols,
-            rows=[_row("AAPL", custom_score=85)],
-        )
-
-        uow = FakeUnitOfWork(
-            universe=FakeUniverseRepository(symbols),
-            feature_runs=feature_runs,
-            feature_store=feature_store,
-        )
-        dispatcher = FakeTaskDispatcher()
-        uc = CreateScanUseCase(dispatcher=dispatcher)
-
-        # debt_to_equity_max is not in the feature store JSON map yet.
-        result = uc.execute(
-            uow,
-            _custom_command(
-                criteria={
-                    "custom_filters": {
-                        "price_min": 20,
-                        "debt_to_equity_max": 0.5,
+    @pytest.mark.parametrize(
+        ("run_symbols", "rows", "universe", "command"),
+        [
+            # Four binary filters are not equivalent to SQL hard gates.
+            # CustomScanner would give this row 30/40 points because it passes
+            # price, market cap, and sector, but fails industry exclusion. At the
+            # default min_score=70, 75 points passes async. A SQL WHERE chain would
+            # drop it, so the compile path must defer.
+            pytest.param(
+                ["AAPL"],
+                [
+                    _row(
+                        "AAPL",
+                        custom_score=85,
+                        current_price=150,
+                        market_cap_usd=2_000_000_000,
+                        gics_sector="Technology",
+                        gics_industry="Tobacco",
+                    )
+                ],
+                ["AAPL"],
+                _custom_command(
+                    criteria={
+                        "custom_filters": {
+                            "price_min": 20,
+                            "market_cap_min": 1_000_000_000,
+                            "sectors": ["Technology"],
+                            "exclude_industries": ["Tobacco"],
+                        },
+                        "min_score": 70,
                     },
-                    "min_score": 70,
-                },
+                ),
+                id="multi_filter_partial_score_case",
             ),
+            # RS rating threshold has partial score semantics in CustomScanner.
+            # A row exactly at rs_rating_min satisfies the hard SQL gate, but gets
+            # 10/15 points in CustomScanner and fails the default min_score=70.
+            pytest.param(
+                ["AAPL"],
+                [_row("AAPL", custom_score=85, rs_rating=80)],
+                ["AAPL"],
+                _custom_command(criteria={"custom_filters": {"rs_rating_min": 80}, "min_score": 70}),
+                id="scaled_score_filter",
+            ),
+            # ``volume_min<=0`` contributes full async points without adding a SQL
+            # predicate. With ``min_score=50``, a row can fail price but pass via
+            # the volume filter, so strict SQL price filtering would false-negative.
+            pytest.param(
+                ["AAPL"],
+                [_row("AAPL", custom_score=85, current_price=10)],
+                ["AAPL"],
+                _custom_command(criteria={"custom_filters": {"price_min": 20, "volume_min": 0}, "min_score": 50}),
+                id="non_positive_volume_min_with_hard_gate",
+            ),
+            # ``exclude_industries=[]`` contributes full async points without a SQL
+            # predicate. With ``min_score=50``, a row can fail price but pass via
+            # the empty exclusion filter, so compile path must defer.
+            pytest.param(
+                ["AAPL"],
+                [_row("AAPL", custom_score=85, current_price=10)],
+                ["AAPL"],
+                _custom_command(
+                    criteria={"custom_filters": {"price_min": 20, "exclude_industries": []}, "min_score": 50},
+                ),
+                id="empty_exclude_industries_with_hard_gate",
+            ),
+            # An exclude-only scan cannot be hard-gate equivalent. The SQL exclude
+            # predicate keeps NULL industries, but CustomScanner only runs the
+            # industry-exclusion filter when fundamentals are present. A row with no
+            # fundamental industry metadata would therefore pass compile-path SQL
+            # while async execution has no active filters and returns non-passing.
+            pytest.param(
+                ["AAPL"],
+                [_row("AAPL", custom_score=85, gics_industry=None)],
+                ["AAPL"],
+                _custom_command(criteria={"custom_filters": {"exclude_industries": ["Tobacco"]}, "min_score": 70}),
+                id="exclude_only_with_missing_industry",
+            ),
+            # A sector-only scan cannot be hard-gate equivalent. Snapshot taxonomy
+            # can populate ``gics_sector`` even when async custom scanning has no
+            # fundamentals. SQL would keep the row, while CustomScanner would skip
+            # the sector filter and return non-passing.
+            pytest.param(
+                ["AAPL"],
+                [_row("AAPL", custom_score=85, gics_sector="Technology")],
+                ["AAPL"],
+                _custom_command(criteria={"custom_filters": {"sectors": ["Technology"]}, "min_score": 70}),
+                id="sector_only_with_snapshot_taxonomy",
+            ),
+            # Stored ``ma_alignment`` has Minervini's stricter semantics, so the
+            # compiler marks it unrepresentable and the scan goes async.
+            pytest.param(
+                ["AAPL"],
+                [_row("AAPL", custom_score=85)],
+                ["AAPL"],
+                _custom_command(criteria={"custom_filters": {"price_min": 20, "ma_alignment": True}, "min_score": 70}),
+                id="ma_alignment_filter",
+            ),
+            # ``sectors=[]`` makes every async stock fail; we can't express
+            # "match nothing" cleanly in SQL, so defer to async.
+            pytest.param(
+                ["AAPL"],
+                [_row("AAPL", custom_score=85)],
+                ["AAPL"],
+                _custom_command(criteria={"custom_filters": {"price_min": 20, "sectors": []}, "min_score": 70}),
+                id="empty_sectors_filter",
+            ),
+            # debt_to_equity_max is not in the feature store JSON map yet.
+            pytest.param(
+                ["AAPL"],
+                [_row("AAPL", custom_score=85)],
+                ["AAPL"],
+                _custom_command(
+                    criteria={"custom_filters": {"price_min": 20, "debt_to_equity_max": 0.5}, "min_score": 70},
+                ),
+                id="unrepresentable_criteria",
+            ),
+            # Run universe doesn't include all requested symbols: the run only
+            # covers AAPL + MSFT; the user asks for GOOGL too.
+            pytest.param(
+                ["AAPL", "MSFT"],
+                [_row("AAPL", custom_score=85), _row("MSFT", custom_score=85)],
+                ["AAPL", "MSFT", "GOOGL"],
+                _custom_command(),
+                id="no_covering_run",
+            ),
+            # Default DQ thresholds permit publishing a run with up to 10% of
+            # universe symbols missing feature rows. The compile path must check
+            # actual ``stock_feature_daily`` rows, not just universe membership,
+            # otherwise it would silently omit those symbols from results.
+            # Universe lists AAPL + MSFT, but only AAPL has a row (partial run).
+            pytest.param(
+                ["AAPL", "MSFT"],
+                [_row("AAPL", custom_score=85)],
+                ["AAPL", "MSFT"],
+                _custom_command(),
+                id="partial_publish_run",
+            ),
+            # Multi-screener composites are out of scope for the compile path.
+            pytest.param(
+                ["AAPL"],
+                [_row("AAPL", custom_score=85)],
+                ["AAPL"],
+                _custom_command(screeners=["custom", "minervini"]),
+                id="multi_screener",
+            ),
+            # INDEX universes pass universe_market=None even when symbols are
+            # single-market, which would mismatch async unit semantics. Defer.
+            pytest.param(
+                ["AAPL", "MSFT"],
+                [_row("AAPL", custom_score=85), _row("MSFT", custom_score=85)],
+                ["AAPL", "MSFT"],
+                CreateScanCommand(
+                    universe_def="index:SP500",
+                    universe_label="S&P 500",
+                    universe_key="index:SP500",
+                    universe_type="index",
+                    universe_index="SP500",
+                    screeners=["custom"],
+                    criteria={"custom_filters": {"price_min": 20, "rs_rating_min": 70}, "min_score": 70},
+                ),
+                id="index_universe",
+            ),
+            # Symbol-list (CUSTOM) universes also defer to async, for the same reason.
+            pytest.param(
+                ["AAPL", "MSFT"],
+                [_row("AAPL", custom_score=85), _row("MSFT", custom_score=85)],
+                ["AAPL", "MSFT"],
+                CreateScanCommand(
+                    universe_def="custom",
+                    universe_label="My Symbols",
+                    universe_key="custom",
+                    universe_type="custom",
+                    universe_symbols=["AAPL", "MSFT"],
+                    screeners=["custom"],
+                    criteria={"custom_filters": {"price_min": 20, "rs_rating_min": 70}, "min_score": 70},
+                ),
+                id="custom_universe",
+            ),
+            # USD-normalised columns can't safely answer HK volume thresholds.
+            pytest.param(
+                ["0700.HK"],
+                [_row("0700.HK", custom_score=85)],
+                ["0700.HK"],
+                CreateScanCommand(
+                    universe_def="market:HK",
+                    universe_label="Hong Kong",
+                    universe_key="market:HK",
+                    universe_type="market",
+                    universe_market="HK",
+                    screeners=["custom"],
+                    criteria={"custom_filters": {"volume_min": 1_000_000, "price_min": 20}, "min_score": 70},
+                ),
+                id="non_us_single_market_with_volume_filter",
+            ),
+        ],
+    )
+    def test_dispatches_async(self, run_symbols, rows, universe, command):
+        feature_runs = FakeFeatureRunRepository()
+        feature_store = FakeFeatureStoreRepository()
+        _publish_run(feature_runs, feature_store, symbols=run_symbols, rows=rows)
+
+        uow = FakeUnitOfWork(
+            universe=FakeUniverseRepository(universe),
+            feature_runs=feature_runs,
+            feature_store=feature_store,
         )
+        dispatcher = FakeTaskDispatcher()
+        uc = CreateScanUseCase(dispatcher=dispatcher)
+
+        result = uc.execute(uow, command)
 
         assert result.status == "queued"
         assert len(dispatcher.dispatched) == 1
         assert uow.scans.rows[0].feature_run_id is None
-
-    def test_no_covering_run_dispatches_async(self):
-        """Run universe doesn't include all requested symbols."""
-        feature_runs = FakeFeatureRunRepository()
-        feature_store = FakeFeatureStoreRepository()
-        # Run only covers AAPL + MSFT; user asks for GOOGL too.
-        _publish_run(
-            feature_runs,
-            feature_store,
-            symbols=["AAPL", "MSFT"],
-            rows=[
-                _row("AAPL", custom_score=85),
-                _row("MSFT", custom_score=85),
-            ],
-        )
-
-        uow = FakeUnitOfWork(
-            universe=FakeUniverseRepository(["AAPL", "MSFT", "GOOGL"]),
-            feature_runs=feature_runs,
-            feature_store=feature_store,
-        )
-        dispatcher = FakeTaskDispatcher()
-        uc = CreateScanUseCase(dispatcher=dispatcher)
-
-        result = uc.execute(uow, _custom_command())
-
-        assert result.status == "queued"
-        assert len(dispatcher.dispatched) == 1
-
-    def test_partial_publish_run_dispatches_async(self):
-        """Default DQ thresholds permit publishing a run with up to 10% of
-        universe symbols missing feature rows. The compile path must check
-        actual ``stock_feature_daily`` rows, not just universe membership,
-        otherwise it would silently omit those symbols from results.
-        """
-        feature_runs = FakeFeatureRunRepository()
-        feature_store = FakeFeatureStoreRepository()
-        # Universe lists AAPL + MSFT, but only AAPL has a row (partial run).
-        _publish_run(
-            feature_runs,
-            feature_store,
-            symbols=["AAPL", "MSFT"],
-            rows=[_row("AAPL", custom_score=85)],
-        )
-
-        uow = FakeUnitOfWork(
-            universe=FakeUniverseRepository(["AAPL", "MSFT"]),
-            feature_runs=feature_runs,
-            feature_store=feature_store,
-        )
-        dispatcher = FakeTaskDispatcher()
-        uc = CreateScanUseCase(dispatcher=dispatcher)
-
-        result = uc.execute(uow, _custom_command())
-
-        assert result.status == "queued"
-        assert len(dispatcher.dispatched) == 1
 
     def test_no_published_run_dispatches_async(self):
         """No feature run has been published yet."""
@@ -808,159 +616,6 @@ class TestCompilePathFallsBack:
         uc = CreateScanUseCase(dispatcher=dispatcher)
 
         result = uc.execute(uow, _custom_command())
-
-        assert result.status == "queued"
-        assert len(dispatcher.dispatched) == 1
-
-    def test_multi_screener_dispatches_async(self):
-        """Multi-screener composites are out of scope for the compile path."""
-        feature_runs = FakeFeatureRunRepository()
-        feature_store = FakeFeatureStoreRepository()
-        symbols = ["AAPL"]
-        _publish_run(
-            feature_runs,
-            feature_store,
-            symbols=symbols,
-            rows=[_row("AAPL", custom_score=85)],
-        )
-
-        uow = FakeUnitOfWork(
-            universe=FakeUniverseRepository(symbols),
-            feature_runs=feature_runs,
-            feature_store=feature_store,
-        )
-        dispatcher = FakeTaskDispatcher()
-        uc = CreateScanUseCase(dispatcher=dispatcher)
-
-        result = uc.execute(
-            uow,
-            _custom_command(screeners=["custom", "minervini"]),
-        )
-
-        assert result.status == "queued"
-        assert len(dispatcher.dispatched) == 1
-
-    def test_index_universe_dispatches_async(self):
-        """INDEX universes pass universe_market=None even when symbols are
-        single-market, which would mismatch async unit semantics. Defer.
-        """
-        feature_runs = FakeFeatureRunRepository()
-        feature_store = FakeFeatureStoreRepository()
-        symbols = ["AAPL", "MSFT"]
-        _publish_run(
-            feature_runs,
-            feature_store,
-            symbols=symbols,
-            rows=[
-                _row("AAPL", custom_score=85),
-                _row("MSFT", custom_score=85),
-            ],
-        )
-
-        uow = FakeUnitOfWork(
-            universe=FakeUniverseRepository(symbols),
-            feature_runs=feature_runs,
-            feature_store=feature_store,
-        )
-        dispatcher = FakeTaskDispatcher()
-        uc = CreateScanUseCase(dispatcher=dispatcher)
-
-        result = uc.execute(
-            uow,
-            CreateScanCommand(
-                universe_def="index:SP500",
-                universe_label="S&P 500",
-                universe_key="index:SP500",
-                universe_type="index",
-                universe_index="SP500",
-                screeners=["custom"],
-                criteria={
-                    "custom_filters": {"price_min": 20, "rs_rating_min": 70},
-                    "min_score": 70,
-                },
-            ),
-        )
-
-        assert result.status == "queued"
-        assert len(dispatcher.dispatched) == 1
-
-    def test_custom_universe_dispatches_async(self):
-        """Symbol-list (CUSTOM) universes also defer to async — same reason."""
-        feature_runs = FakeFeatureRunRepository()
-        feature_store = FakeFeatureStoreRepository()
-        symbols = ["AAPL", "MSFT"]
-        _publish_run(
-            feature_runs,
-            feature_store,
-            symbols=symbols,
-            rows=[
-                _row("AAPL", custom_score=85),
-                _row("MSFT", custom_score=85),
-            ],
-        )
-
-        uow = FakeUnitOfWork(
-            universe=FakeUniverseRepository(symbols),
-            feature_runs=feature_runs,
-            feature_store=feature_store,
-        )
-        dispatcher = FakeTaskDispatcher()
-        uc = CreateScanUseCase(dispatcher=dispatcher)
-
-        result = uc.execute(
-            uow,
-            CreateScanCommand(
-                universe_def="custom",
-                universe_label="My Symbols",
-                universe_key="custom",
-                universe_type="custom",
-                universe_symbols=symbols,
-                screeners=["custom"],
-                criteria={
-                    "custom_filters": {"price_min": 20, "rs_rating_min": 70},
-                    "min_score": 70,
-                },
-            ),
-        )
-
-        assert result.status == "queued"
-        assert len(dispatcher.dispatched) == 1
-
-    def test_non_us_single_market_with_volume_filter_dispatches_async(self):
-        """USD-normalised columns can't safely answer HK volume thresholds."""
-        feature_runs = FakeFeatureRunRepository()
-        feature_store = FakeFeatureStoreRepository()
-        symbols = ["0700.HK"]
-        _publish_run(
-            feature_runs,
-            feature_store,
-            symbols=symbols,
-            rows=[_row("0700.HK", custom_score=85)],
-        )
-
-        uow = FakeUnitOfWork(
-            universe=FakeUniverseRepository(symbols),
-            feature_runs=feature_runs,
-            feature_store=feature_store,
-        )
-        dispatcher = FakeTaskDispatcher()
-        uc = CreateScanUseCase(dispatcher=dispatcher)
-
-        result = uc.execute(
-            uow,
-            CreateScanCommand(
-                universe_def="market:HK",
-                universe_label="Hong Kong",
-                universe_key="market:HK",
-                universe_type="market",
-                universe_market="HK",
-                screeners=["custom"],
-                criteria={
-                    "custom_filters": {"volume_min": 1_000_000, "price_min": 20},
-                    "min_score": 70,
-                },
-            ),
-        )
 
         assert result.status == "queued"
         assert len(dispatcher.dispatched) == 1
