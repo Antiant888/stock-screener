@@ -1,5 +1,6 @@
 from datetime import date, timedelta
 
+import pytest
 from sqlalchemy import inspect
 from sqlalchemy.orm import sessionmaker
 
