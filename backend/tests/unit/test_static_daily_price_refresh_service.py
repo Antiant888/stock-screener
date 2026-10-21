@@ -2620,6 +2620,41 @@ def test_static_daily_price_quote_repair_seed_skips_without_deadline_headroom(
     ) in capsys.readouterr().out
 
 
+def test_static_daily_price_quote_repair_seed_joins_a_repair_that_runs_anyway() -> None:
+    session_factory = _sqlite_session_factory()
+    _seed_prices(session_factory, "SPY", [date(2026, 10, 16), date(2026, 10, 19)])
+    stale_qqq = {
+        "price_data": _price_frame((date(2026, 10, 16), date(2026, 10, 19)), 1.0),
+        "has_error": False,
+    }
+    fetcher = _UsFetcher(
+        lambda symbol, attempt: _throttled()
+        if symbol == "SPY"
+        else stale_qqq if symbol == "QQQ" else None,
+        top_up_dates=_OCTOBER_TOP_UP_DATES,
+    )
+    quote_requests: list[list[str]] = []
+    sleeps: list[float] = []
+    stored: list[list[str]] = []
+    service = _quote_seed_service(
+        session_factory,
+        fetcher,
+        quote_requests=quote_requests,
+        sleeps=sleeps,
+        stored=stored,
+        deadline=100.0,
+        clock=lambda: 0.0,
+    )
+
+    result = service.refresh(as_of_date=_OCTOBER_AS_OF, market="US")
+
+    assert result["status"] == "completed"
+    assert sorted(symbol for batch in quote_requests for symbol in batch) == ["QQQ", "SPY"]
+    assert _stored_dates(session_factory, "SPY")[-1] == _OCTOBER_AS_OF
+    assert result["primary_benchmark_retry"]["quote_repair_seed"] == "seeded"
+    assert result["primary_benchmark_retry"]["primary_current"] is True
+
+
 def test_static_daily_price_quote_repair_seed_runs_with_exactly_its_reserve() -> None:
     session_factory = _sqlite_session_factory()
     _seed_prices(session_factory, "SPY", [date(2026, 10, 16), date(2026, 10, 19)])
