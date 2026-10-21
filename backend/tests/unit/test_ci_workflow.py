@@ -15,6 +15,16 @@ def test_releases_wait_for_the_quickstart_install_smoke():
     assert "quickstart-smoke" in jobs["release"]["needs"]
 
 
+def test_backend_unit_shards_run_the_whole_unit_suite():
+    job = yaml.safe_load((REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text())["jobs"]["backend-unit"]
+    script = next(step["run"] for step in job["steps"] if "python -m pytest" in step.get("run", ""))
+
+    assert job["strategy"]["matrix"]["shard"] == [1, 2, 3, 4]
+    assert "python -m pytest tests/unit \\" in script
+    assert "--splits 4" in script and '--group "${{ matrix.shard }}"' in script
+    assert "--collect-only" not in script
+
+
 def test_latest_images_move_only_after_both_are_published():
     # quickstart.sh falls back to `latest` as a backend/frontend pair. Tagging
     # `latest` in each build step published a new backend `latest` before the

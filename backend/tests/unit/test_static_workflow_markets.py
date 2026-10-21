@@ -131,6 +131,22 @@ def test_breadth_history_is_restored_before_export_and_published_only_with_an_ar
     assert "steps.export-market.outputs.has_artifact == 'true'" in publish["if"]
 
 
+def test_market_without_artifact_still_forwards_its_price_bundle():
+    # Exit 79 skips the market artifact, but refreshed daily prices still ship.
+    branch = _step_branch('[ "$status" -eq 79 ]')
+    assert "has_price_bundle=$has_price_bundle" in branch
+    assert "has_price_bundle=false" not in branch
+
+
+def test_checkpointed_price_stage_uploads_its_checkpoint_and_fails_the_job():
+    assert "price_checkpointed=true" in _step_branch('[ "$status" -eq 80 ]')
+    gate = "steps.export-market.outputs.price_checkpointed == 'true'"
+    assert gate in _build_market_step("Upload price-stage checkpoint")["if"]
+    fail = _build_market_step("Fail after price-stage checkpoint")
+    assert gate in fail["if"]
+    assert "exit 1" in fail["run"]
+
+
 def test_weekly_reference_never_builds_one_market_twice_at_once():
     # The later job waits, so it seeds from the bundle (and fundamentals
     # cursor) the earlier one published.

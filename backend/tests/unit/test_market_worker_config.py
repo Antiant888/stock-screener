@@ -23,6 +23,13 @@ def test_docker_compose_profiles_every_market_worker():
         assert f'profiles: ["market-{suffix}"]' in compose
 
 
+def test_docker_compose_datafetch_queues_are_derived_from_enabled_markets():
+    compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+
+    assert "compose_enabled_markets.py queues" in compose
+    assert '-Q "$$QUEUES"' in compose
+
+
 def test_release_overlay_uses_release_image_for_every_market_worker():
     release = (ROOT / "docker-compose.release.yml").read_text(encoding="utf-8")
 
