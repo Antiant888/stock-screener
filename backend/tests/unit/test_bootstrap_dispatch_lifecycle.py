@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from sqlalchemy import create_engine
@@ -11,13 +11,6 @@ from sqlalchemy.orm import sessionmaker
 
 import app.models.app_settings  # noqa: F401
 from app.database import Base
-from app.domain.relative_strength import (
-    BALANCED_RS_FORMULA_VERSION,
-    BALANCED_RS_PRICE_BASIS,
-    BALANCED_RS_SNAPSHOT_SCHEMA_VERSION,
-)
-from app.infra.db.models.feature_store import FeatureRun, FeatureRunPointer
-from app.infra.db.models.relative_strength import MarketRsRun
 from app.services.bootstrap_dispatch_lifecycle import (
     BootstrapDispatchLifecycle,
     BootstrapMarketCompletion,
@@ -26,6 +19,7 @@ from app.services.bootstrap_run_manifest import (
     BootstrapRunManifest,
     BootstrapRunManifestRepository,
 )
+from app.services.runtime_bootstrap_readiness import BALANCED_PUBLICATION_MISSING
 from app.services.runtime_preferences_service import get_runtime_preferences
 
 
@@ -39,49 +33,6 @@ def db_session():
     finally:
         session.close()
         engine.dispose()
-
-
-def _publish_balanced_snapshot(db, market: str = "US") -> None:
-    as_of = date(2026, 5, 1)
-    rs_run = MarketRsRun(
-        market=market,
-        as_of_date=as_of,
-        formula_version=BALANCED_RS_FORMULA_VERSION,
-        status="completed",
-        benchmark_symbol="SPY",
-        benchmark_as_of_date=as_of,
-        universe_hash="hash",
-        expected_symbol_count=1,
-        eligible_symbol_count=1,
-        excluded_symbol_count=0,
-        diagnostics_json={
-            "price_basis": BALANCED_RS_PRICE_BASIS,
-            "rs_snapshot_schema_version": BALANCED_RS_SNAPSHOT_SCHEMA_VERSION,
-        },
-    )
-    db.add(rs_run)
-    db.flush()
-    feature_run = FeatureRun(
-        as_of_date=as_of,
-        run_type="daily_snapshot",
-        status="published",
-        published_at=datetime(2026, 5, 1, 21, 0, tzinfo=timezone.utc),
-        config_json={
-            "market": market,
-            "rs_formula_version": BALANCED_RS_FORMULA_VERSION,
-            "market_rs_run_id": rs_run.id,
-            "rs_as_of_date": as_of.isoformat(),
-            "rs_universe_size": 1,
-        },
-    )
-    db.add(feature_run)
-    db.flush()
-    db.add(
-        FeatureRunPointer(
-            key=f"latest_published_market:{market}", run_id=feature_run.id
-        )
-    )
-    db.commit()
 
 
 def test_expired_dispatch_ownership_can_be_reclaimed(db_session) -> None:
@@ -205,7 +156,6 @@ def test_balanced_completion_consumes_pending_activation_in_same_transition(
             queue_state="queued",
         ),
     )
-    _publish_balanced_snapshot(db_session)
 
     BootstrapDispatchLifecycle(repository=repository).finish_market(
         db_session,
@@ -213,7 +163,7 @@ def test_balanced_completion_consumes_pending_activation_in_same_transition(
         completion=BootstrapMarketCompletion.ready(
             market="US",
             primary=True,
-            requires_balanced_publication=True,
+            balanced_publication_committed=True,
         ),
     )
 
@@ -242,10 +192,11 @@ def test_missing_balanced_publication_fails_the_market_and_keeps_it_pending(
     updated = lifecycle.finish_market(
         db_session,
         dispatch_id="dispatch-current",
-        completion=BootstrapMarketCompletion.ready(
+        completion=BootstrapMarketCompletion.failed(
             market="US",
             primary=True,
-            requires_balanced_publication=True,
+            stage_key=BALANCED_PUBLICATION_MISSING.stage_key,
+            message=BALANCED_PUBLICATION_MISSING.activity_message,
         ),
     )
 

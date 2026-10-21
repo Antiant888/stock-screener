@@ -438,6 +438,7 @@ def complete_local_runtime_bootstrap(
     )  # Legacy Celery payload compatibility; readiness is primary-only.
     # The dispatch sets the formula kwarg only for a market awaiting its
     # balanced publication; its value is kept for payload compatibility.
+    # Readiness then answers ready only once that publication is committed.
     requires_balanced_publication = expected_formula_version is not None
     primary_market = normalize_market(primary_market)
     db = SessionLocal()
@@ -485,7 +486,7 @@ def complete_local_runtime_bootstrap(
             completion=BootstrapMarketCompletion.ready(
                 market=completion.market,
                 primary=True,
-                requires_balanced_publication=requires_balanced_publication,
+                balanced_publication_committed=requires_balanced_publication,
             ),
         )
         if not finished:
@@ -542,7 +543,7 @@ def complete_background_market_bootstrap(
                 completion=BootstrapMarketCompletion.ready(
                     market=completion.market,
                     primary=False,
-                    requires_balanced_publication=requires_balanced_publication,
+                    balanced_publication_committed=requires_balanced_publication,
                 ),
             )
             if not finished:

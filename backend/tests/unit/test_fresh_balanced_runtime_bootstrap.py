@@ -460,3 +460,84 @@ def test_fresh_bootstrap_completion_fails_until_the_balanced_publication_commits
     assert completions[0].primary is (
         completion_task_name == "complete_local_runtime_bootstrap"
     )
+
+
+@pytest.mark.parametrize(
+    ("completion_task_name", "task_kwargs", "expected_result", "expected_manifest"),
+    [
+        (
+            "complete_local_runtime_bootstrap",
+            {"primary_market": "US"},
+            {"status": "ready", "primary_market": "US", "market": "US"},
+            ((), ("US",), ("HK",), "ready"),
+        ),
+        (
+            "complete_background_market_bootstrap",
+            {"market": "HK"},
+            {"status": "ready", "market": "HK"},
+            ((), ("HK",), ("US",), "running"),
+        ),
+    ],
+)
+def test_ready_completion_records_the_answer_readiness_gave(
+    monkeypatch,
+    completion_task_name,
+    task_kwargs,
+    expected_result,
+    expected_manifest,
+):
+    """Readiness saw the publication, which is gone by the manifest update."""
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from sqlalchemy.pool import StaticPool
+
+    from app.database import Base
+    from app.services.bootstrap_dispatch_lifecycle import BootstrapDispatchLifecycle
+    from app.services.bootstrap_run_manifest import (
+        BootstrapRunManifest,
+        BootstrapRunManifestRepository,
+    )
+    from app.services.runtime_bootstrap_readiness import MarketReadinessCompletion
+    from app.services.runtime_preferences_service import get_runtime_preferences
+    from app.tasks import runtime_bootstrap_tasks as module
+
+    engine = create_engine("sqlite://", poolclass=StaticPool)
+    Base.metadata.create_all(engine)
+    session_factory = sessionmaker(bind=engine)
+    with session_factory() as db:
+        BootstrapDispatchLifecycle().claim(
+            db,
+            manifest=BootstrapRunManifest.create(
+                primary_market="US",
+                enabled_markets=("US", "HK"),
+                dispatch_id="dispatch-current",
+                fresh_install=True,
+                queue_state="queued",
+            ),
+        )
+    monkeypatch.setattr(module, "SessionLocal", session_factory)
+    monkeypatch.setattr(
+        module,
+        "_evaluate_market_readiness",
+        lambda _db, *, market, **_kwargs: MarketReadinessCompletion(
+            market=market, ready=True
+        ),
+    )
+
+    result = getattr(module, completion_task_name).run(
+        **task_kwargs,
+        expected_formula_version=BALANCED_RS_FORMULA_VERSION,
+        dispatch_id="dispatch-current",
+    )
+
+    with session_factory() as db:
+        manifest = BootstrapRunManifestRepository().load(db)
+        recorded = (
+            manifest.failed_markets,
+            manifest.completed_markets,
+            manifest.pending_balanced_activation_markets,
+            get_runtime_preferences(db).bootstrap_state,
+        )
+    engine.dispose()
+    assert result == expected_result
+    assert recorded == expected_manifest

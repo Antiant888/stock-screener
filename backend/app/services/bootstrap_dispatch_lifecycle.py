@@ -9,7 +9,6 @@ from datetime import datetime, timezone
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.services.bootstrap_readiness_service import BootstrapReadinessService
 from app.services.bootstrap_run_manifest import (
     BootstrapAlreadyRunning,
     BootstrapMarketOutcome,
@@ -21,7 +20,6 @@ from app.services.market_activity_service import (
     stage_current_market_activity_failed,
     stage_market_activity_failed,
 )
-from app.services.runtime_bootstrap_readiness import BALANCED_PUBLICATION_MISSING
 from app.services.runtime_preferences_service import (
     get_runtime_preferences,
     stage_runtime_preferences,
@@ -38,7 +36,8 @@ class BootstrapMarketCompletion:
     primary: bool
     failure_stage_key: str | None = None
     failure_message: str | None = None
-    requires_balanced_publication: bool = False
+    # Readiness's answer, so the manifest records what the task reports.
+    balanced_publication_committed: bool = False
 
     @classmethod
     def ready(
@@ -46,13 +45,13 @@ class BootstrapMarketCompletion:
         *,
         market: str,
         primary: bool,
-        requires_balanced_publication: bool = False,
+        balanced_publication_committed: bool = False,
     ) -> BootstrapMarketCompletion:
         return cls(
             market=market,
             succeeded=True,
             primary=primary,
-            requires_balanced_publication=requires_balanced_publication,
+            balanced_publication_committed=balanced_publication_committed,
         )
 
     @classmethod
@@ -87,10 +86,8 @@ class BootstrapDispatchLifecycle:
         self,
         *,
         repository: BootstrapRunManifestRepository | None = None,
-        readiness: BootstrapReadinessService | None = None,
     ) -> None:
         self.repository = repository or BootstrapRunManifestRepository()
-        self.readiness = readiness or BootstrapReadinessService()
 
     def claim(
         self,
@@ -132,24 +129,6 @@ class BootstrapDispatchLifecycle:
     ) -> BootstrapRunManifest:
         market = str(completion.market).upper()
         previous_outcome: BootstrapMarketOutcome | None = None
-        balanced_activation_completed = (
-            completion.requires_balanced_publication
-            and self.readiness.has_balanced_publication(db, market)
-        )
-        if (
-            completion.succeeded
-            and completion.requires_balanced_publication
-            and not balanced_activation_completed
-        ):
-            # Readiness passed before this check; record the disagreement as a
-            # failure rather than a completed market still awaiting publication.
-            completion = BootstrapMarketCompletion.failed(
-                market=market,
-                primary=completion.primary,
-                stage_key=BALANCED_PUBLICATION_MISSING.stage_key,
-                message=BALANCED_PUBLICATION_MISSING.activity_message,
-            )
-
         try:
 
             def finish(current: BootstrapRunManifest) -> BootstrapRunManifest:
@@ -158,7 +137,9 @@ class BootstrapDispatchLifecycle:
                 return current.finish_market(
                     market=market,
                     succeeded=completion.succeeded,
-                    balanced_activation_completed=balanced_activation_completed,
+                    balanced_activation_completed=(
+                        completion.balanced_publication_committed
+                    ),
                 )
 
             updated = self.repository.update_dispatch(
