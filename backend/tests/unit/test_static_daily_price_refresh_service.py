@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -1051,6 +1051,8 @@ def test_static_daily_price_refresh_skips_retry_for_non_in_markets() -> None:
         "attempted": True,
         "recovered": False,
         "skipped_reason": None,
+        "quote_repair_seed": "plan_disallows_quotes",
+        "primary_current": False,
     }
     assert result["yahoo_failed_symbols"] == 5
 
@@ -1104,6 +1106,8 @@ def test_static_daily_price_refresh_skips_retry_when_no_rate_limited_failures() 
         "attempted": True,
         "recovered": False,
         "skipped_reason": None,
+        "quote_repair_seed": "plan_disallows_quotes",
+        "primary_current": False,
     }
     assert result["key_market_symbols"] == len(IN_KEY_MARKET_PRICE_SYMBOLS)
     assert result["yahoo_failed_symbols"] == 6
@@ -1898,15 +1902,18 @@ def test_static_daily_price_refresh_fetches_critical_symbols_before_the_universe
         "attempted": False,
         "recovered": False,
         "skipped_reason": "already_current",
+        "quote_repair_seed": "not_needed",
+        "primary_current": True,
     }
 
 
 class _UsFetcher:
     """US fake: every symbol gets a current top-up frame unless ``fail`` says otherwise."""
 
-    def __init__(self, fail) -> None:
+    def __init__(self, fail, *, top_up_dates=(date(2026, 6, 3), date(2026, 6, 4))) -> None:
         self.calls: list[dict] = []
         self._fail = fail
+        self._top_up_dates = top_up_dates
 
     def price_batch_backoff_schedule(self, market):
         return (30, 60, 120)
@@ -1922,7 +1929,7 @@ class _UsFetcher:
         )
         return {
             symbol: self._fail(symbol, sum(symbol in call["symbols"] for call in self.calls))
-            or {"price_data": _top_up_frame(1.0), "has_error": False}
+            or {"price_data": _price_frame(self._top_up_dates, 1.0), "has_error": False}
             for symbol in symbols
         }
 
@@ -1965,6 +1972,8 @@ def test_static_daily_price_refresh_refetches_a_throttled_primary_benchmark_once
         "attempted": True,
         "recovered": True,
         "skipped_reason": None,
+        "quote_repair_seed": "not_needed",
+        "primary_current": True,
     }
     assert result["rate_limited_retry"] == {
         "attempted": 0,
@@ -2013,6 +2022,8 @@ def test_static_daily_price_late_refetch_leaves_a_frame_without_the_session_to_t
         "attempted": True,
         "recovered": False,
         "skipped_reason": None,
+        "quote_repair_seed": "not_needed",
+        "primary_current": True,
     }
     assert quote_requests == [["SPY"]]
     assert result["latest_session_repair"] == {
@@ -2067,6 +2078,8 @@ def test_static_daily_price_late_refetch_skips_quietly_without_deadline_headroom
         "attempted": attempted,
         "recovered": False,
         "skipped_reason": None if attempted else "deadline",
+        "quote_repair_seed": "no_stored_history",
+        "primary_current": False,
     }
     assert result["yahoo_failed_symbols"] == 1
 
@@ -2141,6 +2154,8 @@ def test_static_daily_price_late_refetch_reports_a_yahoo_circuit_open_on_its_own
         "attempted": False,
         "recovered": False,
         "skipped_reason": "circuit_open",
+        "quote_repair_seed": "no_stored_history",
+        "primary_current": False,
     }
     assert result["yahoo_fetched_symbols"] == 9
     assert result["yahoo_failed_symbols"] == 1
@@ -2174,6 +2189,8 @@ def test_static_daily_price_late_refetch_retries_a_primary_whose_first_call_open
         "attempted": True,
         "recovered": True,
         "skipped_reason": None,
+        "quote_repair_seed": "not_needed",
+        "primary_current": True,
     }
     assert result["yahoo_fetched_symbols"] == 10
     assert result["yahoo_failed_symbols"] == 0
@@ -2214,6 +2231,8 @@ def test_static_daily_price_unsupported_primary_benchmark_is_not_a_late_refetch_
         "attempted": False,
         "recovered": False,
         "skipped_reason": "not_a_fetch_candidate",
+        "quote_repair_seed": "not_needed",
+        "primary_current": False,
     }
 
 
@@ -2296,7 +2315,528 @@ def test_static_daily_price_late_refetch_replaces_history_when_it_finds_drift() 
         "attempted": True,
         "recovered": True,
         "skipped_reason": None,
+        "quote_repair_seed": "not_needed",
+        "primary_current": True,
     }
     assert result["readjusted_symbols"] == 1
     assert result["yahoo_fetched_symbols"] == 10
     assert result["yahoo_failed_symbols"] == 0
+
+
+def _seed_prices(session_factory, symbol: str, dates, *, adj_close: float | None = 1.0) -> None:
+    with session_factory() as db:
+        db.add_all(
+            StockPrice(
+                symbol=symbol,
+                date=seeded_date,
+                open=1.0,
+                high=1.0,
+                low=1.0,
+                close=1.0,
+                adj_close=adj_close,
+                volume=1000,
+            )
+            for seeded_date in dates
+        )
+        db.commit()
+
+
+def _stored_dates(session_factory, symbol: str) -> list[date]:
+    with session_factory() as db:
+        return [
+            stored_date
+            for (stored_date,) in db.query(StockPrice.date)
+            .filter(StockPrice.symbol == symbol)
+            .order_by(StockPrice.date.asc())
+        ]
+
+
+# The 2026-10-20 US session: every other symbol's top-up already holds it.
+_OCTOBER_AS_OF = date(2026, 10, 20)
+_OCTOBER_TOP_UP_DATES = (date(2026, 10, 19), _OCTOBER_AS_OF)
+_OCTOBER_US_UNIVERSE_CALL = ["QQQ", "IWM", "DX-Y.NYB", "SGD=X", "BTC-USD", "GLD", "TLT"]
+
+
+def _quote_seed_service(
+    session_factory,
+    fetcher,
+    *,
+    quote_requests,
+    sleeps,
+    stored,
+    as_of: date = _OCTOBER_AS_OF,
+    **service_kwargs,
+):
+    # Quotes report the 16:00 ET close of the as-of session.
+    session_close_utc = datetime.combine(as_of, time(20, 0), tzinfo=timezone.utc)
+    return StaticDailyPriceRefreshService(
+        session_factory=session_factory,
+        price_cache=SimpleNamespace(store_batch_in_cache=_persisting_store(session_factory, stored)),
+        fetcher=fetcher,
+        batch_size_for_market=lambda _market: 25,
+        sleep=sleeps.append,
+        fetch_quotes=lambda symbols: quote_requests.append(list(symbols))
+        or [_closing_quote(symbol, session_close_utc) for symbol in symbols],
+        **service_kwargs,
+    )
+
+
+def test_static_daily_price_quote_repairs_a_primary_benchmark_whose_every_fetch_failed(
+    capsys,
+) -> None:
+    session_factory = _sqlite_session_factory()
+    _seed_prices(session_factory, "SPY", [date(2026, 10, 16), date(2026, 10, 19)])
+    fetcher = _UsFetcher(
+        lambda symbol, attempt: _throttled() if symbol == "SPY" else None,
+        top_up_dates=_OCTOBER_TOP_UP_DATES,
+    )
+    quote_requests: list[list[str]] = []
+    sleeps: list[float] = []
+    stored: list[list[str]] = []
+    service = _quote_seed_service(
+        session_factory, fetcher, quote_requests=quote_requests, sleeps=sleeps, stored=stored
+    )
+
+    result = service.refresh(as_of_date=_OCTOBER_AS_OF, market="US")
+
+    assert [call["symbols"] for call in fetcher.calls] == [
+        ["SPY"],
+        ["IVV", "^VIX"],
+        _OCTOBER_US_UNIVERSE_CALL,
+        ["SPY"],
+    ]
+    assert quote_requests == [["SPY"]]
+    assert sleeps == [STATIC_SESSION_REPAIR_WAIT_SECONDS]
+    assert stored[-1] == ["SPY"]
+    assert _stored_dates(session_factory, "SPY") == [
+        date(2026, 10, 16),
+        date(2026, 10, 19),
+        _OCTOBER_AS_OF,
+    ]
+    with session_factory() as db:
+        repaired = (
+            db.query(StockPrice)
+            .filter(StockPrice.symbol == "SPY", StockPrice.date == _OCTOBER_AS_OF)
+            .one()
+        )
+    assert (
+        repaired.open,
+        repaired.high,
+        repaired.low,
+        repaired.close,
+        repaired.adj_close,
+        repaired.volume,
+    ) == (1.0, 1.2, 0.9, 1.1, 1.1, 500)
+    assert result["primary_benchmark_retry"] == {
+        "symbol": "SPY",
+        "attempted": True,
+        "recovered": False,
+        "skipped_reason": None,
+        "quote_repair_seed": "seeded",
+        "primary_current": True,
+    }
+    assert result["latest_session_repair"] == {
+        "attempted": 1,
+        "repaired": 1,
+        "wait_seconds": STATIC_SESSION_REPAIR_WAIT_SECONDS,
+    }
+    assert result["yahoo_fetched_symbols"] == 9
+    assert result["yahoo_failed_symbols"] == 1
+    assert (
+        "[static-daily prices:US] Quote-repair seed for primary benchmark SPY: seeded "
+        "(stored history through 2026-10-19)."
+    ) in capsys.readouterr().out
+
+
+def test_static_daily_price_quote_repair_seed_refuses_a_stored_frame_two_sessions_behind(
+    capsys,
+) -> None:
+    session_factory = _sqlite_session_factory()
+    _seed_prices(session_factory, "SPY", [date(2026, 10, 15), date(2026, 10, 16)])
+    fetcher = _UsFetcher(
+        lambda symbol, attempt: _throttled() if symbol == "SPY" else None,
+        top_up_dates=_OCTOBER_TOP_UP_DATES,
+    )
+    quote_requests: list[list[str]] = []
+    sleeps: list[float] = []
+    stored: list[list[str]] = []
+    service = _quote_seed_service(
+        session_factory, fetcher, quote_requests=quote_requests, sleeps=sleeps, stored=stored
+    )
+
+    result = service.refresh(as_of_date=_OCTOBER_AS_OF, market="US")
+
+    assert [call["symbols"] for call in fetcher.calls][3:] == [["SPY"]]
+    assert quote_requests == []
+    assert sleeps == []
+    assert stored == [["IVV", "^VIX"], sorted(_OCTOBER_US_UNIVERSE_CALL)]
+    assert _stored_dates(session_factory, "SPY") == [date(2026, 10, 15), date(2026, 10, 16)]
+    assert result["primary_benchmark_retry"] == {
+        "symbol": "SPY",
+        "attempted": True,
+        "recovered": False,
+        "skipped_reason": None,
+        "quote_repair_seed": "gap_too_large",
+        "primary_current": False,
+    }
+    assert result["latest_session_repair"] == {"attempted": 0, "repaired": 0, "wait_seconds": 0}
+    assert result["yahoo_failed_symbols"] == 1
+    assert (
+        "[static-daily prices:US] Quote-repair seed for primary benchmark SPY: gap_too_large "
+        "(stored history through 2026-10-16)."
+    ) in capsys.readouterr().out
+
+
+def test_static_daily_price_quote_repair_seed_needs_stored_history(capsys) -> None:
+    session_factory = _sqlite_session_factory()
+    fetcher = _UsFetcher(
+        lambda symbol, attempt: _throttled() if symbol == "SPY" else None,
+        top_up_dates=_OCTOBER_TOP_UP_DATES,
+    )
+    quote_requests: list[list[str]] = []
+    sleeps: list[float] = []
+    stored: list[list[str]] = []
+    service = _quote_seed_service(
+        session_factory, fetcher, quote_requests=quote_requests, sleeps=sleeps, stored=stored
+    )
+
+    result = service.refresh(as_of_date=_OCTOBER_AS_OF, market="US")
+
+    assert [call["symbols"] for call in fetcher.calls] == [
+        ["SPY", "IVV", "^VIX"],
+        _OCTOBER_US_UNIVERSE_CALL,
+        ["SPY"],
+    ]
+    assert quote_requests == []
+    assert sleeps == []
+    assert _stored_dates(session_factory, "SPY") == []
+    assert result["primary_benchmark_retry"] == {
+        "symbol": "SPY",
+        "attempted": True,
+        "recovered": False,
+        "skipped_reason": None,
+        "quote_repair_seed": "no_stored_history",
+        "primary_current": False,
+    }
+    assert result["latest_session_repair"] == {"attempted": 0, "repaired": 0, "wait_seconds": 0}
+    assert (
+        "[static-daily prices:US] Quote-repair seed for primary benchmark SPY: no_stored_history."
+    ) in capsys.readouterr().out
+
+
+def test_static_daily_price_quote_repair_seed_follows_the_market_price_plan() -> None:
+    # HK prices are repaired from Sina inside the fetcher, never from Yahoo quotes.
+    session_factory = _sqlite_session_factory()
+    _seed_prices(session_factory, "^HSI", [date(2026, 10, 15), date(2026, 10, 16)])
+    fetcher = _UsFetcher(
+        lambda symbol, attempt: _throttled() if symbol == "^HSI" else None,
+        top_up_dates=(date(2026, 10, 16), _OCTOBER_AS_OF),
+    )
+    sleeps: list[float] = []
+    stored: list[list[str]] = []
+    service = StaticDailyPriceRefreshService(
+        session_factory=session_factory,
+        price_cache=SimpleNamespace(store_batch_in_cache=_persisting_store(session_factory, stored)),
+        fetcher=fetcher,
+        batch_size_for_market=lambda _market: 25,
+        sleep=sleeps.append,
+        fetch_quotes=lambda symbols: pytest.fail("HK prices have no quote repair"),
+    )
+
+    result = service.refresh(as_of_date=_OCTOBER_AS_OF, market="HK")
+
+    assert [call["symbols"] for call in fetcher.calls] == [
+        ["^HSI"],
+        ["2800.HK"],
+        ["0700.HK", "3690.HK", "0941.HK"],
+        ["^HSI"],
+    ]
+    assert sleeps == []
+    assert _stored_dates(session_factory, "^HSI") == [date(2026, 10, 15), date(2026, 10, 16)]
+    assert result["primary_benchmark_retry"] == {
+        "symbol": "^HSI",
+        "attempted": True,
+        "recovered": False,
+        "skipped_reason": None,
+        "quote_repair_seed": "plan_disallows_quotes",
+        "primary_current": False,
+    }
+    assert result["latest_session_repair"] == {"attempted": 0, "repaired": 0, "wait_seconds": 0}
+    assert result["yahoo_failed_symbols"] == 1
+
+
+@pytest.mark.parametrize(
+    "seconds_left",
+    [
+        # Under the 60s latest-session repair wait: a seeded frame would make
+        # that repair raise and turn a completed run into a resumable one.
+        pytest.param(59.0, id="under_the_repair_wait"),
+        # The reserve is that wait plus the quote repair's 15/45 backoff.
+        pytest.param(119.0, id="one_second_short"),
+    ],
+)
+def test_static_daily_price_quote_repair_seed_skips_without_deadline_headroom(
+    seconds_left, capsys
+) -> None:
+    session_factory = _sqlite_session_factory()
+    _seed_prices(session_factory, "SPY", [date(2026, 10, 16), date(2026, 10, 19)])
+    fetcher = _UsFetcher(
+        lambda symbol, attempt: _throttled() if symbol == "SPY" else None,
+        top_up_dates=_OCTOBER_TOP_UP_DATES,
+    )
+    quote_requests: list[list[str]] = []
+    sleeps: list[float] = []
+    stored: list[list[str]] = []
+    service = _quote_seed_service(
+        session_factory,
+        fetcher,
+        quote_requests=quote_requests,
+        sleeps=sleeps,
+        stored=stored,
+        deadline=seconds_left,
+        clock=lambda: 0.0,
+    )
+
+    result = service.refresh(as_of_date=_OCTOBER_AS_OF, market="US")
+
+    assert result["status"] == "completed"
+    assert quote_requests == []
+    assert sleeps == []
+    assert _stored_dates(session_factory, "SPY") == [date(2026, 10, 16), date(2026, 10, 19)]
+    # Below the late refetch's own 600s reserve too, so the seed is the only
+    # path left and it declines as well.
+    assert result["primary_benchmark_retry"] == {
+        "symbol": "SPY",
+        "attempted": False,
+        "recovered": False,
+        "skipped_reason": "deadline",
+        "quote_repair_seed": "deadline",
+        "primary_current": False,
+    }
+    assert result["latest_session_repair"] == {"attempted": 0, "repaired": 0, "wait_seconds": 0}
+    assert (
+        "[static-daily prices:US] Quote-repair seed for primary benchmark SPY: deadline "
+        f"({seconds_left:.0f}s left before the price-stage deadline, 120s needed)."
+    ) in capsys.readouterr().out
+
+
+def test_static_daily_price_quote_repair_seed_joins_a_repair_that_runs_anyway() -> None:
+    session_factory = _sqlite_session_factory()
+    _seed_prices(session_factory, "SPY", [date(2026, 10, 16), date(2026, 10, 19)])
+    stale_qqq = {
+        "price_data": _price_frame((date(2026, 10, 16), date(2026, 10, 19)), 1.0),
+        "has_error": False,
+    }
+    fetcher = _UsFetcher(
+        lambda symbol, attempt: _throttled()
+        if symbol == "SPY"
+        else stale_qqq if symbol == "QQQ" else None,
+        top_up_dates=_OCTOBER_TOP_UP_DATES,
+    )
+    quote_requests: list[list[str]] = []
+    sleeps: list[float] = []
+    stored: list[list[str]] = []
+    service = _quote_seed_service(
+        session_factory,
+        fetcher,
+        quote_requests=quote_requests,
+        sleeps=sleeps,
+        stored=stored,
+        deadline=100.0,
+        clock=lambda: 0.0,
+    )
+
+    result = service.refresh(as_of_date=_OCTOBER_AS_OF, market="US")
+
+    assert result["status"] == "completed"
+    assert sorted(symbol for batch in quote_requests for symbol in batch) == ["QQQ", "SPY"]
+    assert _stored_dates(session_factory, "SPY")[-1] == _OCTOBER_AS_OF
+    assert result["primary_benchmark_retry"]["quote_repair_seed"] == "seeded"
+    assert result["primary_benchmark_retry"]["primary_current"] is True
+
+
+def test_static_daily_price_quote_repair_seed_runs_with_exactly_its_reserve() -> None:
+    session_factory = _sqlite_session_factory()
+    _seed_prices(session_factory, "SPY", [date(2026, 10, 16), date(2026, 10, 19)])
+    fetcher = _UsFetcher(
+        lambda symbol, attempt: _throttled() if symbol == "SPY" else None,
+        top_up_dates=_OCTOBER_TOP_UP_DATES,
+    )
+    quote_requests: list[list[str]] = []
+    sleeps: list[float] = []
+    stored: list[list[str]] = []
+    service = _quote_seed_service(
+        session_factory,
+        fetcher,
+        quote_requests=quote_requests,
+        sleeps=sleeps,
+        stored=stored,
+        deadline=120.0,
+        clock=lambda: 0.0,
+    )
+
+    result = service.refresh(as_of_date=_OCTOBER_AS_OF, market="US")
+
+    assert result["status"] == "completed"
+    assert quote_requests == [["SPY"]]
+    assert sleeps == [STATIC_SESSION_REPAIR_WAIT_SECONDS]
+    assert _stored_dates(session_factory, "SPY") == [
+        date(2026, 10, 16),
+        date(2026, 10, 19),
+        _OCTOBER_AS_OF,
+    ]
+    assert result["primary_benchmark_retry"] == {
+        "symbol": "SPY",
+        "attempted": False,
+        "recovered": False,
+        "skipped_reason": "deadline",
+        "quote_repair_seed": "seeded",
+        "primary_current": True,
+    }
+    assert result["latest_session_repair"] == {
+        "attempted": 1,
+        "repaired": 1,
+        "wait_seconds": STATIC_SESSION_REPAIR_WAIT_SECONDS,
+    }
+
+
+def test_static_daily_price_quote_repair_seed_refuses_readjusted_history(capsys) -> None:
+    session_factory = _sqlite_session_factory()
+    _seed_prices(session_factory, "SPY", [date(2026, 10, 16), date(2026, 10, 19)])
+    # The top-up shows an ex-dividend back-adjustment against the stored 1.0
+    # bars; the 2y replacement refetch and its late retry are both throttled,
+    # so the stored history is on the old basis and must not take the quote.
+    fetcher = _UsFetcher(
+        lambda symbol, attempt: (
+            None
+            if symbol != "SPY"
+            else {"price_data": _price_frame(_OCTOBER_TOP_UP_DATES, 0.99), "has_error": False}
+            if attempt == 1
+            else _throttled()
+        ),
+        top_up_dates=_OCTOBER_TOP_UP_DATES,
+    )
+    quote_requests: list[list[str]] = []
+    sleeps: list[float] = []
+    stored: list[list[str]] = []
+    service = _quote_seed_service(
+        session_factory, fetcher, quote_requests=quote_requests, sleeps=sleeps, stored=stored
+    )
+
+    result = service.refresh(as_of_date=_OCTOBER_AS_OF, market="US")
+
+    assert [(call["symbols"], call["period"]) for call in fetcher.calls] == [
+        (["SPY"], STATIC_DAILY_PRICE_REFRESH_PERIOD),
+        (["IVV", "^VIX"], STATIC_DAILY_PRICE_BOOTSTRAP_PERIOD),
+        (_OCTOBER_US_UNIVERSE_CALL, STATIC_DAILY_PRICE_BOOTSTRAP_PERIOD),
+        (["SPY"], STATIC_DAILY_PRICE_BOOTSTRAP_PERIOD),
+        (["SPY"], STATIC_DAILY_PRICE_BOOTSTRAP_PERIOD),
+    ]
+    assert quote_requests == []
+    assert sleeps == []
+    assert _stored_dates(session_factory, "SPY") == [date(2026, 10, 16), date(2026, 10, 19)]
+    assert _adj_closes(session_factory, "SPY") == {1.0}
+    assert result["primary_benchmark_retry"] == {
+        "symbol": "SPY",
+        "attempted": True,
+        "recovered": False,
+        "skipped_reason": None,
+        "quote_repair_seed": "history_readjusted",
+        "primary_current": False,
+    }
+    assert result["readjusted_symbols"] == 1
+    assert result["latest_session_repair"] == {"attempted": 0, "repaired": 0, "wait_seconds": 0}
+    assert (
+        "[static-daily prices:US] Quote-repair seed for primary benchmark SPY: history_readjusted."
+    ) in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    ("as_of", "stored_through"),
+    [
+        pytest.param(date(2026, 10, 19), date(2026, 10, 16), id="weekend"),
+        # Labor Day 2026 (09-07) closes the US market between the two.
+        pytest.param(date(2026, 9, 8), date(2026, 9, 4), id="holiday"),
+    ],
+)
+def test_static_daily_price_quote_repair_seed_finds_the_previous_session_across_a_closure(
+    as_of, stored_through
+) -> None:
+    session_factory = _sqlite_session_factory()
+    _seed_prices(session_factory, "SPY", [stored_through])
+    fetcher = _UsFetcher(
+        lambda symbol, attempt: _throttled() if symbol == "SPY" else None,
+        top_up_dates=(stored_through, as_of),
+    )
+    quote_requests: list[list[str]] = []
+    sleeps: list[float] = []
+    stored: list[list[str]] = []
+    service = _quote_seed_service(
+        session_factory,
+        fetcher,
+        quote_requests=quote_requests,
+        sleeps=sleeps,
+        stored=stored,
+        as_of=as_of,
+    )
+
+    result = service.refresh(as_of_date=as_of, market="US")
+
+    assert quote_requests == [["SPY"]]
+    assert _stored_dates(session_factory, "SPY") == [stored_through, as_of]
+    assert result["primary_benchmark_retry"] == {
+        "symbol": "SPY",
+        "attempted": True,
+        "recovered": False,
+        "skipped_reason": None,
+        "quote_repair_seed": "seeded",
+        "primary_current": True,
+    }
+    assert result["latest_session_repair"] == {
+        "attempted": 1,
+        "repaired": 1,
+        "wait_seconds": STATIC_SESSION_REPAIR_WAIT_SECONDS,
+    }
+
+
+def test_static_daily_price_quote_repaired_bar_gets_a_usable_adj_close_without_an_anchor() -> None:
+    session_factory = _sqlite_session_factory()
+    # Rows stored without an adjusted close, as older history can be.
+    _seed_prices(
+        session_factory, "SPY", [date(2026, 10, 16), date(2026, 10, 19)], adj_close=None
+    )
+    fetcher = _UsFetcher(
+        lambda symbol, attempt: _throttled() if symbol == "SPY" else None,
+        top_up_dates=_OCTOBER_TOP_UP_DATES,
+    )
+    quote_requests: list[list[str]] = []
+    sleeps: list[float] = []
+    stored: list[list[str]] = []
+    service = _quote_seed_service(
+        session_factory, fetcher, quote_requests=quote_requests, sleeps=sleeps, stored=stored
+    )
+
+    result = service.refresh(as_of_date=_OCTOBER_AS_OF, market="US")
+
+    with session_factory() as db:
+        repaired = (
+            db.query(StockPrice)
+            .filter(StockPrice.symbol == "SPY", StockPrice.date == _OCTOBER_AS_OF)
+            .one()
+        )
+    # Market RS drops a bar whose adj_close is not positive, so the quote's
+    # close stands in for it.
+    assert (repaired.close, repaired.adj_close) == (1.1, 1.1)
+    assert result["primary_benchmark_retry"] == {
+        "symbol": "SPY",
+        "attempted": True,
+        "recovered": False,
+        "skipped_reason": None,
+        "quote_repair_seed": "seeded",
+        "primary_current": True,
+    }
+    assert result["latest_session_repair"] == {
+        "attempted": 1,
+        "repaired": 1,
+        "wait_seconds": STATIC_SESSION_REPAIR_WAIT_SECONDS,
+    }
