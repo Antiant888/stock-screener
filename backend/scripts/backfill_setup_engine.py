@@ -5,11 +5,12 @@ lack the ``setup_engine`` key in ``details_json``.  This script computes
 setup_engine payloads using historical price data and surgically merges them
 into existing rows without disturbing other screener data.
 
-Each row's RS rating comes from its Feature run's published Market RS
-snapshot, read through the same reader the scanner uses. A row whose run has
-no resolvable publication, or whose symbol is outside that run's eligible
-universe, is skipped and counted, so the Setup Engine's RS gate is never
-bypassed with a missing rating.
+Each row's RS rating comes from the Market RS run its Feature run's balanced
+RS identity names, read through the same reader the scanner uses. A run
+without that identity, such as one published under the retired legacy
+formula, is skipped and counted, as is a row whose run cannot be read or
+whose symbol is outside that run's eligible universe. The Setup Engine's RS
+gate is never bypassed with a missing rating.
 
 Usage:
     cd backend
@@ -52,7 +53,6 @@ import pandas as pd
 
 from app.analysis.patterns.models import SETUP_ENGINE_DEFAULT_SCHEMA_VERSION
 from app.database import SessionLocal
-from app.domain.feature_store.run_metadata import feature_run_market
 from app.domain.scanning.ports import MarketRsResolution
 from app.infra.db.models.feature_store import (
     FeatureRun,
@@ -62,6 +62,10 @@ from app.infra.db.models.feature_store import (
 from app.scanners.base_screener import DataRequirements, StockData
 from app.scanners.setup_engine_scanner import attach_setup_engine
 from app.scanners.setup_engine_screener import SetupEngineScanner
+from app.services.feature_run_rs_identity import (
+    FeatureRunRsIdentityError,
+    resolve_feature_run_rs_identity,
+)
 from app.services.market_rs_reader import (
     CanonicalMarketRsUnavailable,
     SqlMarketRsReader,
@@ -199,8 +203,14 @@ def _resolve_market_rs_by_run(
     db,
     reader,
     rows: List[Tuple[int, str, date, Any]],
-) -> Dict[int, Optional[MarketRsResolution]]:
-    """Resolve each run's published Market RS once; None when it cannot be."""
+) -> Tuple[Dict[int, Optional[MarketRsResolution]], int]:
+    """Read each run's own Market RS run once; None when it cannot be read.
+
+    A run is read only by the ``market_rs_run_id`` its balanced RS identity
+    names. A run without one (every run published under the legacy formula)
+    is skipped and counted: the date alone could match an unpublished shadow
+    run. Returns the resolutions and the count of runs without an identity.
+    """
     symbols_by_run: Dict[int, set] = {}
     for run_id, symbol, _as_of_date, _details in rows:
         symbols_by_run.setdefault(run_id, set()).add(symbol)
@@ -209,25 +219,30 @@ def _resolve_market_rs_by_run(
         for run in db.query(FeatureRun).filter(FeatureRun.id.in_(symbols_by_run))
     }
     resolutions: Dict[int, Optional[MarketRsResolution]] = {}
+    runs_without_identity = 0
     for run_id, symbols in symbols_by_run.items():
         run = runs[run_id]
-        config = run.config_json if isinstance(run.config_json, dict) else {}
-        market = feature_run_market(run) or config.get("market") or "US"
-        market_rs_run_id = config.get("market_rs_run_id")
+        try:
+            rs = resolve_feature_run_rs_identity(run, ranking_date=run.as_of_date)
+        except FeatureRunRsIdentityError as exc:
+            logger.warning("No balanced RS identity for run %d: %s", run_id, exc)
+            resolutions[run_id] = None
+            runs_without_identity += 1
+            continue
         try:
             resolutions[run_id] = reader.get(
-                market=market,
+                market=rs.identity.market,
                 symbols=sorted(symbols),
-                as_of_date=None if market_rs_run_id is not None else run.as_of_date,
-                run_id=int(market_rs_run_id) if market_rs_run_id is not None else None,
+                as_of_date=rs.identity.as_of_date,
+                run_id=rs.market_rs_run_id,
             )
         except CanonicalMarketRsUnavailable as exc:
             logger.warning(
                 "No published Market RS for run %d (%s @ %s): %s",
-                run_id, market, run.as_of_date, exc,
+                run_id, rs.identity.market, rs.identity.as_of_date, exc,
             )
             resolutions[run_id] = None
-    return resolutions
+    return resolutions, runs_without_identity
 
 
 # ───────────────────────────────────────────────────────────────────────────
@@ -347,7 +362,7 @@ def run_backfill(args: argparse.Namespace) -> Optional[Dict[str, int]]:
         symbols_list = sorted(symbol_groups.keys())
         total_symbols = len(symbols_list)
         total_rows = len(rows_needing_backfill)
-        rs_by_run = _resolve_market_rs_by_run(
+        rs_by_run, runs_without_rs_identity = _resolve_market_rs_by_run(
             db, SqlMarketRsReader(SessionLocal), rows_needing_backfill
         )
 
@@ -496,6 +511,7 @@ def run_backfill(args: argparse.Namespace) -> Optional[Dict[str, int]]:
         logger.info("  Processed: %d rows", processed)
         logger.info("  Skipped:   %d rows", skipped)
         logger.info("  Skipped (no published Market RS): %d rows", skipped_no_rs)
+        logger.info("  Runs without a balanced RS identity: %d", runs_without_rs_identity)
         logger.info("  Errors:    %d rows", errors)
         if failed_symbols:
             logger.info(
@@ -510,6 +526,7 @@ def run_backfill(args: argparse.Namespace) -> Optional[Dict[str, int]]:
             "processed": processed,
             "skipped": skipped,
             "skipped_no_rs": skipped_no_rs,
+            "runs_without_rs_identity": runs_without_rs_identity,
             "errors": errors,
         }
 

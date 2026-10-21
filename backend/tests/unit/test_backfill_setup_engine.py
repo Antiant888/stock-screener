@@ -261,7 +261,7 @@ class TestRunBackfillErrorIsolation:
     @patch("scripts.backfill_setup_engine.SessionLocal")
     @patch(
         "scripts.backfill_setup_engine._resolve_market_rs_by_run",
-        return_value={1: _resolution(("AAPL", "MSFT"))},
+        return_value=({1: _resolution(("AAPL", "MSFT"))}, 0),
     )
     def test_failed_symbol_continues(
         self, _resolve, mock_session_cls, mock_scanner_cls, mock_fetch, mock_get_benchmark_cache,
@@ -385,7 +385,7 @@ class TestRunBackfillForceOverwrite:
     @patch("scripts.backfill_setup_engine.SessionLocal")
     @patch(
         "scripts.backfill_setup_engine._resolve_market_rs_by_run",
-        return_value={1: _resolution(("AAPL",))},
+        return_value=({1: _resolution(("AAPL",))}, 0),
     )
     def test_force_reprocesses_matching_rows(
         self, _resolve, mock_session_cls, mock_scanner_cls, mock_fetch, mock_get_benchmark_cache,
@@ -466,52 +466,74 @@ class TestRunBackfillForceOverwrite:
 # ───────────────────────────────────────────────────────────────────────────
 
 
+def _add_market_rs_run(db, as_of: date, ratings: dict[str, int]):
+    from app.infra.db.models.relative_strength import MarketRsRun, StockRsSnapshot
+
+    rs_run = MarketRsRun(
+        market="US",
+        as_of_date=as_of,
+        formula_version=BALANCED_RS_FORMULA_VERSION,
+        status="completed",
+        benchmark_symbol="SPY",
+        benchmark_as_of_date=as_of,
+        universe_hash="hash",
+        expected_symbol_count=len(ratings) + 1,
+        eligible_symbol_count=len(ratings),
+        excluded_symbol_count=1,
+        diagnostics_json={
+            "price_basis": BALANCED_RS_PRICE_BASIS,
+            "rs_snapshot_schema_version": BALANCED_RS_SNAPSHOT_SCHEMA_VERSION,
+        },
+    )
+    db.add(rs_run)
+    db.flush()
+    for symbol, rating in ratings.items():
+        excess = (rating - 50) / 100
+        db.add(
+            StockRsSnapshot(
+                run_id=rs_run.id, symbol=symbol, overall_rs=rating,
+                rs_1m=rating, rs_3m=rating, rs_6m=rating, rs_9m=rating, rs_12m=rating,
+                weighted_composite=excess, excess_return_1m=excess,
+                excess_return_3m=excess, excess_return_6m=excess,
+                excess_return_9m=excess, excess_return_12m=excess,
+            )
+        )
+    return rs_run
+
+
 class TestRunBackfillMarketRsGate:
-    @patch("scripts.backfill_setup_engine.get_benchmark_cache")
-    @patch("scripts.backfill_setup_engine._fetch_price_data")
-    @patch("scripts.backfill_setup_engine.SessionLocal")
-    def test_weak_published_rs_fails_the_gate_and_unrated_rows_are_skipped(
-        self, mock_session_cls, mock_fetch, mock_get_benchmark_cache,
-    ):
+    @pytest.fixture
+    def session_factory(self):
         from sqlalchemy import create_engine
         from sqlalchemy.orm import sessionmaker
 
         from app.database import Base
-        from app.infra.db.models.feature_store import FeatureRun, StockFeatureDaily
-        from app.infra.db.models.relative_strength import MarketRsRun, StockRsSnapshot
 
         engine = create_engine("sqlite:///:memory:")
         Base.metadata.create_all(engine)
-        Session = sessionmaker(bind=engine)
+        yield sessionmaker(bind=engine)
+        engine.dispose()
+
+    @staticmethod
+    def _patch_inputs(mock_session_cls, mock_fetch, mock_get_benchmark_cache, session_factory):
+        mock_session_cls.side_effect = session_factory
+        prices = _make_price_df("2024-03-01", 330)
+        mock_fetch.return_value = prices
+        mock_get_benchmark_cache.return_value = MagicMock(
+            get_spy_data=MagicMock(return_value=prices)
+        )
+
+    @patch("scripts.backfill_setup_engine.get_benchmark_cache")
+    @patch("scripts.backfill_setup_engine._fetch_price_data")
+    @patch("scripts.backfill_setup_engine.SessionLocal")
+    def test_weak_published_rs_fails_the_gate_and_unrated_rows_are_skipped(
+        self, mock_session_cls, mock_fetch, mock_get_benchmark_cache, session_factory,
+    ):
+        from app.infra.db.models.feature_store import FeatureRun, StockFeatureDaily
+
         as_of = date(2025, 6, 2)
-        with Session() as db:
-            rs_run = MarketRsRun(
-                market="US",
-                as_of_date=as_of,
-                formula_version=BALANCED_RS_FORMULA_VERSION,
-                status="completed",
-                benchmark_symbol="SPY",
-                benchmark_as_of_date=as_of,
-                universe_hash="hash",
-                expected_symbol_count=2,
-                eligible_symbol_count=1,
-                excluded_symbol_count=1,
-                diagnostics_json={
-                    "price_basis": BALANCED_RS_PRICE_BASIS,
-                    "rs_snapshot_schema_version": BALANCED_RS_SNAPSHOT_SCHEMA_VERSION,
-                },
-            )
-            db.add(rs_run)
-            db.flush()
-            db.add(
-                StockRsSnapshot(
-                    run_id=rs_run.id, symbol="WEAK", overall_rs=10,
-                    rs_1m=10, rs_3m=10, rs_6m=10, rs_9m=10, rs_12m=10,
-                    weighted_composite=0.1, excess_return_1m=-0.1,
-                    excess_return_3m=-0.1, excess_return_6m=-0.1,
-                    excess_return_9m=-0.1, excess_return_12m=-0.1,
-                )
-            )
+        with session_factory() as db:
+            rs_run = _add_market_rs_run(db, as_of, {"WEAK": 10})
             feature_run = FeatureRun(
                 as_of_date=as_of,
                 run_type="daily_snapshot",
@@ -536,17 +558,11 @@ class TestRunBackfillMarketRsGate:
                 )
             db.commit()
             feature_run_id = feature_run.id
-
-        mock_session_cls.side_effect = Session
-        prices = _make_price_df("2024-03-01", 330)
-        mock_fetch.return_value = prices
-        mock_get_benchmark_cache.return_value = MagicMock(
-            get_spy_data=MagicMock(return_value=prices)
-        )
+        self._patch_inputs(mock_session_cls, mock_fetch, mock_get_benchmark_cache, session_factory)
 
         summary = run_backfill(_make_args())
 
-        with Session() as db:
+        with session_factory() as db:
             rows = {
                 row.symbol: row
                 for row in db.query(StockFeatureDaily).filter(
@@ -558,4 +574,54 @@ class TestRunBackfillMarketRsGate:
         assert setup_engine["setup_ready"] is False
         assert "rs_rating_insufficient" in setup_engine["explain"]["failed_checks"]
         assert rows["NORS"].details_json is None
-        assert summary == {"processed": 1, "skipped": 0, "skipped_no_rs": 1, "errors": 0}
+        assert summary == {
+            "processed": 1,
+            "skipped": 0,
+            "skipped_no_rs": 1,
+            "runs_without_rs_identity": 0,
+            "errors": 0,
+        }
+
+    @patch("scripts.backfill_setup_engine.get_benchmark_cache")
+    @patch("scripts.backfill_setup_engine._fetch_price_data")
+    @patch("scripts.backfill_setup_engine.SessionLocal")
+    def test_a_run_without_a_balanced_identity_never_reads_a_shadow_run(
+        self, mock_session_cls, mock_fetch, mock_get_benchmark_cache, session_factory,
+    ):
+        from app.infra.db.models.feature_store import FeatureRun, StockFeatureDaily
+
+        as_of = date(2025, 6, 2)
+        with session_factory() as db:
+            # The shadow backfill writes completed runs that were never published.
+            _add_market_rs_run(db, as_of, {"AAPL": 95})
+            feature_run = FeatureRun(
+                as_of_date=as_of,
+                run_type="daily_snapshot",
+                status="published",
+                config_json={"market": "US", "rs_formula_version": "legacy-linear-v1"},
+            )
+            db.add(feature_run)
+            db.flush()
+            db.add(
+                StockFeatureDaily(
+                    run_id=feature_run.id, symbol="AAPL", as_of_date=as_of, details_json=None,
+                )
+            )
+            db.commit()
+            feature_run_id = feature_run.id
+        self._patch_inputs(mock_session_cls, mock_fetch, mock_get_benchmark_cache, session_factory)
+
+        summary = run_backfill(_make_args())
+
+        with session_factory() as db:
+            row = db.query(StockFeatureDaily).filter(
+                StockFeatureDaily.run_id == feature_run_id
+            ).one()
+        assert row.details_json is None
+        assert summary == {
+            "processed": 0,
+            "skipped": 0,
+            "skipped_no_rs": 1,
+            "runs_without_rs_identity": 1,
+            "errors": 0,
+        }
