@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import inspect
+from contextlib import ExitStack, contextmanager
 from datetime import date, datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import ANY, MagicMock, patch
@@ -104,6 +105,30 @@ class _NonSkippingUoW:
         return False
 
 
+@contextmanager
+def _snapshot_task_patches(use_case, *, auto_scan: bool = True):
+    """Stub the collaborators a build_daily_snapshot task-body run touches."""
+    patches = [
+        patch("app.interfaces.tasks.feature_store_tasks._is_market_trading_day", return_value=True),
+        patch("app.wiring.bootstrap.get_build_daily_snapshot_use_case", return_value=use_case),
+        patch("app.database.SessionLocal"),
+        patch("app.infra.db.uow.SqlUnitOfWork", side_effect=lambda *_args, **_kwargs: _NonSkippingUoW()),
+        patch("app.infra.tasks.progress_sink.CeleryProgressSink", return_value=object()),
+        patch("app.domain.scanning.ports.NeverCancelledToken", return_value=object()),
+    ]
+    if auto_scan:
+        patches.append(
+            patch(
+                "app.interfaces.tasks.feature_store_tasks._create_auto_scan_for_published_run",
+                return_value="auto-scan-001",
+            )
+        )
+    with ExitStack() as stack:
+        for p in patches:
+            stack.enter_context(p)
+        yield
+
+
 def test_task_trading_day_guard_uses_market_calendar(monkeypatch):
     calls = []
 
@@ -124,29 +149,9 @@ def test_task_trading_day_guard_uses_market_calendar(monkeypatch):
 def test_build_daily_snapshot_normalizes_default_active_universe():
     fake_use_case = _FakeUseCase()
 
-    with patch(
+    with _snapshot_task_patches(fake_use_case), patch(
         "app.interfaces.tasks.feature_store_tasks.date"
-    ) as mock_date, patch(
-        "app.interfaces.tasks.feature_store_tasks._is_market_trading_day",
-        return_value=True,
-    ), patch(
-        "app.wiring.bootstrap.get_build_daily_snapshot_use_case",
-        return_value=fake_use_case,
-    ), patch(
-        "app.database.SessionLocal"
-    ), patch(
-        "app.infra.db.uow.SqlUnitOfWork",
-        side_effect=lambda *_args, **_kwargs: _NonSkippingUoW(),
-    ), patch(
-        "app.infra.tasks.progress_sink.CeleryProgressSink",
-        return_value=object(),
-    ), patch(
-        "app.domain.scanning.ports.NeverCancelledToken",
-        return_value=object(),
-    ), patch(
-        "app.interfaces.tasks.feature_store_tasks._create_auto_scan_for_published_run",
-        return_value="auto-scan-001",
-    ):
+    ) as mock_date:
         mock_date.today.return_value = date(2026, 3, 16)
 
         result = _TASK_BODY(
@@ -232,27 +237,7 @@ def test_build_daily_snapshot_autoretry_budget_covers_bootstrap_polling():
 def test_build_daily_snapshot_never_passes_legacy_dict_shape():
     fake_use_case = _FakeUseCase()
 
-    with patch(
-        "app.interfaces.tasks.feature_store_tasks._is_market_trading_day",
-        return_value=True,
-    ), patch(
-        "app.wiring.bootstrap.get_build_daily_snapshot_use_case",
-        return_value=fake_use_case,
-    ), patch(
-        "app.database.SessionLocal"
-    ), patch(
-        "app.infra.db.uow.SqlUnitOfWork",
-        side_effect=lambda *_args, **_kwargs: _NonSkippingUoW(),
-    ), patch(
-        "app.infra.tasks.progress_sink.CeleryProgressSink",
-        return_value=object(),
-    ), patch(
-        "app.domain.scanning.ports.NeverCancelledToken",
-        return_value=object(),
-    ), patch(
-        "app.interfaces.tasks.feature_store_tasks._create_auto_scan_for_published_run",
-        return_value="auto-scan-001",
-    ):
+    with _snapshot_task_patches(fake_use_case):
         _TASK_BODY(_FakeTask(), as_of_date_str="2026-03-16")
 
     assert isinstance(fake_use_case.received_cmd.universe_def, dict) is False
@@ -262,27 +247,7 @@ def test_build_daily_snapshot_uses_default_scan_profile_when_not_provided():
     fake_use_case = _FakeUseCase()
     defaults = get_default_scan_profile("US")
 
-    with patch(
-        "app.interfaces.tasks.feature_store_tasks._is_market_trading_day",
-        return_value=True,
-    ), patch(
-        "app.wiring.bootstrap.get_build_daily_snapshot_use_case",
-        return_value=fake_use_case,
-    ), patch(
-        "app.database.SessionLocal"
-    ), patch(
-        "app.infra.db.uow.SqlUnitOfWork",
-        side_effect=lambda *_args, **_kwargs: _NonSkippingUoW(),
-    ), patch(
-        "app.infra.tasks.progress_sink.CeleryProgressSink",
-        return_value=object(),
-    ), patch(
-        "app.domain.scanning.ports.NeverCancelledToken",
-        return_value=object(),
-    ), patch(
-        "app.interfaces.tasks.feature_store_tasks._create_auto_scan_for_published_run",
-        return_value="auto-scan-001",
-    ):
+    with _snapshot_task_patches(fake_use_case):
         _TASK_BODY(_FakeTask(), as_of_date_str="2026-03-16")
 
     assert fake_use_case.received_cmd.screener_names == defaults["screeners"]
@@ -294,27 +259,7 @@ def test_build_daily_snapshot_bootstrap_uses_lightweight_scan_profile():
     fake_use_case = _FakeUseCase()
     bootstrap_defaults = get_bootstrap_scan_profile("US")
 
-    with patch(
-        "app.interfaces.tasks.feature_store_tasks._is_market_trading_day",
-        return_value=True,
-    ), patch(
-        "app.wiring.bootstrap.get_build_daily_snapshot_use_case",
-        return_value=fake_use_case,
-    ), patch(
-        "app.database.SessionLocal"
-    ), patch(
-        "app.infra.db.uow.SqlUnitOfWork",
-        side_effect=lambda *_args, **_kwargs: _NonSkippingUoW(),
-    ), patch(
-        "app.infra.tasks.progress_sink.CeleryProgressSink",
-        return_value=object(),
-    ), patch(
-        "app.domain.scanning.ports.NeverCancelledToken",
-        return_value=object(),
-    ), patch(
-        "app.interfaces.tasks.feature_store_tasks._create_auto_scan_for_published_run",
-        return_value="auto-scan-001",
-    ):
+    with _snapshot_task_patches(fake_use_case):
         _TASK_BODY(
             _FakeTask(),
             as_of_date_str="2026-03-16",
@@ -332,10 +277,7 @@ def test_build_daily_snapshot_bootstrap_uses_lightweight_scan_profile():
 def test_build_daily_snapshot_bootstrap_uses_balanced_publication_date():
     fake_use_case = _FakeUseCase()
 
-    with patch(
-        "app.interfaces.tasks.feature_store_tasks._is_market_trading_day",
-        return_value=True,
-    ), patch(
+    with _snapshot_task_patches(fake_use_case), patch(
         "app.services.market_calendar_service.MarketCalendarService.last_completed_trading_day",
         return_value=date(2026, 4, 10),
     ), patch(
@@ -345,25 +287,8 @@ def test_build_daily_snapshot_bootstrap_uses_balanced_publication_date():
             reason_code="balanced_run_selected",
         ),
     ), patch(
-        "app.wiring.bootstrap.get_build_daily_snapshot_use_case",
-        return_value=fake_use_case,
-    ), patch(
-        "app.database.SessionLocal"
-    ), patch(
-        "app.infra.db.uow.SqlUnitOfWork",
-        side_effect=lambda *_args, **_kwargs: _NonSkippingUoW(),
-    ), patch(
-        "app.infra.tasks.progress_sink.CeleryProgressSink",
-        return_value=object(),
-    ), patch(
-        "app.domain.scanning.ports.NeverCancelledToken",
-        return_value=object(),
-    ), patch(
         "app.services.runtime_preferences_service.is_market_enabled_now",
         return_value=True,
-    ), patch(
-        "app.interfaces.tasks.feature_store_tasks._create_auto_scan_for_published_run",
-        return_value="auto-scan-001",
     ):
         result = _TASK_BODY(
             _FakeTask(),
@@ -383,27 +308,7 @@ def test_build_daily_snapshot_bootstrap_lifecycle_without_cache_gate_uses_full_p
     fake_use_case = _FakeUseCase()
     defaults = get_default_scan_profile("US")
 
-    with patch(
-        "app.interfaces.tasks.feature_store_tasks._is_market_trading_day",
-        return_value=True,
-    ), patch(
-        "app.wiring.bootstrap.get_build_daily_snapshot_use_case",
-        return_value=fake_use_case,
-    ), patch(
-        "app.database.SessionLocal"
-    ), patch(
-        "app.infra.db.uow.SqlUnitOfWork",
-        side_effect=lambda *_args, **_kwargs: _NonSkippingUoW(),
-    ), patch(
-        "app.infra.tasks.progress_sink.CeleryProgressSink",
-        return_value=object(),
-    ), patch(
-        "app.domain.scanning.ports.NeverCancelledToken",
-        return_value=object(),
-    ), patch(
-        "app.interfaces.tasks.feature_store_tasks._create_auto_scan_for_published_run",
-        return_value="auto-scan-001",
-    ):
+    with _snapshot_task_patches(fake_use_case):
         _TASK_BODY(
             _FakeTask(),
             as_of_date_str="2026-03-16",
@@ -418,27 +323,7 @@ def test_build_daily_snapshot_bootstrap_preserves_explicit_screener_names():
     fake_use_case = _FakeUseCase()
     explicit_screeners = ["setup_engine"]
 
-    with patch(
-        "app.interfaces.tasks.feature_store_tasks._is_market_trading_day",
-        return_value=True,
-    ), patch(
-        "app.wiring.bootstrap.get_build_daily_snapshot_use_case",
-        return_value=fake_use_case,
-    ), patch(
-        "app.database.SessionLocal"
-    ), patch(
-        "app.infra.db.uow.SqlUnitOfWork",
-        side_effect=lambda *_args, **_kwargs: _NonSkippingUoW(),
-    ), patch(
-        "app.infra.tasks.progress_sink.CeleryProgressSink",
-        return_value=object(),
-    ), patch(
-        "app.domain.scanning.ports.NeverCancelledToken",
-        return_value=object(),
-    ), patch(
-        "app.interfaces.tasks.feature_store_tasks._create_auto_scan_for_published_run",
-        return_value="auto-scan-001",
-    ):
+    with _snapshot_task_patches(fake_use_case):
         _TASK_BODY(
             _FakeTask(),
             as_of_date_str="2026-03-16",
@@ -454,32 +339,12 @@ def test_build_daily_snapshot_bootstrap_preserves_explicit_screener_names():
 def test_build_daily_snapshot_defaults_to_market_profile_and_pointer():
     fake_use_case = _FakeUseCase()
 
-    with patch(
-        "app.interfaces.tasks.feature_store_tasks._is_market_trading_day",
-        return_value=True,
-    ), patch(
+    with _snapshot_task_patches(fake_use_case), patch(
         "app.services.market_calendar_service.MarketCalendarService.last_completed_trading_day",
         return_value=date(2026, 3, 16),
     ), patch(
-        "app.wiring.bootstrap.get_build_daily_snapshot_use_case",
-        return_value=fake_use_case,
-    ), patch(
-        "app.database.SessionLocal"
-    ), patch(
-        "app.infra.db.uow.SqlUnitOfWork",
-        side_effect=lambda *_args, **_kwargs: _NonSkippingUoW(),
-    ), patch(
-        "app.infra.tasks.progress_sink.CeleryProgressSink",
-        return_value=object(),
-    ), patch(
-        "app.domain.scanning.ports.NeverCancelledToken",
-        return_value=object(),
-    ), patch(
         "app.services.runtime_preferences_service.is_market_enabled_now",
         return_value=True,
-    ), patch(
-        "app.interfaces.tasks.feature_store_tasks._create_auto_scan_for_published_run",
-        return_value="auto-scan-001",
     ), patch(
         "app.interfaces.tasks.feature_store_tasks._upsert_feature_run_pointer",
     ) as mock_upsert:
@@ -760,27 +625,7 @@ def test_build_daily_snapshot_reraises_soft_time_limit():
         def execute(self, **kwargs):
             raise SoftTimeLimitExceeded()
 
-    with patch(
-        "app.interfaces.tasks.feature_store_tasks._is_market_trading_day",
-        return_value=True,
-    ), patch(
-        "app.wiring.bootstrap.get_build_daily_snapshot_use_case",
-        return_value=_TimeoutUseCase(),
-    ), patch(
-        "app.database.SessionLocal"
-    ), patch(
-        "app.infra.db.uow.SqlUnitOfWork",
-        side_effect=lambda *_args, **_kwargs: _NonSkippingUoW(),
-    ), patch(
-        "app.infra.tasks.progress_sink.CeleryProgressSink",
-        return_value=object(),
-    ), patch(
-        "app.domain.scanning.ports.NeverCancelledToken",
-        return_value=object(),
-    ), patch(
-        "app.interfaces.tasks.feature_store_tasks._create_auto_scan_for_published_run",
-        return_value="auto-scan-001",
-    ):
+    with _snapshot_task_patches(_TimeoutUseCase()):
         with pytest.raises(SoftTimeLimitExceeded):
             _TASK_BODY(_FakeTask(), as_of_date_str="2026-03-16")
 
@@ -792,27 +637,7 @@ def test_build_daily_snapshot_reraises_soft_time_limit_when_failure_activity_pub
         def execute(self, **kwargs):
             raise SoftTimeLimitExceeded()
 
-    with patch(
-        "app.interfaces.tasks.feature_store_tasks._is_market_trading_day",
-        return_value=True,
-    ), patch(
-        "app.wiring.bootstrap.get_build_daily_snapshot_use_case",
-        return_value=_TimeoutUseCase(),
-    ), patch(
-        "app.database.SessionLocal"
-    ), patch(
-        "app.infra.db.uow.SqlUnitOfWork",
-        side_effect=lambda *_args, **_kwargs: _NonSkippingUoW(),
-    ), patch(
-        "app.infra.tasks.progress_sink.CeleryProgressSink",
-        return_value=object(),
-    ), patch(
-        "app.domain.scanning.ports.NeverCancelledToken",
-        return_value=object(),
-    ), patch(
-        "app.interfaces.tasks.feature_store_tasks._create_auto_scan_for_published_run",
-        return_value="auto-scan-001",
-    ), patch(
+    with _snapshot_task_patches(_TimeoutUseCase()), patch(
         "app.interfaces.tasks.feature_store_tasks.mark_market_activity_failed",
         side_effect=RuntimeError("activity store unavailable"),
     ):
@@ -823,24 +648,7 @@ def test_build_daily_snapshot_reraises_soft_time_limit_when_failure_activity_pub
 def test_build_daily_snapshot_creates_auto_scan_after_publish():
     fake_use_case = _FakeUseCase()
 
-    with patch(
-        "app.interfaces.tasks.feature_store_tasks._is_market_trading_day",
-        return_value=True,
-    ), patch(
-        "app.wiring.bootstrap.get_build_daily_snapshot_use_case",
-        return_value=fake_use_case,
-    ), patch(
-        "app.database.SessionLocal"
-    ), patch(
-        "app.infra.db.uow.SqlUnitOfWork",
-        side_effect=lambda *_args, **_kwargs: _NonSkippingUoW(),
-    ), patch(
-        "app.infra.tasks.progress_sink.CeleryProgressSink",
-        return_value=object(),
-    ), patch(
-        "app.domain.scanning.ports.NeverCancelledToken",
-        return_value=object(),
-    ), patch(
+    with _snapshot_task_patches(fake_use_case, auto_scan=False), patch(
         "app.interfaces.tasks.feature_store_tasks._create_auto_scan_for_published_run",
         return_value="auto-scan-001",
     ) as mock_auto_scan:
@@ -855,69 +663,18 @@ def test_build_daily_snapshot_creates_auto_scan_after_publish():
     )
 
 
-def test_build_daily_snapshot_records_opportunity_telemetry_after_publish():
+@pytest.mark.parametrize(
+    "telemetry_error",
+    [
+        pytest.param(None, id="records_opportunity_telemetry_after_publish"),
+        pytest.param(RuntimeError("telemetry unavailable"), id="publication_survives_opportunity_telemetry_failure"),
+    ],
+)
+def test_build_daily_snapshot_opportunity_telemetry(telemetry_error):
     fake_use_case = _FakeUseCase()
-    telemetry = SimpleNamespace(record_opportunity_state_from_db=MagicMock())
+    telemetry = SimpleNamespace(record_opportunity_state_from_db=MagicMock(side_effect=telemetry_error))
 
-    with patch(
-        "app.interfaces.tasks.feature_store_tasks._is_market_trading_day",
-        return_value=True,
-    ), patch(
-        "app.wiring.bootstrap.get_build_daily_snapshot_use_case",
-        return_value=fake_use_case,
-    ), patch(
-        "app.database.SessionLocal"
-    ), patch(
-        "app.infra.db.uow.SqlUnitOfWork",
-        side_effect=lambda *_args, **_kwargs: _NonSkippingUoW(),
-    ), patch(
-        "app.infra.tasks.progress_sink.CeleryProgressSink",
-        return_value=object(),
-    ), patch(
-        "app.domain.scanning.ports.NeverCancelledToken",
-        return_value=object(),
-    ), patch(
-        "app.interfaces.tasks.feature_store_tasks._create_auto_scan_for_published_run",
-        return_value="auto-scan-001",
-    ), patch(
-        "app.services.telemetry.get_telemetry",
-        return_value=telemetry,
-    ):
-        result = _TASK_BODY(_FakeTask(), as_of_date_str="2026-03-16")
-
-    assert result["status"] == "published"
-    telemetry.record_opportunity_state_from_db.assert_called_once_with("US", 11)
-
-
-def test_build_daily_snapshot_publication_survives_opportunity_telemetry_failure():
-    fake_use_case = _FakeUseCase()
-    telemetry = SimpleNamespace(
-        record_opportunity_state_from_db=MagicMock(
-            side_effect=RuntimeError("telemetry unavailable")
-        )
-    )
-
-    with patch(
-        "app.interfaces.tasks.feature_store_tasks._is_market_trading_day",
-        return_value=True,
-    ), patch(
-        "app.wiring.bootstrap.get_build_daily_snapshot_use_case",
-        return_value=fake_use_case,
-    ), patch(
-        "app.database.SessionLocal"
-    ), patch(
-        "app.infra.db.uow.SqlUnitOfWork",
-        side_effect=lambda *_args, **_kwargs: _NonSkippingUoW(),
-    ), patch(
-        "app.infra.tasks.progress_sink.CeleryProgressSink",
-        return_value=object(),
-    ), patch(
-        "app.domain.scanning.ports.NeverCancelledToken",
-        return_value=object(),
-    ), patch(
-        "app.interfaces.tasks.feature_store_tasks._create_auto_scan_for_published_run",
-        return_value="auto-scan-001",
-    ), patch(
+    with _snapshot_task_patches(fake_use_case), patch(
         "app.services.telemetry.get_telemetry",
         return_value=telemetry,
     ):
@@ -931,24 +688,7 @@ def test_build_daily_snapshot_publication_survives_opportunity_telemetry_failure
 def test_build_daily_snapshot_can_defer_ibd_metadata_enrichment():
     fake_use_case = _FakeUseCase()
 
-    with patch(
-        "app.interfaces.tasks.feature_store_tasks._is_market_trading_day",
-        return_value=True,
-    ), patch(
-        "app.wiring.bootstrap.get_build_daily_snapshot_use_case",
-        return_value=fake_use_case,
-    ), patch(
-        "app.database.SessionLocal"
-    ), patch(
-        "app.infra.db.uow.SqlUnitOfWork",
-        side_effect=lambda *_args, **_kwargs: _NonSkippingUoW(),
-    ), patch(
-        "app.infra.tasks.progress_sink.CeleryProgressSink",
-        return_value=object(),
-    ), patch(
-        "app.domain.scanning.ports.NeverCancelledToken",
-        return_value=object(),
-    ), patch(
+    with _snapshot_task_patches(fake_use_case, auto_scan=False), patch(
         "app.interfaces.tasks.feature_store_tasks._create_auto_scan_for_published_run",
         return_value="auto-scan-001",
     ) as mock_auto_scan, patch(
@@ -980,29 +720,9 @@ def test_build_daily_snapshot_can_defer_ibd_metadata_enrichment():
 def test_build_daily_snapshot_static_daily_mode_requires_bulk_prefetch():
     fake_use_case = _FakeUseCase()
 
-    with patch(
+    with _snapshot_task_patches(fake_use_case), patch(
         "app.utils.parallelism.available_cpu_count",
         return_value=2,
-    ), patch(
-        "app.interfaces.tasks.feature_store_tasks._is_market_trading_day",
-        return_value=True,
-    ), patch(
-        "app.wiring.bootstrap.get_build_daily_snapshot_use_case",
-        return_value=fake_use_case,
-    ), patch(
-        "app.database.SessionLocal"
-    ), patch(
-        "app.infra.db.uow.SqlUnitOfWork",
-        side_effect=lambda *_args, **_kwargs: _NonSkippingUoW(),
-    ), patch(
-        "app.infra.tasks.progress_sink.CeleryProgressSink",
-        return_value=object(),
-    ), patch(
-        "app.domain.scanning.ports.NeverCancelledToken",
-        return_value=object(),
-    ), patch(
-        "app.interfaces.tasks.feature_store_tasks._create_auto_scan_for_published_run",
-        return_value="auto-scan-001",
     ):
         result = _TASK_BODY(
             _FakeTask(),
@@ -1028,29 +748,9 @@ def test_build_daily_snapshot_static_daily_mode_requires_bulk_prefetch():
 def test_build_daily_snapshot_static_daily_mode_keeps_setting_as_upper_bound_on_larger_hosts():
     fake_use_case = _FakeUseCase()
 
-    with patch(
+    with _snapshot_task_patches(fake_use_case), patch(
         "app.utils.parallelism.available_cpu_count",
         return_value=16,
-    ), patch(
-        "app.interfaces.tasks.feature_store_tasks._is_market_trading_day",
-        return_value=True,
-    ), patch(
-        "app.wiring.bootstrap.get_build_daily_snapshot_use_case",
-        return_value=fake_use_case,
-    ), patch(
-        "app.database.SessionLocal"
-    ), patch(
-        "app.infra.db.uow.SqlUnitOfWork",
-        side_effect=lambda *_args, **_kwargs: _NonSkippingUoW(),
-    ), patch(
-        "app.infra.tasks.progress_sink.CeleryProgressSink",
-        return_value=object(),
-    ), patch(
-        "app.domain.scanning.ports.NeverCancelledToken",
-        return_value=object(),
-    ), patch(
-        "app.interfaces.tasks.feature_store_tasks._create_auto_scan_for_published_run",
-        return_value="auto-scan-001",
     ):
         _TASK_BODY(
             _FakeTask(),
@@ -1186,24 +886,7 @@ def test_build_daily_snapshot_bootstrap_gate_fail_retries_without_live_fallback(
             )
             raise Retry(message=str(exc))
 
-    with patch(
-        "app.interfaces.tasks.feature_store_tasks._is_market_trading_day",
-        return_value=True,
-    ), patch(
-        "app.wiring.bootstrap.get_build_daily_snapshot_use_case",
-        return_value=fake_use_case,
-    ), patch(
-        "app.database.SessionLocal"
-    ), patch(
-        "app.infra.db.uow.SqlUnitOfWork",
-        side_effect=lambda *_args, **_kwargs: _NonSkippingUoW(),
-    ), patch(
-        "app.infra.tasks.progress_sink.CeleryProgressSink",
-        return_value=object(),
-    ), patch(
-        "app.domain.scanning.ports.NeverCancelledToken",
-        return_value=object(),
-    ), patch(
+    with _snapshot_task_patches(fake_use_case, auto_scan=False), patch(
         "app.interfaces.tasks.feature_store_tasks._create_auto_scan_for_published_run",
         side_effect=AssertionError("auto scan must not publish while waiting for coverage"),
     ):
@@ -1239,24 +922,7 @@ def test_build_daily_snapshot_bootstrap_gate_exhaustion_fails_with_coverage_repo
         def retry(self, **_kwargs):
             raise AssertionError("retry must not be called after retry budget is exhausted")
 
-    with patch(
-        "app.interfaces.tasks.feature_store_tasks._is_market_trading_day",
-        return_value=True,
-    ), patch(
-        "app.wiring.bootstrap.get_build_daily_snapshot_use_case",
-        return_value=fake_use_case,
-    ), patch(
-        "app.database.SessionLocal"
-    ), patch(
-        "app.infra.db.uow.SqlUnitOfWork",
-        side_effect=lambda *_args, **_kwargs: _NonSkippingUoW(),
-    ), patch(
-        "app.infra.tasks.progress_sink.CeleryProgressSink",
-        return_value=object(),
-    ), patch(
-        "app.domain.scanning.ports.NeverCancelledToken",
-        return_value=object(),
-    ), patch(
+    with _snapshot_task_patches(fake_use_case, auto_scan=False), patch(
         "app.interfaces.tasks.feature_store_tasks.mark_market_activity_failed",
         lambda _db, **kwargs: failed_activity.append(kwargs),
     ):
@@ -1839,27 +1505,7 @@ def test_create_auto_scan_skips_resolving_live_universe_when_run_universe_count_
 def test_build_daily_snapshot_includes_cleaned_stale_runs_metadata():
     fake_use_case = _FakeUseCase()
 
-    with patch(
-        "app.interfaces.tasks.feature_store_tasks._is_market_trading_day",
-        return_value=True,
-    ), patch(
-        "app.wiring.bootstrap.get_build_daily_snapshot_use_case",
-        return_value=fake_use_case,
-    ), patch(
-        "app.database.SessionLocal"
-    ), patch(
-        "app.infra.db.uow.SqlUnitOfWork",
-        side_effect=lambda *_args, **_kwargs: _NonSkippingUoW(),
-    ), patch(
-        "app.infra.tasks.progress_sink.CeleryProgressSink",
-        return_value=object(),
-    ), patch(
-        "app.domain.scanning.ports.NeverCancelledToken",
-        return_value=object(),
-    ), patch(
-        "app.interfaces.tasks.feature_store_tasks._create_auto_scan_for_published_run",
-        return_value="auto-scan-001",
-    ), patch(
+    with _snapshot_task_patches(fake_use_case), patch(
         "app.interfaces.tasks.feature_store_tasks._fail_stale_feature_runs",
         return_value=3,
     ):
@@ -1871,27 +1517,7 @@ def test_build_daily_snapshot_includes_cleaned_stale_runs_metadata():
 def test_build_daily_snapshot_enriches_published_run_metadata_after_publish():
     fake_use_case = _FakeUseCase()
 
-    with patch(
-        "app.interfaces.tasks.feature_store_tasks._is_market_trading_day",
-        return_value=True,
-    ), patch(
-        "app.wiring.bootstrap.get_build_daily_snapshot_use_case",
-        return_value=fake_use_case,
-    ), patch(
-        "app.database.SessionLocal"
-    ), patch(
-        "app.infra.db.uow.SqlUnitOfWork",
-        side_effect=lambda *_args, **_kwargs: _NonSkippingUoW(),
-    ), patch(
-        "app.infra.tasks.progress_sink.CeleryProgressSink",
-        return_value=object(),
-    ), patch(
-        "app.domain.scanning.ports.NeverCancelledToken",
-        return_value=object(),
-    ), patch(
-        "app.interfaces.tasks.feature_store_tasks._create_auto_scan_for_published_run",
-        return_value="auto-scan-001",
-    ), patch(
+    with _snapshot_task_patches(fake_use_case), patch(
         "app.interfaces.tasks.feature_store_tasks._enrich_feature_run_with_ibd_metadata",
         return_value={"updated_rows": 2},
     ) as mock_enrich:
@@ -2000,29 +1626,9 @@ def test_build_daily_snapshot_publishes_market_activity():
     started = []
     completed = []
 
-    with patch(
-        "app.interfaces.tasks.feature_store_tasks._is_market_trading_day",
-        return_value=True,
-    ), patch(
-        "app.wiring.bootstrap.get_build_daily_snapshot_use_case",
-        return_value=fake_use_case,
-    ), patch(
-        "app.database.SessionLocal"
-    ), patch(
-        "app.infra.db.uow.SqlUnitOfWork",
-        side_effect=lambda *_args, **_kwargs: _NonSkippingUoW(),
-    ), patch(
-        "app.infra.tasks.progress_sink.CeleryProgressSink",
-        return_value=object(),
-    ), patch(
-        "app.domain.scanning.ports.NeverCancelledToken",
-        return_value=object(),
-    ), patch(
+    with _snapshot_task_patches(fake_use_case), patch(
         "app.services.runtime_preferences_service.is_market_enabled_now",
         return_value=True,
-    ), patch(
-        "app.interfaces.tasks.feature_store_tasks._create_auto_scan_for_published_run",
-        return_value="auto-scan-001",
     ), patch(
         "app.interfaces.tasks.feature_store_tasks.mark_market_activity_started",
         side_effect=lambda *args, **kwargs: started.append(kwargs),
@@ -2040,27 +1646,17 @@ def test_build_daily_snapshot_publishes_market_activity():
     assert completed[0]["message"] == "Market scan ready"
 
 
-def test_build_daily_snapshot_skips_disabled_market_by_default():
+@pytest.mark.parametrize(
+    "gate_kwargs",
+    [
+        pytest.param({}, id="skips_disabled_market_by_default"),
+        pytest.param({"ignore_runtime_market_gate": True}, id="does_not_ignore_market_gate_outside_static_mode"),
+    ],
+)
+def test_build_daily_snapshot_skips_disabled_market(gate_kwargs):
     fake_use_case = _FakeUseCase()
 
-    with patch(
-        "app.interfaces.tasks.feature_store_tasks._is_market_trading_day",
-        return_value=True,
-    ), patch(
-        "app.wiring.bootstrap.get_build_daily_snapshot_use_case",
-        return_value=fake_use_case,
-    ), patch(
-        "app.database.SessionLocal"
-    ), patch(
-        "app.infra.db.uow.SqlUnitOfWork",
-        side_effect=lambda *_args, **_kwargs: _NonSkippingUoW(),
-    ), patch(
-        "app.infra.tasks.progress_sink.CeleryProgressSink",
-        return_value=object(),
-    ), patch(
-        "app.domain.scanning.ports.NeverCancelledToken",
-        return_value=object(),
-    ), patch(
+    with _snapshot_task_patches(fake_use_case, auto_scan=False), patch(
         "app.services.runtime_preferences_service.is_market_enabled_now",
         return_value=False,
     ):
@@ -2069,6 +1665,7 @@ def test_build_daily_snapshot_skips_disabled_market_by_default():
             as_of_date_str="2026-03-16",
             universe_name="market:hk",
             market="HK",
+            **gate_kwargs,
         )
 
     assert result["status"] == "skipped"
@@ -2080,29 +1677,9 @@ def test_build_daily_snapshot_skips_disabled_market_by_default():
 def test_build_daily_snapshot_allows_disabled_market_when_runtime_gate_is_ignored():
     fake_use_case = _FakeUseCase()
 
-    with patch(
-        "app.interfaces.tasks.feature_store_tasks._is_market_trading_day",
-        return_value=True,
-    ), patch(
-        "app.wiring.bootstrap.get_build_daily_snapshot_use_case",
-        return_value=fake_use_case,
-    ), patch(
-        "app.database.SessionLocal"
-    ), patch(
-        "app.infra.db.uow.SqlUnitOfWork",
-        side_effect=lambda *_args, **_kwargs: _NonSkippingUoW(),
-    ), patch(
-        "app.infra.tasks.progress_sink.CeleryProgressSink",
-        return_value=object(),
-    ), patch(
-        "app.domain.scanning.ports.NeverCancelledToken",
-        return_value=object(),
-    ), patch(
+    with _snapshot_task_patches(fake_use_case), patch(
         "app.services.runtime_preferences_service.is_market_enabled_now",
         return_value=False,
-    ), patch(
-        "app.interfaces.tasks.feature_store_tasks._create_auto_scan_for_published_run",
-        return_value="auto-scan-001",
     ):
         result = _TASK_BODY(
             _FakeTask(),
@@ -2115,44 +1692,6 @@ def test_build_daily_snapshot_allows_disabled_market_when_runtime_gate_is_ignore
 
     assert result["status"] == "published"
     assert fake_use_case.received_cmd is not None
-
-
-def test_build_daily_snapshot_does_not_ignore_market_gate_outside_static_mode():
-    fake_use_case = _FakeUseCase()
-
-    with patch(
-        "app.interfaces.tasks.feature_store_tasks._is_market_trading_day",
-        return_value=True,
-    ), patch(
-        "app.wiring.bootstrap.get_build_daily_snapshot_use_case",
-        return_value=fake_use_case,
-    ), patch(
-        "app.database.SessionLocal"
-    ), patch(
-        "app.infra.db.uow.SqlUnitOfWork",
-        side_effect=lambda *_args, **_kwargs: _NonSkippingUoW(),
-    ), patch(
-        "app.infra.tasks.progress_sink.CeleryProgressSink",
-        return_value=object(),
-    ), patch(
-        "app.domain.scanning.ports.NeverCancelledToken",
-        return_value=object(),
-    ), patch(
-        "app.services.runtime_preferences_service.is_market_enabled_now",
-        return_value=False,
-    ):
-        result = _TASK_BODY(
-            _FakeTask(),
-            as_of_date_str="2026-03-16",
-            universe_name="market:hk",
-            market="HK",
-            ignore_runtime_market_gate=True,
-        )
-
-    assert result["status"] == "skipped"
-    assert result["market"] == "HK"
-    assert result["reason"] == "market HK is disabled in local runtime preferences"
-    assert fake_use_case.received_cmd is None
 
 
 def test_build_daily_snapshot_uses_market_calendar_for_non_us_market():
@@ -2242,115 +1781,134 @@ def _add_run(
     return run
 
 
-def test_resolver_skips_a_stale_run_when_a_ranking_date_is_supplied():
-    """A published run from an earlier trading date must not be selected.
+_STALE_RUN_31 = dict(run_id=31, rs_date="2026-09-18", pointer="latest_published_market:US")
 
-    This is the case that aborted the daily chain: the pointer named a run from
-    a previous session, its metadata was enriched with newer rankings, and the
-    RS identity resolver raised instead of letting the chain continue.
-    """
+
+@pytest.mark.parametrize(
+    ("runs", "ranking_date", "expected"),
+    [
+        # A published run from an earlier trading date must not be selected.
+        # This is the case that aborted the daily chain: the pointer named a run
+        # from a previous session, its metadata was enriched with newer rankings,
+        # and the RS identity resolver raised instead of letting the chain continue.
+        pytest.param([_STALE_RUN_31], None, 31, id="stale_run_without_ranking_date_still_wins_by_pointer"),
+        pytest.param([_STALE_RUN_31], date(2026, 9, 22), None, id="skips_a_stale_run_when_a_ranking_date_is_supplied"),
+        # A run that does serve the date must be picked over a newer stale one.
+        pytest.param(
+            [
+                dict(run_id=31, rs_date="2026-09-22", pointer="latest_published_market:US"),
+                dict(run_id=32, rs_date="2026-09-24", pointer="latest_published"),
+            ],
+            date(2026, 9, 24),
+            32,
+            id="prefers_the_newest_run_that_serves_the_ranking_date",
+        ),
+        # Legacy runs keep working: the resolver encodes "any date is fine".
+        # This is about *serving*, not about *coverage*. A hand-written
+        # ``rs_as_of_date`` comparison would silently drop these runs, which is why
+        # the identity check delegates to the identity resolver. The run still has
+        # to cover the ranking date via ``as_of_date``, which is set explicitly
+        # here; ``does_not_reach_an_old_legacy_run_through_the_batch`` is the
+        # counter-case that pins it.
+        pytest.param(
+            [dict(run_id=33, rs_date=None, pointer="latest_published_market:US", as_of_date=date(2026, 9, 24))],
+            date(2026, 9, 24),
+            33,
+            id="accepts_a_legacy_run_without_rs_metadata",
+        ),
+        pytest.param(
+            [dict(run_id=34, rs_date="2026-09-24", pointer="latest_published_market:US", market="DE")],
+            date(2026, 9, 24),
+            None,
+            id="ignores_runs_from_another_market",
+        ),
+        # When both pointers are stale, a matching run is still found by date.
+        pytest.param(
+            [
+                dict(run_id=10, rs_date="2026-09-18", pointer="latest_published_market:US"),
+                dict(run_id=11, rs_date="2026-09-18", pointer="latest_published"),
+                dict(run_id=12, rs_date="2026-09-24"),
+            ],
+            date(2026, 9, 24),
+            12,
+            id="falls_through_stale_pointers_to_the_published_batch",
+        ),
+        # A months-old legacy run must not be picked for a later ranking date.
+        # Legacy runs carry no ``rs_as_of_date`` and therefore *serve* any date, so
+        # a date-blind batch scan reached a pre-migration run from months ago.
+        # Enrichment would then write today's group ranks into that run's rows and
+        # republish that run's scan. Today's snapshot does not exist yet.
+        pytest.param(
+            [
+                # Pre-migration run: no RS metadata, covers its own long-past date.
+                dict(
+                    run_id=5,
+                    rs_date=None,
+                    as_of_date=date(2026, 5, 20),
+                    published_at=datetime(2026, 6, 1, tzinfo=timezone.utc),
+                ),
+                # Yesterday's run, named by the pointer: the normal state on day D.
+                dict(
+                    run_id=31,
+                    rs_date="2026-09-21",
+                    pointer="latest_published_market:US",
+                    as_of_date=date(2026, 9, 21),
+                    published_at=datetime(2026, 9, 21, 22, tzinfo=timezone.utc),
+                ),
+            ],
+            date(2026, 9, 22),
+            None,
+            id="does_not_reach_an_old_legacy_run_through_the_batch",
+        ),
+        # The coverage rule must not drop a legacy run for the date actually asked for.
+        pytest.param(
+            [dict(run_id=5, rs_date=None, pointer="latest_published_market:US", as_of_date=date(2026, 9, 22))],
+            date(2026, 9, 22),
+            5,
+            id="keeps_a_legacy_run_that_covers_the_ranking_date",
+        ),
+        # A pointer naming a run from another date must be skipped. The batch filter
+        # cannot help here: the pointer is collected first, so the old run never
+        # passes through the date-limited query. Legacy runs serve any date, so only
+        # the coverage check keeps it out. Without it the resolver returns a run from
+        # months ago and enrichment writes today's group ranks into that run's rows.
+        pytest.param(
+            [
+                # Pointer names a legacy run that covers a long-past date.
+                dict(
+                    run_id=5,
+                    rs_date=None,
+                    pointer="latest_published_market:US",
+                    as_of_date=date(2026, 5, 20),
+                    published_at=datetime(2026, 6, 1, tzinfo=timezone.utc),
+                ),
+                # No pointer names it, but it covers the ranking date.
+                dict(
+                    run_id=33,
+                    rs_date="2026-09-22",
+                    as_of_date=date(2026, 9, 22),
+                    published_at=datetime(2026, 9, 22, 22, tzinfo=timezone.utc),
+                ),
+            ],
+            date(2026, 9, 22),
+            33,
+            id="does_not_let_a_pointer_reach_a_run_from_another_date",
+        ),
+    ],
+)
+def test_resolver_selects_the_run_that_serves_the_ranking_date(runs, ranking_date, expected):
     engine = create_engine("sqlite:///:memory:")
     _build_run_resolution_schema(engine)
     factory = sessionmaker(bind=engine, autocommit=False, autoflush=False)
 
     with factory() as db:
-        _add_run(
-            db,
-            run_id=31,
-            rs_date="2026-09-18",
-            pointer="latest_published_market:US",
-        )
+        for run in runs:
+            _add_run(db, **run)
         db.commit()
 
-        stale = _resolve_latest_published_run_for_market(db=db, market="US")
-        matching = _resolve_latest_published_run_for_market(
-            db=db,
-            market="US",
-            ranking_date=date(2026, 9, 22),
-        )
+        resolved = _resolve_latest_published_run_for_market(db=db, market="US", ranking_date=ranking_date)
 
-    assert stale == 31, "without a ranking date the pointer still wins"
-    assert matching is None, "a run from 2026-09-18 cannot serve 2026-09-22"
-    engine.dispose()
-
-
-def test_resolver_prefers_the_newest_run_that_serves_the_ranking_date():
-    """A run that does serve the date must be picked over a newer stale one."""
-    engine = create_engine("sqlite:///:memory:")
-    _build_run_resolution_schema(engine)
-    factory = sessionmaker(bind=engine, autocommit=False, autoflush=False)
-
-    with factory() as db:
-        _add_run(db, run_id=31, rs_date="2026-09-22", pointer="latest_published_market:US")
-        _add_run(db, run_id=32, rs_date="2026-09-24", pointer="latest_published")
-        db.commit()
-
-        resolved = _resolve_latest_published_run_for_market(
-            db=db,
-            market="US",
-            ranking_date=date(2026, 9, 24),
-        )
-
-    assert resolved == 32
-    engine.dispose()
-
-
-def test_resolver_accepts_a_legacy_run_without_rs_metadata():
-    """Legacy runs keep working: the resolver encodes "any date is fine".
-
-    This is about *serving*, not about *coverage*. A hand-written
-    ``rs_as_of_date`` comparison would silently drop these runs, which is why the
-    identity check delegates to the identity resolver. The run still has to cover
-    the ranking date via ``as_of_date`` — that part is set explicitly here, and
-    ``test_resolver_does_not_reach_an_old_legacy_run_through_the_batch`` is the
-    counter-case that pins it.
-    """
-    engine = create_engine("sqlite:///:memory:")
-    _build_run_resolution_schema(engine)
-    factory = sessionmaker(bind=engine, autocommit=False, autoflush=False)
-
-    with factory() as db:
-        _add_run(
-            db,
-            run_id=33,
-            rs_date=None,
-            pointer="latest_published_market:US",
-            as_of_date=date(2026, 9, 24),
-        )
-        db.commit()
-
-        resolved = _resolve_latest_published_run_for_market(
-            db=db,
-            market="US",
-            ranking_date=date(2026, 9, 24),
-        )
-
-    assert resolved == 33
-    engine.dispose()
-
-
-def test_resolver_ignores_runs_from_another_market():
-    engine = create_engine("sqlite:///:memory:")
-    _build_run_resolution_schema(engine)
-    factory = sessionmaker(bind=engine, autocommit=False, autoflush=False)
-
-    with factory() as db:
-        _add_run(
-            db,
-            run_id=34,
-            rs_date="2026-09-24",
-            pointer="latest_published_market:US",
-            market="DE",
-        )
-        db.commit()
-
-        resolved = _resolve_latest_published_run_for_market(
-            db=db,
-            market="US",
-            ranking_date=date(2026, 9, 24),
-        )
-
-    assert resolved is None
+    assert resolved == expected
     engine.dispose()
 
 
@@ -2492,137 +2050,4 @@ def test_resolver_falls_through_a_stale_market_pointer_to_the_fallback():
         )
 
     assert resolved == 11, "the global pointer outranks a newer unpointed run"
-    engine.dispose()
-
-
-def test_resolver_falls_through_stale_pointers_to_the_published_batch():
-    """When both pointers are stale, a matching run is still found by date."""
-    engine = create_engine("sqlite:///:memory:")
-    _build_run_resolution_schema(engine)
-    factory = sessionmaker(bind=engine, autocommit=False, autoflush=False)
-
-    with factory() as db:
-        _add_run(db, run_id=10, rs_date="2026-09-18", pointer="latest_published_market:US")
-        _add_run(db, run_id=11, rs_date="2026-09-18", pointer="latest_published")
-        _add_run(db, run_id=12, rs_date="2026-09-24")
-        db.commit()
-
-        resolved = _resolve_latest_published_run_for_market(
-            db=db,
-            market="US",
-            ranking_date=date(2026, 9, 24),
-        )
-
-    assert resolved == 12
-    engine.dispose()
-
-
-def test_resolver_does_not_reach_an_old_legacy_run_through_the_batch():
-    """A months-old legacy run must not be picked for a later ranking date.
-
-    Legacy runs carry no ``rs_as_of_date`` and therefore *serve* any date, so a
-    date-blind batch scan reached a pre-migration run from months ago. Enrichment
-    would then write today's group ranks into that run's rows and republish that
-    run's scan.
-    """
-    engine = create_engine("sqlite:///:memory:")
-    _build_run_resolution_schema(engine)
-    factory = sessionmaker(bind=engine, autocommit=False, autoflush=False)
-
-    with factory() as db:
-        # Pre-migration run: no RS metadata, covers its own long-past date.
-        _add_run(
-            db,
-            run_id=5,
-            rs_date=None,
-            as_of_date=date(2026, 5, 20),
-            published_at=datetime(2026, 6, 1, tzinfo=timezone.utc),
-        )
-        # Yesterday's run, named by the pointer: the normal state on day D.
-        _add_run(
-            db,
-            run_id=31,
-            rs_date="2026-09-21",
-            pointer="latest_published_market:US",
-            as_of_date=date(2026, 9, 21),
-            published_at=datetime(2026, 9, 21, 22, tzinfo=timezone.utc),
-        )
-        db.commit()
-
-        resolved = _resolve_latest_published_run_for_market(
-            db=db,
-            market="US",
-            ranking_date=date(2026, 9, 22),
-        )
-
-    assert resolved is None, "today's snapshot does not exist yet"
-    engine.dispose()
-
-
-def test_resolver_keeps_a_legacy_run_that_covers_the_ranking_date():
-    """The coverage rule must not drop a legacy run for the date actually asked for."""
-    engine = create_engine("sqlite:///:memory:")
-    _build_run_resolution_schema(engine)
-    factory = sessionmaker(bind=engine, autocommit=False, autoflush=False)
-
-    with factory() as db:
-        _add_run(
-            db,
-            run_id=5,
-            rs_date=None,
-            pointer="latest_published_market:US",
-            as_of_date=date(2026, 9, 22),
-        )
-        db.commit()
-
-        resolved = _resolve_latest_published_run_for_market(
-            db=db,
-            market="US",
-            ranking_date=date(2026, 9, 22),
-        )
-
-    assert resolved == 5
-    engine.dispose()
-
-
-def test_resolver_does_not_let_a_pointer_reach_a_run_from_another_date():
-    """A pointer naming a run from another date must be skipped.
-
-    This is the case the batch filter cannot help with: the pointer is collected
-    first, so the old run never passes through the date-limited query. Legacy runs
-    serve any date, so only the coverage check keeps it out — without it the
-    resolver returns a run from months ago and enrichment writes today's group
-    ranks into that run's rows.
-    """
-    engine = create_engine("sqlite:///:memory:")
-    _build_run_resolution_schema(engine)
-    factory = sessionmaker(bind=engine, autocommit=False, autoflush=False)
-
-    with factory() as db:
-        # Pointer names a legacy run that covers a long-past date.
-        _add_run(
-            db,
-            run_id=5,
-            rs_date=None,
-            pointer="latest_published_market:US",
-            as_of_date=date(2026, 5, 20),
-            published_at=datetime(2026, 6, 1, tzinfo=timezone.utc),
-        )
-        # No pointer names it, but it covers the ranking date.
-        _add_run(
-            db,
-            run_id=33,
-            rs_date="2026-09-22",
-            as_of_date=date(2026, 9, 22),
-            published_at=datetime(2026, 9, 22, 22, tzinfo=timezone.utc),
-        )
-        db.commit()
-
-        resolved = _resolve_latest_published_run_for_market(
-            db=db,
-            market="US",
-            ranking_date=date(2026, 9, 22),
-        )
-
-    assert resolved == 33, "the pointer's run covers another date and must be skipped"
     engine.dispose()

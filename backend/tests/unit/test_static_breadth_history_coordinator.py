@@ -31,6 +31,14 @@ def _breadth_signature(calculation_date):
     return f"signature-{calculation_date.isoformat()}"
 
 
+def _run_ensure_breadth_history(monkeypatch, *, session, trading_dates, calculator, **kwargs):
+    monkeypatch.setattr(export_static_site, "SessionLocal", lambda: session())
+    monkeypatch.setattr(export_static_site, "_generate_trading_dates", lambda *args, **kwargs: trading_dates)
+    monkeypatch.setattr(export_static_site, "get_price_cache", lambda: object())
+    monkeypatch.setattr(export_static_site, "BreadthCalculatorService", calculator)
+    return export_static_site._ensure_breadth_history(**kwargs)
+
+
 def _patch_breadth_eligibility(
     monkeypatch,
     eligible_counts_by_date,
@@ -144,20 +152,11 @@ def test_ensure_breadth_history_marks_backfill_errors_not_completed(monkeypatch)
                 "error_dates": [as_of_date.isoformat()],
             }
 
-    monkeypatch.setattr(export_static_site, "SessionLocal", lambda: _FakeDb())
-    monkeypatch.setattr(
-        export_static_site,
-        "_generate_trading_dates",
-        lambda *args, **kwargs: [as_of_date],
-    )
-    monkeypatch.setattr(export_static_site, "get_price_cache", lambda: object())
-    monkeypatch.setattr(
-        export_static_site,
-        "BreadthCalculatorService",
-        _FakeBreadthCalculator,
-    )
-
-    result = export_static_site._ensure_breadth_history(
+    result = _run_ensure_breadth_history(
+        monkeypatch,
+        session=_FakeDb,
+        trading_dates=[as_of_date],
+        calculator=_FakeBreadthCalculator,
         as_of_date=as_of_date,
         market="HK",
         min_trading_days=0,
@@ -253,20 +252,11 @@ def test_ensure_breadth_history_recomputes_ratio_window_after_historical_repair(
                 },
             }
 
-    monkeypatch.setattr(export_static_site, "SessionLocal", lambda: _FakeDb())
-    monkeypatch.setattr(
-        export_static_site,
-        "_generate_trading_dates",
-        lambda *args, **kwargs: target_dates,
-    )
-    monkeypatch.setattr(export_static_site, "get_price_cache", lambda: object())
-    monkeypatch.setattr(
-        export_static_site,
-        "BreadthCalculatorService",
-        _FakeBreadthCalculator,
-    )
-
-    result = export_static_site._ensure_breadth_history(
+    result = _run_ensure_breadth_history(
+        monkeypatch,
+        session=_FakeDb,
+        trading_dates=target_dates,
+        calculator=_FakeBreadthCalculator,
         as_of_date=as_of_date,
         market="HK",
         min_trading_days=0,
@@ -471,18 +461,11 @@ def test_legacy_breadth_row_with_larger_count_recomputes_without_matching_signat
                 "broad_universe_stocks_by_date": {as_of_date.isoformat(): 7},
             }
 
-    monkeypatch.setattr(export_static_site, "SessionLocal", lambda: _FakeDb())
-    monkeypatch.setattr(
-        export_static_site,
-        "_generate_trading_dates",
-        lambda *args, **kwargs: [as_of_date],
-    )
-    monkeypatch.setattr(export_static_site, "get_price_cache", lambda: object())
-    monkeypatch.setattr(
-        export_static_site, "BreadthCalculatorService", _FakeBreadthCalculator
-    )
-
-    result = export_static_site._ensure_breadth_history(
+    result = _run_ensure_breadth_history(
+        monkeypatch,
+        session=_FakeDb,
+        trading_dates=[as_of_date],
+        calculator=_FakeBreadthCalculator,
         as_of_date=as_of_date,
         market="US",
         min_trading_days=0,
@@ -598,20 +581,11 @@ def test_ensure_breadth_history_marks_calculation_errors_not_completed(monkeypat
                 "cache_coverage_ratio": 1.0,
             }
 
-    monkeypatch.setattr(export_static_site, "SessionLocal", lambda: _FakeDb())
-    monkeypatch.setattr(
-        export_static_site,
-        "_generate_trading_dates",
-        lambda *args, **kwargs: [as_of_date],
-    )
-    monkeypatch.setattr(export_static_site, "get_price_cache", lambda: object())
-    monkeypatch.setattr(
-        export_static_site,
-        "BreadthCalculatorService",
-        _FakeBreadthCalculator,
-    )
-
-    result = export_static_site._ensure_breadth_history(
+    result = _run_ensure_breadth_history(
+        monkeypatch,
+        session=_FakeDb,
+        trading_dates=[as_of_date],
+        calculator=_FakeBreadthCalculator,
         as_of_date=as_of_date,
         market="HK",
         min_trading_days=0,
@@ -683,20 +657,11 @@ def test_ensure_breadth_history_marks_undercovered_backfill_rows_not_completed(
                 },
             }
 
-    monkeypatch.setattr(export_static_site, "SessionLocal", lambda: _FakeDb())
-    monkeypatch.setattr(
-        export_static_site,
-        "_generate_trading_dates",
-        lambda *args, **kwargs: [as_of_date],
-    )
-    monkeypatch.setattr(export_static_site, "get_price_cache", lambda: object())
-    monkeypatch.setattr(
-        export_static_site,
-        "BreadthCalculatorService",
-        _FakeBreadthCalculator,
-    )
-
-    result = export_static_site._ensure_breadth_history(
+    result = _run_ensure_breadth_history(
+        monkeypatch,
+        session=_FakeDb,
+        trading_dates=[as_of_date],
+        calculator=_FakeBreadthCalculator,
         as_of_date=as_of_date,
         market="HK",
         min_trading_days=0,
@@ -767,20 +732,11 @@ def test_ensure_breadth_history_accepts_smaller_historical_eligible_universe(
                 "broad_universe_stocks_by_date": {as_of_date.isoformat(): 7},
             }
 
-    monkeypatch.setattr(export_static_site, "SessionLocal", lambda: _FakeDb())
-    monkeypatch.setattr(
-        export_static_site,
-        "_generate_trading_dates",
-        lambda *args, **kwargs: [as_of_date],
-    )
-    monkeypatch.setattr(export_static_site, "get_price_cache", lambda: object())
-    monkeypatch.setattr(
-        export_static_site,
-        "BreadthCalculatorService",
-        _FakeBreadthCalculator,
-    )
-
-    result = export_static_site._ensure_breadth_history(
+    result = _run_ensure_breadth_history(
+        monkeypatch,
+        session=_FakeDb,
+        trading_dates=[as_of_date],
+        calculator=_FakeBreadthCalculator,
         as_of_date=as_of_date,
         market="CA",
         min_trading_days=0,
@@ -833,20 +789,11 @@ def test_ensure_breadth_history_accepts_metric_specific_history_gaps(monkeypatch
                 "broad_universe_stocks_by_date": {as_of_date.isoformat(): 8},
             }
 
-    monkeypatch.setattr(export_static_site, "SessionLocal", lambda: _FakeDb())
-    monkeypatch.setattr(
-        export_static_site,
-        "_generate_trading_dates",
-        lambda *args, **kwargs: [as_of_date],
-    )
-    monkeypatch.setattr(export_static_site, "get_price_cache", lambda: object())
-    monkeypatch.setattr(
-        export_static_site,
-        "BreadthCalculatorService",
-        _FakeBreadthCalculator,
-    )
-
-    result = export_static_site._ensure_breadth_history(
+    result = _run_ensure_breadth_history(
+        monkeypatch,
+        session=_FakeDb,
+        trading_dates=[as_of_date],
+        calculator=_FakeBreadthCalculator,
         as_of_date=as_of_date,
         market="US",
         min_trading_days=0,

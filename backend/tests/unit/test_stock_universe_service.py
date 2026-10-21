@@ -325,87 +325,53 @@ def test_normalize_status_treats_active_status_plus_inactive_flag_as_inactive():
     assert normalized != UNIVERSE_STATUS_ACTIVE
 
 
-def test_get_active_symbols_market_filter_falls_back_to_exchange_when_market_blank():
+@pytest.mark.parametrize(
+    ("rows", "market", "expected"),
+    [
+        pytest.param(
+            [
+                ("AAPL", "NASDAQ", "US", 1000, "Present in Finviz universe sync"),
+                ("IBM", "NYSE", "", 500, "Present in Finviz universe sync"),
+                ("2330.TW", "TWSE", "", 1200, "Present in source universe sync"),
+            ],
+            "US",
+            ["AAPL", "IBM"],
+            id="falls_back_to_exchange_when_market_blank",
+        ),
+        pytest.param(
+            [
+                ("BHP.AX", "XASX", "", 1000, "Present in ASX universe sync"),
+                ("CBA.AX", "ASX", "", 900, "Present in ASX universe sync"),
+                ("0700.HK", "XHKG", "", 800, "Present in HKEX universe sync"),
+            ],
+            "AU",
+            ["BHP.AX", "CBA.AX"],
+            id="falls_back_to_catalog_exchange_for_au",
+        ),
+    ],
+)
+def test_get_active_symbols_market_filter_falls_back_to_exchange(rows, market, expected):
     TestingSessionLocal = _make_session()
     db = TestingSessionLocal()
     db.add_all(
         [
             StockUniverse(
-                symbol="AAPL",
-                exchange="NASDAQ",
-                market="US",
-                market_cap=1000,
+                symbol=symbol,
+                exchange=exchange,
+                market=row_market,
+                market_cap=market_cap,
                 is_active=True,
                 status=UNIVERSE_STATUS_ACTIVE,
-                status_reason="Present in Finviz universe sync",
-            ),
-            StockUniverse(
-                symbol="IBM",
-                exchange="NYSE",
-                market="",
-                market_cap=500,
-                is_active=True,
-                status=UNIVERSE_STATUS_ACTIVE,
-                status_reason="Present in Finviz universe sync",
-            ),
-            StockUniverse(
-                symbol="2330.TW",
-                exchange="TWSE",
-                market="",
-                market_cap=1200,
-                is_active=True,
-                status=UNIVERSE_STATUS_ACTIVE,
-                status_reason="Present in source universe sync",
-            ),
+                status_reason=status_reason,
+            )
+            for symbol, exchange, row_market, market_cap, status_reason in rows
         ]
     )
     db.commit()
 
-    symbols = stock_universe_service.get_active_symbols(db, market="US")
+    symbols = stock_universe_service.get_active_symbols(db, market=market)
 
-    assert symbols == ["AAPL", "IBM"]
-    db.close()
-
-
-def test_get_active_symbols_market_filter_falls_back_to_catalog_exchange_for_au():
-    TestingSessionLocal = _make_session()
-    db = TestingSessionLocal()
-    db.add_all(
-        [
-            StockUniverse(
-                symbol="BHP.AX",
-                exchange="XASX",
-                market="",
-                market_cap=1000,
-                is_active=True,
-                status=UNIVERSE_STATUS_ACTIVE,
-                status_reason="Present in ASX universe sync",
-            ),
-            StockUniverse(
-                symbol="CBA.AX",
-                exchange="ASX",
-                market="",
-                market_cap=900,
-                is_active=True,
-                status=UNIVERSE_STATUS_ACTIVE,
-                status_reason="Present in ASX universe sync",
-            ),
-            StockUniverse(
-                symbol="0700.HK",
-                exchange="XHKG",
-                market="",
-                market_cap=800,
-                is_active=True,
-                status=UNIVERSE_STATUS_ACTIVE,
-                status_reason="Present in HKEX universe sync",
-            ),
-        ]
-    )
-    db.commit()
-
-    symbols = stock_universe_service.get_active_symbols(db, market="AU")
-
-    assert symbols == ["BHP.AX", "CBA.AX"]
+    assert symbols == expected
     db.close()
 
 
@@ -827,14 +793,45 @@ def test_ingest_in_snapshot_rows_truncates_combined_rejected_preview():
     db.close()
 
 
-def test_ingest_hk_snapshot_rows_reactivates_existing_inactive_symbol():
+@pytest.mark.parametrize(
+    ("market", "symbol", "stored_exchange", "csv_row", "source_name", "expected_exchange", "local_code"),
+    [
+        pytest.param(
+            "HK", "0700.HK", "SEHK", "700,Tencent,SEHK,Technology,Internet,500B", "sehk_official", "XHKG", "0700",
+            id="HK",
+        ),
+        pytest.param(
+            "JP",
+            "7203.T",
+            "TSE",
+            "7203.T,Toyota Motor,TSE,Consumer Cyclical,Auto Manufacturers,300B",
+            "tse_official",
+            "XTKS",
+            "7203",
+            id="JP",
+        ),
+        pytest.param(
+            "TW",
+            "3008.TWO",
+            "TPEX",
+            "3008,Largan Precision,TPEX,Technology,Electronics,120B",
+            "tpex_official",
+            "XTAI",
+            "3008",
+            id="TW",
+        ),
+    ],
+)
+def test_ingest_snapshot_rows_reactivates_existing_inactive_symbol(
+    market, symbol, stored_exchange, csv_row, source_name, expected_exchange, local_code
+):
     TestingSessionLocal = _make_session()
     db = TestingSessionLocal()
     db.add(
         StockUniverse(
-            symbol="0700.HK",
-            exchange="SEHK",
-            market="HK",
+            symbol=symbol,
+            exchange=stored_exchange,
+            market=market,
             is_active=False,
             status=UNIVERSE_STATUS_INACTIVE_MANUAL,
             status_reason="manual off",
@@ -842,27 +839,22 @@ def test_ingest_hk_snapshot_rows_reactivates_existing_inactive_symbol():
     )
     db.commit()
 
-    csv_content = "\n".join(
-        [
-            "symbol,name,exchange,sector,industry,market_cap",
-            "700,Tencent,SEHK,Technology,Internet,500B",
-        ]
-    )
+    csv_content = "\n".join(["symbol,name,exchange,sector,industry,market_cap", csv_row])
     stats = stock_universe_service.ingest_snapshot_rows(
         db,
-        market="HK",
+        market=market,
         rows=_csv_rows(csv_content),
-        source_name="sehk_official",
-        snapshot_id="hk-20260412",
+        source_name=source_name,
+        snapshot_id=f"{market.lower()}-20260412",
     )
-    row = db.query(StockUniverse).filter(StockUniverse.symbol == "0700.HK").one()
+    row = db.query(StockUniverse).filter(StockUniverse.symbol == symbol).one()
 
     assert stats["added"] == 0
     assert stats["updated"] == 1
     assert row.is_active is True
     assert row.status == UNIVERSE_STATUS_ACTIVE
-    assert row.exchange == "XHKG"
-    assert row.local_code == "0700"
+    assert row.exchange == expected_exchange
+    assert row.local_code == local_code
     db.close()
 
 
@@ -1385,46 +1377,55 @@ def test_reconciliation_runs_are_distinct_per_source_for_same_snapshot_id():
     db.close()
 
 
-def test_ingest_hk_snapshot_rows_rejects_unapproved_source():
+@pytest.mark.parametrize(
+    ("market", "csv_content"),
+    [
+        pytest.param("HK", "symbol,name,exchange\n700,Tencent,SEHK\n", id="HK"),
+        pytest.param("JP", "symbol,name,exchange\n7203,Toyota,TSE\n", id="JP"),
+        pytest.param("TW", "symbol,name,exchange\n2330,TSMC,TWSE\n", id="TW"),
+    ],
+)
+def test_ingest_snapshot_rows_rejects_unapproved_source(market, csv_content):
     TestingSessionLocal = _make_session()
     db = TestingSessionLocal()
-    csv_content = "symbol,name,exchange\n700,Tencent,SEHK\n"
 
-    with pytest.raises(ValueError, match="Unapproved HK source"):
+    with pytest.raises(ValueError, match=f"Unapproved {market} source"):
         stock_universe_service.ingest_snapshot_rows(
             db,
-            market="HK",
+            market=market,
             rows=_csv_rows(csv_content),
             source_name="random_vendor",
-            snapshot_id="hk-20260412",
+            snapshot_id=f"{market.lower()}-20260412",
         )
     db.close()
 
 
-def test_ingest_hk_snapshot_rows_reports_rejected_rows_in_non_strict_mode():
+@pytest.mark.parametrize(
+    ("market", "invalid_row", "valid_row", "source_name"),
+    [
+        pytest.param("HK", "ABC.HK,Invalid,SEHK", "700,Tencent,SEHK", "sehk_official", id="HK"),
+        pytest.param("JP", "ABCD,Invalid,TSE", "7203,Toyota,TSE", "tse_official", id="JP"),
+        pytest.param("TW", "ABCD,Invalid,TWSE", "2330,TSMC,TWSE", "twse_official", id="TW"),
+    ],
+)
+def test_ingest_snapshot_rows_reports_rejected_rows_in_non_strict_mode(market, invalid_row, valid_row, source_name):
     TestingSessionLocal = _make_session()
     db = TestingSessionLocal()
-    csv_content = "\n".join(
-        [
-            "symbol,name,exchange",
-            "ABC.HK,Invalid,SEHK",
-            "700,Tencent,SEHK",
-        ]
-    )
+    csv_content = "\n".join(["symbol,name,exchange", invalid_row, valid_row])
 
     stats = stock_universe_service.ingest_snapshot_rows(
         db,
-        market="HK",
+        market=market,
         rows=_csv_rows(csv_content),
-        source_name="sehk_official",
-        snapshot_id="hk-20260412",
+        source_name=source_name,
+        snapshot_id=f"{market.lower()}-20260412",
         strict=False,
     )
 
     assert stats["added"] == 1
     assert stats["total"] == 1
     assert stats["rejected"] == 1
-    assert stats["rejected_rows"][0]["source_symbol"] == "ABC.HK"
+    assert stats["rejected_rows"][0]["source_symbol"] == invalid_row.split(",")[0]
     db.close()
 
 
@@ -1475,88 +1476,6 @@ def test_ingest_jp_snapshot_rows_normalizes_exchange_formats_and_lineage():
     db.close()
 
 
-def test_ingest_jp_snapshot_rows_reactivates_existing_inactive_symbol():
-    TestingSessionLocal = _make_session()
-    db = TestingSessionLocal()
-    db.add(
-        StockUniverse(
-            symbol="7203.T",
-            exchange="TSE",
-            market="JP",
-            is_active=False,
-            status=UNIVERSE_STATUS_INACTIVE_MANUAL,
-            status_reason="manual off",
-        )
-    )
-    db.commit()
-
-    csv_content = "\n".join(
-        [
-            "symbol,name,exchange,sector,industry,market_cap",
-            "7203.T,Toyota Motor,TSE,Consumer Cyclical,Auto Manufacturers,300B",
-        ]
-    )
-    stats = stock_universe_service.ingest_snapshot_rows(
-        db,
-        market="JP",
-        rows=_csv_rows(csv_content),
-        source_name="tse_official",
-        snapshot_id="jp-20260412",
-    )
-    row = db.query(StockUniverse).filter(StockUniverse.symbol == "7203.T").one()
-
-    assert stats["added"] == 0
-    assert stats["updated"] == 1
-    assert row.is_active is True
-    assert row.status == UNIVERSE_STATUS_ACTIVE
-    assert row.exchange == "XTKS"
-    assert row.local_code == "7203"
-    db.close()
-
-
-def test_ingest_jp_snapshot_rows_rejects_unapproved_source():
-    TestingSessionLocal = _make_session()
-    db = TestingSessionLocal()
-    csv_content = "symbol,name,exchange\n7203,Toyota,TSE\n"
-
-    with pytest.raises(ValueError, match="Unapproved JP source"):
-        stock_universe_service.ingest_snapshot_rows(
-            db,
-            market="JP",
-            rows=_csv_rows(csv_content),
-            source_name="random_vendor",
-            snapshot_id="jp-20260412",
-        )
-    db.close()
-
-
-def test_ingest_jp_snapshot_rows_reports_rejected_rows_in_non_strict_mode():
-    TestingSessionLocal = _make_session()
-    db = TestingSessionLocal()
-    csv_content = "\n".join(
-        [
-            "symbol,name,exchange",
-            "ABCD,Invalid,TSE",
-            "7203,Toyota,TSE",
-        ]
-    )
-
-    stats = stock_universe_service.ingest_snapshot_rows(
-        db,
-        market="JP",
-        rows=_csv_rows(csv_content),
-        source_name="tse_official",
-        snapshot_id="jp-20260412",
-        strict=False,
-    )
-
-    assert stats["added"] == 1
-    assert stats["total"] == 1
-    assert stats["rejected"] == 1
-    assert stats["rejected_rows"][0]["source_symbol"] == "ABCD"
-    db.close()
-
-
 def test_ingest_jp_snapshot_rows_rejects_zero_prefixed_local_codes():
     TestingSessionLocal = _make_session()
     db = TestingSessionLocal()
@@ -1585,41 +1504,83 @@ def test_ingest_jp_snapshot_rows_rejects_zero_prefixed_local_codes():
     db.close()
 
 
-def test_ingest_jp_snapshot_rows_merges_duplicate_rows_to_keep_richer_metadata():
+@pytest.mark.parametrize(
+    ("market", "csv_rows", "source_name", "snapshot_id", "symbol", "expected"),
+    [
+        pytest.param(
+            "JP",
+            ["7203,,TSE,,,", "7203.T,Toyota Motor,JPX,Consumer Cyclical,Auto Manufacturers,300B"],
+            "jpx_official",
+            "jp-20260412",
+            "7203.T",
+            {
+                "name": "Toyota Motor",
+                "sector": "Consumer Cyclical",
+                "industry": "Auto Manufacturers",
+                "market_cap": 300_000_000_000.0,
+            },
+            id="JP",
+        ),
+        pytest.param(
+            "TW",
+            ["2330,,TWSE,,,", "2330.TW,Taiwan Semiconductor,XTAI,Technology,Semiconductors,800B"],
+            "twse_official",
+            "tw-20260412",
+            "2330.TW",
+            {
+                "name": "Taiwan Semiconductor",
+                "sector": "Technology",
+                "industry": "Semiconductors",
+                "market_cap": 800_000_000_000.0,
+            },
+            id="TW",
+        ),
+        pytest.param(
+            "HK",
+            ["700,,SEHK,Technology,Internet,500B", "0700.HK,Tencent Holdings,,Technology,Internet,"],
+            "hk_manual_csv",
+            "hk-20260414-dup",
+            "0700.HK",
+            {"name": "Tencent Holdings"},
+            id="HK",
+        ),
+    ],
+)
+def test_ingest_snapshot_rows_merges_duplicate_rows_to_keep_richer_metadata(
+    market, csv_rows, source_name, snapshot_id, symbol, expected
+):
     TestingSessionLocal = _make_session()
     db = TestingSessionLocal()
-    csv_content = "\n".join(
-        [
-            "symbol,name,exchange,sector,industry,market_cap",
-            "7203,,TSE,,,",
-            "7203.T,Toyota Motor,JPX,Consumer Cyclical,Auto Manufacturers,300B",
-        ]
-    )
+    csv_content = "\n".join(["symbol,name,exchange,sector,industry,market_cap", *csv_rows])
 
     stats = stock_universe_service.ingest_snapshot_rows(
         db,
-        market="JP",
+        market=market,
         rows=_csv_rows(csv_content),
-        source_name="jpx_official",
-        snapshot_id="jp-20260412",
+        source_name=source_name,
+        snapshot_id=snapshot_id,
     )
-    row = db.query(StockUniverse).filter(StockUniverse.symbol == "7203.T").one()
+    row = db.query(StockUniverse).filter(StockUniverse.symbol == symbol).one()
 
     assert stats["total"] == 1
-    assert row.name == "Toyota Motor"
-    assert row.sector == "Consumer Cyclical"
-    assert row.industry == "Auto Manufacturers"
-    assert row.market_cap == 300_000_000_000.0
+    assert {field: getattr(row, field) for field in expected} == expected
     db.close()
 
 
-def test_ingest_jp_snapshot_rows_truncates_verbose_row_payloads():
+@pytest.mark.parametrize(
+    ("market", "first_code", "exchange", "source_name"),
+    [
+        pytest.param("JP", 1300, "TSE", "tse_official", id="JP"),
+        pytest.param("TW", 1100, "TWSE", "twse_official", id="TW"),
+    ],
+)
+def test_ingest_snapshot_rows_truncates_verbose_row_payloads(market, first_code, exchange, source_name):
     TestingSessionLocal = _make_session()
     db = TestingSessionLocal()
     rows = [
         {
-            "symbol": f"{1300 + index}",
-            "exchange": "TSE",
+            "symbol": f"{first_code + index}",
+            "exchange": exchange,
             "name": f"Company {index}",
         }
         for index in range(30)
@@ -1627,10 +1588,10 @@ def test_ingest_jp_snapshot_rows_truncates_verbose_row_payloads():
 
     stats = stock_universe_service.ingest_snapshot_rows(
         db,
-        market="JP",
+        market=market,
         rows=rows,
-        source_name="tse_official",
-        snapshot_id="jp-20260412",
+        source_name=source_name,
+        snapshot_id=f"{market.lower()}-20260412",
     )
 
     assert stats["total"] == 30
@@ -1691,45 +1652,6 @@ def test_ingest_tw_snapshot_rows_normalizes_twse_tpex_variants_and_lineage():
     db.close()
 
 
-def test_ingest_tw_snapshot_rows_reactivates_existing_inactive_symbol():
-    TestingSessionLocal = _make_session()
-    db = TestingSessionLocal()
-    db.add(
-        StockUniverse(
-            symbol="3008.TWO",
-            exchange="TPEX",
-            market="TW",
-            is_active=False,
-            status=UNIVERSE_STATUS_INACTIVE_MANUAL,
-            status_reason="manual off",
-        )
-    )
-    db.commit()
-
-    csv_content = "\n".join(
-        [
-            "symbol,name,exchange,sector,industry,market_cap",
-            "3008,Largan Precision,TPEX,Technology,Electronics,120B",
-        ]
-    )
-    stats = stock_universe_service.ingest_snapshot_rows(
-        db,
-        market="TW",
-        rows=_csv_rows(csv_content),
-        source_name="tpex_official",
-        snapshot_id="tw-20260412",
-    )
-    row = db.query(StockUniverse).filter(StockUniverse.symbol == "3008.TWO").one()
-
-    assert stats["added"] == 0
-    assert stats["updated"] == 1
-    assert row.is_active is True
-    assert row.status == UNIVERSE_STATUS_ACTIVE
-    assert row.exchange == "XTAI"
-    assert row.local_code == "3008"
-    db.close()
-
-
 def test_ingest_tw_snapshot_rows_infers_tpex_exchange_from_symbol_when_exchange_missing():
     TestingSessionLocal = _make_session()
     db = TestingSessionLocal()
@@ -1757,104 +1679,6 @@ def test_ingest_tw_snapshot_rows_infers_tpex_exchange_from_symbol_when_exchange_
     assert row.exchange == "XTAI"
     assert row.market == "TW"
     assert row.local_code == "3008"
-    db.close()
-
-
-def test_ingest_tw_snapshot_rows_rejects_unapproved_source():
-    TestingSessionLocal = _make_session()
-    db = TestingSessionLocal()
-    csv_content = "symbol,name,exchange\n2330,TSMC,TWSE\n"
-
-    with pytest.raises(ValueError, match="Unapproved TW source"):
-        stock_universe_service.ingest_snapshot_rows(
-            db,
-            market="TW",
-            rows=_csv_rows(csv_content),
-            source_name="random_vendor",
-            snapshot_id="tw-20260412",
-        )
-    db.close()
-
-
-def test_ingest_tw_snapshot_rows_reports_rejected_rows_in_non_strict_mode():
-    TestingSessionLocal = _make_session()
-    db = TestingSessionLocal()
-    csv_content = "\n".join(
-        [
-            "symbol,name,exchange",
-            "ABCD,Invalid,TWSE",
-            "2330,TSMC,TWSE",
-        ]
-    )
-
-    stats = stock_universe_service.ingest_snapshot_rows(
-        db,
-        market="TW",
-        rows=_csv_rows(csv_content),
-        source_name="twse_official",
-        snapshot_id="tw-20260412",
-        strict=False,
-    )
-
-    assert stats["added"] == 1
-    assert stats["total"] == 1
-    assert stats["rejected"] == 1
-    assert stats["rejected_rows"][0]["source_symbol"] == "ABCD"
-    db.close()
-
-
-def test_ingest_tw_snapshot_rows_merges_duplicate_rows_to_keep_richer_metadata():
-    TestingSessionLocal = _make_session()
-    db = TestingSessionLocal()
-    csv_content = "\n".join(
-        [
-            "symbol,name,exchange,sector,industry,market_cap",
-            "2330,,TWSE,,,",
-            "2330.TW,Taiwan Semiconductor,XTAI,Technology,Semiconductors,800B",
-        ]
-    )
-
-    stats = stock_universe_service.ingest_snapshot_rows(
-        db,
-        market="TW",
-        rows=_csv_rows(csv_content),
-        source_name="twse_official",
-        snapshot_id="tw-20260412",
-    )
-    row = db.query(StockUniverse).filter(StockUniverse.symbol == "2330.TW").one()
-
-    assert stats["total"] == 1
-    assert row.name == "Taiwan Semiconductor"
-    assert row.sector == "Technology"
-    assert row.industry == "Semiconductors"
-    assert row.market_cap == 800_000_000_000.0
-    db.close()
-
-
-def test_ingest_tw_snapshot_rows_truncates_verbose_row_payloads():
-    TestingSessionLocal = _make_session()
-    db = TestingSessionLocal()
-    rows = [
-        {
-            "symbol": f"{1100 + index}",
-            "exchange": "TWSE",
-            "name": f"Company {index}",
-        }
-        for index in range(30)
-    ]
-
-    stats = stock_universe_service.ingest_snapshot_rows(
-        db,
-        market="TW",
-        rows=rows,
-        source_name="twse_official",
-        snapshot_id="tw-20260412",
-    )
-
-    assert stats["total"] == 30
-    assert len(stats["canonical_rows"]) == 25
-    assert stats["canonical_rows_truncated"] is True
-    assert stats["rejected_rows_truncated"] is False
     db.close()
 
 
@@ -2463,31 +2287,6 @@ def test_ingest_hk_snapshot_rows_does_not_emit_status_events_for_unchanged_activ
 
     assert initial_events == 1
     assert after_rerun_events == 1
-    db.close()
-
-
-def test_ingest_hk_snapshot_rows_merges_duplicate_rows_to_keep_richer_metadata():
-    TestingSessionLocal = _make_session()
-    db = TestingSessionLocal()
-    csv_content = "\n".join(
-        [
-            "symbol,name,exchange,sector,industry,market_cap",
-            "700,,SEHK,Technology,Internet,500B",
-            "0700.HK,Tencent Holdings,,Technology,Internet,",
-        ]
-    )
-
-    stats = stock_universe_service.ingest_snapshot_rows(
-        db,
-        market="HK",
-        rows=_csv_rows(csv_content),
-        source_name="hk_manual_csv",
-        snapshot_id="hk-20260414-dup",
-    )
-    row = db.query(StockUniverse).filter(StockUniverse.symbol == "0700.HK").one()
-
-    assert stats["total"] == 1
-    assert row.name == "Tencent Holdings"
     db.close()
 
 

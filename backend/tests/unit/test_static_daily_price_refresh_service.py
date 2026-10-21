@@ -102,6 +102,25 @@ class _CurrentSessionGapBreadthHistoryCoverage:
         )
 
 
+class _RecordingFetcher:
+    def __init__(self, calls: list[dict[str, object]]) -> None:
+        self.calls = calls
+
+    def fetch_prices_in_batches(self, symbols, period="2y", start_batch_size=None, market=None):
+        self.calls.append(
+            {
+                "symbols": list(symbols),
+                "period": period,
+                "start_batch_size": start_batch_size,
+                "market": market,
+            }
+        )
+        return {
+            symbol: {"price_data": SimpleNamespace(empty=False), "has_error": False}
+            for symbol in symbols
+        }
+
+
 def _sqlite_session_factory():
     engine = create_engine("sqlite:///:memory:")
     Base.metadata.create_all(
@@ -142,21 +161,6 @@ def test_static_daily_price_refresh_service_fetches_stale_and_no_history_groups(
     fetch_calls: list[dict] = []
     stored_batches: list[dict] = []
 
-    class _FakeFetcher:
-        def fetch_prices_in_batches(self, symbols, period="2y", start_batch_size=None, market=None):
-            fetch_calls.append(
-                {
-                    "symbols": list(symbols),
-                    "period": period,
-                    "start_batch_size": start_batch_size,
-                    "market": market,
-                }
-            )
-            return {
-                symbol: {"price_data": SimpleNamespace(empty=False), "has_error": False}
-                for symbol in symbols
-            }
-
     service = StaticDailyPriceRefreshService(
         session_factory=session_factory,
         price_cache=SimpleNamespace(
@@ -168,7 +172,7 @@ def test_static_daily_price_refresh_service_fetches_stale_and_no_history_groups(
                 }
             )
         ),
-        fetcher=_FakeFetcher(),
+        fetcher=_RecordingFetcher(fetch_calls),
         batch_size_for_market=lambda market: 25,
         sleep=lambda _seconds: None,
     )
@@ -250,21 +254,6 @@ def test_static_daily_price_refresh_refetches_fresh_rows_with_missing_or_zero_vo
     fetch_calls: list[dict] = []
     stored_batches: list[dict] = []
 
-    class _FakeFetcher:
-        def fetch_prices_in_batches(self, symbols, period="2y", start_batch_size=None, market=None):
-            fetch_calls.append(
-                {
-                    "symbols": list(symbols),
-                    "period": period,
-                    "start_batch_size": start_batch_size,
-                    "market": market,
-                }
-            )
-            return {
-                symbol: {"price_data": SimpleNamespace(empty=False), "has_error": False}
-                for symbol in symbols
-            }
-
     service = StaticDailyPriceRefreshService(
         session_factory=session_factory,
         price_cache=SimpleNamespace(
@@ -276,7 +265,7 @@ def test_static_daily_price_refresh_refetches_fresh_rows_with_missing_or_zero_vo
                 }
             )
         ),
-        fetcher=_FakeFetcher(),
+        fetcher=_RecordingFetcher(fetch_calls),
         batch_size_for_market=lambda _market: 25,
         sleep=lambda _seconds: None,
     )
@@ -295,132 +284,67 @@ def test_static_daily_price_refresh_refetches_fresh_rows_with_missing_or_zero_vo
     assert result["stale_symbols"] == 2
 
 
-def test_static_daily_price_refresh_keeps_breadth_current_gap_on_stale_top_up() -> None:
-    session_factory = _sqlite_session_factory()
-
-    with session_factory() as db:
-        db.add(StockUniverse(symbol="SAP.DE", market="DE", is_active=True, market_cap=100.0))
-        db.add(
-            StockPrice(
-                symbol="SAP.DE",
-                date=date(2026, 6, 3),
-                open=1.0,
-                high=1.0,
-                low=1.0,
-                close=1.0,
-                volume=1000,
-            )
-        )
-        db.commit()
-
-    fetch_calls: list[dict] = []
-
-    class _FakeFetcher:
-        def fetch_prices_in_batches(
-            self, symbols, period="2y", start_batch_size=None, market=None
-        ):
-            fetch_calls.append(
-                {
-                    "symbols": list(symbols),
-                    "period": period,
-                    "start_batch_size": start_batch_size,
-                    "market": market,
-                }
-            )
-            return {
-                symbol: {"price_data": SimpleNamespace(empty=False), "has_error": False}
-                for symbol in symbols
-            }
-
-    service = StaticDailyPriceRefreshService(
-        session_factory=session_factory,
-        price_cache=SimpleNamespace(store_batch_in_cache=lambda *_args, **_kwargs: None),
-        fetcher=_FakeFetcher(),
-        batch_size_for_market=lambda _market: 25,
-        group_history_price_coverage=_CompleteGroupHistoryCoverage(),
-        breadth_history_price_coverage=_CurrentSessionGapBreadthHistoryCoverage(),
-        sleep=lambda _seconds: None,
-    )
-
-    result = service.refresh(
-        as_of_date=date(2026, 6, 4),
-        market="DE",
-        ensure_static_history=True,
-    )
-
-    assert fetch_calls == [
-        {
-            "symbols": ["SAP.DE"],
-            "period": STATIC_DAILY_PRICE_REFRESH_PERIOD,
-            "start_batch_size": 25,
-            "market": "DE",
-        },
-        {
-            "symbols": DE_KEY_MARKET_PRICE_SYMBOLS,
-            "period": STATIC_DAILY_PRICE_BOOTSTRAP_PERIOD,
-            "start_batch_size": 25,
-            "market": "DE",
-        }
-    ]
-    assert result["stale_symbols"] == 1
-    assert result["no_history_symbols"] == len(DE_KEY_MARKET_PRICE_SYMBOLS)
-    assert result["history_incomplete_symbols"] == 0
-    assert result["breadth_history_incomplete_symbols"] == 1
-    assert result["breadth_history_missing_through_date_symbols"] == 1
+_DE_STALE_TOP_UP_FETCHES = [
+    {
+        "symbols": ["SAP.DE"],
+        "period": STATIC_DAILY_PRICE_REFRESH_PERIOD,
+        "start_batch_size": 25,
+        "market": "DE",
+    },
+    {
+        "symbols": DE_KEY_MARKET_PRICE_SYMBOLS,
+        "period": STATIC_DAILY_PRICE_BOOTSTRAP_PERIOD,
+        "start_batch_size": 25,
+        "market": "DE",
+    },
+]
 
 
-def test_static_daily_price_refresh_top_up_breadth_only_current_gap() -> None:
-    session_factory = _sqlite_session_factory()
-
-    with session_factory() as db:
-        db.add(StockUniverse(symbol="SAP.DE", market="DE", is_active=True, market_cap=100.0))
-        db.add_all(
+@pytest.mark.parametrize(
+    ("price_rows", "expected"),
+    [
+        pytest.param(
+            [dict(date=date(2026, 6, 3), open=1.0, high=1.0, low=1.0, close=1.0, volume=1000)],
+            {
+                "stale_symbols": 1,
+                "no_history_symbols": len(DE_KEY_MARKET_PRICE_SYMBOLS),
+                "history_incomplete_symbols": 0,
+                "breadth_history_incomplete_symbols": 1,
+                "breadth_history_missing_through_date_symbols": 1,
+            },
+            id="keeps_breadth_current_gap_on_stale_top_up",
+        ),
+        pytest.param(
             [
-                StockPrice(
-                    symbol="SAP.DE",
-                    date=date(2026, 6, 3),
-                    open=1.0,
-                    high=1.0,
-                    low=1.0,
-                    close=1.0,
-                    volume=1000,
-                ),
-                StockPrice(
-                    symbol="SAP.DE",
-                    date=date(2026, 6, 4),
-                    open=None,
-                    high=2.0,
-                    low=2.0,
-                    close=2.0,
-                    volume=1000,
-                ),
-            ]
-        )
+                dict(date=date(2026, 6, 3), open=1.0, high=1.0, low=1.0, close=1.0, volume=1000),
+                dict(date=date(2026, 6, 4), open=None, high=2.0, low=2.0, close=2.0, volume=1000),
+            ],
+            {
+                "db_fresh_symbols": 1,
+                "stale_symbols": 1,
+                "no_history_symbols": len(DE_KEY_MARKET_PRICE_SYMBOLS),
+                "history_incomplete_symbols": 0,
+                "breadth_history_incomplete_symbols": 1,
+                "breadth_history_missing_through_date_symbols": 1,
+            },
+            id="top_up_breadth_only_current_gap",
+        ),
+    ],
+)
+def test_static_daily_price_refresh_tops_up_breadth_current_session_gap(price_rows, expected) -> None:
+    session_factory = _sqlite_session_factory()
+
+    with session_factory() as db:
+        db.add(StockUniverse(symbol="SAP.DE", market="DE", is_active=True, market_cap=100.0))
+        db.add_all([StockPrice(symbol="SAP.DE", **row) for row in price_rows])
         db.commit()
 
     fetch_calls: list[dict] = []
 
-    class _FakeFetcher:
-        def fetch_prices_in_batches(
-            self, symbols, period="2y", start_batch_size=None, market=None
-        ):
-            fetch_calls.append(
-                {
-                    "symbols": list(symbols),
-                    "period": period,
-                    "start_batch_size": start_batch_size,
-                    "market": market,
-                }
-            )
-            return {
-                symbol: {"price_data": SimpleNamespace(empty=False), "has_error": False}
-                for symbol in symbols
-            }
-
     service = StaticDailyPriceRefreshService(
         session_factory=session_factory,
         price_cache=SimpleNamespace(store_batch_in_cache=lambda *_args, **_kwargs: None),
-        fetcher=_FakeFetcher(),
+        fetcher=_RecordingFetcher(fetch_calls),
         batch_size_for_market=lambda _market: 25,
         group_history_price_coverage=_CompleteGroupHistoryCoverage(),
         breadth_history_price_coverage=_CurrentSessionGapBreadthHistoryCoverage(),
@@ -433,26 +357,8 @@ def test_static_daily_price_refresh_top_up_breadth_only_current_gap() -> None:
         ensure_static_history=True,
     )
 
-    assert fetch_calls == [
-        {
-            "symbols": ["SAP.DE"],
-            "period": STATIC_DAILY_PRICE_REFRESH_PERIOD,
-            "start_batch_size": 25,
-            "market": "DE",
-        },
-        {
-            "symbols": DE_KEY_MARKET_PRICE_SYMBOLS,
-            "period": STATIC_DAILY_PRICE_BOOTSTRAP_PERIOD,
-            "start_batch_size": 25,
-            "market": "DE",
-        },
-    ]
-    assert result["db_fresh_symbols"] == 1
-    assert result["stale_symbols"] == 1
-    assert result["no_history_symbols"] == len(DE_KEY_MARKET_PRICE_SYMBOLS)
-    assert result["history_incomplete_symbols"] == 0
-    assert result["breadth_history_incomplete_symbols"] == 1
-    assert result["breadth_history_missing_through_date_symbols"] == 1
+    assert fetch_calls == _DE_STALE_TOP_UP_FETCHES
+    assert {key: result[key] for key in expected} == expected
 
 
 def test_static_daily_price_refresh_service_filters_to_selected_market() -> None:
@@ -484,21 +390,6 @@ def test_static_daily_price_refresh_service_filters_to_selected_market() -> None
     fetch_calls: list[dict] = []
     stored_batches: list[dict] = []
 
-    class _FakeFetcher:
-        def fetch_prices_in_batches(self, symbols, period="2y", start_batch_size=None, market=None):
-            fetch_calls.append(
-                {
-                    "symbols": list(symbols),
-                    "period": period,
-                    "start_batch_size": start_batch_size,
-                    "market": market,
-                }
-            )
-            return {
-                symbol: {"price_data": SimpleNamespace(empty=False), "has_error": False}
-                for symbol in symbols
-            }
-
     service = StaticDailyPriceRefreshService(
         session_factory=session_factory,
         price_cache=SimpleNamespace(
@@ -510,7 +401,7 @@ def test_static_daily_price_refresh_service_filters_to_selected_market() -> None
                 }
             )
         ),
-        fetcher=_FakeFetcher(),
+        fetcher=_RecordingFetcher(fetch_calls),
         batch_size_for_market=lambda _market: 25,
         sleep=lambda _seconds: None,
     )
@@ -569,21 +460,6 @@ def test_static_daily_price_refresh_includes_us_key_market_data_symbols() -> Non
     fetch_calls: list[dict] = []
     stored_batches: list[dict] = []
 
-    class _FakeFetcher:
-        def fetch_prices_in_batches(self, symbols, period="2y", start_batch_size=None, market=None):
-            fetch_calls.append(
-                {
-                    "symbols": list(symbols),
-                    "period": period,
-                    "start_batch_size": start_batch_size,
-                    "market": market,
-                }
-            )
-            return {
-                symbol: {"price_data": SimpleNamespace(empty=False), "has_error": False}
-                for symbol in symbols
-            }
-
     service = StaticDailyPriceRefreshService(
         session_factory=session_factory,
         price_cache=SimpleNamespace(
@@ -595,7 +471,7 @@ def test_static_daily_price_refresh_includes_us_key_market_data_symbols() -> Non
                 }
             )
         ),
-        fetcher=_FakeFetcher(),
+        fetcher=_RecordingFetcher(fetch_calls),
         batch_size_for_market=lambda _market: 25,
         sleep=lambda _seconds: None,
     )
@@ -623,148 +499,54 @@ def test_static_daily_price_refresh_includes_us_key_market_data_symbols() -> Non
     assert result["yahoo_fetched_symbols"] == len(US_KEY_MARKET_PRICE_SYMBOLS)
 
 
-def test_static_daily_price_refresh_hydrates_short_history_for_rrg_startup() -> None:
-    session_factory = _sqlite_session_factory()
-
-    with session_factory() as db:
-        db.add(
-            StockUniverse(symbol="OLD.NS", market="IN", is_active=True, market_cap=100.0)
-        )
-        db.add(
-            StockPrice(
-                symbol="OLD.NS",
-                date=date(2026, 6, 4),
-                open=1.0,
-                high=1.0,
-                low=1.0,
-                close=1.0,
-                volume=1000,
-            )
-        )
-        db.commit()
-
-    fetch_calls: list[dict] = []
-
-    class _FakeFetcher:
-        def fetch_prices_in_batches(
-            self, symbols, period="2y", start_batch_size=None, market=None
-        ):
-            fetch_calls.append(
-                {
-                    "symbols": list(symbols),
-                    "period": period,
-                    "start_batch_size": start_batch_size,
-                    "market": market,
-                }
-            )
-            return {
-                symbol: {"price_data": SimpleNamespace(empty=False), "has_error": False}
-                for symbol in symbols
-            }
-
-    breadth_coverage = _CompleteBreadthHistoryCoverage()
-    service = StaticDailyPriceRefreshService(
-        session_factory=session_factory,
-        price_cache=SimpleNamespace(store_batch_in_cache=lambda *_args, **_kwargs: None),
-        fetcher=_FakeFetcher(),
-        batch_size_for_market=lambda _market: 25,
-        calendar_service=_RRGStartupCalendar(),
-        breadth_history_price_coverage=breadth_coverage,
-        sleep=lambda _seconds: None,
-    )
-
-    result = service.refresh(
-        as_of_date=date(2026, 6, 4),
-        market="IN",
-        ensure_static_history=True,
-    )
-
-    assert fetch_calls == [
-        {
-            "symbols": ["OLD.NS", *IN_KEY_MARKET_PRICE_SYMBOLS],
-            "period": STATIC_DAILY_PRICE_BOOTSTRAP_PERIOD,
-            "start_batch_size": 25,
-            "market": "IN",
-        }
-    ]
-    assert result["db_fresh_symbols"] == 1
-    assert result["stale_symbols"] == 0
-    assert result["no_history_symbols"] == len(IN_KEY_MARKET_PRICE_SYMBOLS)
-    assert result["history_incomplete_symbols"] == 1
-    assert result["rrg_history_coverage_status"] == "verified"
-    assert result["breadth_history_coverage_status"] == "verified"
-    assert breadth_coverage.calls == [
-        {
-            "market": "IN",
-            "through_date": date(2026, 6, 4),
-            "symbols": ("OLD.NS",),
-        }
-    ]
-    assert result["yahoo_fetched_symbols"] == 6
-
-
-def test_static_daily_price_refresh_hydrates_sparse_old_rows_for_rrg_startup() -> None:
-    session_factory = _sqlite_session_factory()
-
-    with session_factory() as db:
-        db.add(
-            StockUniverse(
-                symbol="SPARSE.NS",
-                market="IN",
-                is_active=True,
-                market_cap=100.0,
-            )
-        )
-        db.add_all(
+@pytest.mark.parametrize(
+    ("symbol", "price_rows", "expected"),
+    [
+        pytest.param(
+            "OLD.NS",
+            [dict(date=date(2026, 6, 4), open=1.0, high=1.0, low=1.0, close=1.0, volume=1000)],
+            {
+                "db_fresh_symbols": 1,
+                "stale_symbols": 0,
+                "no_history_symbols": len(IN_KEY_MARKET_PRICE_SYMBOLS),
+                "history_incomplete_symbols": 1,
+                "rrg_history_coverage_status": "verified",
+                "breadth_history_coverage_status": "verified",
+                "yahoo_fetched_symbols": 6,
+            },
+            id="short_history",
+        ),
+        pytest.param(
+            "SPARSE.NS",
             [
-                StockPrice(
-                    symbol="SPARSE.NS",
-                    date=date(2025, 1, 2),
-                    open=1.0,
-                    high=1.0,
-                    low=1.0,
-                    close=1.0,
-                    adj_close=1.0,
-                    volume=1000,
-                ),
-                StockPrice(
-                    symbol="SPARSE.NS",
-                    date=date(2026, 6, 4),
-                    open=2.0,
-                    high=2.0,
-                    low=2.0,
-                    close=2.0,
-                    adj_close=2.0,
-                    volume=1000,
-                ),
-            ]
-        )
+                dict(date=date(2025, 1, 2), open=1.0, high=1.0, low=1.0, close=1.0, adj_close=1.0, volume=1000),
+                dict(date=date(2026, 6, 4), open=2.0, high=2.0, low=2.0, close=2.0, adj_close=2.0, volume=1000),
+            ],
+            {
+                "db_fresh_symbols": 1,
+                "history_incomplete_symbols": 1,
+                "rrg_history_coverage_status": "verified",
+                "breadth_history_coverage_status": "verified",
+            },
+            id="sparse_old_rows",
+        ),
+    ],
+)
+def test_static_daily_price_refresh_hydrates_history_for_rrg_startup(symbol, price_rows, expected) -> None:
+    session_factory = _sqlite_session_factory()
+
+    with session_factory() as db:
+        db.add(StockUniverse(symbol=symbol, market="IN", is_active=True, market_cap=100.0))
+        db.add_all([StockPrice(symbol=symbol, **row) for row in price_rows])
         db.commit()
 
     fetch_calls: list[dict] = []
-
-    class _FakeFetcher:
-        def fetch_prices_in_batches(
-            self, symbols, period="2y", start_batch_size=None, market=None
-        ):
-            fetch_calls.append(
-                {
-                    "symbols": list(symbols),
-                    "period": period,
-                    "start_batch_size": start_batch_size,
-                    "market": market,
-                }
-            )
-            return {
-                symbol: {"price_data": SimpleNamespace(empty=False), "has_error": False}
-                for symbol in symbols
-            }
 
     breadth_coverage = _CompleteBreadthHistoryCoverage()
     service = StaticDailyPriceRefreshService(
         session_factory=session_factory,
         price_cache=SimpleNamespace(store_batch_in_cache=lambda *_args, **_kwargs: None),
-        fetcher=_FakeFetcher(),
+        fetcher=_RecordingFetcher(fetch_calls),
         batch_size_for_market=lambda _market: 25,
         calendar_service=_RRGStartupCalendar(),
         breadth_history_price_coverage=breadth_coverage,
@@ -779,21 +561,18 @@ def test_static_daily_price_refresh_hydrates_sparse_old_rows_for_rrg_startup() -
 
     assert fetch_calls == [
         {
-            "symbols": ["SPARSE.NS", *IN_KEY_MARKET_PRICE_SYMBOLS],
+            "symbols": [symbol, *IN_KEY_MARKET_PRICE_SYMBOLS],
             "period": STATIC_DAILY_PRICE_BOOTSTRAP_PERIOD,
             "start_batch_size": 25,
             "market": "IN",
         }
     ]
-    assert result["db_fresh_symbols"] == 1
-    assert result["history_incomplete_symbols"] == 1
-    assert result["rrg_history_coverage_status"] == "verified"
-    assert result["breadth_history_coverage_status"] == "verified"
+    assert {key: result[key] for key in expected} == expected
     assert breadth_coverage.calls == [
         {
             "market": "IN",
             "through_date": date(2026, 6, 4),
-            "symbols": ("SPARSE.NS",),
+            "symbols": (symbol,),
         }
     ]
 
@@ -825,27 +604,10 @@ def test_static_daily_price_refresh_continues_when_rrg_calendar_lookup_fails() -
         def trading_days(_market, _start, _end):
             raise RuntimeError("calendar unavailable")
 
-    class _FakeFetcher:
-        def fetch_prices_in_batches(
-            self, symbols, period="2y", start_batch_size=None, market=None
-        ):
-            fetch_calls.append(
-                {
-                    "symbols": list(symbols),
-                    "period": period,
-                    "start_batch_size": start_batch_size,
-                    "market": market,
-                }
-            )
-            return {
-                symbol: {"price_data": SimpleNamespace(empty=False), "has_error": False}
-                for symbol in symbols
-            }
-
     service = StaticDailyPriceRefreshService(
         session_factory=session_factory,
         price_cache=SimpleNamespace(store_batch_in_cache=lambda *_args, **_kwargs: None),
-        fetcher=_FakeFetcher(),
+        fetcher=_RecordingFetcher(fetch_calls),
         batch_size_for_market=lambda _market: 25,
         calendar_service=_FailingCalendar(),
         sleep=lambda _seconds: None,
@@ -902,25 +664,10 @@ def test_static_daily_price_refresh_uses_date_only_freshness_for_key_market_symb
 
     fetch_calls: list[dict] = []
 
-    class _FakeFetcher:
-        def fetch_prices_in_batches(self, symbols, period="2y", start_batch_size=None, market=None):
-            fetch_calls.append(
-                {
-                    "symbols": list(symbols),
-                    "period": period,
-                    "start_batch_size": start_batch_size,
-                    "market": market,
-                }
-            )
-            return {
-                symbol: {"price_data": SimpleNamespace(empty=False), "has_error": False}
-                for symbol in symbols
-            }
-
     service = StaticDailyPriceRefreshService(
         session_factory=session_factory,
         price_cache=SimpleNamespace(store_batch_in_cache=lambda *_args, **_kwargs: None),
-        fetcher=_FakeFetcher(),
+        fetcher=_RecordingFetcher(fetch_calls),
         batch_size_for_market=lambda _market: 25,
         sleep=lambda _seconds: None,
     )
@@ -977,21 +724,6 @@ def test_static_daily_price_refresh_classifies_all_supported_symbols_with_volume
         )
         return PriceHistoryCoverage(no_history=tuple(symbols))
 
-    class _FakeFetcher:
-        def fetch_prices_in_batches(self, symbols, period="2y", start_batch_size=None, market=None):
-            fetch_calls.append(
-                {
-                    "symbols": list(symbols),
-                    "period": period,
-                    "start_batch_size": start_batch_size,
-                    "market": market,
-                }
-            )
-            return {
-                symbol: {"price_data": SimpleNamespace(empty=False), "has_error": False}
-                for symbol in symbols
-            }
-
     monkeypatch.setattr(
         service_module,
         "classify_price_history",
@@ -1001,7 +733,7 @@ def test_static_daily_price_refresh_classifies_all_supported_symbols_with_volume
     service = StaticDailyPriceRefreshService(
         session_factory=session_factory,
         price_cache=SimpleNamespace(store_batch_in_cache=lambda *_args, **_kwargs: None),
-        fetcher=_FakeFetcher(),
+        fetcher=_RecordingFetcher(fetch_calls),
         batch_size_for_market=lambda _market: 25,
         sleep=lambda _seconds: None,
     )
