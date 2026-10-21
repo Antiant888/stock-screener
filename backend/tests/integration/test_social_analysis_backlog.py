@@ -22,7 +22,7 @@ NOW = datetime(2026, 9, 7, 15, 59, tzinfo=timezone.utc)
 def backlog(tmp_path):
     engine = create_engine(f"sqlite:///{tmp_path / 'backlog.sqlite'}", connect_args={"timeout": 15})
     Base.metadata.create_all(engine)
-    factory = sessionmaker(engine, expire_on_commit=False)
+    factory = sessionmaker(engine, expire_on_commit=False, autoflush=False)
     with factory.begin() as db:
         db.add(SocialSourceRegistry(id=1, mode="live", provider="official"))
         db.add(AppSetting(key="social_llm_pricing", value=json.dumps({

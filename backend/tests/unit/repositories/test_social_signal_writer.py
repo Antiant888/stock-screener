@@ -20,7 +20,7 @@ NOW = datetime(2026, 9, 7, 12, tzinfo=timezone.utc)
 def store(tmp_path):
     engine = create_engine(f"sqlite:///{tmp_path / 'publication.sqlite'}")
     Base.metadata.create_all(engine)
-    factory = sessionmaker(engine, expire_on_commit=False)
+    factory = sessionmaker(engine, expire_on_commit=False, autoflush=False)
     with factory() as db:
         admin = SocialSourceAdminService(db)
         admin.ensure_seed_sources()

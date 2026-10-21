@@ -464,6 +464,8 @@ class SocialThemeProjectionService:
         run = self.db.get(SocialSignalRun, projection.run_id)
         if run is None or run.mode != "live" or run.status != "published":
             raise ValueError("published_social_run_required")
+        # Admission reads the published status back with SQL.
+        self.db.flush()
         identity = SocialCompanyIdentityService(self.db).read()
         resolver = SocialTickerResolver(
             self.db, verified_company_ids=identity.verified_company_ids
@@ -868,6 +870,8 @@ class SocialThemeProjectionService:
                 self._decision(association, "accepted", "two_independent_authors_14d", "system", projection.prepared_at,
                                projection.run_id, evidence_work_ids=sorted({row[1] for row in company_evidence}))
                 changed.add(association.id)
+        # Membership is read with SQL, so it must see the acceptances above.
+        self.db.flush()
         companies = {item.company_key for item in self.effective_live_membership(theme_id) if item.company_count_eligible}
         dates = {row[0].date() for row in qualifying if row[3] in companies}
         theme = self.db.get(ThemeCluster, theme_id)
