@@ -382,17 +382,23 @@ Confirm the export run publishes `static-site-v3` artifacts and updates the Mark
 
 ### Upgrade refused by migration 0068
 
-Migration `20261021_0068` drops `market_rs_formula_pointers` and refuses with "Markets served under a retired RS formula" while a pointer names another formula for a Market that is still served: one with a `latest_published_market:<MARKET>` Feature pointer, or one whose `ibd_group_ranks` rows carry that formula (`backend/alembic/versions/20261021_0068_drop_market_rs_formula_pointers.py`). The database stays at the previous revision. Go back to the previous release and publish balanced RS for each listed Market from `backend`:
+Migration `20261021_0068` drops `market_rs_formula_pointers` and refuses with "Markets served under a retired RS formula" while a pointer names another formula for a Market that is still served: one with a `latest_published_market:<MARKET>` Feature pointer, or one whose `ibd_group_ranks` rows carry that formula (`backend/alembic/versions/20261021_0068_drop_market_rs_formula_pointers.py`). The database stays at the previous revision. Go back to the previous release and publish balanced RS for each listed Market from `backend`, once per Market. On that release `--activate` requires `--static-staging-dir`, refuses a non-empty one (`validate_static_staging_directory` in `backend/app/services/market_rs_rollout_executor.py`), and leaves its staged bundle there, so each run needs a new, empty absolute directory for each Market that nothing serves. For example, when the refusal lists HK and JP:
 
 ```bash
 python -m app.scripts.backfill_market_rs \
-  --market <MARKET> \
+  --market HK \
   --through-date <YYYY-MM-DD> \
-  --static-staging-dir <absolute empty directory that nothing serves> \
+  --static-staging-dir /var/tmp/stockscreen-rs-hk-<YYYY-MM-DD> \
+  --activate
+
+python -m app.scripts.backfill_market_rs \
+  --market JP \
+  --through-date <YYYY-MM-DD> \
+  --static-staging-dir /var/tmp/stockscreen-rs-jp-<YYYY-MM-DD> \
   --activate
 ```
 
-On that release `--activate` requires `--static-staging-dir`. Then upgrade again. If a listed Market is no longer enabled, delete its row from `market_rs_formula_pointers` instead.
+Then upgrade again. If a listed Market is no longer enabled, delete its row from `market_rs_formula_pointers` instead.
 
 ## Static Price-Stage Checkpoints
 

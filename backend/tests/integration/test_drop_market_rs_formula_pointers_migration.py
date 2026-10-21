@@ -175,13 +175,14 @@ def test_upgrade_refuses_while_a_pointer_names_a_retired_formula(tmp_path):
         "HK='legacy-linear-v1' (published Feature run), "
         "JP='legacy-linear-v1' (published Feature run). This release serves only "
         "'balanced-horizon-percentile-v2' and cannot serve those markets. Finish the "
-        "balanced rollout on the previous release first: run 'python -m "
-        "app.scripts.backfill_market_rs --market <MARKET> --through-date "
-        "<YYYY-MM-DD> --static-staging-dir <absolute empty directory that nothing "
-        "serves> --activate' for each listed market on the release before this "
-        "one, then upgrade. See 'Balanced Market RS Publication' in "
-        "docs/OPERATIONS.md. If a listed market is no longer enabled, delete its "
-        "row from market_rs_formula_pointers."
+        "balanced rollout on the previous release first. For each listed market, "
+        "run 'python -m app.scripts.backfill_market_rs --market <MARKET> "
+        "--through-date <YYYY-MM-DD> --static-staging-dir <DIR> --activate' on "
+        "that release, where <DIR> is a new, empty absolute directory for each "
+        "Market that nothing serves, such as /var/tmp/stockscreen-rs-<market>-<date>. "
+        "Then upgrade. See 'Balanced Market RS Publication' in docs/OPERATIONS.md. "
+        "If a listed market is no longer enabled, delete its row from "
+        "market_rs_formula_pointers."
     )
     assert _pointer_rows(engine) == [
         ("CA", STORED_LEGACY_FORMULA),
