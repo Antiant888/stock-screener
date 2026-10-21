@@ -896,14 +896,15 @@ class BulkDataFetcher:
                 )
         return results
 
-    def _resolve_price_batch_backoff(self, market: Optional[str]) -> tuple[int, ...]:
-        """Return the per-attempt sleep schedule for ``_fetch_price_batch_with_retries``.
+    def price_batch_backoff_schedule(self, market: Optional[str]) -> tuple[int, ...]:
+        """Sleeps between a price batch's retry attempts, longest last.
 
         When a market is supplied we derive the schedule from
         ``RateBudgetPolicy.get_backoff_params`` so India (and other markets
         with longer Yahoo throttle windows) wait ``60/120/240s`` instead of
         the legacy ``30/60/120s``. ``market=None`` keeps the legacy schedule
-        for shared/unmarked callers.
+        for shared/unmarked callers. Callers that must finish before a
+        deadline (the static daily refresh) budget ``sum(schedule)`` per call.
         """
         if market is None:
             return self.PRICE_BATCH_RETRY_BACKOFF_SECONDS
@@ -941,7 +942,7 @@ class BulkDataFetcher:
         back to the legacy ``PRICE_BATCH_RETRY_BACKOFF_SECONDS`` tuple for
         callers that don't pass a market.
         """
-        backoff_schedule = self._resolve_price_batch_backoff(market)
+        backoff_schedule = self.price_batch_backoff_schedule(market)
         current_batch_size = max(
             self.MIN_PRICE_BATCH_SIZE,
             min(initial_batch_size, self.MAX_PRICE_BATCH_SIZE),
