@@ -126,10 +126,28 @@ def test_reposts_empty_quotes_copied_claims_and_canonical_urls_do_not_inflate():
 def test_a_post_whose_claims_about_the_ticker_are_all_flagged_copies_does_not_count():
     shared = {"canonical_url": "https://example.com/claim", "canonical_claim_key": "claim"}
     row = score(evidence((post("1", "alice", **shared), post("2", "bob", age=2, **shared)),
-                         duplicate_post_keys=("xui:2",)))
+                         duplicate_posts=(("xui:2", "a"),)))
     assert row.mention_count == 1
     assert row.exclusions == (("xui:2", "flagged_duplicate"),)
     assert components(row)["authors"].observed_count == 1
+
+
+def test_a_flagged_copy_of_an_accepted_post_is_reported_as_flagged():
+    shared = {"canonical_url": "https://example.com/claim"}
+    row = score(evidence((post("1", "alice", age=2, **shared), post("2", "bob", **shared)),
+                         duplicate_posts=(("xui:2", "a"),)))
+    assert row.exclusions == (("xui:2", "flagged_duplicate"),)
+
+
+@pytest.mark.parametrize(("flagged_source", "exclusions"), [
+    ("a", ()),
+    ("b", (("xui:1", "flagged_duplicate"),)),
+])
+def test_only_the_selected_revision_of_a_post_decides_its_flag(flagged_source, exclusions):
+    older = post("1", source="a", text="$NVDA copy", observed_at=NOW - timedelta(hours=1))
+    newer = post("1", source="b", text="$NVDA copy, edited")
+    row = score(evidence((older, newer), duplicate_posts=(("xui:1", flagged_source),)))
+    assert row.exclusions == exclusions
 
 
 def test_future_observations_and_publications_are_excluded_even_with_ingress_skew():

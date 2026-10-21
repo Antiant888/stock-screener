@@ -394,7 +394,7 @@ def flagged_claim(token, duplicate_of=()):
 
 
 @pytest.mark.parametrize(("claims", "expected"), [
-    ([flagged_claim("$AAA", ["99"])], ("official:100",)),
+    ([flagged_claim("$AAA", ["99"])], (("official:100", "1"),)),
     ([flagged_claim("$AAA", ["99"]), flagged_claim("$AAA")], ()),
     ([flagged_claim("$BBB", ["99"])], ()),
     ([], ()),
@@ -425,7 +425,7 @@ def test_scoring_evidence_marks_a_post_whose_claims_about_a_ticker_are_all_flagg
 
     evidence = {item.candidate_key: item for item in SocialScoringEvidenceReader(store).read("run", NOW)}
 
-    assert evidence["US:AAA"].duplicate_post_keys == expected
+    assert evidence["US:AAA"].duplicate_posts == expected
 
 
 def test_a_flag_on_an_earlier_revision_does_not_exclude_the_edited_post(store):
@@ -462,7 +462,39 @@ def test_a_flag_on_an_earlier_revision_does_not_exclude_the_edited_post(store):
     evidence = {item.candidate_key: item for item in SocialScoringEvidenceReader(store).read("new", later)}
 
     assert [post.text for post in evidence["US:AAA"].posts] == ["$AAA supplies cooling, edited"]
-    assert evidence["US:AAA"].duplicate_post_keys == ()
+    assert evidence["US:AAA"].duplicate_posts == ()
+
+
+def test_each_list_revision_of_a_post_carries_its_own_flag(store):
+    from app.infra.db.models.social_analysis import SocialExtractionWork, SocialRunWork
+    from app.infra.db.repositories.social_refresh_support import SocialScoringEvidenceReader
+    from app.models.stock_universe import StockUniverse
+    from app.services.social_extraction_service import SocialExtractionService
+
+    w = writer(store)
+    w.create_run("run", NOW)
+    first = w.persist_observations(batch(), run_id="run")
+    edited = batch(2)
+    edited = replace(edited, posts=(replace(edited.posts[0], text="$AAA supplies cooling, edited"),))
+    second = w.persist_observations(edited, run_id="run")
+    content_id = dict(w.read_run_inputs("run").content_ids)["100"]
+    with store.begin() as db:
+        db.add(StockUniverse(symbol="AAA", name="AAA Corp", market="US", exchange="NASDAQ", is_active=True))
+        for saved, claims in ((first, [flagged_claim("$AAA", ["99"])]), (second, [])):
+            input_hash = SocialExtractionService.input_hash(saved.posts)
+            work = SocialExtractionWork(
+                content_item_id=content_id, input_hash=input_hash, prompt_version="v1",
+                schema_version="v1", selected_model="model", input_snapshot_json={}, state="succeeded",
+                result_json={"claims": claims, "judgments": []}, created_at=NOW, updated_at=NOW,
+            )
+            db.add(work)
+            db.flush()
+            db.add(SocialRunWork(run_id="run", work_id=work.id, input_hash=input_hash, included_at=NOW))
+    w.select_current_inputs("run")
+
+    evidence = {item.candidate_key: item for item in SocialScoringEvidenceReader(store).read("run", NOW)}
+
+    assert evidence["US:AAA"].duplicate_posts == (("official:100", "1"),)
 
 
 def test_unavailable_revision_does_not_hide_another_revision_of_the_same_post(store):
