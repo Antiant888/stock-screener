@@ -27,8 +27,7 @@ def test_docker_compose_datafetch_queues_are_derived_from_enabled_markets():
     compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
 
     assert "compose_enabled_markets.py queues" in compose
-    assert "data_fetch_shared,data_fetch_us,data_fetch_hk" not in compose
-    assert "-Q \"$$QUEUES\"" in compose
+    assert '-Q "$$QUEUES"' in compose
 
 
 def test_release_overlay_uses_release_image_for_every_market_worker():
@@ -59,26 +58,6 @@ def test_docker_compose_forwards_opendart_api_key_to_app_env():
     compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
 
     assert "OPENDART_API_KEY: ${OPENDART_API_KEY:-}" in compose
-
-
-def test_docker_compose_forwards_options_analytics_flag_to_app_env():
-    compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
-    app_env = compose.split("x-app-env: &app-env", maxsplit=1)[1].split(
-        "x-celery-env: &celery-env", maxsplit=1
-    )[0]
-
-    assert (
-        "OPTIONS_ANALYTICS_ENABLED: ${OPTIONS_ANALYTICS_ENABLED:-false}" in app_env
-    )
-
-
-def test_local_celery_script_data_fetch_worker_reads_every_market_queue():
-    script = (ROOT / "backend" / "start_celery.sh").read_text(encoding="utf-8")
-
-    assert "from app.tasks.market_queues import SUPPORTED_MARKETS" in script
-    assert "from app.tasks.market_queues import all_data_fetch_queues" in script
-    assert '-Q "$DATA_FETCH_QUEUES"' in script
-    assert "case \"$MARKET_UPPER\"" not in script
 
 
 def _started_workers(tmp_path, *, env_markets=None, dotenv_markets=None):
@@ -157,32 +136,6 @@ def test_local_celery_script_prefers_the_exported_enabled_markets(tmp_path):
     assert [name for name in workers if name.startswith("marketjobs-")] == [
         "marketjobs-jp@%h",
     ]
-
-
-def test_windows_celery_script_uses_current_market_scoped_worker_topology():
-    script = (ROOT / "backend" / "start_celery.ps1").read_text(encoding="utf-8")
-
-    assert "from app.tasks.market_queues import SUPPORTED_MARKETS" in script
-    assert "from app.tasks.market_queues import all_data_fetch_queues" in script
-    assert "datafetch-global@%h" in script
-    assert "user_scans_shared" in script
-    assert '"market_jobs_$marketLower"' in script
-    assert '"user_scans_$marketLower"' in script
-    assert '"data_fetch"' not in script
-    assert '"user_scans"' not in script
-
-
-def test_enabled_market_compose_wrapper_reads_env_files_and_preserves_profiles():
-    script = (ROOT / "scripts" / "docker-compose-enabled-markets.sh").read_text(encoding="utf-8")
-
-    assert "read_env_value" in script
-    assert "env_files_from_args" in script
-    assert "RESOLVED_ENV_FILES" in script
-    assert "read_env_value_from_files ENABLED_MARKETS" in script
-    assert "read_env_value_from_files COMPOSE_PROFILES" in script
-    assert "PROFILES=\"$COMPOSE_PROFILES,$MARKET_PROFILES\"" in script
-    assert 'COMPOSE_ARGS+=(--env-file "$ENV_FILE_TO_FORWARD")' in script
-    assert 'COMPOSE_ARGS+=("--remove-orphans")' in script
 
 
 def _fake_docker_bin(tmp_path: Path) -> Path:

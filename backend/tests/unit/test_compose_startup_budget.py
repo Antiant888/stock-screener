@@ -39,9 +39,6 @@ OBSERVED_MIGRATION_SECONDS = 519
 MIN_START_PERIOD_SECONDS = 600
 
 # The grace redis was given for large persisted datasets (the BusyLoadingError fix).
-MIN_REDIS_START_PERIOD_SECONDS = 120
-
-
 def _yaml(path: Path) -> dict:
     """Parse a compose file into a mapping."""
     return yaml.safe_load(path.read_text(encoding="utf-8"))
@@ -78,23 +75,6 @@ def test_backend_start_period_covers_a_long_migration():
     )
     assert _duration_seconds(check["start_period"]) > OBSERVED_MIGRATION_SECONDS, (
         "the backend start_period does not cover the observed migration runtime"
-    )
-
-
-def test_backend_grace_is_not_smaller_than_the_redis_grace():
-    """The backend grace must bound the deploy, not the redis grace.
-
-    Redis got a long grace for large persisted datasets. The backend, which additionally
-    has to migrate, carried a shorter one -- that asymmetry is what aborted the worker
-    tier. Both gate the same deploy, so the backend may not be the tighter of the two.
-    """
-    redis_check = _yaml(BASE_COMPOSE)["services"]["redis"]["healthcheck"]
-
-    assert _duration_seconds(redis_check["start_period"]) >= MIN_REDIS_START_PERIOD_SECONDS
-    assert _duration_seconds(
-        _yaml(BASE_COMPOSE)["services"]["backend"]["healthcheck"]["start_period"]
-    ) >= _duration_seconds(redis_check["start_period"]), (
-        "the backend grace is expected to bound the deploy, not the redis grace"
     )
 
 

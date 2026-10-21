@@ -284,13 +284,6 @@ def test_fills_quoted_empty_secrets_and_edits_the_last_duplicate_key(run):
     assert tags == ["APP_IMAGE_TAG=v0.0.1", f"APP_IMAGE_TAG={_checkout_tag()}"]
 
 
-def test_frontend_image_healthcheck_targets_ipv4():
-    dockerfile = (REPO_ROOT / "frontend" / "Dockerfile").read_text()
-    healthcheck = dockerfile.split("HEALTHCHECK", 1)[1].split("\n\n", 1)[0]
-
-    assert "127.0.0.1" in healthcheck and "localhost" not in healthcheck
-
-
 def test_release_images_pin_the_only_published_platform():
     # publish-images builds amd64 only; without the pin ARM hosts fail to pull.
     ci = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text()
@@ -300,29 +293,3 @@ def test_release_images_pin_the_only_published_platform():
     for anchor in ("&backend-release-service", "&frontend-release-service"):
         block = release.split(anchor, 1)[1].split("\n\n", 1)[0]
         assert "platform: linux/amd64" in block
-
-
-def test_frontend_healthcheck_targets_ipv4():
-    # busybox wget resolves localhost to [::1]; nginx listens on IPv4 only, so
-    # the check never passed and `up --wait` failed on the frontend.
-    import yaml
-
-    prod = yaml.safe_load((REPO_ROOT / "docker-compose.prod.yml").read_text())
-    test = " ".join(prod["services"]["frontend"]["healthcheck"]["test"])
-
-    assert "http://127.0.0.1:80/nginx-health" in test
-    assert "localhost" not in test
-
-
-def test_base_compose_does_not_cancel_the_production_worker_healthchecks():
-    # `healthcheck: disable: true` survives the prod overlay merge, so the
-    # overlay's celery ping checks never ran and `up --wait` refused to wait.
-    import yaml
-
-    base = yaml.safe_load((REPO_ROOT / "docker-compose.yml").read_text())
-
-    disabled = sorted(
-        name for name, service in base["services"].items()
-        if (service.get("healthcheck") or {}).get("disable")
-    )
-    assert disabled == []

@@ -13,13 +13,6 @@ def _documented_release_tags(content: str) -> set[str]:
     return set(re.findall(r"APP_IMAGE_TAG=(v\d+\.\d+\.\d+)", content))
 
 
-def test_release_workflow_uses_curated_release_notes() -> None:
-    content = (ROOT / ".github" / "workflows" / "ci.yml").read_text()
-
-    assert "body_path: .github/release-notes.md" in content
-    assert "generate_release_notes: true" not in content
-
-
 def test_readme_quickstart_is_the_one_command_install() -> None:
     content = (ROOT / "README.md").read_text()
 

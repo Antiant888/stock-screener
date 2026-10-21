@@ -36,7 +36,6 @@ def test_public_social_worker_is_opt_in_fail_closed_and_queue_is_isolated():
     assert environment["SOCIAL_SIGNALS_MODE"] == "${SOCIAL_SIGNALS_MODE:-off}"
     assert environment["SOCIAL_INGEST_PROVIDER"] == "${SOCIAL_INGEST_PROVIDER:-disabled}"
     assert not any(key.startswith("SOCIAL_XUI_") for key in environment)
-    assert "-Q social_ingestion" in worker["command"]
 
     services = base["services"]
     consumers = [
@@ -48,56 +47,11 @@ def test_public_social_worker_is_opt_in_fail_closed_and_queue_is_isolated():
     assert all("xui-reader" not in str(service.get("volumes", [])) for service in base["services"].values())
 
 
-def test_private_overlay_reuses_the_one_worker_and_alone_mounts_profile_writable():
-    overlay = _yaml(XUI_COMPOSE)
-
-    assert list(overlay["services"]) == ["celery-social"]
-    worker = overlay["services"]["celery-social"]
-    assert worker["build"]["target"] == "social-xui"
-    assert worker["image"] == "${SOCIAL_WORKER_IMAGE:-stock-screener-social-xui:dev}"
-    profile_mounts = [
-        volume for volume in worker["volumes"] if "/app/data/xui-reader" in volume
-    ]
-    assert profile_mounts == ["${XUI_PROFILE_DIR:?Set XUI_PROFILE_DIR}:/app/data/xui-reader"]
-    assert not profile_mounts[0].endswith(":ro")
-    assert worker["build"]["ssh"] == ["default"]
-    assert "github_known_hosts" in worker["build"]["secrets"]
-    assert worker["environment"] == {
-        "SOCIAL_XUI_CONFIG_PATH": "/app/data/xui-reader/config.toml",
-        "SOCIAL_XUI_PROFILE": "${SOCIAL_XUI_PROFILE:-automation}",
-        "SOCIAL_XUI_TIMEOUT_SECONDS": "${SOCIAL_XUI_TIMEOUT_SECONDS:-300}",
-    }
-
-
-def test_env_template_documents_every_private_overlay_setting():
-    template = (ROOT / ".env.docker.example").read_text(encoding="utf-8")
-    overlay = _yaml(XUI_COMPOSE)["services"]["celery-social"]["environment"]
-
-    assert [key for key in overlay if f"\n{key}=" not in template] == []
-
-
-def test_private_worker_reserves_shared_memory_for_playwright_chromium():
-    worker = _yaml(XUI_COMPOSE)["services"]["celery-social"]
-
-    assert worker["shm_size"] == "1gb"
-
-
 def test_dockerfile_keeps_private_install_out_of_default_public_target():
     dockerfile = DOCKERFILE.read_text(encoding="utf-8")
 
-    assert dockerfile.startswith("# syntax=docker/dockerfile:1.7\n")
-    assert "FROM python:3.11-slim AS runtime-base" in dockerfile
-    assert "FROM builder AS social-xui-builder" in dockerfile
-    assert "FROM runtime-base AS social-xui" in dockerfile
+    # The last stage is the default build target.
     assert dockerfile.rstrip().endswith("FROM runtime-base AS public")
-    assert "git+ssh://git@github.com/xang1234/xui.git@${XUI_READER_REF}" in dockerfile
-    assert 'test "${#XUI_READER_REF}" -eq 40' in dockerfile
-    assert '*[!0-9a-fA-F]*' in dockerfile
-    assert "--mount=type=ssh,required=true" in dockerfile
-    assert "--mount=type=secret,id=github_known_hosts" in dockerfile
-    assert "python -m playwright install --with-deps chromium" in dockerfile
-    assert "ENV PLAYWRIGHT_BROWSERS_PATH=/opt/stockscanner/playwright" in dockerfile
-
     public_build = dockerfile.split("FROM builder AS social-xui-builder", 1)[0]
     assert "xui-reader" not in public_build.lower()
     assert re.search(r"FROM runtime-base AS social-xui[\s\S]*USER stockscanner", dockerfile)

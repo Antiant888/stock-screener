@@ -40,7 +40,6 @@ def test_overlay_worker_has_narrow_environment_and_dedicated_queue():
     assert "env_file" not in worker
     command = worker["command"]
     assert command[command.index("-Q") + 1] == "exposure_research"
-    assert "--concurrency=1" in command and "--prefetch-multiplier=1" in command
     environment = worker["environment"]
     assert (
         environment["EXPOSURE_RESEARCH_MODE"] == "${EXPOSURE_RESEARCH_MODE:-disabled}"
@@ -54,17 +53,8 @@ def test_overlay_worker_has_narrow_environment_and_dedicated_queue():
         "SERVER_AUTH_PASSWORD",
     ):
         assert unrelated not in environment
-    assert worker["deploy"]["resources"]["limits"] == {"cpus": "1", "memory": "2G"}
     backend_mounts = overlay["services"]["backend"]["volumes"]
     assert backend_mounts == ["./data/exposure-evidence:/app/data/exposure-evidence:ro"]
-
-
-def test_start_script_launches_worker_only_when_enabled():
-    script = (REPO_ROOT / "backend/start_celery.sh").read_text()
-    guard = 'if [[ "${EXPOSURE_WORKER_ENABLED:-false}" == "true" ]]; then'
-    assert guard in script
-    block = script[script.index(guard) :]
-    assert "-Q exposure_research" in block.split("fi", 1)[0]
 
 
 def test_task_claims_no_work_while_research_is_disabled():

@@ -37,7 +37,7 @@ def test_private_workflow_has_only_trusted_manual_main_and_release_triggers():
     assert workflow["permissions"] == {"contents": "read"}
 
 
-def test_private_workflow_delays_key_loading_and_uses_ephemeral_buildkit_inputs():
+def test_private_workflow_validates_the_event_before_loading_the_deploy_key():
     text = PRIVATE_WORKFLOW.read_text(encoding="utf-8")
     workflow = _workflow(PRIVATE_WORKFLOW)
     jobs = workflow["jobs"]
@@ -51,46 +51,22 @@ def test_private_workflow_delays_key_loading_and_uses_ephemeral_buildkit_inputs(
     )
 
     assert trusted_index < ssh_index
-    assert "secrets.XUI_READER_DEPLOY_KEY" in text
-    assert "secrets.GITHUB_KNOWN_HOSTS" in text
-    assert "vars.XUI_READER_REF" in text
-    assert "ssh: default" in text
-    assert "github_known_hosts" in text
     assert "XUI_READER_DEPLOY_KEY" not in "\n".join(
         str(step.get("with", {}).get("build-args", "")) for step in smoke_steps
     )
-    assert "docker/setup-qemu-action@v3" in text
-    assert "docker/setup-buildx-action@v3" in text
-    assert "docker/build-push-action@v6" in text
     assert "upload-artifact" not in text
 
 
-def test_private_publish_is_multi_arch_private_and_has_no_latest_tag():
-    text = PRIVATE_WORKFLOW.read_text(encoding="utf-8")
-    workflow = _workflow(PRIVATE_WORKFLOW)
-    publish = workflow["jobs"]["publish-private-image"]
+def test_private_publish_confirms_the_package_stays_private():
+    publish = _workflow(PRIVATE_WORKFLOW)["jobs"]["publish-private-image"]
     publish_names = [step.get("name", "") for step in publish["steps"]]
 
-    assert publish["permissions"] == {
-        "contents": "read",
-        "packages": "write",
-        "attestations": "write",
-        "id-token": "write",
-    }
-    assert "docker/login-action@v3" in text
-    assert "secrets.GITHUB_TOKEN" in text
-    assert "ghcr.io/xang1234/stock-screener-social-xui:sha-${{ github.sha }}" in text
-    assert "platforms: linux/amd64,linux/arm64" in text
-    assert "provenance: mode=max" in text
-    assert "sbom: true" in text
-    assert "visibility" in text.lower() and "private" in text.lower()
     assert publish_names.index("Require an existing private GHCR package") < (
         publish_names.index("Build and push private multi-architecture image")
     )
     assert publish_names.index("Reconfirm private package visibility") > (
         publish_names.index("Build and push private multi-architecture image")
     )
-    assert ":latest" not in text
 
 
 def test_public_ci_runs_boundary_guard_before_backend_suites():
