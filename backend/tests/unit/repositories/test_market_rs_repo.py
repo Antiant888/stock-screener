@@ -1,14 +1,17 @@
 from datetime import date, timedelta
 
+import pytest
 from sqlalchemy import inspect
 from sqlalchemy.orm import sessionmaker
 
 from app.domain.relative_strength import (
     BALANCED_RS_FORMULA_VERSION,
+    StockRsPlacement,
     StockRsScore,
 )
 from app.infra.db.models.relative_strength import (
     MarketRsRun,
+    StockRsPlacementSnapshot,
     StockRsSnapshot,
 )
 from app.infra.db.repositories.market_rs_repo import MarketRsRunRepository
@@ -276,3 +279,159 @@ def test_two_sessions_share_one_completed_winner_and_never_read_partial_rows(
     finally:
         first.close()
         second.close()
+
+
+# --- young-stock placements -------------------------------------------------
+
+
+def _placement(symbol, **ratings):
+    return StockRsPlacement(symbol, ratings, {horizon: 0.05 for horizon in ratings})
+
+
+YNG = _placement("YNG", **{"1d": 99, "1w": 99, "1m": 66, "3m": 1})
+
+
+def test_replace_rows_writes_placements_once_and_restart_resets_them(db_session):
+    repo = MarketRsRunRepository()
+    run = repo.start_or_restart(db_session, **_run_kwargs(expected_symbol_count=3))
+    scores = {"AAA": _score("AAA", 70), "BBB": _score("BBB", 80)}
+
+    repo.replace_rows(db_session, run, scores, placements={"YNG": YNG})
+    repo.replace_rows(db_session, run, scores, placements={"YNG": YNG})
+
+    rows = db_session.query(StockRsPlacementSnapshot).filter_by(run_id=run.id).all()
+    assert [
+        (r.symbol, r.rs_1d, r.rs_1w, r.rs_1m, r.rs_3m, r.rs_6m, r.rs_9m, r.rs_12m)
+        for r in rows
+    ] == [("YNG", 99, 99, 66, 1, None, None, None)]
+    assert (rows[0].excess_return_1d, rows[0].excess_return_6m) == (0.05, None)
+    assert run.placed_symbol_count == 1
+
+    restarted = repo.start_or_restart(db_session, **_run_kwargs(expected_symbol_count=3))
+
+    assert restarted.id == run.id
+    assert restarted.placements == []
+    assert restarted.placed_symbol_count is None
+
+    repo.replace_rows(db_session, restarted, scores)
+
+    assert restarted.placed_symbol_count is None
+    assert db_session.query(StockRsPlacementSnapshot).count() == 0
+
+
+def test_rebuilding_a_completed_run_drops_its_placements(db_session):
+    repo = MarketRsRunRepository()
+    run = repo.start_or_restart(db_session, **_run_kwargs(expected_symbol_count=3))
+    repo.replace_rows(
+        db_session,
+        run,
+        {"AAA": _score("AAA", 1), "BBB": _score("BBB", 99)},
+        placements={"YNG": YNG},
+    )
+    repo.mark_completed(run, excluded_symbol_count=1, diagnostics={})
+    db_session.commit()
+    old_id = run.id
+    assert run.placed_symbol_count == 1
+
+    rebuilt = repo.start_or_restart(
+        db_session, **_run_kwargs(expected_symbol_count=3), rebuild_completed=True
+    )
+    db_session.commit()
+
+    assert rebuilt.id != old_id
+    assert rebuilt.placed_symbol_count is None
+    assert db_session.query(StockRsPlacementSnapshot).count() == 0
+
+
+def test_mark_completed_rejects_a_symbol_that_is_both_eligible_and_placed(db_session):
+    repo = MarketRsRunRepository()
+    run = repo.start_or_restart(db_session, **_run_kwargs(expected_symbol_count=3))
+    repo.replace_rows(
+        db_session,
+        run,
+        {"AAA": _score("AAA", 70), "BBB": _score("BBB", 80)},
+        placements={"AAA": _placement("AAA", **{"1d": 50})},
+    )
+
+    with pytest.raises(ValueError, match="AAA is both eligible and placed"):
+        repo.mark_completed(run, excluded_symbol_count=1, diagnostics={})
+
+    assert run.status == "running"
+
+
+def test_mark_completed_rejects_a_placed_count_that_does_not_match_rows(db_session):
+    repo = MarketRsRunRepository()
+    run = repo.start_or_restart(db_session, **_run_kwargs(expected_symbol_count=3))
+    repo.replace_rows(
+        db_session,
+        run,
+        {"AAA": _score("AAA", 70), "BBB": _score("BBB", 80)},
+        placements={"YNG": YNG},
+    )
+    run.placed_symbol_count = 2
+
+    with pytest.raises(
+        ValueError, match="placed symbol count does not match persisted placements"
+    ):
+        repo.mark_completed(run, excluded_symbol_count=1, diagnostics={})
+
+    assert run.status == "running"
+
+
+def test_mark_completed_rejects_more_placed_than_excluded_symbols(db_session):
+    repo = MarketRsRunRepository()
+    run = repo.start_or_restart(db_session, **_run_kwargs(expected_symbol_count=3))
+    repo.replace_rows(
+        db_session,
+        run,
+        {"AAA": _score("AAA", 70), "BBB": _score("BBB", 80)},
+        placements={"YNG": YNG, "ZZZ": _placement("ZZZ", **{"1d": 40})},
+    )
+
+    with pytest.raises(ValueError, match="placed symbols exceed excluded symbols"):
+        repo.mark_completed(run, excluded_symbol_count=1, diagnostics={})
+
+    assert run.status == "running"
+
+
+def test_mark_completed_rejects_a_placement_row_that_is_not_a_leading_prefix(db_session):
+    repo = MarketRsRunRepository()
+    run = repo.start_or_restart(db_session, **_run_kwargs(expected_symbol_count=4))
+    repo.replace_rows(
+        db_session,
+        run,
+        {"AAA": _score("AAA", 70), "BBB": _score("BBB", 80)},
+        placements={"YNG": YNG},
+    )
+    run.placements.append(
+        StockRsPlacementSnapshot(
+            symbol="BAD", rs_1d=50, rs_1m=50, excess_return_1d=0.0, excess_return_1m=0.0
+        )
+    )
+    run.placed_symbol_count = 2
+
+    with pytest.raises(ValueError, match="BAD placement horizons"):
+        repo.mark_completed(run, excluded_symbol_count=2, diagnostics={})
+
+    assert run.status == "running"
+    db_session.rollback()
+
+
+def test_iter_placements_for_run_yields_domain_placements_in_symbol_order(db_session):
+    repo = MarketRsRunRepository()
+    run = repo.start_or_restart(db_session, **_run_kwargs(expected_symbol_count=4))
+    repo.replace_rows(
+        db_session,
+        run,
+        {"AAA": _score("AAA", 70), "BBB": _score("BBB", 80)},
+        placements={"YNG": YNG, "ABC": _placement("ABC", **{"1d": 40})},
+    )
+    repo.mark_completed(run, excluded_symbol_count=2, diagnostics={})
+    run_id = run.id
+    db_session.commit()
+    db_session.expunge_all()
+
+    placements = list(repo.iter_placements_for_run(db_session, run_id=run_id, batch_size=1))
+
+    assert placements == [_placement("ABC", **{"1d": 40}), YNG]
+    assert placements[1].scanner_fields() == {"rs_rating_1m": 66, "rs_rating_3m": 1}

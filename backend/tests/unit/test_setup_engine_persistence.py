@@ -29,6 +29,8 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Session
 
+from app.domain.relative_strength import BALANCED_RS_FORMULA_VERSION
+from app.domain.scanning.ports import CanonicalStockRsSource
 from app.infra.db.repositories.scan_result_repo import _map_orchestrator_result
 from app.infra.query.feature_store_query import _FIELD_BINDINGS as FS_FIELD_BINDINGS
 from app.infra.query.scan_result_query import _FIELD_BINDINGS as SR_FIELD_BINDINGS
@@ -117,7 +119,17 @@ def _make_stub_stock_data(symbol: str = "TEST") -> StockData:
         {"Open": 100.0, "High": 105.0, "Low": 99.0, "Close": 102.0, "Volume": 1_000_000},
         index=dates,
     )
-    return StockData(symbol=symbol, price_data=df, benchmark_data=df)
+    return StockData(
+        symbol=symbol,
+        price_data=df,
+        benchmark_data=df,
+        rs_source=CanonicalStockRsSource(
+            formula_version=BALANCED_RS_FORMULA_VERSION,
+            run_id=1,
+            universe_size=5000,
+            ratings={"rs_rating": 85, "rs_rating_1m": 80, "rs_rating_3m": 82, "rs_rating_12m": 88},
+        ),
+    )
 
 
 def _make_se_screener_result(payload: dict[str, Any] | None = None) -> ScreenerResult:
@@ -141,7 +153,6 @@ def _make_minervini_screener_result() -> ScreenerResult:
         rating="Buy",
         breakdown={"rs": 85, "stage": 90},
         details={
-            "rs_rating": 85,
             "stage": 2,
             "stage_name": "Stage 2 - Uptrend",
         },
@@ -225,8 +236,8 @@ class TestOrchestratorPromotion:
             "minervini": _make_minervini_screener_result(),
             "setup_engine": _make_se_screener_result(),
         })
-        # Minervini fields promoted
         assert result["rs_rating"] == 85
+        # Minervini fields promoted
         assert result["stage"] == 2
         # SE fields promoted
         assert result["setup_engine"]["setup_score"] == 82.5
@@ -520,7 +531,6 @@ class TestFeatureStoreRoundTrip:
         })
         _insert_fs_row(fs_db_session, "AAPL", result_dict)
 
-        # rs_rating from minervini
         row = fs_db_session.execute(
             text("SELECT json_extract(details_json, '$.rs_rating') FROM stock_feature_daily WHERE symbol = 'AAPL'")
         ).fetchone()

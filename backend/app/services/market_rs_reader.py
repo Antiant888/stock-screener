@@ -14,8 +14,15 @@ from app.domain.relative_strength import (
     balanced_run_has_current_snapshot_contract,
 )
 from app.domain.scanning.ports import MarketRsResolution
-from app.infra.db.models.relative_strength import MarketRsRun, StockRsSnapshot
-from app.infra.db.repositories.market_rs_repo import MarketRsRunRepository
+from app.infra.db.models.relative_strength import (
+    MarketRsRun,
+    StockRsPlacementSnapshot,
+    StockRsSnapshot,
+)
+from app.infra.db.repositories.market_rs_repo import (
+    MarketRsRunRepository,
+    placement_from_row,
+)
 
 
 class CanonicalMarketRsUnavailable(LookupError):
@@ -106,12 +113,21 @@ class SqlMarketRsReader:
                 )
 
             rows = []
+            placed_rows = []
             if normalized_symbols:
                 rows = (
                     db.query(StockRsSnapshot)
                     .filter(
                         StockRsSnapshot.run_id == run.id,
                         StockRsSnapshot.symbol.in_(normalized_symbols),
+                    )
+                    .all()
+                )
+                placed_rows = (
+                    db.query(StockRsPlacementSnapshot)
+                    .filter(
+                        StockRsPlacementSnapshot.run_id == run.id,
+                        StockRsPlacementSnapshot.symbol.in_(normalized_symbols),
                     )
                     .all()
                 )
@@ -134,6 +150,10 @@ class SqlMarketRsReader:
                 run_id=run.id,
                 universe_size=run.eligible_symbol_count,
                 ratings_by_symbol=ratings,
+                placed_ratings_by_symbol={
+                    row.symbol: placement_from_row(row).scanner_fields()
+                    for row in placed_rows
+                },
             )
         finally:
             db.close()

@@ -517,3 +517,86 @@ def test_load_keeps_short_histories_out_of_the_anchor_gap_guard(db_session):
         "CCC": "missing_adjusted_21_session_anchor",
     }
     assert inputs.history_gaps["symbol_count"] == 0
+
+
+def _young_rows(symbol, offsets, *, current):
+    return [
+        _price(symbol, offset, adjusted=current if offset == 0 else 100.0)
+        for offset in offsets
+    ]
+
+
+def test_load_classifies_young_gap_and_too_new_listings_without_changing_exclusions(
+    db_session,
+):
+    # Ten symbols, one without a current price, keep US coverage at the 90% floor.
+    eligible = ("AAA", "BBB", "CCC", "DDD", "EEE", "FFF", "GGG")
+    db_session.add_all(
+        [
+            *[
+                _price("SPY", offset, adjusted=105.0 if offset == 0 else 100.0)
+                for offset in ANCHORS
+            ],
+            *[
+                row
+                for symbol in eligible
+                for row in _complete_rows(symbol, {offset: 100.0 + offset for offset in ANCHORS})
+            ],
+            *_young_rows("YNG", (0, 1, 5, 21, 63), current=110.0),
+            *_rows_without("GAP", {63}),
+            *_young_rows("NEW", (0,), current=110.0),
+            *_rows_without("NOCUR", {0}),
+        ]
+    )
+    db_session.commit()
+
+    inputs = _loader((*eligible, "YNG", "GAP", "NEW", "NOCUR")).load(
+        db_session, market="US", as_of_date=ANCHORS[0]
+    )
+
+    assert set(inputs.excess_returns_by_symbol) == set(eligible)
+    assert inputs.exclusions == {
+        "YNG": "missing_adjusted_126_session_anchor",
+        "GAP": "missing_adjusted_63_session_anchor",
+        "NEW": "missing_adjusted_1_session_anchor",
+        "NOCUR": "missing_adjusted_current_session_anchor",
+    }
+    assert inputs.history_gaps == {
+        "symbol_count": 1,
+        "share": pytest.approx(1 / 10),
+        "count_by_anchor": {"2026-01-09": 1},
+        "samples": ["GAP"],
+        "current_prices_available": 10,
+    }
+    assert inputs.current_price_coverage == pytest.approx(10 / 11)
+    assert inputs.young_excess_returns_by_symbol == {
+        "YNG": {
+            "1d": pytest.approx(0.05),
+            "1w": pytest.approx(0.05),
+            "1m": pytest.approx(0.05),
+            "3m": pytest.approx(0.05),
+        }
+    }
+
+
+def test_load_keeps_a_broken_anchor_date_row_out_of_both_young_and_gap_buckets(
+    db_session,
+):
+    # Y2's first row sits on the 126 anchor date with an invalid price: today
+    # it is neither a gap (first < anchor) nor rateable, and that stays so.
+    db_session.add_all(
+        [
+            *_complete_rows("SPY", {offset: 100.0 for offset in ANCHORS}),
+            *_complete_rows("AAA", {offset: 100.0 + offset for offset in ANCHORS}),
+            *_young_rows("Y2", (0, 1, 5, 21, 63), current=110.0),
+            _price("Y2", 126, adjusted=float("inf")),
+        ]
+    )
+    db_session.commit()
+
+    inputs = _loader(("AAA", "Y2")).load(db_session, market="US", as_of_date=ANCHORS[0])
+
+    assert inputs.exclusions == {"Y2": "missing_adjusted_126_session_anchor"}
+    assert inputs.young_excess_returns_by_symbol == {}
+    assert inputs.history_gaps["symbol_count"] == 0
+    assert inputs.history_gaps["samples"] == []

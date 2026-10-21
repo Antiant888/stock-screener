@@ -18,6 +18,7 @@ from app.services.opportunity_state_service import (
 )
 
 from .base_screener import ScreenerResult, StockData
+from .criteria.rs_resolution import canonical_rs_row_fields
 
 logger = logging.getLogger(__name__)
 
@@ -27,10 +28,6 @@ OpportunityProjector = Callable[
 ]
 
 _MINERVINI_PROMOTED_FIELDS = (
-    "rs_rating",
-    "rs_rating_1m",
-    "rs_rating_3m",
-    "rs_rating_12m",
     "stage",
     "stage_name",
     "adr_percent",
@@ -208,6 +205,7 @@ class ScanResultAssembler:
             "composite_reason": request.composite_reason,
             "ipo_bonus": request.ipo_bonus,
             **audit_fields,
+            **canonical_rs_row_fields(request.stock_data),
             "field_completeness_score": request.field_completeness_score,
             "quality_downgrade_reason": request.quality_downgrade_reason,
             **leadership.as_scan_fields(),

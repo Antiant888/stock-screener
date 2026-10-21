@@ -756,7 +756,7 @@ def test_activation_validation_skips_groups_when_market_lacks_capability(
     monkeypatch,
 ):
     calculation_date = date(2026, 4, 10)
-    run = SimpleNamespace(id=42, eligible_symbol_count=0, rows=[])
+    run = SimpleNamespace(id=42, eligible_symbol_count=0, placed_symbol_count=None, rows=[])
     repository = MagicMock()
     repository.get_completed_exact.return_value = run
     service = _service(repository=repository)
@@ -783,6 +783,48 @@ def test_activation_validation_skips_groups_when_market_lacks_capability(
 
     assert result is run
     assert errors == []
+
+
+@pytest.mark.parametrize(
+    ("placed_symbol_count", "expected_errors"),
+    [
+        (2, ["Placed stock count mismatch for 2026-04-10: 1 != 2."]),
+        (1, []),
+        # NULL means the run predates placement, so there is nothing to reconcile.
+        (None, []),
+    ],
+)
+def test_activation_validation_reconciles_placement_rows_with_the_run(
+    monkeypatch,
+    placed_symbol_count,
+    expected_errors,
+):
+    run = SimpleNamespace(
+        id=42,
+        eligible_symbol_count=0,
+        placed_symbol_count=placed_symbol_count,
+        rows=[],
+    )
+    repository = MagicMock()
+    repository.get_completed_exact.return_value = run
+    repository.iter_stock_rows_for_run.return_value = iter(())
+    repository.iter_placements_for_run.return_value = iter([SimpleNamespace(symbol="YNG040")])
+    service = _service(repository=repository)
+    monkeypatch.setattr(
+        "app.services.market_rs_activation_validator."
+        "balanced_run_has_current_snapshot_contract",
+        lambda _run: True,
+    )
+    errors: list[str] = []
+
+    service.validator._validate_run_and_groups(
+        MagicMock(),
+        market="DE",
+        calculation_date=date(2026, 4, 10),
+        errors=errors,
+    )
+
+    assert errors == expected_errors
 
 
 def test_rejected_activation_rolls_back_without_moving_either_pointer(tmp_path):

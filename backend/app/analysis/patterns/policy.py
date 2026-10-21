@@ -9,6 +9,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal, TypedDict
 
+import pandas as pd
+
+from app.analysis.patterns.technicals import resample_ohlcv
+
 
 class SetupEngineDataPolicyResult(TypedDict):
     """Result of evaluating minimum data requirements for Setup Engine."""
@@ -31,6 +35,22 @@ class SetupEngineDataRequirements:
     require_benchmark_for_rs: bool = True
     allow_degraded_without_benchmark: bool = True
     allow_incomplete_current_week: bool = False
+
+    @property
+    def min_history_bars(self) -> int:
+        """Fewest contiguous daily bars that always meet both bar minimums.
+
+        For weekday-only bars, five per required week (52 x 5 by default) cover
+        ``min_weekly_bars`` completed weeks plus the up to four bars of the
+        excluded current week. A rare weekend session (India, 2026-02-01) is
+        absorbed by the spare weeks holidays leave on every shipped calendar.
+        """
+        return max(self.min_daily_bars, 5 * self.min_weekly_bars)
+
+
+def setup_engine_weekly_bars(price_data: pd.DataFrame) -> pd.DataFrame:
+    """The completed weekly bars Setup Engine reads from a daily history."""
+    return resample_ohlcv(price_data, exclude_incomplete_last_period=True)
 
 
 def validate_data_requirements(requirements: SetupEngineDataRequirements) -> list[str]:

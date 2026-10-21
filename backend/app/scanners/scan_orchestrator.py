@@ -13,6 +13,10 @@ from typing import Dict, List, Optional
 from app.analysis.patterns.config import (
     build_setup_engine_parameters,
 )
+from app.analysis.patterns.policy import (
+    SetupEngineDataRequirements,
+    setup_engine_weekly_bars,
+)
 from app.analysis.patterns.rs_line import (
     DEFAULT_BLUE_DOT_RECENT_DAYS,
     DEFAULT_LOOKBACK,
@@ -43,7 +47,12 @@ from .base_screener import (
     StockData,
     fifty_two_week_range,
 )
-from .criteria.rs_resolution import CanonicalStockRsUnavailable, resolve_stock_rs
+from .criteria.rs_resolution import (
+    CanonicalStockRsUnavailable,
+    canonical_rs_row_fields,
+    resolve_optional_stock_rs,
+    stock_rs_lacks_overall,
+)
 from .partial_history_metrics import partial_history_metrics
 from .scan_result_assembler import (
     ScanResultAssembler,
@@ -61,7 +70,6 @@ IPO_BONUS_MAX = 15.0
 _DEFAULT_SCREENER_MIN_BARS = 100
 _SCREENER_MIN_BARS: dict[str, int] = {
     "ipo": 30,
-    "setup_engine": 100,
     "custom": 200,
     "minervini": 240,
     "canslim": 240,
@@ -130,8 +138,12 @@ def _build_precomputed_scan_context(
         fifty_two_week_range(close_rev) if not close_rev.empty else (None, None)
     )
 
+    # A young listing gets None here, so no screener sees a ratings dict
+    # without an overall rating; an unrated stock still raises.
     rs_ratings = (
-        resolve_stock_rs(stock_data) if stock_data.rs_source is not None else None
+        resolve_optional_stock_rs(stock_data)
+        if stock_data.rs_source is not None
+        else None
     )
 
     rs_leadership = RsLineLeadershipSnapshot.empty()
@@ -186,6 +198,18 @@ def _history_bar_count(stock_data: StockData) -> int:
 
 def _required_bars_for_screener(name: str) -> int:
     return _SCREENER_MIN_BARS.get(name, _DEFAULT_SCREENER_MIN_BARS)
+
+
+def _setup_engine_has_history(stock_data: StockData) -> bool:
+    """Whether the history passes Setup Engine's daily and completed-week checks."""
+    requirements = SetupEngineDataRequirements()
+    bars = _history_bar_count(stock_data)
+    if bars >= requirements.min_history_bars:
+        return True
+    if bars < requirements.min_daily_bars:
+        return False
+    # Between the two, the weekday the history ends on decides.
+    return len(setup_engine_weekly_bars(stock_data.price_data)) >= requirements.min_weekly_bars
 
 
 def _requirements_with_opportunity_state_fields(
@@ -258,12 +282,23 @@ def _composite_method(value: str) -> CompositeMethod:
 
 def _partition_screeners(
     screeners: dict[str, BaseStockScreener],
-    history_bars: int,
+    stock_data: StockData,
+    *,
+    criteria: Optional[Dict],
+    lacks_overall_rs: bool,
 ) -> tuple[dict[str, BaseStockScreener], list[str]]:
+    history_bars = _history_bar_count(stock_data)
     runnable: dict[str, BaseStockScreener] = {}
     unavailable: list[str] = []
     for name, screener in screeners.items():
-        if history_bars < _required_bars_for_screener(name):
+        has_history = (
+            _setup_engine_has_history(stock_data)
+            if name == "setup_engine"
+            else history_bars >= _required_bars_for_screener(name)
+        )
+        if not has_history or (
+            lacks_overall_rs and screener.needs_overall_rs(criteria)
+        ):
             unavailable.append(name)
         else:
             runnable[name] = screener
@@ -414,7 +449,12 @@ class ScanOrchestrator:
             if context_error is not None:
                 return context_error
 
-            runnable, unavailable = _partition_screeners(screeners, history_bars)
+            runnable, unavailable = _partition_screeners(
+                screeners,
+                stock_data,
+                criteria=criteria,
+                lacks_overall_rs=stock_rs_lacks_overall(stock_data),
+            )
             preparation_error = self._pre_execution_result(
                 symbol=symbol,
                 stock_data=stock_data,
@@ -764,6 +804,7 @@ class ScanOrchestrator:
             "composite_reason": None,
             "ipo_bonus": 0.0,
             **market_rs_audit_fields(stock_data),
+            **canonical_rs_row_fields(stock_data),
             "details": {
                 "screeners": {},
                 "data_errors": stock_data.fetch_errors

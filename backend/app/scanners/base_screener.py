@@ -226,6 +226,16 @@ class BaseStockScreener(ABC):
         """
         pass
 
+    def needs_overall_rs(self, criteria: Optional[Dict] = None) -> bool:
+        """Whether this screener scores the overall RS rating.
+
+        The orchestrator marks such a screener unavailable for a young listing
+        (placed horizon ratings, no overall) instead of running it, as it does
+        for a screener that needs more bars. Defaults to True so a screener
+        that forgets to declare itself fails closed.
+        """
+        return True
+
     @abstractmethod
     def scan_stock(self, symbol: str, data: StockData, criteria: Optional[Dict] = None) -> ScreenerResult:
         """

@@ -121,6 +121,15 @@ class MarketRsActivationValidator:
                 f"Stock row count mismatch for {calculation_date}: "
                 f"{row_count} != {run.eligible_symbol_count}."
             )
+        if run.placed_symbol_count is not None:
+            placed_count = sum(
+                1 for _ in self.repository.iter_placements_for_run(db, run_id=run.id)
+            )
+            if placed_count != int(run.placed_symbol_count):
+                errors.append(
+                    f"Placed stock count mismatch for {calculation_date}: "
+                    f"{placed_count} != {run.placed_symbol_count}."
+                )
 
         if not get_market_catalog().get(market).capabilities.group_rankings:
             return run

@@ -51,6 +51,11 @@ class MarketRsInputs:
     # Currently priced symbols missing an interior anchor despite older
     # history (#539); measured here, enforced only by static publication.
     history_gaps: dict[str, object] = field(default_factory=dict)
+    # Young listings: still in `exclusions` with their unchanged reason. Each
+    # value holds the leading horizons the stock has anchors for, never all.
+    young_excess_returns_by_symbol: dict[str, dict[str, float]] = field(
+        default_factory=dict
+    )
 
 
 class MarketRsInputUnavailable(RuntimeError):
@@ -293,6 +298,7 @@ class MarketRsInputLoader:
         excess_returns_by_symbol: dict[str, dict[str, float]] = {}
         exclusions: dict[str, str] = {}
         missing_anchor_by_symbol: dict[str, date] = {}
+        leading_excess_returns_by_symbol: dict[str, dict[str, float]] = {}
         required_offsets = (0, *HORIZON_SESSIONS.values())
         for symbol in universe.symbols:
             missing_offset = next(
@@ -306,19 +312,29 @@ class MarketRsInputLoader:
             if missing_offset is not None:
                 label = "current" if missing_offset == 0 else str(missing_offset)
                 exclusions[symbol] = f"missing_adjusted_{label}_session_anchor"
-                if missing_offset != 0:
-                    missing_anchor_by_symbol[symbol] = anchors[missing_offset]
-                continue
+                if missing_offset == 0:
+                    continue
+                missing_anchor_by_symbol[symbol] = anchors[missing_offset]
 
             current_stock = prices[(symbol, current_date)]
-            excess_returns_by_symbol[symbol] = {
+            returns = {
                 horizon: (
                     current_stock / prices[(symbol, anchors[offset])] - 1.0
                 )
                 - benchmark_returns[horizon]
                 for horizon, offset in HORIZON_SESSIONS.items()
+                if missing_offset is None or offset < missing_offset
             }
+            if missing_offset is None:
+                excess_returns_by_symbol[symbol] = returns
+            elif returns:
+                leading_excess_returns_by_symbol[symbol] = returns
 
+        history_gaps, young_symbols = self._classify_missing_anchors(
+            db,
+            missing_anchor_by_symbol=missing_anchor_by_symbol,
+            current_available=current_available,
+        )
         return MarketRsInputs(
             market=normalized,
             as_of_date=as_of_date,
@@ -329,20 +345,25 @@ class MarketRsInputLoader:
             excess_returns_by_symbol=excess_returns_by_symbol,
             exclusions=exclusions,
             current_price_coverage=current_price_coverage,
-            history_gaps=self._history_anchor_gaps(
-                db,
-                missing_anchor_by_symbol=missing_anchor_by_symbol,
-                current_available=current_available,
-            ),
+            history_gaps=history_gaps,
+            young_excess_returns_by_symbol={
+                symbol: leading_excess_returns_by_symbol[symbol]
+                for symbol in sorted(young_symbols)
+                if symbol in leading_excess_returns_by_symbol
+            },
         )
 
     @staticmethod
-    def _history_anchor_gaps(
+    def _classify_missing_anchors(
         db: Session,
         *,
         missing_anchor_by_symbol: dict[str, date],
         current_available: int,
-    ) -> dict[str, object]:
+    ) -> tuple[dict[str, object], frozenset[str]]:
+        """Split currently priced symbols that miss an anchor into the #539
+        history-gap diagnostics (first valid price before the missing anchor)
+        and young listings (first valid price after it). A first price on the
+        anchor date itself is in neither bucket, as before."""
         first_by_symbol: dict[str, date] = {}
         symbols = tuple(missing_anchor_by_symbol)
         for start in range(0, len(symbols), 500):
@@ -363,14 +384,21 @@ class MarketRsInputLoader:
             if first_by_symbol.get(symbol) is not None
             and first_by_symbol[symbol] < anchor
         )
+        young_symbols = frozenset(
+            symbol
+            for symbol, anchor in missing_anchor_by_symbol.items()
+            if first_by_symbol.get(symbol) is not None
+            and first_by_symbol[symbol] > anchor
+        )
         count_by_anchor: dict[str, int] = {}
         for symbol in gap_symbols:
             key = missing_anchor_by_symbol[symbol].isoformat()
             count_by_anchor[key] = count_by_anchor.get(key, 0) + 1
-        return {
+        history_gaps = {
             "symbol_count": len(gap_symbols),
             "share": len(gap_symbols) / current_available if current_available else 0.0,
             "count_by_anchor": dict(sorted(count_by_anchor.items())),
             "samples": gap_symbols[:HISTORY_GAP_SAMPLE_LIMIT],
             "current_prices_available": current_available,
         }
+        return history_gaps, young_symbols
