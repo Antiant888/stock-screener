@@ -13,14 +13,16 @@ from typing import Dict, List, Optional
 from app.analysis.patterns.config import (
     build_setup_engine_parameters,
 )
-from app.analysis.patterns.policy import SetupEngineDataRequirements
+from app.analysis.patterns.policy import (
+    SetupEngineDataRequirements,
+    setup_engine_weekly_bars,
+)
 from app.analysis.patterns.rs_line import (
     DEFAULT_BLUE_DOT_RECENT_DAYS,
     DEFAULT_LOOKBACK,
     RsLineLeadershipSnapshot,
     rs_line_leadership_snapshot,
 )
-from app.analysis.patterns.technicals import resample_ohlcv
 from app.config import settings
 from app.domain.scanning.models import CompositeMethod, ScreenerOutputDomain
 from app.domain.scanning.ports import (
@@ -206,10 +208,8 @@ def _setup_engine_has_history(stock_data: StockData) -> bool:
         return True
     if bars < requirements.min_daily_bars:
         return False
-    # Between the two, the weekday the history ends on decides, so count the
-    # completed weeks the way SetupEngineScanner does.
-    weekly = resample_ohlcv(stock_data.price_data, exclude_incomplete_last_period=True)
-    return len(weekly) >= requirements.min_weekly_bars
+    # Between the two, the weekday the history ends on decides.
+    return len(setup_engine_weekly_bars(stock_data.price_data)) >= requirements.min_weekly_bars
 
 
 def _requirements_with_opportunity_state_fields(

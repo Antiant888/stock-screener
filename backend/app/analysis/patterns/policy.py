@@ -9,6 +9,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal, TypedDict
 
+import pandas as pd
+
+from app.analysis.patterns.technicals import resample_ohlcv
+
 
 class SetupEngineDataPolicyResult(TypedDict):
     """Result of evaluating minimum data requirements for Setup Engine."""
@@ -42,6 +46,11 @@ class SetupEngineDataRequirements:
         absorbed by the spare weeks holidays leave on every shipped calendar.
         """
         return max(self.min_daily_bars, 5 * self.min_weekly_bars)
+
+
+def setup_engine_weekly_bars(price_data: pd.DataFrame) -> pd.DataFrame:
+    """The completed weekly bars Setup Engine reads from a daily history."""
+    return resample_ohlcv(price_data, exclude_incomplete_last_period=True)
 
 
 def validate_data_requirements(requirements: SetupEngineDataRequirements) -> list[str]:

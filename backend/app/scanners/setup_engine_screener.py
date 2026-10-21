@@ -30,9 +30,9 @@ from app.analysis.patterns.operational_flags import (
 from app.analysis.patterns.policy import (
     SetupEngineDataPolicyResult,
     evaluate_setup_engine_data_policy,
+    setup_engine_weekly_bars,
 )
 from app.analysis.patterns.readiness import compute_breakout_readiness_features
-from app.analysis.patterns.technicals import resample_ohlcv
 from app.domain.scanning.opportunity_state import normalize_event_date
 from app.scanners.base_screener import (
     BaseStockScreener,
@@ -130,9 +130,7 @@ class SetupEngineScanner(BaseStockScreener):
         price_data = data.price_data
 
         # 2. Resample daily → weekly
-        weekly_data = resample_ohlcv(
-            price_data, exclude_incomplete_last_period=True
-        )
+        weekly_data = setup_engine_weekly_bars(price_data)
 
         # 3. Count bars
         daily_bars = len(price_data)
