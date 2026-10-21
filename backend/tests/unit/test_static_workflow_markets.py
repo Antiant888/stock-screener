@@ -117,6 +117,17 @@ def test_rewound_export_never_publishes_rrg_history():
     assert "steps.export-market.outputs.rrg_history_publishable == 'true'" in publish["if"]
 
 
+def test_only_the_benchmark_backed_rewind_sets_its_output():
+    # The warning text is pinned in test_export_static_site_refresh.py.
+    assert "benchmark_backed_rewind=true" in _step_branch(
+        'grep -qF "using benchmark-backed as-of date"'
+    )
+    # The deliberate previous-session coverage rewind stays a plain warning.
+    assert "benchmark_backed_rewind" not in _step_branch(
+        "using (benchmark-backed|previous-session) as-of date"
+    )
+
+
 def test_incomplete_daily_price_bundle_is_never_uploaded():
     assert "--require-complete" in _build_market_step("Build daily price bundle")["run"]
     branch = _step_branch("is below required", "Build daily price bundle")
@@ -162,13 +173,19 @@ def test_weekly_reference_never_builds_one_market_twice_at_once():
     assert publish_concurrency["queue"] == "max"
 
 
-_FAIL_REQUIRED_MARKET_STEP = "Fail a required market that uploaded no current artifact"
+_FAIL_REQUIRED_MARKET_STEP = "Fail a required market that published no current artifact"
 
 
-def test_required_market_whose_artifact_upload_did_not_succeed_fails_its_job_last():
+def _fail_step_required_markets(step: dict) -> list[str]:
+    """The required-market list the step's ``if`` tests ``matrix.market`` against."""
+    match = re.search(r"contains\(fromJSON\('(\[[^']*\])'\), matrix\.market\)", step["if"])
+    assert match is not None, step["if"]
+    return list(json.loads(match.group(1)))
+
+
+def test_required_market_without_a_current_artifact_fails_its_job_last():
     from app.services.static_market_publish_policy import REQUIRED_STATIC_MARKETS
 
-    assert _static_site_market_group("REQUIRED_MARKETS") == sorted(REQUIRED_STATIC_MARKETS)
     assert "not_trading_day=true" in _step_branch('[ "$status" -eq 78 ]')
     assert "price_checkpointed=true" in _step_branch('[ "$status" -eq 80 ]')
     assert _build_market_step("Upload market artifact")["id"] == "upload-market-artifact"
@@ -179,13 +196,17 @@ def test_required_market_whose_artifact_upload_did_not_succeed_fails_its_job_las
     build_market = workflow["jobs"]["build-market"]
     fail = build_market["steps"][-1]
     assert fail["name"] == _FAIL_REQUIRED_MARKET_STEP
+    assert _fail_step_required_markets(fail) == sorted(REQUIRED_STATIC_MARKETS)
     # Keyed on the upload itself, so a failed RRG restore, unpublished breadth
-    # metadata or a failed upload count too; a non-trading day and the
-    # checkpointed price stage (which already fails) are the exceptions.
+    # metadata or a failed upload count too, and on the benchmark-backed
+    # rewind, whose upload succeeds a session behind; a non-trading day and
+    # the checkpointed price stage (which already fails) are the exceptions.
     assert fail["if"] == (
-        "${{ always() && steps.upload-market-artifact.outcome != 'success'"
+        "${{ always() && contains(fromJSON('[\"US\"]'), matrix.market)"
         " && steps.export-market.outputs.not_trading_day != 'true'"
-        " && steps.export-market.outputs.price_checkpointed != 'true' }}"
+        " && steps.export-market.outputs.price_checkpointed != 'true'"
+        " && (steps.upload-market-artifact.outcome != 'success'"
+        " || steps.export-market.outputs.benchmark_backed_rewind == 'true') }}"
     )
     # A failed US job must not stop the other markets or the publisher.
     assert build_market["strategy"]["fail-fast"] is False
@@ -201,13 +222,19 @@ def _run_fail_required_market_step(
     status: dict | None = None,
     has_artifact: str = "false",
     upload_outcome: str = "skipped",
+    export_outcome: str = "success",
+    benchmark_backed_rewind: str = "",
 ) -> tuple[subprocess.CompletedProcess, str]:
     """Run the step's shell as GitHub would, with its expressions substituted."""
     data_dir = tmp_path / "static-data"
     script = (
         _build_market_step(_FAIL_REQUIRED_MARKET_STEP)["run"]
         .replace("${{ matrix.market }}", market)
+        .replace("${{ steps.export-market.outcome }}", export_outcome)
         .replace("${{ steps.export-market.outputs.has_artifact }}", has_artifact)
+        .replace(
+            "${{ steps.export-market.outputs.benchmark_backed_rewind }}", benchmark_backed_rewind
+        )
         .replace("${{ steps.upload-market-artifact.outcome }}", upload_outcome)
         .replace("/tmp/static-data", str(data_dir))
     )
@@ -225,12 +252,13 @@ def _run_fail_required_market_step(
     summary.write_text("", encoding="utf-8")
     completed = subprocess.run(
         ["bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", script],
-        env={**os.environ, "MARKET_LOWER": market_lower, "GITHUB_STEP_SUMMARY": str(summary)},
+        env={**os.environ, "GITHUB_STEP_SUMMARY": str(summary)},
         capture_output=True,
         text=True,
         check=False,
     )
-    return completed, summary.read_text(encoding="utf-8")
+    # Bytes, so a carriage return the step wrote survives into the assertion.
+    return completed, summary.read_bytes().decode("utf-8")
 
 
 def test_fail_required_market_step_reports_the_snapshot_failure_reason(tmp_path):
@@ -268,16 +296,57 @@ def test_fail_required_market_step_falls_back_to_the_status_reason_then_the_uplo
     )
     assert completed.returncode == 1
     assert (
-        "(export has_artifact=true, upload step skipped; see the export step log)."
+        "(export step success, has_artifact=true, upload step skipped; see the job log)."
         in completed.stdout
     )
     assert summary.startswith("Required market US uploaded no current static artifact")
 
 
-def test_fail_required_market_step_lets_an_optional_market_pass(tmp_path):
-    completed, summary = _run_fail_required_market_step(tmp_path, "HK")
+def test_fail_required_market_step_explains_an_export_that_never_ran(tmp_path):
+    # An earlier step failed, so the export never wrote its outputs.
+    completed, summary = _run_fail_required_market_step(
+        tmp_path, "US", has_artifact="", export_outcome="skipped", upload_outcome="skipped"
+    )
 
-    assert completed.returncode == 0, completed.stderr
-    assert completed.stdout.strip() == "HK uploaded no current artifact; it is not a required market."
-    assert "::error::" not in completed.stdout
-    assert summary == ""
+    assert completed.returncode == 1
+    message = (
+        "Required market US uploaded no current static artifact "
+        "(export step skipped, has_artifact=unset, upload step skipped; see the job log)."
+    )
+    assert f"::error::{message}" in completed.stdout
+    assert summary.startswith(message)
+
+
+def test_fail_required_market_step_fails_a_benchmark_backed_rewind_that_uploaded(tmp_path):
+    completed, summary = _run_fail_required_market_step(
+        tmp_path,
+        "US",
+        has_artifact="true",
+        upload_outcome="success",
+        benchmark_backed_rewind="true",
+    )
+
+    message = (
+        "Required market US published its artifact a session behind: the export rewound "
+        "to the benchmark-backed as-of date because no benchmark candidate had the current "
+        "session. See the export step log; rerun once the benchmark's bar is available."
+    )
+    assert completed.returncode == 1, completed.stderr
+    assert f"::error::{message}" in completed.stdout
+    assert summary.startswith(message)
+    assert "uploaded no current" not in completed.stdout
+
+
+def test_fail_required_market_step_escapes_the_annotation_but_not_the_summary(tmp_path):
+    completed, summary = _run_fail_required_market_step(
+        tmp_path,
+        "US",
+        snapshot_failure={"reason": "coverage 86%\r\nbelow 90%"},
+    )
+
+    assert completed.returncode == 1
+    assert (
+        "::error::Required market US uploaded no current static artifact "
+        "(coverage 86%25%0D%0Abelow 90%25)."
+    ) in completed.stdout
+    assert "Required market US uploaded no current static artifact (coverage 86%\r\nbelow 90%)." in summary

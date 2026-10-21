@@ -557,7 +557,7 @@ def test_fetch_price_batch_with_retries_keeps_legacy_schedule_without_market():
     stays at the original 30/60/120s so we don't slow down code paths that
     haven't migrated to the per-market policy yet."""
     fetcher = BulkDataFetcher()
-    schedule = fetcher._resolve_price_batch_backoff(None)
+    schedule = fetcher.price_batch_backoff_schedule(None)
     assert schedule == (30, 60, 120)
 
 
@@ -565,7 +565,7 @@ def test_fetch_price_batch_with_retries_us_market_keeps_legacy_schedule():
     """US base_s=30 preserves the legacy retry schedule for the largest
     market so this change is conservative for the hot path."""
     fetcher = BulkDataFetcher()
-    schedule = fetcher._resolve_price_batch_backoff("US")
+    schedule = fetcher.price_batch_backoff_schedule("US")
     assert schedule == (30, 60, 120)
 
 

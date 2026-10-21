@@ -11,6 +11,7 @@ from app.database import Base
 from app.domain.relative_strength import HORIZON_SESSIONS
 from app.models.stock import StockPrice
 from app.models.stock_universe import StockUniverse
+from app.services.bulk_data_fetcher import BulkDataFetcher
 from app.services.static_daily_price_refresh_service import (
     STATIC_DAILY_PRICE_BOOTSTRAP_PERIOD,
     STATIC_DAILY_PRICE_REFRESH_BATCH_SIZE,
@@ -1045,7 +1046,7 @@ def test_static_daily_price_refresh_skips_retry_for_non_in_markets() -> None:
         "wait_seconds": 0,
         "batch_size": STATIC_RATE_LIMITED_RETRY_BATCH_SIZE,
     }
-    assert result["critical_symbol_retry"] == {
+    assert result["primary_benchmark_retry"] == {
         "symbol": "^HSI",
         "attempted": True,
         "recovered": False,
@@ -1098,7 +1099,7 @@ def test_static_daily_price_refresh_skips_retry_when_no_rate_limited_failures() 
         "wait_seconds": 0,
         "batch_size": STATIC_RATE_LIMITED_RETRY_BATCH_SIZE,
     }
-    assert result["critical_symbol_retry"] == {
+    assert result["primary_benchmark_retry"] == {
         "symbol": "^NSEI",
         "attempted": True,
         "recovered": False,
@@ -1692,7 +1693,7 @@ def test_static_daily_price_refresh_stops_before_the_deadline_with_durable_batch
     assert result["as_of_date"] == "2026-04-02"
 
 
-def test_static_daily_price_refresh_does_not_start_a_retry_wait_past_the_deadline() -> None:
+def test_static_daily_price_refresh_does_not_start_a_retry_wait_past_the_deadline(capsys) -> None:
     session_factory = _sqlite_session_factory()
     _seed_in_universe(session_factory)
 
@@ -1726,6 +1727,7 @@ def test_static_daily_price_refresh_does_not_start_a_retry_wait_past_the_deadlin
     assert len(fetcher.calls) == 3  # critical, stale and bootstrap groups, no retry
     assert sleeps == []
     assert result["status"] == "resumable"
+    assert "then retrying with batch size" not in capsys.readouterr().out
 
 
 def test_static_daily_price_session_repair_wait_respects_the_deadline() -> None:
@@ -1891,7 +1893,7 @@ def test_static_daily_price_refresh_fetches_critical_symbols_before_the_universe
     assert result["stale_symbols"] == 2
     assert result["no_history_symbols"] == 9
     assert result["yahoo_fetched_symbols"] == 11
-    assert result["critical_symbol_retry"] == {
+    assert result["primary_benchmark_retry"] == {
         "symbol": "SPY",
         "attempted": False,
         "recovered": False,
@@ -1905,6 +1907,9 @@ class _UsFetcher:
     def __init__(self, fail) -> None:
         self.calls: list[dict] = []
         self._fail = fail
+
+    def price_batch_backoff_schedule(self, market):
+        return (30, 60, 120)
 
     def fetch_prices_in_batches(self, symbols, period="2y", start_batch_size=None, market=None):
         self.calls.append(
@@ -1955,7 +1960,7 @@ def test_static_daily_price_refresh_refetches_a_throttled_primary_benchmark_once
     }
     assert sleeps == []
     assert stored_batches[-1] == ["SPY"]
-    assert result["critical_symbol_retry"] == {
+    assert result["primary_benchmark_retry"] == {
         "symbol": "SPY",
         "attempted": True,
         "recovered": True,
@@ -2003,7 +2008,7 @@ def test_static_daily_price_late_refetch_leaves_a_frame_without_the_session_to_t
 
     assert [call["symbols"] for call in fetcher.calls][2:] == [["SPY"]]
     assert sleeps == [STATIC_SESSION_REPAIR_WAIT_SECONDS]
-    assert result["critical_symbol_retry"] == {
+    assert result["primary_benchmark_retry"] == {
         "symbol": "SPY",
         "attempted": True,
         "recovered": False,
@@ -2024,10 +2029,11 @@ def test_static_daily_price_late_refetch_leaves_a_frame_without_the_session_to_t
 @pytest.mark.parametrize(
     ("seconds_left", "attempted"),
     [
-        # Reserve: two single-symbol fetches with the fetcher's 30/60/120
-        # backoff (420s) plus the 60s latest-session repair wait.
-        pytest.param(479.0, False, id="one_second_short"),
-        pytest.param(480.0, True, id="exactly_the_reserve"),
+        # Reserve: two single-symbol fetches, each with the fetcher's 30/60/120
+        # backoff and the quote repair's 15/45 backoff (540s), plus the 60s
+        # latest-session repair wait.
+        pytest.param(599.0, False, id="one_second_short"),
+        pytest.param(600.0, True, id="exactly_the_reserve"),
     ],
 )
 def test_static_daily_price_late_refetch_skips_quietly_without_deadline_headroom(
@@ -2056,7 +2062,7 @@ def test_static_daily_price_late_refetch_skips_quietly_without_deadline_headroom
     assert [call["symbols"] for call in fetcher.calls][2:] == ([["SPY"]] if attempted else [])
     assert sleeps == []
     assert result["status"] == "completed"
-    assert result["critical_symbol_retry"] == {
+    assert result["primary_benchmark_retry"] == {
         "symbol": "SPY",
         "attempted": attempted,
         "recovered": False,
@@ -2065,9 +2071,56 @@ def test_static_daily_price_late_refetch_skips_quietly_without_deadline_headroom
     assert result["yahoo_failed_symbols"] == 1
 
 
-def test_static_daily_price_late_refetch_skips_when_the_yahoo_circuit_was_open(capsys) -> None:
+@pytest.mark.parametrize(
+    ("market", "primary", "seconds_left", "attempted"),
+    [
+        # US: two fetches, each 30+60+120 batch backoff plus 15+45 quote-repair
+        # backoff, plus the 60s latest-session repair wait.
+        pytest.param("US", "SPY", 599.0, False, id="us_one_second_short"),
+        pytest.param("US", "SPY", 600.0, True, id="us_exactly_the_reserve"),
+        # IN: 60/120/240 batch backoff and no Yahoo quote step in its price plan.
+        pytest.param("IN", "^NSEI", 839.0, False, id="in_one_second_short"),
+        pytest.param("IN", "^NSEI", 840.0, True, id="in_exactly_the_reserve"),
+    ],
+)
+def test_static_daily_price_late_refetch_reserve_follows_the_real_fetcher_schedule(
+    market, primary, seconds_left, attempted
+) -> None:
+    scripted = _UsFetcher(
+        lambda symbol, attempt: (
+            {"price_data": None, "has_error": True, "error": "connection reset"}
+            if symbol == primary
+            else None
+        )
+    )
+    fetcher = BulkDataFetcher()
+    fetcher.fetch_prices_in_batches = scripted.fetch_prices_in_batches
+    service = StaticDailyPriceRefreshService(
+        session_factory=_sqlite_session_factory(),
+        price_cache=SimpleNamespace(store_batch_in_cache=lambda *_args, **_kwargs: None),
+        fetcher=fetcher,
+        batch_size_for_market=lambda _market: 25,
+        sleep=lambda _seconds: None,
+        deadline=seconds_left,
+        clock=lambda: 0.0,
+    )
+
+    result = service.refresh(as_of_date=date(2026, 6, 4), market=market)
+
+    assert ([primary] in [call["symbols"] for call in scripted.calls][1:]) is attempted
+    assert result["status"] == "completed"
+    assert result["primary_benchmark_retry"]["attempted"] is attempted
+    assert result["primary_benchmark_retry"]["skipped_reason"] == (None if attempted else "deadline")
+
+
+def test_static_daily_price_late_refetch_reports_a_yahoo_circuit_open_on_its_own_call(capsys) -> None:
     circuit_open = {"price_data": None, "has_error": True, "error": "circuit_open", "error_kind": "circuit_open"}
-    fetcher = _UsFetcher(lambda symbol, attempt: circuit_open if symbol == "SPY" else None)
+    # Throttled in its group, then the circuit is open by the time of the late call.
+    fetcher = _UsFetcher(
+        lambda symbol, attempt: (
+            [_throttled(), circuit_open][attempt - 1] if symbol == "SPY" else None
+        )
+    )
     service = StaticDailyPriceRefreshService(
         session_factory=_sqlite_session_factory(),
         price_cache=SimpleNamespace(store_batch_in_cache=lambda *_args, **_kwargs: None),
@@ -2081,17 +2134,87 @@ def test_static_daily_price_late_refetch_skips_when_the_yahoo_circuit_was_open(c
     assert [call["symbols"] for call in fetcher.calls] == [
         ["SPY", "IVV", "^VIX"],
         ["QQQ", "IWM", "DX-Y.NYB", "SGD=X", "BTC-USD", "GLD", "TLT"],
+        ["SPY"],
     ]
-    assert result["critical_symbol_retry"] == {
+    assert result["primary_benchmark_retry"] == {
         "symbol": "SPY",
         "attempted": False,
         "recovered": False,
         "skipped_reason": "circuit_open",
     }
+    assert result["yahoo_fetched_symbols"] == 9
+    assert result["yahoo_failed_symbols"] == 1
     assert (
-        "[static-daily prices:US] Not refetching SPY: the Yahoo circuit is open for US."
-        in capsys.readouterr().out
+        "[static-daily prices:US] Late refetch of SPY found the Yahoo circuit open for US; "
+        "not retried."
+    ) in capsys.readouterr().out
+
+
+def test_static_daily_price_late_refetch_retries_a_primary_whose_first_call_opened_the_circuit(
+    capsys,
+) -> None:
+    circuit_open = {"price_data": None, "has_error": True, "error": "circuit_open", "error_kind": "circuit_open"}
+    # The circuit was open for the group call only; the late call finds it closed.
+    fetcher = _UsFetcher(
+        lambda symbol, attempt: circuit_open if symbol == "SPY" and attempt == 1 else None
     )
+    service = StaticDailyPriceRefreshService(
+        session_factory=_sqlite_session_factory(),
+        price_cache=SimpleNamespace(store_batch_in_cache=lambda *_args, **_kwargs: None),
+        fetcher=fetcher,
+        batch_size_for_market=lambda _market: 25,
+        sleep=lambda _seconds: None,
+    )
+
+    result = service.refresh(as_of_date=date(2026, 6, 4), market="US")
+
+    assert [call["symbols"] for call in fetcher.calls][2:] == [["SPY"]]
+    assert result["primary_benchmark_retry"] == {
+        "symbol": "SPY",
+        "attempted": True,
+        "recovered": True,
+        "skipped_reason": None,
+    }
+    assert result["yahoo_fetched_symbols"] == 10
+    assert result["yahoo_failed_symbols"] == 0
+    assert "circuit" not in capsys.readouterr().out
+
+
+def test_static_daily_price_unsupported_primary_benchmark_is_not_a_late_refetch_candidate(
+    monkeypatch,
+) -> None:
+    import app.services.static_daily_price_refresh_service as module
+
+    monkeypatch.setattr(
+        module,
+        "split_supported_price_symbols",
+        lambda symbols: (
+            [symbol for symbol in symbols if symbol != "SPY"],
+            [symbol for symbol in symbols if symbol == "SPY"],
+        ),
+    )
+    fetcher = _UsFetcher(lambda symbol, attempt: None)
+    service = StaticDailyPriceRefreshService(
+        session_factory=_sqlite_session_factory(),
+        price_cache=SimpleNamespace(store_batch_in_cache=lambda *_args, **_kwargs: None),
+        fetcher=fetcher,
+        batch_size_for_market=lambda _market: 25,
+        sleep=lambda _seconds: None,
+    )
+
+    result = service.refresh(as_of_date=date(2026, 6, 4), market="US")
+
+    assert [call["symbols"] for call in fetcher.calls] == [
+        ["IVV", "^VIX"],
+        ["QQQ", "IWM", "DX-Y.NYB", "SGD=X", "BTC-USD", "GLD", "TLT"],
+    ]
+    assert result["skipped_unsupported_symbols"] == 1
+    assert result["primary_benchmark_retry"] == {
+        "symbol": "SPY",
+        "attempted": False,
+        "recovered": False,
+        "skipped_reason": "not_a_fetch_candidate",
+    }
 
 
 def test_static_daily_price_failed_fallback_and_vix_alone_trigger_no_late_refetch() -> None:
@@ -2110,7 +2233,7 @@ def test_static_daily_price_failed_fallback_and_vix_alone_trigger_no_late_refetc
         ["SPY", "IVV", "^VIX"],
         ["QQQ", "IWM", "DX-Y.NYB", "SGD=X", "BTC-USD", "GLD", "TLT"],
     ]
-    assert result["critical_symbol_retry"]["skipped_reason"] == "already_current"
+    assert result["primary_benchmark_retry"]["skipped_reason"] == "already_current"
     assert result["yahoo_fetched_symbols"] == 8
     assert result["yahoo_failed_symbols"] == 2
 
@@ -2168,7 +2291,7 @@ def test_static_daily_price_late_refetch_replaces_history_when_it_finds_drift() 
     ]
     assert stored[-1] == ["SPY"]
     assert _adj_closes(session_factory, "SPY") == {0.5}
-    assert result["critical_symbol_retry"] == {
+    assert result["primary_benchmark_retry"] == {
         "symbol": "SPY",
         "attempted": True,
         "recovered": True,
