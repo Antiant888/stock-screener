@@ -84,7 +84,8 @@ class WeinsteinstageAnalyzer:
             return "unknown"
 
         # Simple linear regression to determine trend
-        recent_prices = prices.iloc[:lookback].values
+        # Inputs are newest first; fit the latest window forward in time.
+        recent_prices = prices.iloc[:lookback].iloc[::-1].values
         x = np.arange(len(recent_prices))
 
         try:
