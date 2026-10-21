@@ -371,19 +371,20 @@ def test_build_weekly_reference_bundle_us_publishes_seeded_cache_fallback(
     assert export_calls, "Bundle export should run after seeded fallback publish"
 
 
-def test_build_weekly_reference_bundle_runs_hk_official_path(monkeypatch, tmp_path, capsys):
-    published_at = datetime(2026, 4, 4, 12, 10, 0)
-    active_rows = [
-        SimpleNamespace(
-            symbol="0700.HK",
-            market="HK",
-            exchange="XHKG",
-            name="Tencent",
-            sector="Technology",
-            industry="Internet Content & Information",
-            market_cap=456.0,
-        )
-    ]
+def _run_official_market_build(
+    monkeypatch,
+    tmp_path,
+    *,
+    market: str,
+    published_at: datetime,
+    active_rows: list[SimpleNamespace],
+    source_name: str,
+    snapshot_id: str,
+    source_metadata: dict,
+    snapshot_row: dict,
+    fundamentals: dict,
+    provider_error_counts: dict | None = None,
+) -> SimpleNamespace:
     fake_query = MagicMock()
     fake_query.filter.return_value.order_by.return_value.all.return_value = active_rows
     fake_db = MagicMock()
@@ -391,46 +392,34 @@ def test_build_weekly_reference_bundle_runs_hk_official_path(monkeypatch, tmp_pa
 
     monkeypatch.setattr(build_script, "prepare_runtime", lambda: None)
     monkeypatch.setattr(build_script, "SessionLocal", lambda: _fake_session(fake_db))
-    summary_path = tmp_path / "github-step-summary.md"
-    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary_path))
 
-    fetch_calls: list[str] = []
+    calls = SimpleNamespace(fetch=[], ingest=[], hybrid=[], published=[], export=[])
     official_service = SimpleNamespace(
-        fetch_market_snapshot=lambda market: fetch_calls.append(market)
+        fetch_market_snapshot=lambda market: calls.fetch.append(market)
         or SimpleNamespace(
             market=market,
-            source_name="hkex_official",
-            snapshot_id="hkex-listofsecurities-2026-04-04",
-            snapshot_as_of="2026-04-04",
-            source_metadata={"source_urls": ["https://example.com"]},
-            rows=(
-                {
-                    "symbol": "0700.HK",
-                    "name": "Tencent",
-                    "exchange": "XHKG",
-                    "sector": "",
-                    "industry": "",
-                    "market_cap": None,
-                },
-            ),
+            source_name=source_name,
+            snapshot_id=snapshot_id,
+            snapshot_as_of=published_at.date().isoformat(),
+            source_metadata=source_metadata,
+            rows=(snapshot_row,),
         )
     )
     monkeypatch.setattr(build_script, "OfficialMarketUniverseSourceService", lambda: official_service)
 
     stock_universe_service = SimpleNamespace(
         seed_reconciliation_baseline_from_active_rows=lambda db, **kwargs: None,
-        ingest_snapshot_rows=lambda db, **kwargs: {"added": 1, "updated": 0, "deactivated": 0},
+        ingest_snapshot_rows=lambda db, **kwargs: calls.ingest.append(kwargs)
+        or {"added": 1, "updated": 0, "deactivated": 0},
     )
     monkeypatch.setattr(build_script, "get_stock_universe_service", lambda: stock_universe_service)
 
-    hybrid_calls: list[dict[str, object]] = []
-
     def fake_fetch_fundamentals_batch(symbols, **kwargs):
-        hybrid_calls.append({"symbols": symbols, **kwargs})
+        calls.hybrid.append({"symbols": symbols, **kwargs})
         kwargs["progress_callback"](1, len(symbols))
-        return {"0700.HK": {"market_cap": 456.0, "sector": "Technology"}}
+        return fundamentals
 
-    hybrid_service = SimpleNamespace(
+    calls.hybrid_service = SimpleNamespace(
         yfinance_delay_per_ticker=1.5,
         fetch_fundamentals_batch=fake_fetch_fundamentals_batch,
         store_all_caches=lambda *args, **kwargs: {
@@ -438,18 +427,17 @@ def test_build_weekly_reference_bundle_runs_hk_official_path(monkeypatch, tmp_pa
             "persisted_symbols": 1,
             "failed_persistence_symbols": 0,
             "failed": 0,
-            "provider_error_counts": {"yahoo_quote_not_found": 2},
+            "provider_error_counts": provider_error_counts or {},
         },
     )
-    monkeypatch.setattr(build_script, "get_hybrid_fundamentals_service", lambda: hybrid_service)
+    monkeypatch.setattr(build_script, "get_hybrid_fundamentals_service", lambda: calls.hybrid_service)
     monkeypatch.setattr(
         build_script,
         "get_fundamentals_cache",
-        lambda: SimpleNamespace(get_many=lambda symbols: {"0700.HK": {"market_cap": 456.0, "sector": "Technology"}}),
+        lambda: SimpleNamespace(get_many=lambda symbols: fundamentals),
     )
 
-    published_rows: list[dict[str, object]] = []
-    export_calls: list[dict[str, object]] = []
+    source_revision = f"fundamentals_v1_{market.lower()}:{published_at:%Y%m%d%H%M%S}"
     provider_snapshot_service = SimpleNamespace(
         build_market_snapshot_row=lambda **kwargs: {
             "symbol": kwargs["symbol"],
@@ -458,17 +446,14 @@ def test_build_weekly_reference_bundle_runs_hk_official_path(monkeypatch, tmp_pa
             "normalized_payload": kwargs["normalized_payload"],
             "raw_payload": kwargs["raw_payload"],
         },
-        publish_market_snapshot_run=lambda db, **kwargs: published_rows.append(kwargs)
+        publish_market_snapshot_run=lambda db, **kwargs: calls.published.append(kwargs)
         or {
             "published": True,
-            "source_revision": "fundamentals_v1_hk:20260404121000",
+            "source_revision": source_revision,
             "snapshot_key": kwargs["snapshot_key"],
-            "coverage": {
-                "snapshot_symbols": 1,
-                "active_symbols": 1,
-            },
+            "coverage": {"snapshot_symbols": 1, "active_symbols": 1},
             "coverage_thresholds": {
-                "market": "HK",
+                "market": market,
                 "active_coverage": 1.0,
                 "min_active_coverage": 0.70,
                 "missing_ratio": 0.0,
@@ -481,38 +466,70 @@ def test_build_weekly_reference_bundle_runs_hk_official_path(monkeypatch, tmp_pa
             {
                 "published_at": published_at,
                 "created_at": published_at,
-                "source_revision": "fundamentals_v1_hk:20260404121000",
+                "source_revision": source_revision,
             },
         )(),
-        export_weekly_reference_bundle=lambda db, **kwargs: export_calls.append(kwargs)
+        export_weekly_reference_bundle=lambda db, **kwargs: calls.export.append(kwargs)
         or {"bundle_path": str(kwargs["output_path"])},
     )
     monkeypatch.setattr(build_script, "get_provider_snapshot_service", lambda: provider_snapshot_service)
 
     monkeypatch.setattr(
         "sys.argv",
-        [
-            "build_weekly_reference_bundle",
-            "--market",
-            "HK",
-            "--output-dir",
-            str(tmp_path),
+        ["build_weekly_reference_bundle", "--market", market, "--output-dir", str(tmp_path)],
+    )
+    calls.exit_code = build_script.main()
+    return calls
+
+
+def test_build_weekly_reference_bundle_runs_hk_official_path(monkeypatch, tmp_path, capsys):
+    summary_path = tmp_path / "github-step-summary.md"
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary_path))
+
+    calls = _run_official_market_build(
+        monkeypatch,
+        tmp_path,
+        market="HK",
+        published_at=datetime(2026, 4, 4, 12, 10, 0),
+        active_rows=[
+            SimpleNamespace(
+                symbol="0700.HK",
+                market="HK",
+                exchange="XHKG",
+                name="Tencent",
+                sector="Technology",
+                industry="Internet Content & Information",
+                market_cap=456.0,
+            )
         ],
+        source_name="hkex_official",
+        snapshot_id="hkex-listofsecurities-2026-04-04",
+        source_metadata={"source_urls": ["https://example.com"]},
+        snapshot_row={
+            "symbol": "0700.HK",
+            "name": "Tencent",
+            "exchange": "XHKG",
+            "sector": "",
+            "industry": "",
+            "market_cap": None,
+        },
+        fundamentals={"0700.HK": {"market_cap": 456.0, "sector": "Technology"}},
+        provider_error_counts={"yahoo_quote_not_found": 2},
     )
 
-    assert build_script.main() == 0
-    assert fetch_calls == ["HK"]
-    assert hybrid_calls[0]["include_finviz"] is False
-    assert hybrid_calls[0]["market_by_symbol"] == {"0700.HK": "HK"}
-    assert callable(hybrid_calls[0]["progress_callback"])
-    assert hybrid_service.yfinance_delay_per_ticker == build_script._WEEKLY_NON_US_YFINANCE_DELAY_PER_TICKER
-    assert published_rows[0]["snapshot_key"] == build_script.ProviderSnapshotService.snapshot_key_for_market("HK")
-    assert published_rows[0]["market"] == "HK"
-    assert export_calls[0]["output_path"] == (
+    assert calls.exit_code == 0
+    assert calls.fetch == ["HK"]
+    assert calls.hybrid[0]["include_finviz"] is False
+    assert calls.hybrid[0]["market_by_symbol"] == {"0700.HK": "HK"}
+    assert callable(calls.hybrid[0]["progress_callback"])
+    assert calls.hybrid_service.yfinance_delay_per_ticker == build_script._WEEKLY_NON_US_YFINANCE_DELAY_PER_TICKER
+    assert calls.published[0]["snapshot_key"] == build_script.ProviderSnapshotService.snapshot_key_for_market("HK")
+    assert calls.published[0]["market"] == "HK"
+    assert calls.export[0]["output_path"] == (
         tmp_path / "weekly-reference-hk-20260404-fundamentals_v1_hk-20260404121000.json.gz"
     )
-    assert export_calls[0]["latest_manifest_path"] == tmp_path / "weekly-reference-latest-hk.json"
-    assert export_calls[0]["market"] == "HK"
+    assert calls.export[0]["latest_manifest_path"] == tmp_path / "weekly-reference-latest-hk.json"
+    assert calls.export[0]["market"] == "HK"
     stdout = capsys.readouterr().out
     assert "Starting official universe refresh for HK..." in stdout
     assert (
@@ -532,45 +549,32 @@ def test_build_weekly_reference_bundle_runs_hk_official_path(monkeypatch, tmp_pa
     assert "| `yahoo_quote_not_found` | 2 |" in summary_text
 
 
-def test_build_weekly_reference_bundle_runs_de_official_path(monkeypatch, tmp_path, capsys):
-    """Mirror of the HK official-path test for the new DE fetcher.
+def _official_listing(symbol, market, exchange, name, sector, industry, market_cap):
+    return SimpleNamespace(
+        symbol=symbol,
+        market=market,
+        exchange=exchange,
+        name=name,
+        sector=sector,
+        industry=industry,
+        market_cap=market_cap,
+    )
 
-    Verifies the build script (1) fetches the DE snapshot via the official
-    source service, (2) routes the snapshot to ``ingest_snapshot_rows(market="DE")``
-    rather than raising on ``Unsupported official weekly reference market``,
-    and (3) publishes/exports the resulting bundle.
-    """
-    published_at = datetime(2026, 5, 9, 12, 10, 0)
-    active_rows = [
-        SimpleNamespace(
-            symbol="SAP.DE",
-            market="DE",
-            exchange="XETR",
-            name="SAP SE",
-            sector="Technology",
-            industry="Application Software",
-            market_cap=200.0,
-        )
-    ]
-    fake_query = MagicMock()
-    fake_query.filter.return_value.order_by.return_value.all.return_value = active_rows
-    fake_db = MagicMock()
-    fake_db.query.return_value = fake_query
 
-    monkeypatch.setattr(build_script, "prepare_runtime", lambda: None)
-    monkeypatch.setattr(build_script, "SessionLocal", lambda: _fake_session(fake_db))
-
-    fetch_calls: list[str] = []
-    official_service = SimpleNamespace(
-        fetch_market_snapshot=lambda market: fetch_calls.append(market)
-        or SimpleNamespace(
-            market=market,
-            source_name="dbg_official",
-            snapshot_id="dbg-equity-2026-05-09",
-            snapshot_as_of="2026-05-09",
-            source_metadata={"source_urls": ["https://api.boerse-frankfurt.de"], "fetch_mode": "live_http"},
-            rows=(
-                {
+@pytest.mark.parametrize(
+    ("case", "expected_bundle", "excluded_symbols"),
+    [
+        pytest.param(
+            dict(
+                market="DE",
+                published_at=datetime(2026, 5, 9, 12, 10, 0),
+                active_rows=[
+                    _official_listing("SAP.DE", "DE", "XETR", "SAP SE", "Technology", "Application Software", 200.0)
+                ],
+                source_name="dbg_official",
+                snapshot_id="dbg-equity-2026-05-09",
+                source_metadata={"source_urls": ["https://api.boerse-frankfurt.de"], "fetch_mode": "live_http"},
+                snapshot_row={
                     "symbol": "SAP.DE",
                     "name": "SAP SE",
                     "exchange": "XETR",
@@ -580,144 +584,21 @@ def test_build_weekly_reference_bundle_runs_de_official_path(monkeypatch, tmp_pa
                     "isin": "DE0007164600",
                     "wkn": "SAP",
                 },
+                fundamentals={"SAP.DE": {"market_cap": 200.0, "sector": "Technology"}},
             ),
-        )
-    )
-    monkeypatch.setattr(build_script, "OfficialMarketUniverseSourceService", lambda: official_service)
-
-    ingest_calls: list[dict[str, object]] = []
-    stock_universe_service = SimpleNamespace(
-        seed_reconciliation_baseline_from_active_rows=lambda db, **kwargs: None,
-        ingest_snapshot_rows=lambda db, **kwargs: ingest_calls.append(kwargs)
-        or {"added": 1, "updated": 0, "deactivated": 0},
-    )
-    monkeypatch.setattr(build_script, "get_stock_universe_service", lambda: stock_universe_service)
-
-    hybrid_service = SimpleNamespace(
-        yfinance_delay_per_ticker=1.5,
-        fetch_fundamentals_batch=lambda symbols, **kwargs: (
-            kwargs["progress_callback"](1, len(symbols))
-            or {"SAP.DE": {"market_cap": 200.0, "sector": "Technology"}}
+            "weekly-reference-de-20260509-fundamentals_v1_de-20260509121000.json.gz",
+            set(),
+            id="DE",
         ),
-        store_all_caches=lambda *args, **kwargs: {
-            "fundamentals_stored": 1,
-            "persisted_symbols": 1,
-            "failed_persistence_symbols": 0,
-            "failed": 0,
-            "provider_error_counts": {},
-        },
-    )
-    monkeypatch.setattr(build_script, "get_hybrid_fundamentals_service", lambda: hybrid_service)
-    monkeypatch.setattr(
-        build_script,
-        "get_fundamentals_cache",
-        lambda: SimpleNamespace(
-            get_many=lambda symbols: {"SAP.DE": {"market_cap": 200.0, "sector": "Technology"}}
-        ),
-    )
-
-    export_calls: list[dict[str, object]] = []
-    provider_snapshot_service = SimpleNamespace(
-        build_market_snapshot_row=lambda **kwargs: {
-            "symbol": kwargs["symbol"],
-            "exchange": kwargs["exchange"],
-            "row_hash": "row-hash",
-            "normalized_payload": kwargs["normalized_payload"],
-            "raw_payload": kwargs["raw_payload"],
-        },
-        publish_market_snapshot_run=lambda db, **kwargs: {
-            "published": True,
-            "source_revision": "fundamentals_v1_de:20260509121000",
-            "snapshot_key": kwargs["snapshot_key"],
-            "coverage": {"snapshot_symbols": 1, "active_symbols": 1},
-            "coverage_thresholds": {
-                "market": "DE",
-                "active_coverage": 1.0,
-                "min_active_coverage": 0.70,
-                "missing_ratio": 0.0,
-                "max_missing_ratio": 0.30,
-            },
-        },
-        get_published_run=lambda db, snapshot_key: type(
-            "Run",
-            (),
-            {
-                "published_at": published_at,
-                "created_at": published_at,
-                "source_revision": "fundamentals_v1_de:20260509121000",
-            },
-        )(),
-        export_weekly_reference_bundle=lambda db, **kwargs: export_calls.append(kwargs)
-        or {"bundle_path": str(kwargs["output_path"])},
-    )
-    monkeypatch.setattr(build_script, "get_provider_snapshot_service", lambda: provider_snapshot_service)
-
-    monkeypatch.setattr(
-        "sys.argv",
-        [
-            "build_weekly_reference_bundle",
-            "--market",
-            "DE",
-            "--output-dir",
-            str(tmp_path),
-        ],
-    )
-
-    assert build_script.main() == 0
-    assert fetch_calls == ["DE"]
-    assert len(ingest_calls) == 1
-    assert ingest_calls[0]["market"] == "DE"
-    assert ingest_calls[0]["source_name"] == "dbg_official"
-    assert ingest_calls[0]["snapshot_id"] == "dbg-equity-2026-05-09"
-    assert export_calls[0]["output_path"] == (
-        tmp_path / "weekly-reference-de-20260509-fundamentals_v1_de-20260509121000.json.gz"
-    )
-    assert export_calls[0]["latest_manifest_path"] == tmp_path / "weekly-reference-latest-de.json"
-    assert export_calls[0]["market"] == "DE"
-    stdout = capsys.readouterr().out
-    assert "Starting official universe refresh for DE..." in stdout
-    assert "Weekly reference bundle complete for DE:" in stdout
-
-
-def test_build_weekly_reference_bundle_runs_sg_official_path(monkeypatch, tmp_path, capsys):
-    """Mirror of the DE official-path test for the SG fetcher.
-
-    Verifies the build script (1) fetches the SG snapshot via the official
-    source service, (2) routes the snapshot to ``ingest_snapshot_rows(market="SG")``
-    rather than raising on ``Unsupported official weekly reference market``,
-    and (3) publishes/exports the resulting bundle.
-    """
-    published_at = datetime(2026, 5, 17, 12, 10, 0)
-    active_rows = [
-        SimpleNamespace(
-            symbol="D05.SI",
-            market="SG",
-            exchange="XSES",
-            name="DBS Group Holdings",
-            sector="Banks",
-            industry="Banks",
-            market_cap=95.0,
-        )
-    ]
-    fake_query = MagicMock()
-    fake_query.filter.return_value.order_by.return_value.all.return_value = active_rows
-    fake_db = MagicMock()
-    fake_db.query.return_value = fake_query
-
-    monkeypatch.setattr(build_script, "prepare_runtime", lambda: None)
-    monkeypatch.setattr(build_script, "SessionLocal", lambda: _fake_session(fake_db))
-
-    fetch_calls: list[str] = []
-    official_service = SimpleNamespace(
-        fetch_market_snapshot=lambda market: fetch_calls.append(market)
-        or SimpleNamespace(
-            market=market,
-            source_name="sg_manual_csv",
-            snapshot_id="sg-csv-fallback-2026-05-17",
-            snapshot_as_of="2026-05-17",
-            source_metadata={"source_urls": [], "fetch_mode": "csv_fallback"},
-            rows=(
-                {
+        pytest.param(
+            dict(
+                market="SG",
+                published_at=datetime(2026, 5, 17, 12, 10, 0),
+                active_rows=[_official_listing("D05.SI", "SG", "XSES", "DBS Group Holdings", "Banks", "Banks", 95.0)],
+                source_name="sg_manual_csv",
+                snapshot_id="sg-csv-fallback-2026-05-17",
+                source_metadata={"source_urls": [], "fetch_mode": "csv_fallback"},
+                snapshot_row={
                     "symbol": "D05.SI",
                     "name": "DBS Group Holdings",
                     "exchange": "XSES",
@@ -726,151 +607,36 @@ def test_build_weekly_reference_bundle_runs_sg_official_path(monkeypatch, tmp_pa
                     "market_cap": None,
                     "isin": "SG1L01001701",
                 },
+                fundamentals={"D05.SI": {"market_cap": 95.0, "sector": "Banks"}},
             ),
-        )
-    )
-    monkeypatch.setattr(build_script, "OfficialMarketUniverseSourceService", lambda: official_service)
-
-    ingest_calls: list[dict[str, object]] = []
-    stock_universe_service = SimpleNamespace(
-        seed_reconciliation_baseline_from_active_rows=lambda db, **kwargs: None,
-        ingest_snapshot_rows=lambda db, **kwargs: ingest_calls.append(kwargs)
-        or {"added": 1, "updated": 0, "deactivated": 0},
-    )
-    monkeypatch.setattr(build_script, "get_stock_universe_service", lambda: stock_universe_service)
-
-    hybrid_service = SimpleNamespace(
-        yfinance_delay_per_ticker=1.5,
-        fetch_fundamentals_batch=lambda symbols, **kwargs: (
-            kwargs["progress_callback"](1, len(symbols))
-            or {"D05.SI": {"market_cap": 95.0, "sector": "Banks"}}
+            "weekly-reference-sg-20260517-fundamentals_v1_sg-20260517121000.json.gz",
+            set(),
+            id="SG",
         ),
-        store_all_caches=lambda *args, **kwargs: {
-            "fundamentals_stored": 1,
-            "persisted_symbols": 1,
-            "failed_persistence_symbols": 0,
-            "failed": 0,
-            "provider_error_counts": {},
-        },
-    )
-    monkeypatch.setattr(build_script, "get_hybrid_fundamentals_service", lambda: hybrid_service)
-    monkeypatch.setattr(
-        build_script,
-        "get_fundamentals_cache",
-        lambda: SimpleNamespace(
-            get_many=lambda symbols: {"D05.SI": {"market_cap": 95.0, "sector": "Banks"}}
-        ),
-    )
-
-    export_calls: list[dict[str, object]] = []
-    provider_snapshot_service = SimpleNamespace(
-        build_market_snapshot_row=lambda **kwargs: {
-            "symbol": kwargs["symbol"],
-            "exchange": kwargs["exchange"],
-            "row_hash": "row-hash",
-            "normalized_payload": kwargs["normalized_payload"],
-            "raw_payload": kwargs["raw_payload"],
-        },
-        publish_market_snapshot_run=lambda db, **kwargs: {
-            "published": True,
-            "source_revision": "fundamentals_v1_sg:20260517121000",
-            "snapshot_key": kwargs["snapshot_key"],
-            "coverage": {"snapshot_symbols": 1, "active_symbols": 1},
-            "coverage_thresholds": {
-                "market": "SG",
-                "active_coverage": 1.0,
-                "min_active_coverage": 0.70,
-                "missing_ratio": 0.0,
-                "max_missing_ratio": 0.30,
-            },
-        },
-        get_published_run=lambda db, snapshot_key: type(
-            "Run",
-            (),
-            {
-                "published_at": published_at,
-                "created_at": published_at,
-                "source_revision": "fundamentals_v1_sg:20260517121000",
-            },
-        )(),
-        export_weekly_reference_bundle=lambda db, **kwargs: export_calls.append(kwargs)
-        or {"bundle_path": str(kwargs["output_path"])},
-    )
-    monkeypatch.setattr(build_script, "get_provider_snapshot_service", lambda: provider_snapshot_service)
-
-    monkeypatch.setattr(
-        "sys.argv",
-        [
-            "build_weekly_reference_bundle",
-            "--market",
-            "SG",
-            "--output-dir",
-            str(tmp_path),
-        ],
-    )
-
-    assert build_script.main() == 0
-    assert fetch_calls == ["SG"]
-    assert len(ingest_calls) == 1
-    assert ingest_calls[0]["market"] == "SG"
-    assert ingest_calls[0]["source_name"] == "sg_manual_csv"
-    assert ingest_calls[0]["snapshot_id"] == "sg-csv-fallback-2026-05-17"
-    assert export_calls[0]["output_path"] == (
-        tmp_path / "weekly-reference-sg-20260517-fundamentals_v1_sg-20260517121000.json.gz"
-    )
-    assert export_calls[0]["latest_manifest_path"] == tmp_path / "weekly-reference-latest-sg.json"
-    assert export_calls[0]["market"] == "SG"
-    stdout = capsys.readouterr().out
-    assert "Starting official universe refresh for SG..." in stdout
-    assert "Weekly reference bundle complete for SG:" in stdout
-
-
-def test_build_weekly_reference_bundle_runs_au_official_path(monkeypatch, tmp_path, capsys):
-    """AU weekly reference builds must route ASX snapshots into AU ingestion."""
-    published_at = datetime(2026, 5, 30, 12, 10, 0)
-    active_rows = [
-        SimpleNamespace(
-            symbol="BHP.AX",
-            market="AU",
-            exchange="XASX",
-            name="BHP Group Limited",
-            sector="Basic Materials",
-            industry="Other Industrial Metals & Mining",
-            market_cap=220.0,
-        ),
-        # Seeded from a prior bundle; the ASX source no longer emits it (#481).
-        SimpleNamespace(
-            symbol="PUT.AX",
-            market="AU",
-            exchange="XASX",
-            name="PUMA SERIES 2023-1 TRUST",
-            sector=None,
-            industry=None,
-            market_cap=None,
-        ),
-    ]
-    fake_query = MagicMock()
-    fake_query.filter.return_value.order_by.return_value.all.return_value = active_rows
-    fake_db = MagicMock()
-    fake_db.query.return_value = fake_query
-
-    monkeypatch.setattr(build_script, "prepare_runtime", lambda: None)
-    monkeypatch.setattr(build_script, "SessionLocal", lambda: _fake_session(fake_db))
-
-    fetch_calls: list[str] = []
-    official_service = SimpleNamespace(
-        fetch_market_snapshot=lambda market: fetch_calls.append(market)
-        or SimpleNamespace(
-            market=market,
-            source_name="asx_official_public_csv",
-            snapshot_id="asx-listed-companies-2026-05-30",
-            snapshot_as_of="2026-05-30",
-            source_metadata={
-                "source_urls": ["https://www.asx.com.au/asx/research/ASXListedCompanies.csv"],
-                "fetch_mode": "live_http",
-            },
-            rows=(
-                {
+        pytest.param(
+            dict(
+                market="AU",
+                published_at=datetime(2026, 5, 30, 12, 10, 0),
+                active_rows=[
+                    _official_listing(
+                        "BHP.AX",
+                        "AU",
+                        "XASX",
+                        "BHP Group Limited",
+                        "Basic Materials",
+                        "Other Industrial Metals & Mining",
+                        220.0,
+                    ),
+                    # Seeded from a prior bundle; the ASX source no longer emits it (#481).
+                    _official_listing("PUT.AX", "AU", "XASX", "PUMA SERIES 2023-1 TRUST", None, None, None),
+                ],
+                source_name="asx_official_public_csv",
+                snapshot_id="asx-listed-companies-2026-05-30",
+                source_metadata={
+                    "source_urls": ["https://www.asx.com.au/asx/research/ASXListedCompanies.csv"],
+                    "fetch_mode": "live_http",
+                },
+                snapshot_row={
                     "symbol": "BHP.AX",
                     "name": "BHP Group Limited",
                     "exchange": "XASX",
@@ -879,105 +645,38 @@ def test_build_weekly_reference_bundle_runs_au_official_path(monkeypatch, tmp_pa
                     "market_cap": None,
                     "isin": "AU000000BHP4",
                 },
+                fundamentals={"BHP.AX": {"market_cap": 220.0, "sector": "Basic Materials"}},
             ),
-        )
-    )
-    monkeypatch.setattr(build_script, "OfficialMarketUniverseSourceService", lambda: official_service)
-
-    ingest_calls: list[dict[str, object]] = []
-    stock_universe_service = SimpleNamespace(
-        seed_reconciliation_baseline_from_active_rows=lambda db, **kwargs: None,
-        ingest_snapshot_rows=lambda db, **kwargs: ingest_calls.append(kwargs)
-        or {"added": 1, "updated": 0, "deactivated": 0},
-    )
-    monkeypatch.setattr(build_script, "get_stock_universe_service", lambda: stock_universe_service)
-
-    hybrid_service = SimpleNamespace(
-        yfinance_delay_per_ticker=1.5,
-        fetch_fundamentals_batch=lambda symbols, **kwargs: (
-            kwargs["progress_callback"](1, len(symbols))
-            or {"BHP.AX": {"market_cap": 220.0, "sector": "Basic Materials"}}
+            "weekly-reference-au-20260530-fundamentals_v1_au-20260530121000.json.gz",
+            # The export re-queries active rows, so dropped listings must be passed on.
+            {"PUT.AX"},
+            id="AU",
         ),
-        store_all_caches=lambda *args, **kwargs: {
-            "fundamentals_stored": 1,
-            "persisted_symbols": 1,
-            "failed_persistence_symbols": 0,
-            "failed": 0,
-            "provider_error_counts": {},
-        },
-    )
-    monkeypatch.setattr(build_script, "get_hybrid_fundamentals_service", lambda: hybrid_service)
-    monkeypatch.setattr(
-        build_script,
-        "get_fundamentals_cache",
-        lambda: SimpleNamespace(
-            get_many=lambda symbols: {"BHP.AX": {"market_cap": 220.0, "sector": "Basic Materials"}}
-        ),
-    )
+    ],
+)
+def test_build_weekly_reference_bundle_runs_official_path(
+    monkeypatch, tmp_path, capsys, case, expected_bundle, excluded_symbols
+):
+    """The build script fetches the official snapshot, routes it to
+    ``ingest_snapshot_rows(market=...)`` rather than raising on
+    ``Unsupported official weekly reference market``, and publishes/exports
+    the resulting bundle."""
+    market = case["market"]
+    calls = _run_official_market_build(monkeypatch, tmp_path, **case)
 
-    export_calls: list[dict[str, object]] = []
-    provider_snapshot_service = SimpleNamespace(
-        build_market_snapshot_row=lambda **kwargs: {
-            "symbol": kwargs["symbol"],
-            "exchange": kwargs["exchange"],
-            "row_hash": "row-hash",
-            "normalized_payload": kwargs["normalized_payload"],
-            "raw_payload": kwargs["raw_payload"],
-        },
-        publish_market_snapshot_run=lambda db, **kwargs: {
-            "published": True,
-            "source_revision": "fundamentals_v1_au:20260530121000",
-            "snapshot_key": kwargs["snapshot_key"],
-            "coverage": {"snapshot_symbols": 1, "active_symbols": 1},
-            "coverage_thresholds": {
-                "market": "AU",
-                "active_coverage": 1.0,
-                "min_active_coverage": 0.70,
-                "missing_ratio": 0.0,
-                "max_missing_ratio": 0.30,
-            },
-        },
-        get_published_run=lambda db, snapshot_key: type(
-            "Run",
-            (),
-            {
-                "published_at": published_at,
-                "created_at": published_at,
-                "source_revision": "fundamentals_v1_au:20260530121000",
-            },
-        )(),
-        export_weekly_reference_bundle=lambda db, **kwargs: export_calls.append(kwargs)
-        or {"bundle_path": str(kwargs["output_path"])},
-    )
-    monkeypatch.setattr(build_script, "get_provider_snapshot_service", lambda: provider_snapshot_service)
-
-    monkeypatch.setattr(
-        "sys.argv",
-        [
-            "build_weekly_reference_bundle",
-            "--market",
-            "AU",
-            "--output-dir",
-            str(tmp_path),
-        ],
-    )
-
-    assert build_script.main() == 0
-    assert fetch_calls == ["AU"]
-    assert len(ingest_calls) == 1
-    assert ingest_calls[0]["market"] == "AU"
-    assert ingest_calls[0]["source_name"] == "asx_official_public_csv"
-    assert ingest_calls[0]["snapshot_id"] == "asx-listed-companies-2026-05-30"
-    assert export_calls[0]["output_path"] == (
-        tmp_path / "weekly-reference-au-20260530-fundamentals_v1_au-20260530121000.json.gz"
-    )
-    assert export_calls[0]["latest_manifest_path"] == tmp_path / "weekly-reference-latest-au.json"
-    assert export_calls[0]["market"] == "AU"
-    # The export re-queries active rows, so dropped listings must be passed on.
-    assert export_calls[0]["excluded_symbols"] == {"PUT.AX"}
+    assert calls.exit_code == 0
+    assert calls.fetch == [market]
+    assert len(calls.ingest) == 1
+    assert calls.ingest[0]["market"] == market
+    assert calls.ingest[0]["source_name"] == case["source_name"]
+    assert calls.ingest[0]["snapshot_id"] == case["snapshot_id"]
+    assert calls.export[0]["output_path"] == tmp_path / expected_bundle
+    assert calls.export[0]["latest_manifest_path"] == tmp_path / f"weekly-reference-latest-{market.lower()}.json"
+    assert calls.export[0]["market"] == market
+    assert calls.export[0]["excluded_symbols"] == excluded_symbols
     stdout = capsys.readouterr().out
-    assert "Starting official universe refresh for AU..." in stdout
-    assert "Weekly reference bundle complete for AU:" in stdout
+    assert f"Starting official universe refresh for {market}..." in stdout
+    assert f"Weekly reference bundle complete for {market}:" in stdout
 
 
 def _make_universe_row(symbol: str, market: str = "CN") -> SimpleNamespace:
@@ -1515,9 +1214,19 @@ def test_au_bundle_drops_seeded_securitisation_trusts():
     assert [r.symbol for r in build_script._without_excluded_listings("AU", rows)] == ["CDP.AX", "BHP.AX"]
 
 
-def test_build_asia_bundle_reraises_when_no_seeded_universe_rows(monkeypatch, tmp_path):
-    """If AKShare fails AND no prior-week rows are seeded, surface the original error."""
-    fake_db = _make_cn_db_mock([], seeded_count=0)
+@pytest.mark.parametrize(
+    ("active_rows", "seeded_count", "extra_args"),
+    [
+        # If AKShare fails AND no prior-week rows are seeded, surface the original error.
+        pytest.param([], 0, ["--allow-partial-publish"], id="no_seeded_universe_rows"),
+        # Without --allow-partial-publish, an AKShare failure must abort the run.
+        pytest.param([_make_universe_row("600000.SS")], None, [], id="partial_publish_disabled"),
+    ],
+)
+def test_build_asia_bundle_reraises_official_fetch_failure(
+    monkeypatch, tmp_path, active_rows, seeded_count, extra_args
+):
+    fake_db = _make_cn_db_mock(active_rows, seeded_count=seeded_count)
 
     monkeypatch.setattr(build_script, "prepare_runtime", lambda: None)
     monkeypatch.setattr(build_script, "SessionLocal", lambda: _fake_session(fake_db))
@@ -1540,61 +1249,40 @@ def test_build_asia_bundle_reraises_when_no_seeded_universe_rows(monkeypatch, tm
 
     monkeypatch.setattr(
         "sys.argv",
-        [
-            "build_weekly_reference_bundle",
-            "--market",
-            "CN",
-            "--output-dir",
-            str(tmp_path),
-            "--allow-partial-publish",
-        ],
+        ["build_weekly_reference_bundle", "--market", "CN", "--output-dir", str(tmp_path), *extra_args],
     )
 
     with pytest.raises(RuntimeError, match="AKShare CN spot disconnected"):
         build_script.main()
 
 
-def test_build_asia_bundle_reraises_when_partial_publish_disabled(monkeypatch, tmp_path):
-    """Without --allow-partial-publish, an AKShare failure must abort the run."""
-    active_rows = [_make_universe_row("600000.SS")]
-    fake_db = _make_cn_db_mock(active_rows)
-
-    monkeypatch.setattr(build_script, "prepare_runtime", lambda: None)
-    monkeypatch.setattr(build_script, "SessionLocal", lambda: _fake_session(fake_db))
-    monkeypatch.delenv("GITHUB_STEP_SUMMARY", raising=False)
-
-    _patch_cn_dependencies(monkeypatch, raise_universe=True)
-    monkeypatch.setattr(
-        build_script,
-        "get_fundamentals_cache",
-        lambda: SimpleNamespace(get_many=lambda symbols: {}),
-    )
-    monkeypatch.setattr(
-        build_script,
-        "get_provider_snapshot_service",
-        lambda: SimpleNamespace(
-            build_market_snapshot_row=lambda **kwargs: {},
-            publish_market_snapshot_run=lambda db, **kwargs: {"published": False, "warnings": []},
+@pytest.mark.parametrize(
+    ("cached_symbols", "prior_snapshot_symbols", "expected_fetch_calls", "expected_coverage"),
+    [
+        pytest.param(
+            ["600000.SS"],
+            1,
+            [["000001.SZ", "600001.SS"]],
+            {
+                "seeded_symbols": 1,
+                "fetch_symbols": 2,
+                "attempted_symbols": 2,
+                "partial_run": False,
+                "snapshot_symbols": 3,
+            },
+            id="resumes_partial_seed_by_skipping_cached_symbols",
         ),
-    )
-
-    monkeypatch.setattr(
-        "sys.argv",
-        [
-            "build_weekly_reference_bundle",
-            "--market",
-            "CN",
-            "--output-dir",
-            str(tmp_path),
-        ],
-    )
-
-    with pytest.raises(RuntimeError, match="AKShare CN spot disconnected"):
-        build_script.main()
-
-
-def test_build_weekly_reference_bundle_resumes_partial_seed_by_skipping_cached_symbols(
-    monkeypatch, tmp_path
+        pytest.param(
+            ["600000.SS", "600001.SS", "000001.SZ"],
+            3,
+            [["000001.SZ", "600000.SS"], ["600001.SS"]],
+            {"seeded_symbols": 0, "fetch_symbols": 3, "attempted_symbols": 3},
+            id="does_not_resume_full_coverage_partial_seed",
+        ),
+    ],
+)
+def test_build_weekly_reference_bundle_resume_partial_seed(
+    monkeypatch, tmp_path, cached_symbols, prior_snapshot_symbols, expected_fetch_calls, expected_coverage
 ):
     active_rows = [
         _make_universe_row("600000.SS"),
@@ -1610,11 +1298,12 @@ def test_build_weekly_reference_bundle_resumes_partial_seed_by_skipping_cached_s
 
     fetch_calls: list[list[str]] = []
     cached = {
-        "600000.SS": {
+        symbol: {
             "market_cap": 999.0,
             "sector": "Industrials",
             "data_source": "bundle_import",
-        },
+        }
+        for symbol in cached_symbols
     }
 
     def fake_fetch_fundamentals_batch(symbols, **kwargs):
@@ -1678,9 +1367,13 @@ def test_build_weekly_reference_bundle_resumes_partial_seed_by_skipping_cached_s
             published_at=published_at,
             created_at=published_at,
             source_revision="fundamentals_v1_cn:20260505121000",
-            coverage_stats_json=(
-                '{"partial_run": true, "active_symbols": 3, '
-                '"snapshot_symbols": 1, "missing_active_symbols": 2}'
+            coverage_stats_json=json.dumps(
+                {
+                    "partial_run": True,
+                    "active_symbols": 3,
+                    "snapshot_symbols": prior_snapshot_symbols,
+                    "missing_active_symbols": 3 - prior_snapshot_symbols,
+                }
             ),
         ),
         export_weekly_reference_bundle=lambda db, **kwargs: export_calls.append(kwargs)
@@ -1705,132 +1398,10 @@ def test_build_weekly_reference_bundle_resumes_partial_seed_by_skipping_cached_s
 
     assert build_script.main() == 0
 
-    assert fetch_calls == [["000001.SZ", "600001.SS"]]
-    publish_kwargs = publish_calls[0]
-    assert publish_kwargs["coverage_stats"]["seeded_symbols"] == 1
-    assert publish_kwargs["coverage_stats"]["fetch_symbols"] == 2
-    assert publish_kwargs["coverage_stats"]["attempted_symbols"] == 2
-    assert publish_kwargs["coverage_stats"]["partial_run"] is False
-    assert publish_kwargs["coverage_stats"]["snapshot_symbols"] == 3
-    assert export_calls, "Bundle export should run after completing a resumed seed"
-
-
-def test_build_weekly_reference_bundle_does_not_resume_full_coverage_partial_seed(
-    monkeypatch, tmp_path
-):
-    active_rows = [
-        _make_universe_row("600000.SS"),
-        _make_universe_row("600001.SS"),
-        _make_universe_row("000001.SZ"),
-    ]
-    fake_db = _make_cn_db_mock(active_rows)
-
-    monkeypatch.setattr(build_script, "prepare_runtime", lambda: None)
-    monkeypatch.setattr(build_script, "SessionLocal", lambda: _fake_session(fake_db))
-    monkeypatch.delenv("GITHUB_STEP_SUMMARY", raising=False)
-    _patch_cn_dependencies(monkeypatch, raise_universe=False)
-
-    fetch_calls: list[list[str]] = []
-    cached = {
-        row.symbol: {
-            "market_cap": 999.0,
-            "sector": "Industrials",
-            "data_source": "bundle_import",
-        }
-        for row in active_rows
-    }
-
-    def fake_fetch_fundamentals_batch(symbols, **kwargs):
-        fetch_calls.append(list(symbols))
-        kwargs["progress_callback"](len(symbols), len(symbols))
-        return {symbol: {"market_cap": 1000.0, "sector": "Industrials"} for symbol in symbols}
-
-    def fake_store_all_caches(data, _cache, **_kwargs):
-        cached.update(data)
-        return {
-            "fundamentals_stored": len(data),
-            "persisted_symbols": len(data),
-            "failed_persistence_symbols": 0,
-            "failed": 0,
-            "provider_error_counts": {},
-        }
-
-    monkeypatch.setattr(
-        build_script,
-        "get_hybrid_fundamentals_service",
-        lambda: SimpleNamespace(
-            yfinance_delay_per_ticker=1.5,
-            fetch_fundamentals_batch=fake_fetch_fundamentals_batch,
-            store_all_caches=fake_store_all_caches,
-        ),
-    )
-    monkeypatch.setattr(
-        build_script,
-        "get_fundamentals_cache",
-        lambda: SimpleNamespace(get_many=lambda symbols: {s: cached[s] for s in symbols if s in cached}),
-    )
-
-    published_at = datetime(2026, 5, 5, 12, 10, 0)
-    publish_calls: list[dict[str, object]] = []
-    provider_snapshot_service = SimpleNamespace(
-        build_market_snapshot_row=lambda **kwargs: {
-            "symbol": kwargs["symbol"],
-            "exchange": kwargs["exchange"],
-            "row_hash": "row-hash",
-            "normalized_payload": kwargs["normalized_payload"],
-            "raw_payload": kwargs["raw_payload"],
-        },
-        publish_market_snapshot_run=lambda db, **kwargs: publish_calls.append(kwargs)
-        or {
-            "published": True,
-            "force_published": False,
-            "source_revision": "fundamentals_v1_cn:20260505121000",
-            "snapshot_key": kwargs["snapshot_key"],
-            "coverage": dict(kwargs["coverage_stats"]),
-            "warnings": list(kwargs["warnings"]),
-            "coverage_thresholds": {
-                "market": "CN",
-                "active_coverage": 1.0,
-                "min_active_coverage": 0.70,
-                "missing_ratio": 0.0,
-                "max_missing_ratio": 0.30,
-            },
-        },
-        get_published_run=lambda db, snapshot_key: SimpleNamespace(
-            published_at=published_at,
-            created_at=published_at,
-            source_revision="fundamentals_v1_cn:20260505121000",
-            coverage_stats_json=(
-                '{"partial_run": true, "active_symbols": 3, '
-                '"snapshot_symbols": 3, "missing_active_symbols": 0}'
-            ),
-        ),
-        export_weekly_reference_bundle=lambda db, **kwargs: {"bundle_path": str(kwargs["output_path"])},
-    )
-    monkeypatch.setattr(
-        build_script, "get_provider_snapshot_service", lambda: provider_snapshot_service
-    )
-    monkeypatch.setattr(
-        "sys.argv",
-        [
-            "build_weekly_reference_bundle",
-            "--market",
-            "CN",
-            "--output-dir",
-            str(tmp_path),
-            "--fetch-chunk-size",
-            "2",
-            "--resume-partial-seed",
-        ],
-    )
-
-    assert build_script.main() == 0
-
-    assert fetch_calls == [["000001.SZ", "600000.SS"], ["600001.SS"]]
-    publish_kwargs = publish_calls[0]
-    assert publish_kwargs["coverage_stats"]["seeded_symbols"] == 0
-    assert publish_kwargs["coverage_stats"]["fetch_symbols"] == 3
-    assert publish_kwargs["coverage_stats"]["attempted_symbols"] == 3
+    assert fetch_calls == expected_fetch_calls
+    coverage_stats = publish_calls[0]["coverage_stats"]
+    assert {key: coverage_stats[key] for key in expected_coverage} == expected_coverage
+    assert export_calls, "Bundle export should run after the seed run"
 
 
 def test_import_weekly_reference_bundle_script_calls_service(monkeypatch, tmp_path, capsys):
