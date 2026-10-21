@@ -9,8 +9,9 @@ Each row's RS rating comes from the Market RS run its Feature run's balanced
 RS identity names, read through the same reader the scanner uses. A run
 without that identity, such as one published under the retired legacy
 formula, is skipped and counted, as is a row whose run cannot be read or
-whose symbol is outside that run's eligible universe. The Setup Engine's RS
-gate is never bypassed with a missing rating.
+whose symbol is outside that run's eligible universe. Those rows are dropped
+before any price is fetched. The Setup Engine's RS gate is never bypassed
+with a missing rating.
 
 Usage:
     cd backend
@@ -53,7 +54,7 @@ import pandas as pd
 
 from app.analysis.patterns.models import SETUP_ENGINE_DEFAULT_SCHEMA_VERSION
 from app.database import SessionLocal
-from app.domain.scanning.ports import MarketRsResolution
+from app.domain.scanning.ports import CanonicalStockRsSource, MarketRsResolution
 from app.infra.db.models.feature_store import (
     FeatureRun,
     StockFeatureDaily,
@@ -333,38 +334,52 @@ def run_backfill(args: argparse.Namespace) -> Optional[Dict[str, int]]:
             logger.info("All rows already have setup_engine at schema %s. Done.", CURRENT_SCHEMA)
             return
 
-        # ── 3. Dry-run exit ───────────────────────────────────────────
-        if args.dry_run:
-            # Show breakdown by symbol count
-            sym_set = {sym for _, sym, _, _ in rows_needing_backfill}
-            logger.info(
-                "[DRY RUN] Would backfill %d rows across %d symbols. No writes performed.",
-                len(rows_needing_backfill), len(sym_set),
-            )
-            return
-
-        # ── 4. Confirmation ───────────────────────────────────────────
-        if not args.yes:
-            sym_set = {sym for _, sym, _, _ in rows_needing_backfill}
-            answer = input(
-                f"\nBackfill {len(rows_needing_backfill)} rows across "
-                f"{len(sym_set)} symbols? [y/N] "
-            )
-            if answer.strip().lower() not in ("y", "yes"):
-                logger.info("Aborted by user.")
-                return
-
-        # ── 5. Group by symbol ────────────────────────────────────────
-        symbol_groups: Dict[str, List[Tuple[int, date, Any]]] = {}
-        for run_id, symbol, as_of_date, details_json in rows_needing_backfill:
-            symbol_groups.setdefault(symbol, []).append((run_id, as_of_date, details_json))
-
-        symbols_list = sorted(symbol_groups.keys())
-        total_symbols = len(symbols_list)
-        total_rows = len(rows_needing_backfill)
+        # ── 3. Keep rows with a published rating, grouped by symbol ───
         rs_by_run, runs_without_rs_identity = _resolve_market_rs_by_run(
             db, SqlMarketRsReader(SessionLocal), rows_needing_backfill
         )
+        symbol_groups: Dict[str, List[Tuple[int, date, Any, CanonicalStockRsSource]]] = {}
+        skipped_no_rs = 0
+        for run_id, symbol, as_of_date, details_json in rows_needing_backfill:
+            resolution = rs_by_run[run_id]
+            rs_source = resolution.stock_source(symbol) if resolution is not None else None
+            if rs_source is None or rs_source.ratings is None:
+                skipped_no_rs += 1
+                continue
+            symbol_groups.setdefault(symbol, []).append(
+                (run_id, as_of_date, details_json, rs_source)
+            )
+
+        symbols_list = sorted(symbol_groups.keys())
+        total_symbols = len(symbols_list)
+        total_rows = len(rows_needing_backfill) - skipped_no_rs
+        counts = (
+            f"{total_rows} rows across {total_symbols} symbols and skip "
+            f"{skipped_no_rs} rows without published Market RS "
+            f"({runs_without_rs_identity} runs without a balanced RS identity)"
+        )
+
+        # ── 4. Dry-run exit ───────────────────────────────────────────
+        if args.dry_run:
+            logger.info("[DRY RUN] Would backfill %s. No writes performed.", counts)
+            return
+
+        if not symbol_groups:
+            logger.info("No row has a published Market RS rating. Would backfill %s.", counts)
+            return {
+                "processed": 0,
+                "skipped": 0,
+                "skipped_no_rs": skipped_no_rs,
+                "runs_without_rs_identity": runs_without_rs_identity,
+                "errors": 0,
+            }
+
+        # ── 5. Confirmation ───────────────────────────────────────────
+        if not args.yes:
+            answer = input(f"\nBackfill {counts}? [y/N] ")
+            if answer.strip().lower() not in ("y", "yes"):
+                logger.info("Aborted by user.")
+                return
 
         logger.info(
             "Processing %d rows across %d symbols (chunk_size=%d)",
@@ -384,7 +399,6 @@ def run_backfill(args: argparse.Namespace) -> Optional[Dict[str, int]]:
         scanner = SetupEngineScanner()
         processed = 0
         skipped = 0
-        skipped_no_rs = 0
         errors = 0
         failed_symbols: List[str] = []
         updated_keys: List[Tuple[int, str]] = []  # (run_id, symbol) of written rows
@@ -405,7 +419,7 @@ def run_backfill(args: argparse.Namespace) -> Optional[Dict[str, int]]:
                         continue
 
                     # Process each (run_id, as_of_date) for this symbol
-                    for run_id, as_of_date, existing_details in symbol_groups[symbol]:
+                    for run_id, as_of_date, existing_details, rs_source in symbol_groups[symbol]:
                         try:
                             # Truncate price + SPY to as_of_date
                             truncated_prices = _truncate_to_date(price_data, as_of_date)
@@ -417,16 +431,6 @@ def run_backfill(args: argparse.Namespace) -> Optional[Dict[str, int]]:
                                     symbol, as_of_date, len(truncated_prices),
                                 )
                                 skipped += 1
-                                continue
-
-                            resolution = rs_by_run.get(run_id)
-                            rs_source = (
-                                resolution.stock_source(symbol)
-                                if resolution is not None
-                                else None
-                            )
-                            if rs_source is None or rs_source.ratings is None:
-                                skipped_no_rs += 1
                                 continue
 
                             # Build StockData and run the scanner
