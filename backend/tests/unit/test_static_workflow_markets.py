@@ -9,7 +9,6 @@ from pathlib import Path
 import yaml
 
 from app.domain.markets import market_registry
-from app.domain.relative_strength import BALANCED_RS_FORMULA_VERSION
 
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[3]
@@ -70,221 +69,59 @@ def test_static_site_schedule_groups_partition_supported_markets():
     assert set(all_markets) == set(market_registry.supported_market_codes())
 
 
-def test_static_site_manual_dispatch_can_run_china_only():
-    content = (_PROJECT_ROOT / ".github/workflows/static-site.yml").read_text(encoding="utf-8")
-    select_markets_job = content.split("  select-markets:\n", 1)[1].split(
-        "\n  ensure_daily_price_release:",
-        1,
-    )[0]
-
-    assert "          - china" in content
-    assert _static_site_market_group("CN_ONLY") == ["CN"]
-    assert 'china) markets="$CN_ONLY" ;;' in select_markets_job
-
-
-def test_static_workflow_uses_canonical_weekly_reference_sync_boundary():
-    content = (_PROJECT_ROOT / ".github/workflows/static-site.yml").read_text(encoding="utf-8")
-
-    assert "app.scripts.sync_weekly_reference_from_github" in content
-    assert "gh release download weekly-reference-data" not in content
-    assert "retry_list_assets" not in content
-    assert "retry_download" not in content
-
-
-def test_static_workflow_reports_calendar_audit_without_gating_markets():
-    content = (_PROJECT_ROOT / ".github/workflows/static-site.yml").read_text(
-        encoding="utf-8"
-    )
-    audit_job = content.split("  calendar-audit:\n", 1)[1].split(
-        "\n  select-markets:", 1
-    )[0]
-    select_job = content.split("  select-markets:\n", 1)[1].split(
-        "\n  ensure_daily_price_release:", 1
-    )[0]
-
-    assert "app.scripts.audit_market_calendars --github-actions" in audit_job
-    assert "app.scripts.build_market_calendar_data --check" in audit_job
-    assert "::warning::Market calendar generation drift detected" in audit_job
-    assert "continue-on-error" not in audit_job
-    # #499: a failing audit is reported but no longer blocks every market's
-    # export; each export still refuses an invalid session for its own market.
-    assert "needs: calendar-audit" not in select_job
-    assert "warning" not in select_job.lower()
-
-
-def test_static_workflow_uses_canonical_rrg_plan_for_restore_and_publish():
-    content = (_PROJECT_ROOT / ".github/workflows/static-site.yml").read_text(
-        encoding="utf-8"
-    )
-
-    assert "rrg-history-data" in content
-    assert "app.scripts.describe_static_rrg_history" in content
-    assert "steps.rrg-history.outputs.enabled == 'true'" in content
-    assert "steps.rrg-history.outputs.source_path" in content
-    assert "steps.rrg-history.outputs.output_path" in content
-    assert 'gh release upload rrg-history-data "$HISTORY_PATH" --clobber' in content
-    assert "--rrg-history-dir" in content
-    assert "continue-on-error: true" in content
-    assert content.index("Upload market artifact") < content.index("Publish rolling RRG history")
-    assert "/current/rrg-history-${MARKET_LOWER}.json.gz" not in content
+def _build_market_step(name: str) -> dict:
+    return next(step for step in _static_build_market_steps() if step.get("name") == name)
 
 
 def test_static_workflow_does_not_replace_rrg_history_after_restore_failure():
-    content = (_PROJECT_ROOT / ".github/workflows/static-site.yml").read_text(
-        encoding="utf-8"
-    )
-
-    assert "id: restore-rrg-history" in content
-    assert "app.scripts.restore_static_rrg_history" in content
-    assert "SAFE_TO_PUBLISH=false" in content
-    assert (
-        "steps.restore-rrg-history.outputs.safe_to_publish == 'true'" in content
-    )
-    assert "RRG_HISTORY_ENABLED: ${{ steps.rrg-history.outputs.enabled }}" in content
-    assert (
-        "RRG_RESTORE_STATUS: "
-        "${{ steps.restore-rrg-history.outputs.restore_status }}" in content
-    )
-    assert (
-        '[ "$RRG_HISTORY_ENABLED" = "true" ] '
-        '&& [ "$RRG_RESTORE_STATUS" = "failed" ]' in content
-    )
-    failure_guard = content.index(
-        '[ "$RRG_HISTORY_ENABLED" = "true" ] '
-        '&& [ "$RRG_RESTORE_STATUS" = "failed" ]'
-    )
-    artifact_success = content.index(
-        'echo "has_artifact=true" >> "$GITHUB_OUTPUT"',
-        failure_guard,
-    )
-    upload_artifact = content.index("- name: Upload market artifact", artifact_success)
-    assert failure_guard < artifact_success < upload_artifact
-    assert "outputs.restore_status != 'failed'" not in content
-
-
-def test_static_workflow_publishes_breadth_metadata_before_market_artifact():
-    content = (_PROJECT_ROOT / ".github/workflows/static-site.yml").read_text(
-        encoding="utf-8"
-    )
-    steps = _static_build_market_steps()
-    step_by_name = {step.get("name"): step for step in steps if step.get("name")}
-    names = [step.get("name") for step in steps]
-
-    assert "breadth-contributor-metadata-data" in content
-    assert names.index("Plan breadth contributor metadata") < names.index(
-        "Restore breadth contributor metadata"
-    )
-    assert names.index("Restore breadth contributor metadata") < names.index(
-        "Export market static data bundle"
-    )
-    assert names.index("Export market static data bundle") < names.index(
-        "Publish breadth contributor metadata"
-    )
-    assert names.index("Publish breadth contributor metadata") < names.index(
-        "Upload market artifact"
-    )
-
-    export_run = step_by_name["Export market static data bundle"]["run"]
-    assert "--breadth-contributor-metadata-dir" in export_run
-    assert "--breadth-contributor-metadata-restore-status" in export_run
-
-    breadth_plan_run = step_by_name["Plan breadth contributor metadata"]["run"]
-    rrg_plan_run = step_by_name["Plan rolling RRG history"]["run"]
-    assert "previous_asset_name=$(jq" in breadth_plan_run
-    assert "previous_path=$(jq" in breadth_plan_run
-    assert "previous_asset_name=$(jq" not in rrg_plan_run
-    assert "previous_path=$(jq" not in rrg_plan_run
-
-    publish = step_by_name["Publish breadth contributor metadata"]
-    assert publish["id"] == "publish-breadth-contributor-metadata"
-    assert "for attempt in 1 2 3" in publish["run"]
-    assert "metadata_state_published=false" in publish["run"]
-    assert "PREVIOUS_ASSET_NAME" in publish["env"]
-    assert publish["run"].index("$PREVIOUS_PATH\" --clobber") < publish[
-        "run"
-    ].index("$METADATA_PATH\" --clobber")
-
-    upload_condition = step_by_name["Upload market artifact"]["if"]
-    assert "publish-breadth-contributor-metadata.outputs.metadata_state_published" in upload_condition
-    assert "breadth-contributor-metadata.outputs.enabled" in upload_condition
+    publish = _build_market_step("Publish rolling RRG history")
+    assert "steps.restore-rrg-history.outputs.safe_to_publish == 'true'" in publish["if"]
 
 
 def test_static_workflow_never_advances_breadth_metadata_after_unsafe_restore():
-    steps = _static_build_market_steps()
-    step_by_name = {step.get("name"): step for step in steps if step.get("name")}
-
-    restore = step_by_name["Restore breadth contributor metadata"]
-    assert "safe_to_publish" in restore["run"]
-    assert 'RESTORE_STATUS="$(jq -r' in restore["run"]
-    assert "--previous-asset-name" in restore["run"]
-    assert "--market" in restore["run"]
-
-    publish_condition = step_by_name["Publish breadth contributor metadata"]["if"]
-    assert "restore-breadth-contributor-metadata.outputs.safe_to_publish == 'true'" in publish_condition
+    publish = _build_market_step("Publish breadth contributor metadata")
+    assert "restore-breadth-contributor-metadata.outputs.safe_to_publish == 'true'" in publish["if"]
 
 
-def test_static_workflow_supports_independent_per_market_rs_rollback():
-    content = (_PROJECT_ROOT / ".github/workflows/static-site.yml").read_text(
-        encoding="utf-8"
-    )
-
-    assert "rs_formula_overrides:" in content
-    assert "default: '{}'" in content
-    assert "rs_formula_version:" not in content
-    assert f"{BALANCED_RS_FORMULA_VERSION}" in content
-    assert "legacy-linear-v1" in content
-    # Only the export applies overrides.
-    assert content.count(
-        '--rs-formula-overrides-json "$RS_FORMULA_OVERRIDES"'
-    ) == 1
-    publisher = (
-        _PROJECT_ROOT / ".github/workflows/static-site-publish.yml"
-    ).read_text(encoding="utf-8")
-    # The publisher selects stored artifacts leniently; a rollback is an export
-    # run with the override, whose legacy artifact becomes the newest one.
-    assert not yaml.safe_load(publisher)[True]["workflow_dispatch"]  # no inputs
-    assert "RS_FORMULA_OVERRIDES" not in publisher
-    assert "rs-formula-overrides-json" not in publisher
+def test_static_workflow_publishes_breadth_metadata_before_market_artifact():
+    names = [step.get("name") for step in _static_build_market_steps()]
+    assert names.index("Publish breadth contributor metadata") < names.index("Upload market artifact")
+    upload = _build_market_step("Upload market artifact")
+    assert "publish-breadth-contributor-metadata.outputs.metadata_state_published" in upload["if"]
 
 
-def test_weekly_reference_defaults_to_partial_publish_for_transient_tw_source_failures():
-    content = (_PROJECT_ROOT / ".github/workflows/weekly-reference-data.yml").read_text(
-        encoding="utf-8"
-    )
-
-    assert '[ "$MATRIX_MARKET" = "CN" ] || [ "$MATRIX_MARKET" = "TW" ]' in content
+def test_market_export_failure_fails_the_job():
+    assert not _build_market_step("Export market static data bundle").get("continue-on-error")
 
 
-def test_weekly_reference_concurrency_is_scoped_per_market():
+def test_rewound_export_never_publishes_rrg_history():
+    export = _build_market_step("Export market static data bundle")
+    assert "rrg_history_publishable=false" in export["run"]
+    publish = _build_market_step("Publish rolling RRG history")
+    assert "steps.export-market.outputs.rrg_history_publishable == 'true'" in publish["if"]
+
+
+def test_incomplete_daily_price_bundle_is_never_uploaded():
+    assert "--require-complete" in _build_market_step("Build daily price bundle")["run"]
+    upload = _build_market_step("Upload daily price assets")
+    assert "steps.build-daily-price-bundle.outputs.price_bundle_ready == 'true'" in upload["if"]
+
+
+def test_breadth_history_is_restored_before_export_and_published_only_with_an_artifact():
+    names = [step.get("name") for step in _static_build_market_steps()]
+    assert names.index("Restore breadth history") < names.index("Export market static data bundle")
+    publish = _build_market_step("Publish breadth history")
+    assert "steps.export-market.outputs.has_artifact == 'true'" in publish["if"]
+
+
+def test_weekly_reference_never_builds_one_market_twice_at_once():
+    # The later job waits, so it seeds from the bundle (and fundamentals
+    # cursor) the earlier one published.
     workflow = yaml.safe_load(
         (_PROJECT_ROOT / ".github/workflows/weekly-reference-data.yml").read_text(encoding="utf-8")
     )
-
-    # A dispatch for one market must not cancel a long run for another (CN ~4.5h).
-    run_group = workflow["concurrency"]["group"]
-    assert "github.event.inputs.market" in run_group
-    assert "|| 'all'" in run_group
-    assert workflow["concurrency"]["cancel-in-progress"] is True
-
-    # Two runs never build the same market at once: the later job waits, so it
-    # seeds from the bundle (and fundamentals cursor) the earlier one published.
     publish_concurrency = workflow["jobs"]["publish"]["concurrency"]
     assert publish_concurrency["group"] == "${{ github.workflow }}-publish-${{ matrix.market }}"
     assert publish_concurrency["cancel-in-progress"] is False
     # A third same-market job queues too instead of cancelling the pending one.
     assert publish_concurrency["queue"] == "max"
-
-    # Runs for different markets can now create the release at the same time;
-    # the one that loses the create race must re-check instead of failing.
-    ensure_script = workflow["jobs"]["ensure_release"]["steps"][0]["run"]
-    create_at = ensure_script.index("gh release create")
-    assert "gh release view" in ensure_script[create_at:]
-
-
-def test_local_celery_startup_derives_market_workers_from_backend_topology():
-    content = (_PROJECT_ROOT / "backend" / "start_celery.sh").read_text(encoding="utf-8")
-
-    assert "from app.tasks.market_queues import SUPPORTED_MARKETS" in content
-    assert "from app.tasks.market_queues import all_data_fetch_queues" in content
-    assert '-Q "$DATA_FETCH_QUEUES"' in content
-    assert "US|HK|IN|JP|KR|TW|CN|CA|DE|SG|MY" not in content

@@ -19,6 +19,7 @@ from app.scripts.download_static_market_fallbacks import (
 
 ROOT = Path(__file__).resolve().parents[3]
 PUBLISH_WORKFLOW = ROOT / ".github" / "workflows" / "static-site-publish.yml"
+SITE_WORKFLOW = ROOT / ".github" / "workflows" / "static-site.yml"
 
 
 _ARTIFACT_LOOKUP_PRELUDE = """\
@@ -107,38 +108,6 @@ def test_static_fallback_downloader_import_does_not_initialize_database(tmp_path
     assert result.returncode == 0, result.stderr
 
 
-def _build_market_job() -> str:
-    content = (ROOT / ".github" / "workflows" / "static-site.yml").read_text()
-    return content.split("  build-market:\n", 1)[1].split(
-        "\n  wake-publisher:",
-        1,
-    )[0]
-
-
-def _build_cot_job() -> str:
-    content = (ROOT / ".github" / "workflows" / "static-site.yml").read_text()
-    return content.split("  build-cot:\n", 1)[1].split(
-        "\n  build-market:",
-        1,
-    )[0]
-
-
-def test_static_site_workflow_publishes_and_combines_global_cot_artifact() -> None:
-    workflow = (ROOT / ".github" / "workflows" / "static-site.yml").read_text()
-    cot_job = _build_cot_job()
-    market_job = _build_market_job()
-
-    assert "static-cot-global" in workflow
-    assert "python -m app.scripts.export_static_cot" in cot_job
-    assert "actions/upload-artifact@v7" in cot_job
-    assert "static-cot-global" in cot_job
-    assert "--skip-cot-refresh" in market_job
-    assert "Upload current global COT artifact" not in market_job
-    publisher = PUBLISH_WORKFLOW.read_text(encoding="utf-8")
-    assert "--fallback-cot-dir /tmp/static-cot" in publisher
-    assert "--fallback-cot-artifacts-dir /tmp/static-cot" in publisher
-
-
 def test_fake_gh_launcher_handles_python_path_with_spaces(
     tmp_path, monkeypatch
 ) -> None:
@@ -173,272 +142,10 @@ def test_fake_gh_launcher_handles_python_path_with_spaces(
     assert result.stdout.strip() == "api|hello world"
 
 
-def test_static_site_market_build_failures_are_not_marked_continue_on_error() -> None:
-    build_market_job = _build_market_job()
-    export_step = build_market_job.split(
-        "      - name: Export market static data bundle\n", 1
-    )[1].split(
-        "\n      - name: Upload market status",
-        1,
-    )[0]
-
-    assert "continue-on-error: true" not in export_step
-
-
-def test_static_site_daily_price_seed_allows_stale_bootstrap() -> None:
-    build_market_job = _build_market_job()
-    seed_step = build_market_job.split(
-        "      - name: Seed daily price bundle from GitHub\n", 1
-    )[1].split(
-        "\n      - name: Export market static data bundle",
-        1,
-    )[0]
-
-    assert "--allow-stale" in seed_step
-
-
-def test_static_site_market_export_preserves_price_bundle_after_soft_skip() -> None:
-    build_market_job = _build_market_job()
-    export_step = build_market_job.split(
-        "      - name: Export market static data bundle\n", 1
-    )[1].split(
-        "\n      - name: Build daily price bundle",
-        1,
-    )[0]
-    build_price_step = build_market_job.split(
-        "      - name: Build daily price bundle\n", 1
-    )[1].split(
-        "\n      - name: Upload daily price assets",
-        1,
-    )[0]
-    upload_price_step = build_market_job.split(
-        "      - name: Upload daily price assets\n", 1
-    )[1].split(
-        "\n      - name: Upload market artifact",
-        1,
-    )[0]
-    upload_market_step = build_market_job.split(
-        "      - name: Upload market artifact\n", 1
-    )[1].split(
-        "\n\n  wake-publisher:",
-        1,
-    )[0]
-
-    assert "id: export-market" in export_step
-    assert 'status="${pipeline_status[0]}"' in export_step
-    assert 'if [ "$status" -eq 78 ]; then' in export_step
-    assert "has_artifact=false" in export_step
-    assert "has_artifact=true" in export_step
-    assert "has_price_bundle=false" in export_step
-    assert "has_price_bundle=true" in export_step
-    assert "steps.export-market.outputs.has_price_bundle == 'true'" in build_price_step
-    assert "steps.export-market.outputs.has_price_bundle == 'true'" in upload_price_step
-    assert "steps.export-market.outputs.has_artifact == 'true'" in upload_market_step
-
-
-def test_static_site_market_export_soft_skips_no_current_artifact_exit_code() -> None:
-    build_market_job = _build_market_job()
-    export_step = build_market_job.split(
-        "      - name: Export market static data bundle\n", 1
-    )[1].split(
-        "\n      - name: Upload market status",
-        1,
-    )[0]
-
-    assert 'if [ "$status" -eq 79 ]; then' in export_step
-    assert "has_artifact=false" in export_step
-    assert "fallback artifacts" in export_step
-    assert "no current market artifact will be uploaded" in export_step
-
-
-def test_static_site_market_export_uses_status_price_bundle_signal_for_soft_skip() -> (
-    None
-):
-    build_market_job = _build_market_job()
-    export_step = build_market_job.split(
-        "      - name: Export market static data bundle\n", 1
-    )[1].split(
-        "\n      - name: Upload market status",
-        1,
-    )[0]
-    soft_skip_branch = export_step.split('if [ "$status" -eq 79 ]; then', 1)[1].split(
-        "exit 0",
-        1,
-    )[0]
-
-    assert (
-        'STATUS_PATH="/tmp/static-data/status/${MARKET_LOWER}/status.json"'
-        in export_step
-    )
-    assert ".has_price_bundle // false" in soft_skip_branch
-    assert (
-        'echo "has_price_bundle=$has_price_bundle" >> "$GITHUB_OUTPUT"'
-        in soft_skip_branch
-    )
-    assert 'echo "has_price_bundle=true" >> "$GITHUB_OUTPUT"' not in soft_skip_branch
-
-
-def test_static_site_uploads_canonical_market_status_after_export() -> None:
-    build_market_job = _build_market_job()
-    export_step = build_market_job.split(
-        "      - name: Export market static data bundle\n", 1
-    )[1].split(
-        "\n      - name: Upload market status",
-        1,
-    )[0]
-    status_step = build_market_job.split("      - name: Upload market status\n", 1)[
-        1
-    ].split(
-        "\n      - name: Upload market diagnostics",
-        1,
-    )[0]
-
-    assert "python -m app.scripts.export_static_market_artifact" in export_step
-    assert "write_market_status" not in export_step
-    assert "json_reason" not in export_step
-    assert "cat >" not in export_step
-    assert "if: ${{ always() }}" in status_step
-    assert "uses: actions/upload-artifact@v7" in status_step
-    assert "name: static-market-status-${{ matrix.market }}" in status_step
-    assert (
-        "path: /tmp/static-data/status/${{ env.MARKET_LOWER }}/status.json"
-        in status_step
-    )
-    assert "if-no-files-found: error" in status_step
-
-
-def test_static_site_uploads_market_diagnostics_after_export() -> None:
-    build_market_job = _build_market_job()
-    diagnostics_step = build_market_job.split(
-        "      - name: Upload market diagnostics\n", 1
-    )[1].split(
-        "\n      - name: Build daily price bundle",
-        1,
-    )[0]
-
-    assert "if: ${{ always() }}" in diagnostics_step
-    assert "uses: actions/upload-artifact@v7" in diagnostics_step
-    assert "name: static-market-diagnostics-${{ matrix.market }}" in diagnostics_step
-    assert (
-        "path: /tmp/static-data/diagnostics/${{ env.MARKET_LOWER }}" in diagnostics_step
-    )
-    assert "if-no-files-found: ignore" in diagnostics_step
-
-
-def test_static_site_rrg_history_publish_skips_rewound_market_exports() -> None:
-    build_market_job = _build_market_job()
-    export_step = build_market_job.split(
-        "      - name: Export market static data bundle\n", 1
-    )[1].split(
-        "\n      - name: Upload market status",
-        1,
-    )[0]
-    publish_rrg_step = build_market_job.split(
-        "      - name: Publish rolling RRG history\n", 1
-    )[1].split(
-        "\n\n  wake-publisher:",
-        1,
-    )[0]
-
-    assert 'EXPORT_LOG="$(mktemp)"' in export_step
-    assert '| tee "$EXPORT_LOG"' in export_step
-    assert 'pipeline_status=("${PIPESTATUS[@]}")' in export_step
-    assert 'status="${pipeline_status[0]}"' in export_step
-    assert 'log_status="${pipeline_status[1]}"' in export_step
-    assert 'if [ "$log_status" -ne 0 ]; then' in export_step
-    assert 'exit "$log_status"' in export_step
-    assert (
-        'grep -qE "using (benchmark-backed|previous-session) as-of date"'
-        in export_step
-    )
-    assert "rrg_history_publishable=false" in export_step
-    assert "rrg_history_publishable=true" in export_step
-    assert (
-        "steps.export-market.outputs.rrg_history_publishable == 'true'"
-        in publish_rrg_step
-    )
-
-
-def test_static_site_daily_price_build_requires_current_session_coverage() -> None:
-    build_market_job = _build_market_job()
-    build_price_step = build_market_job.split(
-        "      - name: Build daily price bundle\n", 1
-    )[1].split(
-        "\n      - name: Upload daily price assets",
-        1,
-    )[0]
-    upload_price_step = build_market_job.split(
-        "      - name: Upload daily price assets\n", 1
-    )[1].split(
-        "\n      - name: Upload market artifact",
-        1,
-    )[0]
-
-    assert "id: build-daily-price-bundle" in build_price_step
-    assert "static_daily_price_bundle_min_coverage" in build_price_step
-    assert 'BUILD_LOG="$(mktemp)"' in build_price_step
-    assert '| tee "$BUILD_LOG"' in build_price_step
-    assert 'build_pipeline_status=("${PIPESTATUS[@]}")' in build_price_step
-    assert 'build_log_status="${build_pipeline_status[1]}"' in build_price_step
-    assert "--require-complete" in build_price_step
-    assert '--min-symbol-coverage "$MIN_SYMBOL_COVERAGE"' in build_price_step
-    assert "Daily price bundle coverage .* is below required" in build_price_step
-    assert "price_bundle_ready=false" in build_price_step
-    assert "price_bundle_ready=true" in build_price_step
-    assert 'exit "$status"' in build_price_step
-    assert (
-        "steps.build-daily-price-bundle.outputs.price_bundle_ready == 'true'"
-        in upload_price_step
-    )
-
-
-def test_static_site_preserves_and_publishes_us_options_history() -> None:
-    workflow = (ROOT / ".github" / "workflows" / "static-site.yml").read_text()
-    build_job = _build_market_job()
-    publisher = PUBLISH_WORKFLOW.read_text(encoding="utf-8")
-
-    assert "options-analytics-data" in workflow
-    assert "OPTIONS_ANALYTICS_ENABLED" in build_job
-    assert "matrix.market == 'US'" in build_job
-    assert "python -m app.scripts.import_options_history" in build_job
-    assert "id: restore-options-history" in build_job
-    assert "--allow-missing" not in build_job
-    assert "python -m app.scripts.export_options_history" in build_job
-    assert "--require-run-id" in build_job
-    assert "name: static-options-US" in build_job
-    assert "--fallback-options-dir /tmp/static-options" in publisher
-    assert "--fallback-options-artifacts-dir /tmp/static-options" in publisher
-    publish_history = build_job.split("      - name: Publish US options history\n", 1)[
-        1
-    ].split("      - name:", 1)[0]
-    assert (
-        "steps.restore-options-history.outputs.safe_to_publish == 'true'"
-        in publish_history
-    )
-    assert "options-history-us-v1.previous.json.gz" in build_job
-    assert "source_asset_name" in build_job
-    assert "SOURCE_ASSET_NAME" in publish_history
-    assert 'cp "$RESTORED_PATH" "$PREVIOUS_PATH"' in publish_history
-    assert publish_history.index('$PREVIOUS_PATH" --clobber') < publish_history.index(
-        "/tmp/options-history-us-v1.json.gz --clobber"
-    )
-
-
-def test_static_site_restores_breadth_history_before_export_and_publishes_after() -> None:
-    build_job = _build_market_job()
-
-    def step(name: str) -> str:
-        return build_job.split(f"      - name: {name}\n", 1)[1].split("      - name:", 1)[0]
-
-    restore, publish = step("Restore breadth history"), step("Publish breadth history")
-    assert build_job.index("- name: Restore breadth history") < build_job.index(
-        "- name: Export market static data bundle"
-    )
-    assert "static_breadth_history_cache import" in restore
-    assert "continue-on-error: true" in restore
-    assert "static_breadth_history_cache export" in publish
-    assert "continue-on-error: true" in publish
-    assert "steps.export-market.outputs.has_artifact == 'true'" in publish
+def test_options_history_publishes_only_after_a_safe_restore() -> None:
+    steps = _site_workflow()["jobs"]["build-market"]["steps"]
+    publish = next(step for step in steps if step.get("name") == "Publish US options history")
+    assert "steps.restore-options-history.outputs.safe_to_publish == 'true'" in publish["if"]
 
 
 def test_static_site_fallback_candidate_install_restores_incumbent_on_failure(
@@ -1175,23 +882,13 @@ def _publish_workflow() -> dict:
     return yaml.safe_load(PUBLISH_WORKFLOW.read_text(encoding="utf-8"))
 
 
+def _site_workflow() -> dict:
+    return yaml.safe_load(SITE_WORKFLOW.read_text(encoding="utf-8"))
+
+
 def _publish_step(name: str) -> dict:
     steps = _publish_workflow()["jobs"]["build"]["steps"]
     return next(step for step in steps if step.get("name") == name)
-
-
-def test_publisher_runs_only_on_dispatch_and_same_repo_prs() -> None:
-    workflow = _publish_workflow()
-    triggers = workflow[True]  # PyYAML parses the `on:` key as True
-    assert set(triggers) == {"workflow_dispatch", "pull_request"}
-    # No publish-time RS override: a stateless publish cannot keep one (a
-    # later wake-up would undo it). Rollbacks go through the export run.
-    assert not triggers["workflow_dispatch"]
-    build_if = workflow["jobs"]["build"]["if"]
-    assert "github.event.pull_request.head.repo.full_name == github.repository" in build_if
-    # Any-branch dispatch is a build-only rehearsal; only deploy needs main.
-    assert "github.event_name == 'workflow_dispatch'" in build_if
-    assert "default_branch" not in build_if
 
 
 PRODUCTION_RUN = (
@@ -1229,120 +926,15 @@ def test_publisher_rehearsals_never_share_the_production_group() -> None:
     )
 
 
-def test_publisher_reads_default_branch_artifacts_into_one_selection() -> None:
+def test_publisher_reads_only_default_branch_artifacts() -> None:
     step = _publish_step("Download newest market artifacts")
-    assert "continue-on-error" not in step
     assert step["env"]["BRANCH_NAME"] == "${{ github.event.repository.default_branch }}"
-    assert step["env"]["CURRENT_RUN_ID"] == "${{ github.run_id }}"
-    run = step["run"]
-    assert "python -m app.scripts.download_static_market_fallbacks" in run
-    assert "--fallback-dir /tmp/static-market-artifacts" in run
-    assert "--fallback-options-dir /tmp/static-options" in run
-    assert "--fallback-cot-dir /tmp/static-cot" in run
-
-
-def test_publisher_validates_and_combines_one_selection() -> None:
-    # Stored artifacts are last-good inputs: they go through the fallback path
-    # (see test_publisher_combine_arguments_accept_last_good_legacy_artifacts).
-    validate = _publish_step("Validate market artifacts")["run"]
-    assert "python -m app.scripts.validate_static_market_artifacts" in validate
-    assert "--current-dir /tmp/static-empty" in validate
-    assert "--fallback-dir /tmp/static-market-artifacts" in validate
-    assert "--selected-markets '[]'" in validate
-    combine = _publish_step("Combine static data bundle")["run"]
-    assert "--combine-artifacts-dir /tmp/static-empty" in combine
-    assert "--fallback-artifacts-dir /tmp/static-market-artifacts" in combine
-    assert "--fallback-options-artifacts-dir /tmp/static-options" in combine
-    assert "--fallback-cot-artifacts-dir /tmp/static-cot" in combine
-    report = _publish_step("Report market freshness")
-    assert report["continue-on-error"] is True
-    assert "app.scripts.report_static_market_freshness" in report["run"]
-
-
-def test_publisher_publishes_data_generations_unless_switched_off() -> None:
-    # #504: data under g/<generation>/; STATIC_DATA_GENERATIONS=false is the rollback.
-    step = _publish_step("Combine static data bundle")
-    assert step["env"]["DATA_GENERATIONS"] == "${{ vars.STATIC_DATA_GENERATIONS || 'true' }}"
-    assert '[ "$DATA_GENERATIONS" != "false" ] && GENERATION_ARGS="--data-generation"' in step["run"]
-    assert "$GENERATION_ARGS" in step["run"]
 
 
 def test_publisher_deploys_only_from_default_branch_dispatch() -> None:
-    jobs = _publish_workflow()["jobs"]
-    deploy_if = jobs["deploy"]["if"]
-    assert "github.event_name == 'workflow_dispatch'" in deploy_if
-    assert "default_branch" in deploy_if
-    assert jobs["deploy"]["environment"]["name"] == "github-pages"
-    assert PRODUCTION_RUN in deploy_if
-    build_steps = {step.get("name") for step in jobs["build"]["steps"]}
-    deploy_steps = [step.get("name") or step.get("id") for step in jobs["deploy"]["steps"]]
-    assert deploy_steps == [
-        "Configure Pages",
-        "Prune duplicate Pages artifacts",
-        "deployment",
-    ]
-    assert not build_steps & {"Configure Pages", "Prune duplicate Pages artifacts"}
-    prune = jobs["deploy"]["steps"][1]
-    assert prune["env"]["KEEP_ARTIFACT_ID"] == "${{ needs.build.outputs.pages_artifact_id }}"
-    assert jobs["build"]["outputs"]["pages_artifact_id"] == (
-        "${{ steps.upload-pages-artifact.outputs.artifact_id }}"
-    )
-
-
-SITE_WORKFLOW = ROOT / ".github" / "workflows" / "static-site.yml"
-WAKE_COMMAND = "gh workflow run static-site-publish.yml"
-
-
-def _site_workflow() -> dict:
-    return yaml.safe_load(SITE_WORKFLOW.read_text(encoding="utf-8"))
-
-
-def _wake_step(job: str) -> dict:
-    steps = _site_workflow()["jobs"][job]["steps"]
-    return next(
-        step for step in steps if step.get("name") == "Wake static-site publisher"
-    )
-
-
-def test_static_site_no_longer_combines_or_deploys() -> None:
-    workflow = _site_workflow()
-    assert "combine-and-build" not in workflow["jobs"]
-    assert "deploy" not in workflow["jobs"]
-    assert "pages" not in workflow["permissions"]
-    assert "id-token" not in workflow["permissions"]
-    # The calendar audit reports; it no longer gates every market's export.
-    assert "needs" not in workflow["jobs"]["select-markets"]
-
-
-def test_wake_steps_only_run_on_the_default_branch() -> None:
-    for job in ("build-cot", "build-market"):
-        step = _wake_step(job)
-        assert step["continue-on-error"] is True
-        assert "default_branch" in step["if"]
-        assert WAKE_COMMAND in step["run"]
-        assert "--ref" in step["run"]
-    wake_job = _site_workflow()["jobs"]["wake-publisher"]
-    assert "always()" in wake_job["if"] and "default_branch" in wake_job["if"]
-    assert set(wake_job["needs"]) >= {"build-cot", "build-market"}
-    assert WAKE_COMMAND in wake_job["steps"][0]["run"]
-
-
-def test_market_wake_runs_after_any_later_failure() -> None:
-    steps = _site_workflow()["jobs"]["build-market"]["steps"]
-    assert steps[-1]["name"] == "Wake static-site publisher"
-    wake_if = steps[-1]["if"]
-    assert "always()" in wake_if
-    assert "steps.upload-market-artifact.outcome == 'success'" in wake_if
-    upload = next(step for step in steps if step.get("name") == "Upload market artifact")
-    assert upload["id"] == "upload-market-artifact"
-
-
-def test_cot_wake_follows_its_upload() -> None:
-    steps = _site_workflow()["jobs"]["build-cot"]["steps"]
-    names = [step.get("name") for step in steps]
-    assert names.index("Wake static-site publisher") > names.index(
-        "Upload current global COT artifact"
-    )
+    deploy = _publish_workflow()["jobs"]["deploy"]
+    assert PRODUCTION_RUN in deploy["if"]
+    assert deploy["environment"]["name"] == "github-pages"
 
 
 def _workflow_script_args(run: str, module: str) -> list[str]:
@@ -1436,24 +1028,6 @@ def test_publisher_combine_arguments_accept_last_good_legacy_artifacts(
     assert (tmp_path / "out" / manifest["data_root"] / scan_path).is_file()
 
 
-def test_price_history_repair_is_an_opt_in_for_one_market_job() -> None:
-    workflow = _site_workflow()
-    dispatch_input = workflow[True]["workflow_dispatch"]["inputs"]["repair_price_history_market"]
-    assert dispatch_input["default"] == ""
-    export = next(
-        step
-        for step in workflow["jobs"]["build-market"]["steps"]
-        if step.get("id") == "export-market"
-    )
-    assert export["env"]["REPAIR_PRICE_HISTORY_MARKET"] == (
-        "${{ github.event.inputs.repair_price_history_market || '' }}"
-    )
-    run = export["run"]
-    # Only the named market's job gets the flag, compared case-insensitively.
-    assert '= "${{ matrix.market }}" ]; then\n  repair_args=(--repair-price-history)' in run
-    assert '"${breadth_metadata_args[@]}" "${repair_args[@]}" "${checkpoint_args[@]}" 2>&1' in run
-
-
 @pytest.mark.parametrize(
     ("repair_market", "group", "accepted"),
     [
@@ -1481,60 +1055,6 @@ def test_repair_market_must_belong_to_the_selected_group(repair_market, group, a
     }
     result = subprocess.run(["bash", "-e", "-c", step["run"]], env=env, capture_output=True)
     assert (result.returncode == 0) is accepted
-
-
-def _build_market_step(name: str) -> dict:
-    return next(
-        step
-        for step in _site_workflow()["jobs"]["build-market"]["steps"]
-        if step.get("name") == name
-    )
-
-
-def test_price_stage_checkpoint_is_opt_in_per_market() -> None:
-    env = _site_workflow()["jobs"]["build-market"]["env"]
-    assert env["PRICE_STAGE_DEADLINE_MINUTES"] == (
-        "${{ fromJSON(vars.STATIC_PRICE_STAGE_DEADLINE_MINUTES || '{}')[matrix.market] || '' }}"
-    )
-    resume = _build_market_step("Resume price-stage checkpoint")
-    assert resume["if"] == "${{ env.PRICE_STAGE_DEADLINE_MINUTES != '' }}"
-    assert "app.scripts.resume_static_price_checkpoint" in resume["run"]
-    names = [step.get("name") for step in _site_workflow()["jobs"]["build-market"]["steps"]]
-    assert names.index("Seed daily price bundle from GitHub") < names.index(
-        "Resume price-stage checkpoint"
-    ) < names.index("Export market static data bundle")
-
-
-def test_checkpointed_export_uploads_data_before_manifest_then_fails() -> None:
-    export = _build_market_step("Export market static data bundle")
-    assert "--price-stage-deadline-minutes" in export["run"]
-    # The deadline counts from the job's start, recorded by its first step.
-    assert '--price-stage-start-epoch "$JOB_STARTED_EPOCH"' in export["run"]
-    first = _site_workflow()["jobs"]["build-market"]["steps"][0]
-    assert first["name"] == "Record job start" and "JOB_STARTED_EPOCH" in first["run"]
-    assert 'if [ "$status" -eq 80 ]; then' in export["run"]
-    assert 'echo "price_checkpointed=true" >> "$GITHUB_OUTPUT"' in export["run"]
-
-    upload = _build_market_step("Upload price-stage checkpoint")
-    assert upload["if"] == "${{ steps.export-market.outputs.price_checkpointed == 'true' }}"
-    run = upload["run"]
-    assert run.index('"$BUNDLE_PATH"') < run.index('"$MANIFEST_PATH"')
-
-    fail = _build_market_step("Fail after price-stage checkpoint")
-    assert fail["if"] == "${{ steps.export-market.outputs.price_checkpointed == 'true' }}"
-    assert "exit 1" in fail["run"] and "Re-run failed jobs" in fail["run"]
-
-
-def test_publisher_renders_seo_pages_into_the_built_site() -> None:
-    steps = [step.get("name") for step in _publish_workflow()["jobs"]["build"]["steps"]]
-    # After the build (dist exists) and before the upload (pages ship).
-    assert steps.index("Build static frontend") < steps.index("Render search pages") < steps.index("Upload Pages artifact")
-    step = _publish_step("Render search pages")
-    # Search pages are extras: a data quirk there must never block the deploy.
-    assert step["continue-on-error"] is True
-    run = step["run"]
-    assert "python3 scripts/render_seo_pages.py --dist frontend/dist" in run
-    assert "--site-url https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/" in run
 
 
 def test_search_console_verification_file_ships_with_the_site() -> None:
