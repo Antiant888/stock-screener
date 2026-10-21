@@ -38,11 +38,11 @@ class StaticArtifactCombineResult:
     manifest: dict[str, Any]
 
 
-class StaticArtifactFormulaError(RuntimeError):
+class StaticArtifactDamagedError(RuntimeError):
     """A Market artifact is damaged or breaks the static artifact contract."""
 
 
-class StaticArtifactIncompatibleError(StaticArtifactFormulaError):
+class StaticArtifactIncompatibleError(RuntimeError):
     """A Market artifact was built with an RS formula or breadth revision
     this release does not publish."""
 
@@ -134,9 +134,7 @@ class StaticArtifactCombiner:
                 "source": artifact["source_label"],
                 "session_date": artifact["entry"].get("as_of_date"),
             }
-            warnings.extend(
-                str(item) for item in artifact["metadata"].get("warnings", [])
-            )
+            warnings.extend(str(item) for item in artifact["warnings"])
             # With no current artifacts at all (the static-site publisher, which
             # selects stored artifacts) every market is a fallback, so a
             # per-market reuse warning would carry no information.
@@ -276,9 +274,12 @@ class StaticArtifactCombiner:
             if reason is not None:
                 rejections.append((market, reason))
                 continue
+            entry, asset_warnings = self._without_broken_breadth_contributors(
+                market=market, entry=metadata["entry"], market_dir=market_dir
+            )
             discovered[market] = {
-                "entry": metadata["entry"],
-                "metadata": metadata,
+                "entry": entry,
+                "warnings": [*metadata.get("warnings", []), *asset_warnings],
                 "market_dir": market_dir,
                 "source_label": source_label,
             }
@@ -300,9 +301,7 @@ class StaticArtifactCombiner:
         artifact, so a valid fallback can serve the Market. A current artifact
         built with an incompatible formula or breadth revision raises
         ``StaticArtifactIncompatibleError`` instead: the export just built it,
-        so that is a defect to surface. Accepting an artifact can drop a broken
-        breadth contributor asset from its entry, with a warning appended to
-        ``metadata["warnings"]``.
+        so that is a defect to surface. ``metadata`` is left unchanged.
         """
         entry = metadata.get("entry")
         if not isinstance(entry, dict):
@@ -310,7 +309,7 @@ class StaticArtifactCombiner:
         try:
             # Shape first: the formula and breadth checks read the payloads the
             # advertised-asset check proves are present and parse.
-            asset_warnings = cls._validate_advertised_assets(
+            cls._validate_advertised_assets(
                 market=market,
                 source_label=source_label,
                 entry=entry,
@@ -319,39 +318,36 @@ class StaticArtifactCombiner:
             cls._validate_formula(
                 market=market,
                 source_label=source_label,
-                metadata=metadata,
+                entry=entry,
                 market_dir=market_dir,
                 expected_formula=BALANCED_RS_FORMULA_VERSION,
             )
             cls._validate_breadth_revision(
                 market=market,
                 source_label=source_label,
-                metadata=metadata,
+                entry=entry,
                 market_dir=market_dir,
             )
         except StaticArtifactIncompatibleError as exc:
             if source_label == "current":
                 raise
             return str(exc)
-        except StaticArtifactFormulaError as exc:
+        except StaticArtifactDamagedError as exc:
             return str(exc)
         except (OSError, json.JSONDecodeError, UnicodeDecodeError) as exc:
             return f"{market} {source_label} artifact is unreadable ({exc})"
-        if asset_warnings:
-            metadata["warnings"] = [*metadata.get("warnings", []), *asset_warnings]
         return None
 
     @staticmethod
     def _validate_advertised_assets(
         *, market: str, source_label: str, entry: dict, market_dir: Path
-    ) -> list[str]:
+    ) -> None:
         try:
             validate_advertised_paths(
                 market=market, entry=entry, market_dir=market_dir
             )
         except StaticAdvertisedPathError as exc:
-            raise StaticArtifactFormulaError(f"{market} {source_label} {exc}") from exc
-        warnings: list[str] = []
+            raise StaticArtifactDamagedError(f"{market} {source_label} {exc}") from exc
         features = (
             entry.get("features") if isinstance(entry.get("features"), dict) else {}
         )
@@ -360,36 +356,48 @@ class StaticArtifactCombiner:
             ("rrg", "groups_rrg.json"),
         ):
             if features.get(feature) and not (market_dir / filename).is_file():
-                raise StaticArtifactFormulaError(
+                raise StaticArtifactDamagedError(
                     f"{market} {source_label} artifact advertises "
                     f"{feature.upper()} but {filename} is absent"
                 )
         try:
             validate_group_matrix_asset(market=market, market_dir=market_dir, entry=entry)
         except (ValueError, OSError) as exc:
-            raise StaticArtifactFormulaError(f"{market} invalid Matrix asset: {exc}") from exc
+            raise StaticArtifactDamagedError(f"{market} invalid Matrix asset: {exc}") from exc
+
+    @classmethod
+    def _without_broken_breadth_contributors(
+        cls, *, market: str, entry: dict, market_dir: Path
+    ) -> tuple[dict, list[str]]:
         assets = entry.get("assets")
         contributor_asset = (
             assets.get("breadth_contributors") if isinstance(assets, dict) else None
         )
-        if contributor_asset is not None:
-            try:
-                StaticArtifactCombiner._validate_breadth_contributor_asset(
-                    market=market,
-                    market_dir=market_dir,
-                    descriptor=contributor_asset,
-                )
-            except (
-                OSError,
-                TypeError,
-                ValueError,
-                StaticArtifactFormulaError,
-                StaticBreadthContributorAssetError,
-            ) as exc:
-                entry["assets"] = dict(assets)
-                entry["assets"].pop("breadth_contributors", None)
-                warnings.append(f"{market} breadth contributor asset ignored: {exc}")
-        return warnings
+        if contributor_asset is None:
+            return entry, []
+        try:
+            cls._validate_breadth_contributor_asset(
+                market=market,
+                market_dir=market_dir,
+                descriptor=contributor_asset,
+            )
+        except (
+            OSError,
+            TypeError,
+            ValueError,
+            StaticArtifactDamagedError,
+            StaticBreadthContributorAssetError,
+        ) as exc:
+            kept_assets = {
+                name: asset
+                for name, asset in assets.items()
+                if name != "breadth_contributors"
+            }
+            return (
+                {**entry, "assets": kept_assets},
+                [f"{market} breadth contributor asset ignored: {exc}"],
+            )
+        return entry, []
 
     @staticmethod
     def _validate_breadth_contributor_asset(
@@ -405,13 +413,13 @@ class StaticArtifactCombiner:
                 descriptor=descriptor,
             )
         except StaticBreadthContributorAssetError as exc:
-            raise StaticArtifactFormulaError(str(exc)) from exc
+            raise StaticArtifactDamagedError(str(exc)) from exc
 
     @staticmethod
     def _read_object(path: Path, label: str) -> dict:
         payload = json.loads(path.read_text(encoding="utf-8"))
         if not isinstance(payload, dict):
-            raise StaticArtifactFormulaError(f"{label} is not a JSON object")
+            raise StaticArtifactDamagedError(f"{label} is not a JSON object")
         return payload
 
     @classmethod
@@ -420,20 +428,17 @@ class StaticArtifactCombiner:
         *,
         market: str,
         source_label: str,
-        metadata: dict,
+        entry: dict,
         market_dir: Path,
         expected_formula: str,
-    ) -> dict:
-        entry = metadata.get("entry")
-        if not isinstance(entry, dict):
-            raise RuntimeError(f"{market} {source_label} metadata has no Market entry")
+    ) -> None:
         observed = {"market entry": entry.get("rs_formula_version")}
         features = (
             entry.get("features") if isinstance(entry.get("features"), dict) else {}
         )
         scan_manifest_path = market_dir / "scan" / "manifest.json"
         if features.get("scan") and not scan_manifest_path.is_file():
-            raise StaticArtifactFormulaError(
+            raise StaticArtifactDamagedError(
                 f"{market} {source_label} artifact advertises Scan but "
                 "scan/manifest.json is absent"
             )
@@ -446,7 +451,7 @@ class StaticArtifactCombiner:
             if not isinstance(chunk_refs, list) or not all(
                 isinstance(ref, dict) for ref in chunk_refs
             ):
-                raise StaticArtifactFormulaError(
+                raise StaticArtifactDamagedError(
                     f"{market} {source_label} Scan manifest must list chunks as objects"
                 )
             artifact_root = market_dir.resolve()
@@ -464,12 +469,12 @@ class StaticArtifactCombiner:
                 try:
                     chunk_path.relative_to(artifact_root)
                 except ValueError as exc:
-                    raise StaticArtifactFormulaError(
+                    raise StaticArtifactDamagedError(
                         f"{market} {source_label} Scan chunk path escapes its artifact: "
                         f"{advertised_path!r}"
                     ) from exc
                 if not advertised_path or not chunk_path.is_file():
-                    raise StaticArtifactFormulaError(
+                    raise StaticArtifactDamagedError(
                         f"{market} {source_label} Scan chunk is absent: "
                         f"{advertised_path!r}"
                     )
@@ -481,7 +486,7 @@ class StaticArtifactCombiner:
                 )
         groups_path = market_dir / "groups.json"
         if features.get("groups") and not groups_path.is_file():
-            raise StaticArtifactFormulaError(
+            raise StaticArtifactDamagedError(
                 f"{market} {source_label} artifact advertises Groups but groups.json is absent"
             )
         if groups_path.is_file():
@@ -492,7 +497,7 @@ class StaticArtifactCombiner:
                 observed["Groups"] = groups.get("rs_formula_version")
         rrg_path = market_dir / "groups_rrg.json"
         if features.get("rrg") and not rrg_path.is_file():
-            raise StaticArtifactFormulaError(
+            raise StaticArtifactDamagedError(
                 f"{market} {source_label} artifact advertises RRG but groups_rrg.json is absent"
             )
         if rrg_path.is_file():
@@ -513,28 +518,24 @@ class StaticArtifactCombiner:
                 f"{market} {source_label} artifact uses incompatible RS formula: "
                 f"{rendered}; expected {expected_formula!r}"
             )
-        return entry
 
     @staticmethod
     def _validate_breadth_revision(
         *,
         market: str,
         source_label: str,
-        metadata: dict,
+        entry: dict,
         market_dir: Path,
-    ) -> dict:
-        entry = metadata.get("entry")
-        if not isinstance(entry, dict):
-            raise RuntimeError(f"{market} {source_label} metadata has no Market entry")
+    ) -> None:
         features = (
             entry.get("features") if isinstance(entry.get("features"), dict) else {}
         )
         if not features.get("breadth"):
-            return entry
+            return
 
         breadth_path = market_dir / "breadth.json"
         if not breadth_path.is_file():
-            raise StaticArtifactFormulaError(
+            raise StaticArtifactDamagedError(
                 f"{market} {source_label} artifact advertises breadth but "
                 "breadth.json is absent"
             )
@@ -558,7 +559,6 @@ class StaticArtifactCombiner:
                 f"expected {CURRENT_BREADTH_CALCULATION_REVISION} and marker "
                 f"{expected_marker!r}"
             )
-        return entry
 
     def _build_manifest(
         self,

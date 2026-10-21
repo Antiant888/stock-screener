@@ -50,7 +50,7 @@ from app.services.breadth.types import (
 from app.services.breadth.universe import breadth_eligibility_signature
 from app.services.group_ranking_history import select_market_run_series
 from app.services.key_market_history import build_key_market_entries
-from app.services.static_artifact_combiner import StaticArtifactFormulaError
+from app.services.static_artifact_combiner import StaticArtifactIncompatibleError
 from app.services.static_breadth_contributor_exporter import (
     StaticBreadthContributorUnavailable,
 )
@@ -2240,8 +2240,6 @@ def test_combine_market_artifacts_uses_newer_fallback_for_rewound_current_market
 def test_combine_market_artifacts_rejects_a_legacy_current_before_selecting_a_newer_fallback(
     tmp_path,
 ):
-    from app.services.static_artifact_combiner import StaticArtifactFormulaError
-
     current_dir = tmp_path / "current"
     fallback_dir = tmp_path / "fallback"
     output_dir = tmp_path / "combined"
@@ -2295,7 +2293,7 @@ def test_combine_market_artifacts_rejects_a_legacy_current_before_selecting_a_ne
         )
 
     _materialize_advertised_files(tmp_path)
-    with pytest.raises(StaticArtifactFormulaError, match="US current artifact uses incompatible RS formula"):
+    with pytest.raises(StaticArtifactIncompatibleError, match="US current artifact uses incompatible RS formula"):
         StaticSiteExportService.combine_market_artifacts(
             current_dir,
             output_dir,
@@ -2479,7 +2477,7 @@ def test_collect_market_artifacts_rejects_cross_formula_fallback(tmp_path):
         encoding="utf-8",
     )
 
-    with pytest.raises(StaticArtifactFormulaError, match="incompatible RS formula"):
+    with pytest.raises(StaticArtifactIncompatibleError, match="incompatible RS formula"):
         StaticSiteExportService.combine_market_artifacts(
             artifacts_dir,
             tmp_path / "combined",

@@ -7,7 +7,8 @@ import pytest
 from app.domain.relative_strength import BALANCED_RS_FORMULA_VERSION
 from app.services.static_artifact_combiner import (
     StaticArtifactCombiner,
-    StaticArtifactFormulaError,
+    StaticArtifactDamagedError,
+    StaticArtifactIncompatibleError,
     annotate_publication_lag,
 )
 from app.services.static_options_section import StaticOptionsSection
@@ -156,7 +157,7 @@ def test_combiner_rejects_wrong_formula_current_without_using_fallback(tmp_path)
     output.mkdir()
     sentinel = output / "sentinel"
     sentinel.write_text("last-good", encoding="utf-8")
-    with pytest.raises(StaticArtifactFormulaError, match="US current"):
+    with pytest.raises(StaticArtifactIncompatibleError, match="US current"):
         combiner().combine(
             artifacts_dir=current,
             fallback_artifacts_dir=fallback,
@@ -319,7 +320,7 @@ def test_combiner_validates_optional_market_formula_when_artifact_exists(tmp_pat
         formula=STORED_LEGACY_FORMULA,
     )
 
-    with pytest.raises(StaticArtifactFormulaError, match="CN current"):
+    with pytest.raises(StaticArtifactIncompatibleError, match="CN current"):
         combiner().combine(
             artifacts_dir=current,
             fallback_artifacts_dir=None,
@@ -339,7 +340,7 @@ def test_combiner_rejects_wrong_scan_manifest_formula(tmp_path):
     )
 
     with pytest.raises(
-        StaticArtifactFormulaError,
+        StaticArtifactIncompatibleError,
         match="Scan manifest='legacy-linear-v1'",
     ):
         combiner().combine(
@@ -360,7 +361,7 @@ def test_combiner_rejects_wrong_scan_chunk_formula(tmp_path):
     )
 
     with pytest.raises(
-        StaticArtifactFormulaError,
+        StaticArtifactIncompatibleError,
         match="Scan chunk chunk-0001.json='legacy-linear-v1'",
     ):
         combiner().combine(
@@ -414,7 +415,7 @@ def test_combiner_rejects_current_breadth_revision_two(tmp_path):
         breadth_revision=2,
     )
 
-    with pytest.raises(StaticArtifactFormulaError, match="breadth revision"):
+    with pytest.raises(StaticArtifactIncompatibleError, match="breadth revision"):
         combiner().combine(
             artifacts_dir=current,
             fallback_artifacts_dir=None,
@@ -457,7 +458,7 @@ def test_combiner_rejects_revision_three_with_revision_two_source_marker(tmp_pat
         breadth_source_revision="2026-04-10|breadth-r2",
     )
 
-    with pytest.raises(StaticArtifactFormulaError, match="breadth revision"):
+    with pytest.raises(StaticArtifactIncompatibleError, match="breadth revision"):
         combiner().combine(
             artifacts_dir=current,
             fallback_artifacts_dir=None,
@@ -506,7 +507,7 @@ def test_advertised_page_paths_must_exist_inside_root_and_parse(
     for name, text in files.items():
         (market_dir / name).write_text(text, encoding="utf-8")
 
-    with pytest.raises(StaticArtifactFormulaError, match=message):
+    with pytest.raises(StaticArtifactDamagedError, match=message):
         _validate_assets(market_dir)
 
 
@@ -523,7 +524,7 @@ def test_chart_index_symbol_paths_must_stay_inside_root(tmp_path: Path) -> None:
         tmp_path, "US", assets={"charts": {"path": "markets/us/charts/index.json"}}
     )
 
-    with pytest.raises(StaticArtifactFormulaError, match="escapes"):
+    with pytest.raises(StaticArtifactDamagedError, match="escapes"):
         _validate_assets(market_dir)
 
 
@@ -539,7 +540,7 @@ def test_chart_index_symbol_payload_must_exist(tmp_path: Path) -> None:
         tmp_path, "US", assets={"charts": {"path": "markets/us/charts/index.json"}}
     )
 
-    with pytest.raises(StaticArtifactFormulaError, match="X.json"):
+    with pytest.raises(StaticArtifactDamagedError, match="X.json"):
         _validate_assets(market_dir)
 
 
@@ -729,7 +730,7 @@ def test_advertised_path_with_nul_byte_is_rejected_not_crashing(tmp_path: Path) 
         tmp_path, "US", pages={"home": {"path": "markets/us/ho\x00me.json"}}
     )
 
-    with pytest.raises(StaticArtifactFormulaError, match="path is invalid"):
+    with pytest.raises(StaticArtifactDamagedError, match="path is invalid"):
         _validate_assets(market_dir)
 
 
@@ -927,7 +928,7 @@ def test_market_root_relative_paths_are_still_validated(tmp_path: Path) -> None:
     write_market_artifact(tmp_path, market="US", formula=BALANCED_RS_FORMULA_VERSION)
     market_dir = _rewrite_entry(tmp_path, "US", pages={"home": {"path": "home.json"}})
 
-    with pytest.raises(StaticArtifactFormulaError, match="absent.*home.json"):
+    with pytest.raises(StaticArtifactDamagedError, match="absent.*home.json"):
         _validate_assets(market_dir)
 
 
@@ -941,7 +942,7 @@ def test_market_root_relative_chart_payloads_are_still_validated(tmp_path: Path)
     )
     _rewrite_entry(tmp_path, "US", assets={"charts": {"path": "charts/index.json"}})
 
-    with pytest.raises(StaticArtifactFormulaError, match="X.json"):
+    with pytest.raises(StaticArtifactDamagedError, match="X.json"):
         _validate_assets(market_dir)
 
 
@@ -951,7 +952,7 @@ def test_another_markets_path_is_rejected(tmp_path: Path) -> None:
         tmp_path, "US", pages={"home": {"path": "markets/hk/home.json"}}
     )
 
-    with pytest.raises(StaticArtifactFormulaError, match="another market"):
+    with pytest.raises(StaticArtifactDamagedError, match="another market"):
         _validate_assets(market_dir)
 
 
@@ -971,7 +972,7 @@ def test_malformed_descriptors_are_rejected(tmp_path: Path, changes) -> None:
     write_market_artifact(tmp_path, market="US", formula=BALANCED_RS_FORMULA_VERSION)
     market_dir = _rewrite_entry(tmp_path, "US", **changes)
 
-    with pytest.raises(StaticArtifactFormulaError, match="descriptor|empty path"):
+    with pytest.raises(StaticArtifactDamagedError, match="descriptor|empty path"):
         _validate_assets(market_dir)
 
 
@@ -980,7 +981,7 @@ def test_non_object_page_and_asset_sections_are_rejected(tmp_path: Path, changes
     write_market_artifact(tmp_path, market="US", formula=BALANCED_RS_FORMULA_VERSION)
     market_dir = _rewrite_entry(tmp_path, "US", **changes)
 
-    with pytest.raises(StaticArtifactFormulaError, match="must be an object"):
+    with pytest.raises(StaticArtifactDamagedError, match="must be an object"):
         _validate_assets(market_dir)
 
 
@@ -1023,27 +1024,50 @@ def test_unreadable_current_manifest_falls_back(tmp_path: Path, damage) -> None:
     assert any("Ignored static market artifact" in w and "HK" in w for w in result.warnings)
 
 
-def test_asset_descriptor_without_path_is_left_to_its_own_validator(
-    tmp_path: Path,
-) -> None:
+def _with_pathless_contributor_asset(root: Path) -> Path:
     # breadth_contributors advertises index_path and has its own validator.
-    write_market_artifact(tmp_path, market="US", formula=BALANCED_RS_FORMULA_VERSION)
-    market_dir = _rewrite_entry(
-        tmp_path,
+    write_market_artifact(root, market="US", formula=BALANCED_RS_FORMULA_VERSION)
+    return _rewrite_entry(
+        root,
         "US",
         assets={"breadth_contributors": {"index_path": "markets/us/x/index.json"}},
     )
 
-    warnings = StaticArtifactCombiner._validate_advertised_assets(
-        market="US",
-        source_label="fallback",
-        entry=json.loads(
-            (market_dir / STATIC_MARKET_METADATA_FILENAME).read_text(encoding="utf-8")
-        )["entry"],
-        market_dir=market_dir,
+
+def test_rejection_reason_leaves_the_artifact_metadata_unchanged(
+    tmp_path: Path,
+) -> None:
+    market_dir = _with_pathless_contributor_asset(tmp_path)
+    metadata = json.loads(
+        (market_dir / STATIC_MARKET_METADATA_FILENAME).read_text(encoding="utf-8")
+    )
+    before = json.loads(json.dumps(metadata))
+
+    reason = StaticArtifactCombiner.rejection_reason(
+        market="US", source_label="fallback", metadata=metadata, market_dir=market_dir
     )
 
-    assert any("breadth contributor asset ignored" in w for w in warnings)
+    assert reason is None
+    assert metadata == before
+
+
+def test_broken_breadth_contributor_asset_is_dropped_with_a_warning(
+    tmp_path: Path,
+) -> None:
+    _with_pathless_contributor_asset(tmp_path / "current")
+
+    result = combiner().combine(
+        artifacts_dir=tmp_path / "current",
+        fallback_artifacts_dir=None,
+        output_dir=tmp_path / "out",
+        required_markets=["US"],
+        clean=True,
+    )
+
+    assert result.manifest["markets"]["US"]["assets"] == {}
+    assert [w for w in result.warnings if "breadth contributor" in w] == [
+        "US breadth contributor asset ignored: advertised index file is absent"
+    ]
 
 
 @pytest.mark.parametrize("chunk_text", [None, "{truncated"])
@@ -1057,7 +1081,7 @@ def test_scan_chunks_are_validated_without_a_formula_override(
     else:
         chunk.write_text(chunk_text, encoding="utf-8")
 
-    with pytest.raises(StaticArtifactFormulaError, match="chunk-0001.json"):
+    with pytest.raises(StaticArtifactDamagedError, match="chunk-0001.json"):
         _validate_assets(tmp_path / "static-market-US")
 
 
@@ -1074,7 +1098,7 @@ def test_malformed_chart_payload_is_rejected(tmp_path: Path) -> None:
         tmp_path, "US", assets={"charts": {"path": "markets/us/charts/index.json"}}
     )
 
-    with pytest.raises(StaticArtifactFormulaError, match="X.json.*does not parse"):
+    with pytest.raises(StaticArtifactDamagedError, match="X.json.*does not parse"):
         _validate_assets(market_dir)
 
 
@@ -1088,7 +1112,7 @@ def test_malformed_chart_index_is_rejected_not_crashing(tmp_path: Path, index) -
         tmp_path, "US", assets={"charts": {"path": "markets/us/charts/index.json"}}
     )
 
-    with pytest.raises(StaticArtifactFormulaError, match="chart index"):
+    with pytest.raises(StaticArtifactDamagedError, match="chart index"):
         _validate_assets(market_dir)
 
 

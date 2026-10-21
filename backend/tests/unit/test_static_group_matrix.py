@@ -91,7 +91,7 @@ def test_old_manifest_without_matrix_is_supported(tmp_path):
 def test_combiner_rejects_inconsistent_advertised_matrix(db, tmp_path, change):
     from app.services.static_artifact_combiner import (
         StaticArtifactCombiner,
-        StaticArtifactFormulaError,
+        StaticArtifactDamagedError,
     )
 
     add_run(db, 1, "US", ["A"])
@@ -115,7 +115,7 @@ def test_combiner_rejects_inconsistent_advertised_matrix(db, tmp_path, change):
     }
     entry["assets"] = {"groups_matrix": asset}
     path.write_text(json.dumps({**payload, **change}))
-    with pytest.raises(StaticArtifactFormulaError):
+    with pytest.raises(StaticArtifactDamagedError):
         StaticArtifactCombiner._validate_advertised_assets(
             market="US", source_label="test", market_dir=path.parent, entry=entry
         )
@@ -125,10 +125,10 @@ def test_combiner_rejects_inconsistent_advertised_matrix(db, tmp_path, change):
 def test_combiner_reports_non_mapping_assets_as_invalid_artifacts(tmp_path, assets):
     from app.services.static_artifact_combiner import (
         StaticArtifactCombiner,
-        StaticArtifactFormulaError,
+        StaticArtifactDamagedError,
     )
 
-    with pytest.raises(StaticArtifactFormulaError, match="assets"):
+    with pytest.raises(StaticArtifactDamagedError, match="assets"):
         StaticArtifactCombiner._validate_advertised_assets(
             market="US", source_label="test", market_dir=tmp_path,
             entry={"assets": assets},
