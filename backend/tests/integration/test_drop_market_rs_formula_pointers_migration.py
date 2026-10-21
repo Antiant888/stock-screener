@@ -237,12 +237,14 @@ def test_upgrade_drops_a_legacy_pointer_whose_group_ranks_are_balanced(tmp_path)
     engine.dispose()
 
 
-def test_downgrade_seeds_a_balanced_pointer_only_for_markets_with_a_completed_run(tmp_path):
+def test_downgrade_seeds_a_balanced_pointer_only_for_published_markets(tmp_path):
     engine = create_engine(f"sqlite:///{tmp_path / 'downgrade.sqlite'}")
+    # JP has a completed shadow run but was never published.
     _create_pre_drop_schema(
         engine,
         pointers={"US": BALANCED_RS_FORMULA_VERSION},
-        runs=[("US", "completed"), ("US", "completed"), ("HK", "completed"), ("JP", "failed")],
+        runs=[("US", "completed"), ("HK", "completed"), ("JP", "completed")],
+        published=("US", "HK"),
     )
     _run_revision(engine, "upgrade")
 

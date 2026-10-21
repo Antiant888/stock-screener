@@ -8,8 +8,8 @@ formula, since every reader now filters group ranks on the balanced formula.
 Revision 0025 seeds a legacy pointer for every catalog market and tags
 existing group ranks legacy, so an empty database upgrading in one run has
 neither and passes. Downgrade recreates the table and seeds a balanced row
-for every market with a completed Market RS run, the markets the previous
-release could have published.
+for every market with a latest_published_market Feature pointer, so the
+previous release serves the same markets.
 """
 
 import sqlalchemy as sa
@@ -22,6 +22,7 @@ branch_labels = None
 depends_on = None
 
 BALANCED_FORMULA_VERSION = "balanced-horizon-percentile-v2"
+PUBLISHED_POINTER_PREFIX = "latest_published_market:"
 
 
 def upgrade() -> None:
@@ -86,7 +87,11 @@ def downgrade() -> None:
     op.execute(
         sa.text(
             "INSERT INTO market_rs_formula_pointers (market, formula_version) "
-            "SELECT DISTINCT market, :formula FROM market_rs_runs "
-            "WHERE status = 'completed'"
-        ).bindparams(formula=BALANCED_FORMULA_VERSION)
+            "SELECT substr(key, :prefix_length + 1), :formula "
+            "FROM feature_run_pointers WHERE substr(key, 1, :prefix_length) = :prefix"
+        ).bindparams(
+            formula=BALANCED_FORMULA_VERSION,
+            prefix=PUBLISHED_POINTER_PREFIX,
+            prefix_length=len(PUBLISHED_POINTER_PREFIX),
+        )
     )
