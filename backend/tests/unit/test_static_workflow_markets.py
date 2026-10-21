@@ -202,7 +202,7 @@ def test_required_market_without_a_current_artifact_fails_its_job_last():
     # rewind, whose upload succeeds a session behind; a non-trading day and
     # the checkpointed price stage (which already fails) are the exceptions.
     assert fail["if"] == (
-        "${{ always() && contains(fromJSON('[\"US\"]'), matrix.market)"
+        "${{ !cancelled() && contains(fromJSON('[\"US\"]'), matrix.market)"
         " && steps.export-market.outputs.not_trading_day != 'true'"
         " && steps.export-market.outputs.price_checkpointed != 'true'"
         " && (steps.upload-market-artifact.outcome != 'success'"

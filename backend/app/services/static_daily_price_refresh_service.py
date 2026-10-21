@@ -1292,7 +1292,8 @@ class StaticDailyPriceRefreshService:
         replacement), each with the fetcher's full inter-attempt backoff and,
         where the market's price plan repairs the latest session from Yahoo
         quotes, that repair's backoff too; plus the wait the latest-session
-        repair then checks for.
+        repair then checks for. HTTP time and the RS-anchor repair that runs
+        between the two are not budgeted.
         """
         fetch_seconds = sum(self._fetcher.price_batch_backoff_schedule(market))
         session_repair_wait = 0

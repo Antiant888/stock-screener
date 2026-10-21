@@ -861,7 +861,7 @@ jobs:
       # static_market_publish_policy.REQUIRED_STATIC_MARKETS; a test keeps
       # them in lockstep.
       - name: Fail a required market that published no current artifact
-        if: ${{ always() && contains(fromJSON('["US"]'), matrix.market) && steps.export-market.outputs.not_trading_day != 'true' && steps.export-market.outputs.price_checkpointed != 'true' && (steps.upload-market-artifact.outcome != 'success' || steps.export-market.outputs.benchmark_backed_rewind == 'true') }}
+        if: ${{ !cancelled() && contains(fromJSON('["US"]'), matrix.market) && steps.export-market.outputs.not_trading_day != 'true' && steps.export-market.outputs.price_checkpointed != 'true' && (steps.upload-market-artifact.outcome != 'success' || steps.export-market.outputs.benchmark_backed_rewind == 'true') }}
         run: |
           MARKET_LOWER="$(echo "${{ matrix.market }}" | tr '[:upper:]' '[:lower:]')"
           if [ "${{ steps.upload-market-artifact.outcome }}" != "success" ]; then
