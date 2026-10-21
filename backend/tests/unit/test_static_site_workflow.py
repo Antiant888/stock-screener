@@ -14,7 +14,7 @@ import yaml
 from app.scripts import download_static_market_fallbacks as fallback_script
 from app.scripts.download_static_market_fallbacks import (
     collect_current_markets,
-    downloaded_market_is_compatible,
+    inspect_downloaded_market,
 )
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -574,8 +574,24 @@ def test_static_site_fallback_downloader_keeps_newest_candidate_for_current_mark
     assert "exit 7. Details: stderr: download denied for HK" in result.stdout
 
 
-def test_static_site_fallback_downloader_keeps_newest_balanced_candidate(
-    tmp_path,
+@pytest.mark.parametrize(
+    ("newer_defect", "reason"),
+    [
+        (
+            "legacy formula",
+            "US fallback artifact uses incompatible RS formula: "
+            "Scan manifest='legacy-linear-v1', market entry='legacy-linear-v1'; "
+            "expected 'balanced-horizon-percentile-v2'",
+        ),
+        (
+            "breadth r2",
+            "US fallback artifact uses incompatible breadth revision: revision=2, "
+            "source_revision='2026-08-04|breadth-r2'; expected 3 and marker '|breadth-r3'",
+        ),
+    ],
+)
+def test_static_site_fallback_downloader_keeps_newest_accepted_candidate(
+    tmp_path, newer_defect, reason
 ) -> None:
     current_dir = tmp_path / "current"
     fallback_dir = tmp_path / "fallback"
@@ -604,15 +620,20 @@ def test_static_site_fallback_downloader_keeps_newest_balanced_candidate(
             target_dir = pathlib.Path(args[args.index("--dir") + 1])
             market_dir = target_dir / "markets" / "us"
             (market_dir / "scan").mkdir(parents=True, exist_ok=True)
-            formula_by_run = {{
-                "333": "legacy-linear-v1",
-                "222": "balanced-horizon-percentile-v2",
-            }}
             date_by_run = {{
                 "333": "2026-08-04",
                 "222": "2026-08-03",
             }}
-            formula = formula_by_run[run_id]
+            formula = "balanced-horizon-percentile-v2"
+            features = {{"scan": True}}
+            if run_id == "333" and {newer_defect!r} == "legacy formula":
+                formula = "legacy-linear-v1"
+            elif run_id == "333":
+                features["breadth"] = True
+                (market_dir / "breadth.json").write_text(json.dumps({{
+                    "source_revision": "2026-08-04|breadth-r2",
+                    "payload": {{"current": {{"calculation_revision": 2}}}},
+                }}))
             (market_dir / "scan" / "manifest.json").write_text(
                 json.dumps({{"rs_formula_version": formula}})
             )
@@ -623,7 +644,7 @@ def test_static_site_fallback_downloader_keeps_newest_balanced_candidate(
                     "market": "US",
                     "as_of_date": date_by_run[run_id],
                     "rs_formula_version": formula,
-                    "features": {{"scan": True}},
+                    "features": features,
                     "pages": {{"scan": {{"path": "markets/us/scan/manifest.json"}}}},
                 }},
             }}))
@@ -662,7 +683,7 @@ def test_static_site_fallback_downloader_keeps_newest_balanced_candidate(
         {"run": "222", "artifact": "static-market-US"},
     ]
     assert (
-        "does not use the balanced RS formula for US" in result.stdout
+        f"static-market-US from run 333 was rejected ({reason})." in result.stdout
     ), result.stdout
     manifest = json.loads(
         (
@@ -747,7 +768,10 @@ def test_static_site_fallback_downloader_skips_damaged_advertised_assets(
     )
 
     assert not (fallback_dir / "static-market-US").exists()
-    assert "advertises GROUPS but groups.json is absent" in result.stdout
+    assert (
+        "static-market-US from run 333 was rejected (US fallback artifact "
+        "advertises Groups but groups.json is absent)." in result.stdout
+    ), result.stdout
 
 
 def test_static_site_fallback_downloader_skips_incompatible_schema_and_keeps_searching(
@@ -843,12 +867,12 @@ def test_static_site_fallback_downloader_rejects_missing_manifest_market(
         encoding="utf-8",
     )
 
-    assert not downloaded_market_is_compatible(
+    assert inspect_downloaded_market(
         target_dir,
         market="AU",
         artifact_name="static-market-AU",
         run_id=222,
-    )
+    ) is None
 
 
 def test_static_site_fallback_downloader_rejects_multiple_market_manifests(
@@ -867,12 +891,12 @@ def test_static_site_fallback_downloader_rejects_multiple_market_manifests(
         encoding="utf-8",
     )
 
-    assert not downloaded_market_is_compatible(
+    assert inspect_downloaded_market(
         target_dir,
         market="AU",
         artifact_name="static-market-AU",
         run_id=222,
-    )
+    ) is None
 
 
 def test_static_site_current_market_collection_rejects_swapped_artifact_name(

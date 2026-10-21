@@ -432,7 +432,7 @@ def test_combiner_filters_revision_two_breadth_fallback(tmp_path):
         breadth_revision=2,
     )
 
-    with pytest.raises(NoPublishedStaticMarketArtifact, match="HK"):
+    with pytest.raises(NoPublishedStaticMarketArtifact) as exc_info:
         combiner().combine(
             artifacts_dir=tmp_path / "empty-current",
             fallback_artifacts_dir=fallback,
@@ -440,6 +440,12 @@ def test_combiner_filters_revision_two_breadth_fallback(tmp_path):
             required_markets=["HK"],
             clean=True,
         )
+    assert str(exc_info.value) == (
+        "No published compatible static artifact is available for required "
+        "Markets: HK. Rejected: HK fallback artifact uses incompatible breadth "
+        "revision: revision=2, source_revision='2026-04-10|breadth-r2'; "
+        "expected 3 and marker '|breadth-r3'."
+    )
 
 
 def test_combiner_rejects_revision_three_with_revision_two_source_marker(tmp_path):
@@ -772,6 +778,31 @@ def test_current_artifact_missing_a_scan_chunk_falls_back(tmp_path: Path) -> Non
     assert result.warnings[0] == (
         "Ignored static market artifact: HK current Scan chunk is absent: "
         "'markets/hk/scan/chunks/chunk-0001.json'"
+    )
+
+
+def test_fallback_with_an_unparseable_scan_chunk_is_rejected_with_its_reason(
+    tmp_path: Path,
+) -> None:
+    fallback = write_market_artifact(
+        tmp_path / "fallback", market="HK", formula=BALANCED_RS_FORMULA_VERSION
+    )
+    chunk = fallback / "static-market-HK" / "scan" / "chunks" / "chunk-0001.json"
+    chunk.write_text("{", encoding="utf-8")
+
+    with pytest.raises(NoPublishedStaticMarketArtifact) as exc_info:
+        combiner().combine(
+            artifacts_dir=tmp_path / "empty-current",
+            fallback_artifacts_dir=fallback,
+            output_dir=tmp_path / "out",
+            required_markets=["HK"],
+            clean=True,
+        )
+
+    assert str(exc_info.value) == (
+        "No published compatible static artifact is available for required "
+        "Markets: HK. Rejected: HK fallback artifact is unreadable (Expecting "
+        "property name enclosed in double quotes: line 1 column 2 (char 1))."
     )
 
 

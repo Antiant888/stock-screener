@@ -17,11 +17,7 @@ from typing import Any
 from urllib.parse import urlencode
 
 from app.domain.markets import SUPPORTED_MARKET_CODES
-from app.domain.relative_strength import BALANCED_RS_FORMULA_VERSION
-from app.services.static_artifact_combiner import (
-    StaticArtifactCombiner,
-    StaticArtifactFormulaError,
-)
+from app.services.static_artifact_combiner import StaticArtifactCombiner
 from app.services.static_global_artifacts import (
     GLOBAL_STATIC_ARTIFACTS,
     find_global_artifact,
@@ -129,117 +125,49 @@ def collect_current_markets(current_dir: Path) -> set[str]:
     return current_markets
 
 
-def downloaded_market_is_compatible(
+def inspect_downloaded_market(
     target_dir: Path,
     *,
     market: str,
     artifact_name: str,
     run_id: int,
-) -> bool:
+) -> tuple[Path, date | None] | None:
+    """Accept a downloaded Market artifact under the combiner's rules.
+
+    Returns the artifact and its session date, or None after a warning.
+    """
     metadata_paths = sorted(target_dir.rglob(STATIC_MARKET_METADATA_FILENAME))
     if not metadata_paths:
         warn(
             f"{artifact_name} from run {run_id} has no {STATIC_MARKET_METADATA_FILENAME}."
         )
-        return False
+        return None
     if len(metadata_paths) != 1:
         warn(
             f"{artifact_name} from run {run_id} has multiple "
             f"{STATIC_MARKET_METADATA_FILENAME} files."
         )
-        return False
+        return None
 
     metadata_path = metadata_paths[0]
     try:
-        read_static_market_manifest(metadata_path, expected_market=market)
+        metadata = read_static_market_manifest(metadata_path, expected_market=market)
     except (OSError, json.JSONDecodeError, TypeError) as exc:
         warn(f"{artifact_name} metadata at {metadata_path} could not be read ({exc}).")
-        return False
+        return None
     except StaticMarketArtifactContractError as exc:
         warn(str(exc))
-        return False
-    return True
-
-
-def downloaded_market_has_advertised_assets(
-    target_dir: Path,
-    *,
-    market: str,
-    artifact_name: str,
-    run_id: int,
-) -> bool:
-    metadata_paths = sorted(target_dir.rglob(STATIC_MARKET_METADATA_FILENAME))
-    if len(metadata_paths) != 1:
-        warn(
-            f"{artifact_name} from run {run_id} has no unique "
-            f"{STATIC_MARKET_METADATA_FILENAME} for asset validation."
-        )
-        return False
-
-    metadata_path = metadata_paths[0]
-    try:
-        metadata = read_static_market_manifest(metadata_path, expected_market=market)
-        entry = metadata.get("entry")
-        if not isinstance(entry, dict):
-            return True
-        StaticArtifactCombiner._validate_advertised_assets(
-            market=market,
-            source_label="fallback",
-            entry=entry,
-            market_dir=metadata_path.parent,
-        )
-    except (
-        OSError,
-        json.JSONDecodeError,
-        TypeError,
-        StaticMarketArtifactContractError,
-        StaticArtifactFormulaError,
-    ) as exc:
-        warn(
-            f"{artifact_name} from run {run_id} has invalid advertised assets ({exc})."
-        )
-        return False
-    return True
-
-
-def downloaded_market_uses_balanced_formula(
-    target_dir: Path,
-    *,
-    market: str,
-    artifact_name: str,
-    run_id: int,
-) -> bool:
-    metadata_paths = sorted(target_dir.rglob(STATIC_MARKET_METADATA_FILENAME))
-    if len(metadata_paths) != 1:
-        warn(
-            f"{artifact_name} from run {run_id} has no unique "
-            f"{STATIC_MARKET_METADATA_FILENAME} for formula validation."
-        )
-        return False
-    metadata_path = metadata_paths[0]
-    try:
-        metadata = read_static_market_manifest(metadata_path, expected_market=market)
-        StaticArtifactCombiner._validate_formula(
-            market=market,
-            source_label="fallback",
-            metadata=metadata,
-            market_dir=metadata_path.parent,
-            expected_formula=BALANCED_RS_FORMULA_VERSION,
-        )
-    except (
-        OSError,
-        json.JSONDecodeError,
-        TypeError,
-        RuntimeError,
-        StaticMarketArtifactContractError,
-        StaticArtifactFormulaError,
-    ) as exc:
-        warn(
-            f"{artifact_name} from run {run_id} does not use the balanced RS "
-            f"formula for {market} ({exc})."
-        )
-        return False
-    return True
+        return None
+    reason = StaticArtifactCombiner.rejection_reason(
+        market=market,
+        source_label="fallback",
+        metadata=metadata,
+        market_dir=metadata_path.parent,
+    )
+    if reason is not None:
+        warn(f"{artifact_name} from run {run_id} was rejected ({reason}).")
+        return None
+    return target_dir, _coerce_manifest_date(metadata["entry"].get("as_of_date"))
 
 
 def _coerce_manifest_date(value: object) -> date | None:
@@ -256,24 +184,6 @@ def _coerce_manifest_date(value: object) -> date | None:
         return date.fromisoformat(text.split("T", 1)[0])
     except ValueError:
         return None
-
-
-def downloaded_market_as_of_date(target_dir: Path) -> date | None:
-    metadata_paths = sorted(target_dir.rglob(STATIC_MARKET_METADATA_FILENAME))
-    if len(metadata_paths) != 1:
-        return None
-    try:
-        metadata = read_static_market_manifest(metadata_paths[0])
-    except (
-        OSError,
-        json.JSONDecodeError,
-        TypeError,
-        StaticMarketArtifactContractError,
-    ):
-        return None
-    entry = metadata.get("entry")
-    value = entry.get("as_of_date") if isinstance(entry, dict) else None
-    return _coerce_manifest_date(value)
 
 
 def find_options_artifact_dir(base: Path) -> Path | None:
@@ -319,6 +229,15 @@ def _run_cannot_beat_incumbent(
     )
 
 
+def _find_global_candidate(
+    spec: Any, wrapper: Path
+) -> tuple[Path, date | None] | None:
+    artifact_dir = find_global_artifact(spec, wrapper)
+    if artifact_dir is None:
+        return None
+    return artifact_dir, global_artifact_as_of_date(spec, wrapper)
+
+
 def _install_market_candidate(
     *,
     target_dir: Path,
@@ -346,8 +265,7 @@ def _download_candidate(
     run_id: int,
     artifact_name: str,
     parent_dir: Path,
-    finder: Callable[[Path], Path | None],
-    date_reader: Callable[[Path], date | None],
+    finder: Callable[[Path], tuple[Path, date | None] | None],
     missing_warning: str | None = None,
 ) -> _DownloadedCandidate | None:
     wrapper = Path(
@@ -382,48 +300,18 @@ def _download_candidate(
         shutil.rmtree(wrapper, ignore_errors=True)
         return None
 
-    artifact_dir = finder(wrapper)
-    if artifact_dir is None:
+    found = finder(wrapper)
+    if found is None:
         if missing_warning:
             warn(missing_warning)
         shutil.rmtree(wrapper, ignore_errors=True)
         return None
+    artifact_dir, as_of_date = found
     return _DownloadedCandidate(
         wrapper_dir=wrapper,
         artifact_dir=artifact_dir,
-        as_of_date=date_reader(wrapper),
+        as_of_date=as_of_date,
     )
-
-
-def _find_compatible_market_candidate(
-    wrapper: Path,
-    *,
-    market: str,
-    artifact_name: str,
-    run_id: int,
-) -> Path | None:
-    if not downloaded_market_is_compatible(
-        wrapper,
-        market=market,
-        artifact_name=artifact_name,
-        run_id=run_id,
-    ):
-        return None
-    if not downloaded_market_has_advertised_assets(
-        wrapper,
-        market=market,
-        artifact_name=artifact_name,
-        run_id=run_id,
-    ):
-        return None
-    if not downloaded_market_uses_balanced_formula(
-        wrapper,
-        market=market,
-        artifact_name=artifact_name,
-        run_id=run_id,
-    ):
-        return None
-    return wrapper
 
 
 @dataclass(frozen=True)
@@ -572,8 +460,7 @@ def download_fallback_artifacts(
                 run_id=run_id,
                 artifact_name=spec.artifact_name,
                 parent_dir=fallback_dir,
-                finder=partial(find_global_artifact, spec),
-                date_reader=partial(global_artifact_as_of_date, spec),
+                finder=partial(_find_global_candidate, spec),
                 missing_warning=(
                     f"{spec.artifact_name} from run {run_id} is not a compatible "
                     f"{spec.label} artifact."
@@ -619,12 +506,11 @@ def download_fallback_artifacts(
                 artifact_name=artifact_name,
                 parent_dir=fallback_dir,
                 finder=partial(
-                    _find_compatible_market_candidate,
+                    inspect_downloaded_market,
                     market=market,
                     artifact_name=artifact_name,
                     run_id=run_id,
                 ),
-                date_reader=downloaded_market_as_of_date,
             )
             if candidate is None:
                 continue
