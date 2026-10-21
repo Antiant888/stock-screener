@@ -78,7 +78,7 @@ def test_backend_unit_shards_use_cache_free_equal_weight_split_and_exclude_opt_i
     assert 'make gate-unit-files > "${gate_unit_file}"' in shard_script
     assert 'ignore_args+=(--ignore "${path}")' in shard_script
     assert "python -m pytest tests/unit \\" in shard_script
-    assert '-m "not live_service and not load" \\' in shard_script
+    assert '-m "not live_service" \\' in shard_script
     assert (
         "Intentionally cache-free: without duration data, pytest-split gives "
         "each test equal weight and all shards compute the same partition."

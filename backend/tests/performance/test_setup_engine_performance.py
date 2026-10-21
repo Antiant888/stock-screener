@@ -8,12 +8,7 @@ Enforces wall-clock timing budgets at three granularity levels:
 Plus structural guards on detector registry size and uniqueness.
 
 All tests use deterministic synthetic data (np.random.seed(42)), require
-no external services, and follow the warmup/measure pattern established
-in test_query_performance.py.
-
-Note: The _verify_seed_integrity autouse fixture in conftest.py will create
-the perf_engine (in-memory SQLite + 500-row seeding) for this module even
-though no SE test uses it. The overhead is negligible (~50-100ms).
+no external services, and follow a warmup/measure pattern.
 """
 
 from __future__ import annotations
