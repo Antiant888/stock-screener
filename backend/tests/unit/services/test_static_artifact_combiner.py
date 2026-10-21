@@ -750,6 +750,31 @@ def test_damaged_current_artifact_falls_back_instead_of_aborting(tmp_path: Path)
     assert any("HK" in w and "home.json" in w for w in result.warnings)
 
 
+def test_current_artifact_missing_a_scan_chunk_falls_back(tmp_path: Path) -> None:
+    current = tmp_path / "current"
+    write_market_artifact(current, market="US", formula=BALANCED_RS_FORMULA_VERSION)
+    write_market_artifact(current, market="HK", formula=BALANCED_RS_FORMULA_VERSION)
+    (current / "static-market-HK" / "scan" / "chunks" / "chunk-0001.json").unlink()
+    fallback = write_market_artifact(
+        tmp_path / "fallback", market="HK", formula=BALANCED_RS_FORMULA_VERSION
+    )
+
+    result = combiner().combine(
+        artifacts_dir=current,
+        fallback_artifacts_dir=fallback,
+        output_dir=tmp_path / "out",
+        required_markets=["US"],
+        optional_markets=[m for m in STATIC_SUPPORTED_MARKETS if m != "US"],
+        clean=True,
+    )
+
+    assert result.manifest["markets"]["HK"]["publication"]["source"] == "fallback"
+    assert result.warnings[0] == (
+        "Ignored static market artifact: HK current Scan chunk is absent: "
+        "'markets/hk/scan/chunks/chunk-0001.json'"
+    )
+
+
 def test_damaged_required_current_without_fallback_names_the_defect(
     tmp_path: Path,
 ) -> None:

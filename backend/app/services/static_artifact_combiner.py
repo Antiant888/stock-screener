@@ -39,7 +39,12 @@ class StaticArtifactCombineResult:
 
 
 class StaticArtifactFormulaError(RuntimeError):
-    """A Market artifact does not match its required RS formula contract."""
+    """A Market artifact is damaged or breaks the static artifact contract."""
+
+
+class StaticArtifactIncompatibleError(StaticArtifactFormulaError):
+    """A Market artifact was built with an RS formula or breadth revision
+    this release does not publish."""
 
 
 class StaticArtifactCombiner:
@@ -313,11 +318,15 @@ class StaticArtifactCombiner:
                     market_dir=market_dir,
                     expected_formula=BALANCED_RS_FORMULA_VERSION,
                 )
-            except StaticArtifactFormulaError as exc:
+            except StaticArtifactIncompatibleError as exc:
                 if source_label == "current":
                     # The export just built this artifact; a wrong formula is
                     # a defect to surface, never something to paper over.
                     raise
+                rejections.append((market, str(exc)))
+                continue
+            except StaticArtifactFormulaError as exc:
+                # Damage, unlike a wrong formula, counts as absent.
                 rejections.append((market, str(exc)))
                 continue
             try:
@@ -494,7 +503,7 @@ class StaticArtifactCombiner:
                 f"{source}={formula!r}"
                 for source, formula in sorted(mismatches.items())
             )
-            raise StaticArtifactFormulaError(
+            raise StaticArtifactIncompatibleError(
                 f"{market} {source_label} artifact uses incompatible RS formula: "
                 f"{rendered}; expected {expected_formula!r}"
             )
@@ -535,7 +544,7 @@ class StaticArtifactCombiner:
             observed_revision != CURRENT_BREADTH_CALCULATION_REVISION
             or not source_revision.endswith(expected_marker)
         ):
-            raise StaticArtifactFormulaError(
+            raise StaticArtifactIncompatibleError(
                 f"{market} {source_label} artifact uses incompatible breadth revision: "
                 f"revision={observed_revision!r}, source_revision={source_revision!r}; "
                 f"expected {CURRENT_BREADTH_CALCULATION_REVISION} and marker "
