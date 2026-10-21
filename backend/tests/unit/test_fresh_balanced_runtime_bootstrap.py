@@ -372,7 +372,7 @@ def test_fresh_bootstrap_signature_routes_activation_to_market_queue() -> None:
                 "status": "failed",
                 "primary_market": "US",
                 "market": "US",
-                "reason": "balanced market rs formula not active",
+                "reason": "no committed balanced market rs publication",
             },
         ),
         (
@@ -381,7 +381,7 @@ def test_fresh_bootstrap_signature_routes_activation_to_market_queue() -> None:
             {
                 "status": "failed",
                 "market": "US",
-                "reason": "balanced market rs formula not active",
+                "reason": "no committed balanced market rs publication",
             },
         ),
     ],
@@ -455,7 +455,7 @@ def test_fresh_bootstrap_completion_fails_until_the_balanced_publication_commits
     assert calls["publication_markets"] == ["US"]
     assert completions[0].failure_stage_key == "market_rs"
     assert completions[0].failure_message == (
-        "Balanced Market RS activation incomplete"
+        "Balanced Market RS publication not committed"
     )
     assert completions[0].primary is (
         completion_task_name == "complete_local_runtime_bootstrap"

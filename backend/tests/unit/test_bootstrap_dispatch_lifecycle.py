@@ -223,7 +223,9 @@ def test_balanced_completion_consumes_pending_activation_in_same_transition(
     assert manifest.completed_markets == ("US",)
 
 
-def test_missing_balanced_publication_preserves_pending_activation(db_session) -> None:
+def test_missing_balanced_publication_fails_the_market_and_keeps_it_pending(
+    db_session,
+) -> None:
     repository = BootstrapRunManifestRepository()
     lifecycle = BootstrapDispatchLifecycle(repository=repository)
     lifecycle.claim(
@@ -248,7 +250,9 @@ def test_missing_balanced_publication_preserves_pending_activation(db_session) -
     )
 
     assert updated.pending_balanced_activation_markets == ("US",)
-    assert updated.completed_markets == ("US",)
+    assert updated.completed_markets == ()
+    assert updated.failed_markets == ("US",)
+    assert get_runtime_preferences(db_session).bootstrap_state == "failed"
 
 
 def test_first_terminal_market_outcome_wins_on_contradictory_redelivery(

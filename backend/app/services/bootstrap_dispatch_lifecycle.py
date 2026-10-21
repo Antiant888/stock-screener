@@ -21,6 +21,7 @@ from app.services.market_activity_service import (
     stage_current_market_activity_failed,
     stage_market_activity_failed,
 )
+from app.services.runtime_bootstrap_readiness import BALANCED_PUBLICATION_MISSING
 from app.services.runtime_preferences_service import (
     get_runtime_preferences,
     stage_runtime_preferences,
@@ -135,6 +136,19 @@ class BootstrapDispatchLifecycle:
             completion.requires_balanced_publication
             and self.readiness.has_balanced_publication(db, market)
         )
+        if (
+            completion.succeeded
+            and completion.requires_balanced_publication
+            and not balanced_activation_completed
+        ):
+            # Readiness passed before this check; record the disagreement as a
+            # failure rather than a completed market still awaiting publication.
+            completion = BootstrapMarketCompletion.failed(
+                market=market,
+                primary=completion.primary,
+                stage_key=BALANCED_PUBLICATION_MISSING.stage_key,
+                message=BALANCED_PUBLICATION_MISSING.activity_message,
+            )
 
         try:
 

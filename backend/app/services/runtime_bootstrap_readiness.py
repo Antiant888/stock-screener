@@ -21,6 +21,13 @@ class ReadinessFailure:
     result_reason: str
 
 
+BALANCED_PUBLICATION_MISSING = ReadinessFailure(
+    stage_key="market_rs",
+    activity_message="Balanced Market RS publication not committed",
+    result_reason="no committed balanced market rs publication",
+)
+
+
 @dataclass(frozen=True)
 class MarketReadinessCompletion:
     market: str
@@ -43,11 +50,7 @@ def readiness_failure(
             activity_message="Bootstrap scan did not publish",
             result_reason="missing published auto scan",
         )
-    return ReadinessFailure(
-        stage_key="market_rs",
-        activity_message="Balanced Market RS activation incomplete",
-        result_reason="balanced market rs formula not active",
-    )
+    return BALANCED_PUBLICATION_MISSING
 
 
 def evaluate_market_readiness(
@@ -80,6 +83,7 @@ def evaluate_market_readiness(
 
 
 __all__ = [
+    "BALANCED_PUBLICATION_MISSING",
     "MarketReadinessCompletion",
     "ReadinessFailure",
     "evaluate_market_readiness",
