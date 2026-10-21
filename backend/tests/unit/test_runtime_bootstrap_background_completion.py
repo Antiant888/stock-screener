@@ -19,8 +19,13 @@ def test_background_completion_marks_market_failure_without_global_state(
             pass
 
     class _FakeReadinessService:
-        def evaluate(self, db, *, enabled_markets, bootstrap_started_at=None):
-            calls["evaluate"] = (db, enabled_markets, bootstrap_started_at)
+        def evaluate(
+            self, db, *, enabled_markets, bootstrap_started_at=None,
+            balanced_publication_markets=(),
+        ):
+            calls["evaluate"] = (
+                db, enabled_markets, bootstrap_started_at, balanced_publication_markets
+            )
             return BootstrapReadiness(
                 empty_system=False,
                 market_results={
@@ -64,7 +69,7 @@ def test_background_completion_marks_market_failure_without_global_state(
         market="HK", dispatch_id="dispatch-current"
     )
 
-    assert calls["evaluate"] == (session, ["HK"], "started-at")
+    assert calls["evaluate"] == (session, ["HK"], "started-at", ())
     assert result == {
         "status": "failed",
         "market": "HK",
