@@ -237,7 +237,16 @@ def test_create_snapshot_run_blocks_publish_when_coverage_below_threshold(monkey
     db.close()
 
 
-def test_create_snapshot_run_market_scope_ignores_other_markets(monkeypatch):
+@pytest.mark.parametrize(
+    ("us_name", "hk_name", "requested_market"),
+    [
+        pytest.param(None, None, "US", id="market_scope_ignores_other_markets"),
+        pytest.param("Apple Inc.", "Tencent", "us", id="normalizes_lowercase_market_before_scoping"),
+    ],
+)
+def test_create_snapshot_run_scopes_coverage_to_the_requested_market(
+    monkeypatch, us_name, hk_name, requested_market
+):
     TestingSessionLocal = _make_session()
     db = TestingSessionLocal()
     db.add_all(
@@ -246,6 +255,7 @@ def test_create_snapshot_run_market_scope_ignores_other_markets(monkeypatch):
                 symbol="AAPL",
                 market="US",
                 exchange="NASDAQ",
+                name=us_name,
                 is_active=True,
                 status=UNIVERSE_STATUS_ACTIVE,
                 status_reason="active",
@@ -254,6 +264,7 @@ def test_create_snapshot_run_market_scope_ignores_other_markets(monkeypatch):
                 symbol="0700.HK",
                 market="HK",
                 exchange="XHKG",
+                name=hk_name,
                 is_active=True,
                 status=UNIVERSE_STATUS_ACTIVE,
                 status_reason="active",
@@ -281,7 +292,7 @@ def test_create_snapshot_run_market_scope_ignores_other_markets(monkeypatch):
     result = service.create_snapshot_run(
         db,
         run_mode="publish",
-        market="US",
+        market=requested_market,
         publish=True,
     )
 
@@ -367,73 +378,22 @@ def test_create_snapshot_run_does_not_backfill_weekly_seed_cache_in_generic_path
     db.close()
 
 
-def test_create_snapshot_run_normalizes_lowercase_market_before_scoping(monkeypatch):
+@pytest.mark.parametrize(
+    ("market", "exchange", "code_width", "suffix"),
+    [
+        pytest.param("HK", "XHKG", "04d", ".HK", id="HK"),
+        pytest.param("KR", "KOSPI", "06d", ".KS", id="KR"),
+    ],
+)
+def test_create_snapshot_run_uses_market_specific_thresholds(monkeypatch, market, exchange, code_width, suffix):
     TestingSessionLocal = _make_session()
     db = TestingSessionLocal()
     db.add_all(
         [
             StockUniverse(
-                symbol="AAPL",
-                market="US",
-                exchange="NASDAQ",
-                name="Apple Inc.",
-                is_active=True,
-                status=UNIVERSE_STATUS_ACTIVE,
-                status_reason="active",
-            ),
-            StockUniverse(
-                symbol="0700.HK",
-                market="HK",
-                exchange="XHKG",
-                name="Tencent",
-                is_active=True,
-                status=UNIVERSE_STATUS_ACTIVE,
-                status_reason="active",
-            ),
-        ]
-    )
-    db.commit()
-
-    service = _make_provider_snapshot_service()
-    monkeypatch.setattr(
-        service,
-        "_build_snapshot_rows",
-        lambda exchange_filter=None, **kwargs: {
-            "AAPL": {
-                "exchange": "NASDAQ",
-                "row_hash": "hash-aapl",
-                "normalized_payload": {"symbol": "AAPL", "exchange": "NASDAQ"},
-                "raw_payload": {"overview": {"Ticker": "AAPL"}},
-            }
-        },
-    )
-    monkeypatch.setattr(settings, "provider_snapshot_min_active_coverage_us", 0.98)
-    monkeypatch.setattr(settings, "provider_snapshot_max_missing_ratio_us", 0.005)
-
-    result = service.create_snapshot_run(
-        db,
-        run_mode="publish",
-        market="us",
-        publish=True,
-    )
-
-    assert result["published"] is True
-    assert result["coverage"]["active_symbols"] == 1
-    assert result["coverage"]["covered_active_symbols"] == 1
-    assert result["coverage"]["missing_active_symbols"] == 0
-    assert result["coverage_thresholds"]["market"] == "US"
-    db.close()
-
-
-def test_create_snapshot_run_uses_market_specific_thresholds_for_hk(monkeypatch):
-    TestingSessionLocal = _make_session()
-    db = TestingSessionLocal()
-    db.add_all(
-        [
-            StockUniverse(
-                symbol=f"{code:04d}.HK",
-                market="HK",
-                exchange="XHKG",
+                symbol=f"{code:{code_width}}{suffix}",
+                market=market,
+                exchange=exchange,
                 is_active=True,
                 status=UNIVERSE_STATUS_ACTIVE,
                 status_reason="active",
@@ -448,11 +408,11 @@ def test_create_snapshot_run_uses_market_specific_thresholds_for_hk(monkeypatch)
         service,
         "_build_snapshot_rows",
         lambda exchange_filter=None, **kwargs: {
-            f"{code:04d}.HK": {
-                "exchange": "XHKG",
-                "row_hash": f"hash-{code:04d}",
-                "normalized_payload": {"symbol": f"{code:04d}.HK", "exchange": "XHKG"},
-                "raw_payload": {"overview": {"Ticker": f"{code:04d}.HK"}},
+            f"{code:{code_width}}{suffix}": {
+                "exchange": exchange,
+                "row_hash": f"hash-{code:{code_width}}",
+                "normalized_payload": {"symbol": f"{code:{code_width}}{suffix}", "exchange": exchange},
+                "raw_payload": {"overview": {"Ticker": f"{code:{code_width}}{suffix}"}},
             }
             for code in range(1, 8)
         },
@@ -461,15 +421,15 @@ def test_create_snapshot_run_uses_market_specific_thresholds_for_hk(monkeypatch)
     result = service.create_snapshot_run(
         db,
         run_mode="publish",
-        snapshot_key=ProviderSnapshotService.snapshot_key_for_market("HK"),
-        market="HK",
+        snapshot_key=ProviderSnapshotService.snapshot_key_for_market(market),
+        market=market,
         publish=True,
     )
 
     assert result["published"] is True
     assert result["coverage"]["active_symbols"] == 10
     assert result["coverage"]["covered_active_symbols"] == 7
-    assert result["coverage_thresholds"]["market"] == "HK"
+    assert result["coverage_thresholds"]["market"] == market
     assert result["coverage_thresholds"]["active_coverage"] == pytest.approx(0.7)
     assert result["coverage_thresholds"]["missing_ratio"] == pytest.approx(0.3)
     db.close()
@@ -503,56 +463,6 @@ def test_coverage_gate_resolves_thresholds_for_every_weekly_reference_market():
         # the market's threshold — that's not the regression we're guarding.
         assert isinstance(ok, bool)
         assert isinstance(warnings, list)
-
-
-def test_create_snapshot_run_uses_market_specific_thresholds_for_kr(monkeypatch):
-    TestingSessionLocal = _make_session()
-    db = TestingSessionLocal()
-    db.add_all(
-        [
-            StockUniverse(
-                symbol=f"{code:06d}.KS",
-                market="KR",
-                exchange="KOSPI",
-                is_active=True,
-                status=UNIVERSE_STATUS_ACTIVE,
-                status_reason="active",
-            )
-            for code in range(1, 11)
-        ]
-    )
-    db.commit()
-
-    service = _make_provider_snapshot_service()
-    monkeypatch.setattr(
-        service,
-        "_build_snapshot_rows",
-        lambda exchange_filter=None, **kwargs: {
-            f"{code:06d}.KS": {
-                "exchange": "KOSPI",
-                "row_hash": f"hash-{code:06d}",
-                "normalized_payload": {"symbol": f"{code:06d}.KS", "exchange": "KOSPI"},
-                "raw_payload": {"overview": {"Ticker": f"{code:06d}.KS"}},
-            }
-            for code in range(1, 8)
-        },
-    )
-
-    result = service.create_snapshot_run(
-        db,
-        run_mode="publish",
-        snapshot_key=ProviderSnapshotService.snapshot_key_for_market("KR"),
-        market="KR",
-        publish=True,
-    )
-
-    assert result["published"] is True
-    assert result["coverage"]["active_symbols"] == 10
-    assert result["coverage"]["covered_active_symbols"] == 7
-    assert result["coverage_thresholds"]["market"] == "KR"
-    assert result["coverage_thresholds"]["active_coverage"] == pytest.approx(0.7)
-    assert result["coverage_thresholds"]["missing_ratio"] == pytest.approx(0.3)
-    db.close()
 
 
 def test_hydrate_published_snapshot_fetches_yahoo_only_fields_for_missing_scan_data():
