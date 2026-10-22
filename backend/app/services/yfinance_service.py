@@ -14,6 +14,7 @@ import logging
 from threading import RLock
 
 from .growth_cadence_service import compute_cadence_aware_growth
+from .percentage_units import as_percentage_points
 from .yahoo_earnings_calendar import (
     normalize_yahoo_earnings_dates,
     stamp_event_calendar_observation,
@@ -29,6 +30,7 @@ logger = logging.getLogger(__name__)
 class YFinanceService:
     """Service for fetching stock data using yfinance."""
     _fallback_lock = RLock()
+
     _fallback_rate_limiter: "RedisRateLimiter | None" = None
     _fallback_eps_rating_service: "EPSRatingService | None" = None
 
@@ -247,6 +249,8 @@ class YFinanceService:
                 "profit_margin": info.get("profitMargins"),
                 "operating_margin": info.get("operatingMargins"),
                 "roe": info.get("returnOnEquity"),
+                "beta": info.get("beta"),
+                "dividend_yield": as_percentage_points(info.get("dividendYield")),
                 "shares_outstanding": info.get("sharesOutstanding"),
                 "institutional_ownership": info.get("heldPercentInstitutions", 0) * 100 if info.get("heldPercentInstitutions") else None,
                 "description_yfinance": info.get("longBusinessSummary"),

@@ -23,6 +23,7 @@ from ..config import settings
 from ..domain.markets.cn_symbols import cn_price_symbol_for_native_provider
 from ..domain.providers.price_symbol_support import yahoo_price_no_data_error_for_symbol
 from .growth_cadence_service import compute_cadence_aware_growth
+from .percentage_units import as_percentage_points
 from .yahoo_earnings_calendar import (
     normalize_yahoo_earnings_dates,
     stamp_event_calendar_observation,
@@ -370,7 +371,10 @@ class BulkDataFetcher:
 
             # Dividend metrics
             'dividend_ttm': info.get('dividendRate'),
-            'dividend_yield': self._convert_to_percentage(info.get('dividendYield')),
+            # Already in percentage points (KO 2.27 -> 2.27 %), unlike the
+            # decimal fields above. The x100 here made every yield 100x too high;
+            # as_percentage_points also validates the raw provider value.
+            'dividend_yield': as_percentage_points(info.get('dividendYield')),
             'payout_ratio': self._convert_to_percentage(info.get('payoutRatio')),
 
             # Financial health
