@@ -437,7 +437,7 @@
       "vcp_num_bases": 3,
       "volume": 26000000,
       "volume_breakthrough_rating": "Strong Buy",
-      "volume_surge": true
+      "volume_surge": 2.4
     },
     {
       "action_state": "WATCH",
@@ -485,7 +485,7 @@
       "vcp_num_bases": null,
       "volume": 8500000,
       "volume_breakthrough_rating": "Pass",
-      "volume_surge": false
+      "volume_surge": 1.2
     },
     {
       "action_state": "WATCH",
@@ -533,7 +533,7 @@
       "vcp_num_bases": null,
       "volume": 13000000,
       "volume_breakthrough_rating": "Pass",
-      "volume_surge": false
+      "volume_surge": 1.2
     },
     {
       "action_state": "WATCH",
@@ -581,7 +581,7 @@
       "vcp_num_bases": null,
       "volume": 14000000,
       "volume_breakthrough_rating": "Pass",
-      "volume_surge": false
+      "volume_surge": 1.2
     },
     {
       "action_state": "WATCH",
@@ -629,7 +629,7 @@
       "vcp_num_bases": null,
       "volume": 5500000,
       "volume_breakthrough_rating": "Pass",
-      "volume_surge": false
+      "volume_surge": 1.2
     }
   ]
 }

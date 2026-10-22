@@ -176,8 +176,8 @@ def test_candidate_record_projects_volume_surge(service):
     high_volume = _candidate_record(service, 2, "NVDA")
     low_volume = _candidate_record(service, 2, "SNOW")
 
-    assert high_volume["volume_surge"] is True
-    assert low_volume["volume_surge"] is False
+    assert high_volume["volume_surge"] == 2.4
+    assert low_volume["volume_surge"] == 1.2
 
 
 def test_explain_symbol_full_surfaces_the_facts_on_the_result(service):

@@ -87,7 +87,7 @@
       "vcp_num_bases": 3,
       "volume": 26000000,
       "volume_breakthrough_rating": "Strong Buy",
-      "volume_surge": true
+      "volume_surge": 2.4
     }
   ],
   "missing_symbols": [
@@ -150,7 +150,7 @@
       "vcp_num_bases": 3,
       "volume": 26000000,
       "volume_breakthrough_rating": "Strong Buy",
-      "volume_surge": true
+      "volume_surge": 2.4
     }
   ],
   "summary": "Watchlist Leaders has 2 symbols; 1 are present in published run 2 and 1 are missing.",

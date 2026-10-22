@@ -120,7 +120,7 @@ def test_map_feature_to_scan_result_projects_the_persisted_row_state():
             "is_scannable": True,
             "action_state": "WATCH",
             "opportunity_state": {"policy_version": "correction-survivors-v1"},
-            "volume_surge": True,
+            "volume_surge": 2.4,
         },
     )
 
@@ -132,7 +132,7 @@ def test_map_feature_to_scan_result_projects_the_persisted_row_state():
     assert item.extended_fields["opportunity_state"] == {
         "policy_version": "correction-survivors-v1"
     }
-    assert item.extended_fields["volume_surge"] is True
+    assert item.extended_fields["volume_surge"] == 2.4
 
 
 def test_map_feature_to_scan_result_preserves_insufficient_data_rating_from_details():

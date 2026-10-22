@@ -409,7 +409,9 @@ def _details(
             else vcp_detected
         ),
         "vcp_score": composite_score - 27.0,
-        "volume_surge": avg_dollar_volume >= 20_000_000,
+        # Production stores a rounded volume ratio (ScanResult.volume_surge is a
+        # Float, minervini_scanner rounds to 2 decimals), not a flag.
+        "volume_surge": 2.4 if avg_dollar_volume >= 20_000_000 else 1.2,
         "screeners_run": ["minervini", "canslim"],
         "screeners_passed": 2 if rating in {"Strong Buy", "Buy"} else 1,
         "screeners_total": 2,
