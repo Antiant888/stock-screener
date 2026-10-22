@@ -398,6 +398,19 @@ python -m app.scripts.backfill_market_rs \
   --activate
 ```
 
+On releases before #678, the command stops at once with "RuntimeServices are not initialized for this context" and changes nothing, because the script never started the runtime services. The release just before 0068 is one of them. Start the services first, as a Celery worker does, and call the script's `main()` with the same arguments:
+
+```bash
+python -c '
+import sys
+from app.wiring.bootstrap import initialize_process_runtime_services
+initialize_process_runtime_services()
+from app.scripts.backfill_market_rs import main
+sys.exit(main(sys.argv[1:]))
+' --market HK --through-date <YYYY-MM-DD> \
+  --static-staging-dir /var/tmp/stockscreen-rs-hk-<YYYY-MM-DD> --activate
+```
+
 Then upgrade again. If a listed Market is no longer enabled, delete its row from `market_rs_formula_pointers` instead.
 
 ## Static Price-Stage Checkpoints

@@ -17,6 +17,7 @@ from app.services.market_rs_rollout_executor import (
 from app.wiring.bootstrap import (
     get_market_rs_activation_executor,
     get_market_rs_rollout_service,
+    initialize_process_runtime_services,
 )
 
 
@@ -79,6 +80,9 @@ def execute_rollout(options: argparse.Namespace) -> dict[str, Any]:
 
 def main(argv: list[str] | None = None) -> int:
     options = _build_parser().parse_args(argv)
+    # Not prepare_runtime(): it migrates to head, and migration 0068 sends
+    # operators here precisely when that upgrade is refused.
+    initialize_process_runtime_services(session_factory=SessionLocal)
     try:
         payload = execute_rollout(options)
     except RolloutCommandFailed as exc:
