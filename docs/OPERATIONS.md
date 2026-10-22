@@ -398,7 +398,7 @@ python -m app.scripts.backfill_market_rs \
   --activate
 ```
 
-On releases before the fix, the command stops at once with "RuntimeServices are not initialized for this context" and changes nothing, because the script never started the runtime services. The release just before 0068 is one of them. Start the services first, as a Celery worker does, and call the script's `main()` with the same arguments:
+On releases before #678, the command stops at once with "RuntimeServices are not initialized for this context" and changes nothing, because the script never started the runtime services. The release just before 0068 is one of them. Start the services first, as a Celery worker does, and call the script's `main()` with the same arguments:
 
 ```bash
 python -c '
