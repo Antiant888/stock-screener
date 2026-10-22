@@ -13,9 +13,14 @@ from celery import chain
 from app.celery_app import celery_app
 from app.database import SessionLocal
 from app.domain.markets.catalog import get_market_catalog
+from app.domain.markets.registry import critical_price_symbols
 from app.domain.relative_strength import BALANCED_RS_FORMULA_VERSION
+from app.domain.relative_strength.price_validity import is_valid_adjusted_price
+from app.services.benchmark_registry_service import benchmark_registry
+from app.models.stock import StockPrice
 from app.services.market_calendar_service import MarketCalendarService
 from app.tasks.market_queues import (
+    SHARED_DATA_FETCH_QUEUE,
     data_fetch_queue_for_market,
     market_jobs_queue_for_market,
     normalize_market,
@@ -24,6 +29,15 @@ from app.tasks.market_queues import (
 logger = logging.getLogger(__name__)
 
 _MIN_DAILY_PRICE_REFRESH_SUCCESS_RATE = 0.90
+# A missing primary benchmark bar: one refetch of the candidates. When no
+# candidate has the bar after it, this many re-runs of the whole pipeline,
+# each this long after the guard. The message expires before Redis' default
+# one-hour visibility timeout can deliver it a second time.
+_MAX_BENCHMARK_RERUNS = 2
+_BENCHMARK_RERUN_COUNTDOWN_SECONDS = 45 * 60
+_BENCHMARK_RERUN_EXPIRES_SECONDS = 55 * 60
+_BENCHMARK_REFETCH_PERIOD = "1y"
+PRIMARY_BENCHMARK_MISSING = "primary_benchmark_missing"
 
 
 def _normalize_pipeline_market(market: str | None) -> str:
@@ -101,13 +115,167 @@ def _price_refresh_failed(result: Any) -> bool:
     return _result_failed(result)
 
 
+def _benchmark_bar_present(symbol: str, as_of: date) -> bool:
+    """A StockPrice row with the adjusted close Market RS reads."""
+    db = SessionLocal()
+    try:
+        adj_close = (
+            db.query(StockPrice.adj_close)
+            .filter(StockPrice.symbol == symbol, StockPrice.date == as_of)
+            .scalar()
+        )
+    finally:
+        db.close()
+    return is_valid_adjusted_price(adj_close)
+
+
+def _refetch_prices(market: str, symbols: tuple[str, ...]) -> None:
+    """One pass of the bulk price path for ``symbols``: the market's provider
+    plan (Yahoo quote repair where the plan has it), then the refresh
+    persistence."""
+    from app.services.bulk_data_fetcher import BulkDataFetcher
+    from app.wiring.bootstrap import get_price_cache
+
+    results = BulkDataFetcher().fetch_prices_in_batches(
+        list(symbols), period=_BENCHMARK_REFETCH_PERIOD, market=market
+    )
+    frames = {
+        symbol: payload["price_data"]
+        for symbol, payload in results.items()
+        if not payload.get("has_error") and payload.get("price_data") is not None
+    }
+    get_price_cache().store_refreshed_batch(
+        frames,
+        period=_BENCHMARK_REFETCH_PERIOD,
+        market_by_symbol={symbol: market for symbol in frames},
+    )
+
+
+@celery_app.task(
+    name="app.tasks.daily_market_pipeline_tasks.ensure_benchmark_prices",
+    queue=SHARED_DATA_FETCH_QUEUE,
+)
+def ensure_benchmark_prices(
+    result: dict | None = None, *, market: str, as_of_date: str
+) -> dict:
+    """Refetch the market's benchmark candidates once when the primary has no
+    bar for ``as_of_date``, and add what the guard decides on to the price
+    refresh result: ``present`` (the primary has the bar), ``fallback``
+    (another candidate has it, so Market RS runs on that one) or ``missing``.
+
+    The daily refresh already fetched these symbols; this pass only helps
+    when its batch failed or skipped the primary. The re-run the guard
+    queues on ``missing`` is the recovery for a close Yahoo publishes late.
+
+    Runs on the market's data_fetch queue so the refetch takes the provider
+    plan the daily refresh takes. A refresh that already failed passes
+    through untouched; its guard reports it.
+    """
+    if _price_refresh_failed(result):
+        return result
+    market_code = _normalize_pipeline_market(market)
+    candidates = critical_price_symbols(market_code)
+    primary = candidates[0]
+    as_of = date.fromisoformat(as_of_date)
+    report: dict[str, Any] = {
+        "status": "present",
+        "symbol": primary,
+        "as_of_date": as_of_date,
+        "refetched": False,
+    }
+    if not _benchmark_bar_present(primary, as_of):
+        report["refetched"] = True
+        try:
+            _refetch_prices(market_code, candidates)
+        except Exception as exc:
+            # The guard turns a missing bar into the re-run; a refetch that
+            # raised here would end the chain before it.
+            logger.warning("Benchmark refetch for %s failed", market_code, exc_info=True)
+            report["error"] = str(exc)
+        if not _benchmark_bar_present(primary, as_of):
+            fallbacks = benchmark_registry.get_candidate_symbols(market_code)[1:]
+            report["status"] = (
+                "fallback" if any(_benchmark_bar_present(s, as_of) for s in fallbacks) else "missing"
+            )
+    return {**result, "benchmark": report}
+
+
+def _schedule_benchmark_rerun(
+    market: str, *, as_of_date: str | None, rerun_attempt: int
+) -> dict:
+    """Queue one re-run of the market's pipeline for ``as_of_date``, at most
+    _MAX_BENCHMARK_RERUNS times.
+
+    The attempt number rides in the re-run's kwargs: the count needs no
+    store, cannot be left behind, and the next Beat dispatch starts at zero.
+    The re-run is an ordinary dispatch, so it takes the chain claim (and
+    skips while a pipeline still holds it) and checks the session again when
+    it fires. Never queued while the market is open.
+    """
+    if as_of_date is None:
+        return {"status": "skipped", "reason": "no_as_of_date"}
+    attempt = rerun_attempt + 1
+    if attempt > _MAX_BENCHMARK_RERUNS:
+        return {"status": "exhausted", "attempts": rerun_attempt}
+    try:
+        market_open = _preflight_calendar().is_market_open(market)
+    except Exception as exc:
+        logger.warning("Cannot tell whether %s is open; no re-run queued", market, exc_info=True)
+        return {"status": "skipped", "reason": f"calendar_unavailable: {exc}"}
+    if market_open:
+        return {"status": "skipped", "reason": "market_open"}
+    try:
+        task = queue_daily_market_pipeline.apply_async(
+            kwargs={"market": market, "rerun_attempt": attempt, "rerun_as_of_date": as_of_date},
+            countdown=_BENCHMARK_RERUN_COUNTDOWN_SECONDS,
+            expires=_BENCHMARK_RERUN_EXPIRES_SECONDS,
+            queue=market_jobs_queue_for_market(market),
+        )
+    except Exception as exc:
+        logger.warning("Could not queue the %s pipeline re-run", market, exc_info=True)
+        return {"status": "failed_to_queue", "reason": str(exc)}
+    return {
+        "status": "scheduled",
+        "attempt": attempt,
+        "countdown_seconds": _BENCHMARK_RERUN_COUNTDOWN_SECONDS,
+        "task_id": task.id,
+    }
+
+
 @celery_app.task(
     name="app.tasks.daily_market_pipeline_tasks.guard_price_refresh",
     queue="celery",
 )
-def guard_price_refresh(result: dict | None = None, *, market: str) -> dict:
+def guard_price_refresh(
+    result: dict | None = None,
+    *,
+    market: str,
+    as_of_date: str | None = None,
+    rerun_attempt: int = 0,
+) -> dict:
     if _price_refresh_failed(result):
         raise RuntimeError(f"Daily price refresh failed for {market}: {result}")
+    # Absent from a chain published before ensure_benchmark_prices existed.
+    # The chain always goes on: Market RS takes a fallback candidate itself,
+    # and without any it fails on its own guard, as before this stage. A
+    # stopped chain would lose the evening whenever the re-run then skipped.
+    benchmark = result.get("benchmark") or {}
+    if benchmark.get("status") == "fallback":
+        logger.warning(
+            "%s: %s has no %s bar for %s; Market RS runs on the fallback benchmark",
+            PRIMARY_BENCHMARK_MISSING, market, benchmark.get("symbol"), as_of_date,
+            extra={"market": market, "reason": PRIMARY_BENCHMARK_MISSING},
+        )
+    elif benchmark.get("status") == "missing":
+        rerun = _schedule_benchmark_rerun(
+            market, as_of_date=as_of_date, rerun_attempt=rerun_attempt
+        )
+        logger.error(
+            "%s: %s has no benchmark bar for %s after a refetch (rerun: %s)",
+            PRIMARY_BENCHMARK_MISSING, market, as_of_date, rerun,
+            extra={"market": market, "reason": PRIMARY_BENCHMARK_MISSING, "rerun": rerun},
+        )
+        return {"status": "ok", "market": market, "stage": "prices", "benchmark_rerun": rerun}
     return {"status": "ok", "market": market, "stage": "prices"}
 
 
@@ -233,7 +401,9 @@ def dispatch_options_after_snapshot(
     return payload
 
 
-def _build_daily_market_pipeline_signatures(market: str, trading_date: date) -> list:
+def _build_daily_market_pipeline_signatures(
+    market: str, trading_date: date, *, rerun_attempt: int = 0
+) -> list:
     from app.interfaces.tasks.feature_store_tasks import build_daily_snapshot
     from app.tasks.breadth_tasks import (
         calculate_daily_breadth_with_gapfill,
@@ -249,9 +419,12 @@ def _build_daily_market_pipeline_signatures(market: str, trading_date: date) -> 
         smart_refresh_cache.si(mode="delta", market=market_code).set(
             queue=data_fetch_queue_for_market(market_code)
         ),
-        guard_price_refresh.s(market=market_code).set(
-            queue=market_jobs_queue_for_market(market_code)
+        ensure_benchmark_prices.s(market=market_code, as_of_date=as_of_date).set(
+            queue=data_fetch_queue_for_market(market_code)
         ),
+        guard_price_refresh.s(
+            market=market_code, as_of_date=as_of_date, rerun_attempt=rerun_attempt
+        ).set(queue=market_jobs_queue_for_market(market_code)),
         calculate_market_rs_snapshot.si(
             market=market_code,
             calculation_date=as_of_date,
@@ -628,7 +801,16 @@ def _local_runtime_bootstrap_blocker(market: str) -> dict | None:
     name="app.tasks.daily_market_pipeline_tasks.queue_daily_market_pipeline",
     queue="celery",
 )
-def queue_daily_market_pipeline(self, market: str) -> dict:
+def queue_daily_market_pipeline(
+    self, market: str, rerun_attempt: int = 0, rerun_as_of_date: str | None = None
+) -> dict:
+    """Dispatch the market's daily chain for its last completed session.
+
+    A re-run (``rerun_attempt`` > 0, queued by guard_price_refresh for
+    ``rerun_as_of_date``) runs only while that is still the last completed
+    session and the market is closed; otherwise it skips, and the next Beat
+    dispatch covers the newer session.
+    """
     from app.services.runtime_preferences_service import is_market_enabled_now
 
     market_code = _normalize_pipeline_market(market)
@@ -657,7 +839,7 @@ def queue_daily_market_pipeline(self, market: str) -> dict:
 
     calendar = MarketCalendarService()
     today = calendar.market_now(market_code).date()
-    if not calendar.is_trading_day(market_code, today):
+    if not rerun_attempt and not calendar.is_trading_day(market_code, today):
         return {
             "status": "skipped",
             "reason": "not_trading_day",
@@ -667,7 +849,27 @@ def queue_daily_market_pipeline(self, market: str) -> dict:
         }
 
     trading_day = calendar.last_completed_trading_day(market_code)
-    signatures = _build_daily_market_pipeline_signatures(market_code, trading_day)
+    if rerun_attempt:
+        if trading_day.isoformat() != rerun_as_of_date:
+            return {
+                "status": "skipped",
+                "reason": "rerun_session_advanced",
+                "market": market_code,
+                "as_of_date": trading_day.isoformat(),
+                "rerun_as_of_date": rerun_as_of_date,
+                "timestamp": datetime.now().isoformat(),
+            }
+        if calendar.is_market_open(market_code):
+            return {
+                "status": "skipped",
+                "reason": "market_open",
+                "market": market_code,
+                "as_of_date": trading_day.isoformat(),
+                "timestamp": datetime.now().isoformat(),
+            }
+    signatures = _build_daily_market_pipeline_signatures(
+        market_code, trading_day, rerun_attempt=rerun_attempt
+    )
     token = uuid4().hex
     # Built before claiming, so nothing between the claim and the publish's
     # try can raise and leak the claim.
