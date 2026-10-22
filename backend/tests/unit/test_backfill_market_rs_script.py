@@ -187,3 +187,25 @@ def test_executor_failure_is_exposed_as_command_failure(monkeypatch, tmp_path):
         module.execute_rollout(_options(tmp_path, activate=True))
 
     db.close.assert_called_once_with()
+
+
+def test_main_initializes_runtime_services_before_running(monkeypatch):
+    from app.scripts import backfill_market_rs as module
+
+    calls = []
+    monkeypatch.setattr(
+        module,
+        "initialize_process_runtime_services",
+        lambda **kwargs: calls.append(("init", kwargs)),
+    )
+    monkeypatch.setattr(
+        module,
+        "execute_rollout",
+        lambda options: calls.append(("run", options.market)) or {},
+    )
+
+    assert module.main(["--market", "KR", "--through-date", "2026-10-21"]) == 0
+    assert calls == [
+        ("init", {"session_factory": module.SessionLocal}),
+        ("run", "KR"),
+    ]
