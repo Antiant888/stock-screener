@@ -118,8 +118,8 @@ function UserWatchlistManager({ open, onClose, onUpdate }) {
 
   const addItemMutation = useMutation({
     mutationFn: ({ watchlistId, data }) => addItem(watchlistId, data),
-    onSuccess: () => {
-      invalidateWatchlistItems(queryClient, selectedWatchlistId);
+    onSuccess: (_, { watchlistId }) => {
+      invalidateWatchlistItems(queryClient, watchlistId);
       setNewSymbol('');
       setFeedback(null);
       onUpdate?.();
@@ -128,9 +128,9 @@ function UserWatchlistManager({ open, onClose, onUpdate }) {
   });
 
   const removeItemMutation = useMutation({
-    mutationFn: (id) => removeItem(id),
-    onSuccess: () => {
-      invalidateWatchlistItems(queryClient, selectedWatchlistId);
+    mutationFn: ({ itemId }) => removeItem(itemId),
+    onSuccess: (_, { watchlistId }) => {
+      invalidateWatchlistItems(queryClient, watchlistId);
       setFeedback(null);
       onUpdate?.();
     },
@@ -147,8 +147,8 @@ function UserWatchlistManager({ open, onClose, onUpdate }) {
 
   const reorderItemsMutation = useMutation({
     mutationFn: ({ watchlistId, itemIds }) => reorderItems(watchlistId, itemIds),
-    onSuccess: () => {
-      invalidateWatchlistItems(queryClient, selectedWatchlistId);
+    onSuccess: (_, { watchlistId }) => {
+      invalidateWatchlistItems(queryClient, watchlistId);
       onUpdate?.();
     },
   });
@@ -210,7 +210,7 @@ function UserWatchlistManager({ open, onClose, onUpdate }) {
   };
 
   const handleRemoveItem = (itemId) => {
-    removeItemMutation.mutate(itemId);
+    removeItemMutation.mutate({ itemId, watchlistId: selectedWatchlistId });
   };
 
   const handleOpenImportDialog = () => {
@@ -459,6 +459,7 @@ function UserWatchlistManager({ open, onClose, onUpdate }) {
                                   <ListItemSecondaryAction>
                                     <IconButton
                                       size="small"
+                                      aria-label={`Remove ${item.symbol}`}
                                       onClick={() => handleRemoveItem(item.id)}
                                       sx={{ opacity: 0.5, '&:hover': { opacity: 1 } }}
                                     >

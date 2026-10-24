@@ -63,10 +63,10 @@ function AssistantWatchlistDialog({ open, symbols, onClose }) {
   });
 
   const addMutation = useMutation({
-    mutationFn: () => bulkAddItems(Number(selectedWatchlistId), previewQuery.data?.addable_symbols || []),
-    onSuccess: () => {
+    mutationFn: ({ watchlistId, addableSymbols }) => bulkAddItems(watchlistId, addableSymbols),
+    onSuccess: (_, { watchlistId }) => {
       queryClient.invalidateQueries({ queryKey: ['userWatchlists'] });
-      invalidateWatchlistItems(queryClient, Number(selectedWatchlistId));
+      invalidateWatchlistItems(queryClient, watchlistId);
       onClose();
     },
   });
@@ -154,7 +154,10 @@ function AssistantWatchlistDialog({ open, symbols, onClose }) {
         <Button onClick={onClose}>Cancel</Button>
         <Button
           variant="contained"
-          onClick={() => addMutation.mutate()}
+          onClick={() => addMutation.mutate({
+            watchlistId: Number(selectedWatchlistId),
+            addableSymbols: preview.addable_symbols,
+          })}
           disabled={!canConfirm}
         >
           {addMutation.isPending ? 'Adding...' : 'Confirm add'}

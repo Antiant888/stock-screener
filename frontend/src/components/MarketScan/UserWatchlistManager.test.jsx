@@ -193,3 +193,66 @@ describe('UserWatchlistManager import flow', () => {
     expect(api.importItems).not.toHaveBeenCalled();
   }, 20000);
 });
+
+describe('UserWatchlistManager item mutations', () => {
+  const deferred = () => {
+    let resolve;
+    const promise = new Promise((done) => { resolve = done; });
+    return { promise, resolve };
+  };
+
+  beforeEach(() => {
+    Object.values(api).forEach((mockFn) => mockFn.mockReset());
+    api.getWatchlists.mockResolvedValue({
+      watchlists: [{ id: 7, name: 'Leaders' }, { id: 8, name: 'Laggards' }],
+      total: 2,
+    });
+    api.getWatchlistData.mockImplementation(async (id) => ({
+      id,
+      name: id === 7 ? 'Leaders' : 'Laggards',
+      items: id === 7 ? [{ id: 70, symbol: 'AAPL', position: 0 }] : [],
+      price_change_bounds: {},
+    }));
+  });
+
+  const renderWithSymbolCaches = () => {
+    const { queryClient } = renderWithProviders(
+      <UserWatchlistManager open={true} onClose={vi.fn()} onUpdate={vi.fn()} />
+    );
+    queryClient.setQueryData(['userWatchlistSymbols', 7], { symbols: ['AAPL'] });
+    queryClient.setQueryData(['userWatchlistSymbols', 8], { symbols: [] });
+    const invalidated = (id) => queryClient.getQueryState(['userWatchlistSymbols', id]).isInvalidated;
+    return invalidated;
+  };
+
+  it('refreshes the watchlist an add targeted after the selection moves on', async () => {
+    const add = deferred();
+    api.addItem.mockReturnValue(add.promise);
+    const invalidated = renderWithSymbolCaches();
+
+    fireEvent.click(await screen.findByText('Leaders'));
+    fireEvent.change(screen.getByPlaceholderText('Add symbol (e.g., NVDA)'), { target: { value: 'nvda' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }));
+    await waitFor(() => expect(api.addItem).toHaveBeenCalledWith(7, { symbol: 'NVDA' }));
+    fireEvent.click(screen.getByText('Laggards'));
+    add.resolve({ id: 71, symbol: 'NVDA' });
+
+    await waitFor(() => expect(invalidated(7)).toBe(true));
+    expect(invalidated(8)).toBe(false);
+  }, 20000);
+
+  it('refreshes the watchlist a removal targeted after the selection moves on', async () => {
+    const remove = deferred();
+    api.removeItem.mockReturnValue(remove.promise);
+    const invalidated = renderWithSymbolCaches();
+
+    fireEvent.click(await screen.findByText('Leaders'));
+    fireEvent.click(await screen.findByRole('button', { name: 'Remove AAPL' }));
+    await waitFor(() => expect(api.removeItem).toHaveBeenCalledWith(70));
+    fireEvent.click(screen.getByText('Laggards'));
+    remove.resolve({ status: 'deleted' });
+
+    await waitFor(() => expect(invalidated(7)).toBe(true));
+    expect(invalidated(8)).toBe(false);
+  }, 20000);
+});
