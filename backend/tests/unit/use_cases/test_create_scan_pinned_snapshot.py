@@ -21,8 +21,6 @@ from tests.unit.use_cases.conftest import (
     FakeTaskDispatcher,
     FakeUnitOfWork,
     FakeUniverseRepository,
-    kept_scan_ids,
-    sql_scans_with_history,
 )
 
 SESSION = date(2026, 10, 2)
@@ -531,16 +529,3 @@ class TestCodexRound2:
             _use_case().execute(uow, _cmd(data_mode="last_published"))
 
         assert exc.value.to_dict()["reason"] == "source_market_mismatch"
-
-
-
-def test_instant_custom_scan_prunes_its_universe_key_to_the_retention_count():
-    uow, _ = _world(["AAPL"])
-    uow.scans = sql_scans_with_history("custom:abc")
-
-    result = _use_case().execute(
-        uow, _cmd(universe_type="custom", universe_def="custom", universe_key="custom:abc")
-    )
-
-    assert result.status == "completed"
-    assert kept_scan_ids(uow.scans) == [result.scan_id, "old-3", "old-2", "other-key"]

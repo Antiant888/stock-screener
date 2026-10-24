@@ -11,7 +11,6 @@ from sqlalchemy.orm import Session
 from app.domain.scanning.errors import DuplicateIdempotencyKey, SingleActiveScanViolation
 from app.domain.scanning.ports import ScanRepository
 from app.models.scan_result import Scan
-from app.services.scan_execution import cleanup_old_scans
 
 
 def _is_single_active_scan_integrity_error(exc: IntegrityError) -> bool:
@@ -121,6 +120,3 @@ class SqlScanRepository(ScanRepository):
         self._session.delete(scan)
         self._session.flush()
         return True
-
-    def prune_history(self, universe_key: str) -> None:
-        cleanup_old_scans(self._session, universe_key)

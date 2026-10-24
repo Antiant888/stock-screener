@@ -20,8 +20,6 @@ from tests.unit.use_cases.conftest import (
     FakeTaskDispatcher,
     FakeUnitOfWork,
     FakeUniverseRepository,
-    kept_scan_ids,
-    sql_scans_with_history,
 )
 
 # ── Helpers ──────────────────────────────────────────────────────────────
@@ -727,41 +725,6 @@ class TestFeatureRunBinding:
         assert scan.task_id is None
         assert scan.passed_stocks == 42
         assert len(dispatcher.dispatched) == 0
-
-    def test_exact_match_prunes_its_universe_key_to_the_retention_count(self):
-        from datetime import date
-
-        from app.domain.feature_store.models import RunStats, RunType
-        from app.domain.scanning.signature import (
-            build_scan_signature_payload,
-            hash_scan_signature,
-            hash_universe_symbols,
-        )
-
-        feature_runs = FakeFeatureRunRepository()
-        signature = build_scan_signature_payload(
-            universe_type="all", screeners=["minervini"], composite_method="weighted_average", criteria=None,
-        )
-        run = feature_runs.start_run(
-            as_of_date=date(2026, 2, 18),
-            run_type=RunType.DAILY_SNAPSHOT,
-            universe_hash=hash_universe_symbols(["AAPL"]),
-            input_hash=hash_scan_signature(signature),
-        )
-        feature_runs.mark_completed(run.id, stats=RunStats(
-            total_symbols=1, processed_symbols=1, failed_symbols=0, duration_seconds=1.0, passed_symbols=1,
-        ))
-        feature_runs.publish_atomically(run.id)
-        uow = FakeUnitOfWork(
-            scans=sql_scans_with_history("all"),
-            universe=FakeUniverseRepository(["AAPL"]),
-            feature_runs=feature_runs,
-        )
-
-        result = CreateScanUseCase(dispatcher=FakeTaskDispatcher()).execute(uow, _make_command())
-
-        assert result.feature_run_id == run.id
-        assert kept_scan_ids(uow.scans) == [result.scan_id, "old-3", "old-2", "other-key"]
 
     def test_non_matching_published_run_leaves_feature_run_id_none(self):
         from datetime import date

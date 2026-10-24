@@ -104,11 +104,6 @@ class ScanRepository(abc.ABC):
         """Delete a scan by scan_id. Returns True if deleted, False if not found."""
         ...
 
-    @abc.abstractmethod
-    def prune_history(self, universe_key: str) -> None:
-        """Apply the post-scan retention to one universe key's scans and commit."""
-        ...
-
 
 class ScanResultRepository(abc.ABC):
     """Persist and retrieve individual scan results."""

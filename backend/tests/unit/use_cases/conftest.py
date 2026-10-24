@@ -184,9 +184,6 @@ class FakeScanRepository(ScanRepository):
             return True
         return False
 
-    def prune_history(self, universe_key: str) -> None:
-        """Retention is SQL behavior; use-case tests that need it use SqlScanRepository."""
-
 
 class FakeScanResultRepository(ScanResultRepository):
     """Configurable in-memory scan result repository.
@@ -1267,39 +1264,6 @@ def make_domain_item(
 def setup_scan(uow: FakeUnitOfWork, scan_id: str = "scan-123") -> None:
     """Pre-populate a scan record so the use case doesn't raise NotFound."""
     uow.scans.create(scan_id=scan_id, status="completed")
-
-
-def sql_scans_with_history(universe_key: str):
-    """SqlScanRepository holding three completed scans of ``universe_key``
-    (``old-1`` .. ``old-3``, oldest first) and one of another key (``other-key``)."""
-    from sqlalchemy import create_engine
-    from sqlalchemy.orm import sessionmaker
-
-    from app.database import Base
-    from app.infra.db.repositories.scan_repo import SqlScanRepository
-    from app.models.scan_result import Scan
-
-    engine = create_engine("sqlite://")
-    Base.metadata.create_all(engine)
-    db = sessionmaker(bind=engine)()
-    for scan_id, key, day in (
-        ("other-key", "other:key", 1), ("old-1", universe_key, 2),
-        ("old-2", universe_key, 3), ("old-3", universe_key, 4),
-    ):
-        db.add(Scan(
-            scan_id=scan_id, status="completed", universe_key=key,
-            started_at=datetime(2020, 1, day), completed_at=datetime(2020, 1, day, 0, 5),
-        ))
-    db.commit()
-    return SqlScanRepository(db)
-
-
-def kept_scan_ids(scans) -> list[str]:
-    """Scan ids left in a ``sql_scans_with_history`` database, newest first."""
-    from app.models.scan_result import Scan
-
-    rows = scans._session.query(Scan.scan_id).order_by(Scan.completed_at.desc()).all()
-    return [scan_id for (scan_id,) in rows]
 
 
 # ---------------------------------------------------------------------------
