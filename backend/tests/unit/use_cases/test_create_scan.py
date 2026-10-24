@@ -158,6 +158,20 @@ class TestCreateScanUseCase:
 
         assert len(dispatcher.dispatched) == 0
 
+    def test_custom_universe_with_no_active_symbol_says_so(self):
+        uow = FakeUnitOfWork(universe=FakeUniverseRepository([], dropped_symbols=("ZZZZ", "QQQQ")))
+        uc = CreateScanUseCase(dispatcher=FakeTaskDispatcher())
+
+        with pytest.raises(ValidationError) as exc_info:
+            uc.execute(uow, _make_command(
+                universe_def={"type": "custom", "symbols": ["ZZZZ", "QQQQ"]},
+                universe_label="Custom (2 symbols)",
+                universe_key="custom:abc",
+                universe_type="custom",
+            ))
+
+        assert str(exc_info.value) == "None of the requested symbols are in the active stock universe."
+
     def test_rejects_second_active_scan(self):
         uow = _make_uow(["AAPL", "MSFT"])
         uow.scans.create(

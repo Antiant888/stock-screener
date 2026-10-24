@@ -506,6 +506,10 @@ class CreateScanUseCase:
             if resolved is None:
                 resolved = uow.universe.resolve(cmd.universe_def)
             symbols = resolved.symbols
+            if not symbols and cmd.universe_type == UniverseType.CUSTOM.value:
+                raise ValidationError(
+                    "None of the requested symbols are in the active stock universe."
+                )
             if not symbols:
                 raise ValidationError(
                     f"No symbols found for universe '{cmd.universe_label}'. "
