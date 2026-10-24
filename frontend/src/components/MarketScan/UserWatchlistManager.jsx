@@ -171,6 +171,8 @@ function UserWatchlistManager({ open, onClose, onUpdate }) {
       setFeedback({ severity: 'success', message: parts.join(', ') });
       onUpdate?.();
     },
+    // The import dialog shows the error while open; this keeps it once closed.
+    onError: (err) => setFeedback({ severity: 'error', message: getErrorMessage(err, 'Failed to import symbols') }),
   });
 
   const handleCreate = () => {

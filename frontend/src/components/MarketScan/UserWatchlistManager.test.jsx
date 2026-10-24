@@ -185,6 +185,27 @@ describe('UserWatchlistManager import flow', () => {
     expect(within(reopened).queryByRole('alert')).toBeNull();
   }, 20000);
 
+  it('keeps an import error visible after the import dialog is closed while it was pending', async () => {
+    let reject;
+    api.importItems.mockReturnValue(new Promise((_, fail) => { reject = fail; }));
+    renderWithProviders(
+      <UserWatchlistManager open={true} onClose={vi.fn()} onUpdate={vi.fn()} />
+    );
+    const importDialog = await openImportDialog();
+
+    fireEvent.change(
+      within(importDialog).getByRole('textbox', { name: 'Symbols to import' }),
+      { target: { value: 'NVDA' } },
+    );
+    fireEvent.click(within(importDialog).getByRole('button', { name: 'Import' }));
+    await waitFor(() => expect(api.importItems).toHaveBeenCalled());
+    fireEvent.click(within(importDialog).getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Import Symbols' })).toBeNull());
+    reject({ response: { status: 400, data: { detail: 'Too many symbols.' } } });
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('Too many symbols.');
+  }, 20000);
+
   it('blocks pasted text over the import limit before sending it', async () => {
     renderWithProviders(
       <UserWatchlistManager open={true} onClose={vi.fn()} onUpdate={vi.fn()} />
