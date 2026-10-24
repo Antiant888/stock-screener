@@ -184,6 +184,10 @@ class CreateScanCommand:
     # never computes (see ``published_snapshot``).
     data_mode: str = DATA_MODE_CURRENT
 
+    # Caller-owned entries stored in the scan's metadata_json beside the
+    # backend's own keys, which win on a clash.
+    metadata: dict | None = None
+
 
 # ── Result (output) ──────────────────────────────────────────────────────
 
@@ -652,6 +656,8 @@ class CreateScanUseCase:
                     expected_session=session,
                 )
                 scan_metadata = {**(scan_metadata or {}), "published_source": published_source}
+            if cmd.metadata:
+                scan_metadata = {**cmd.metadata, **(scan_metadata or {})}
 
             completed_instantly = (
                 instant_match is not None
