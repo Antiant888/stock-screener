@@ -35,6 +35,7 @@ from app.domain.scanning.models import (
     SCAN_WARNING_TYPES,
     FreshnessDecision,
     FreshnessOmissionWarning,
+    ResolvedUniverse,
     ScanFreshnessPolicy,
     ScanWarning,
     SymbolsNotInUniverseWarning,
@@ -160,6 +161,9 @@ class CreateScanCommand:
     universe_exchange: str | None = None
     universe_index: str | None = None
     universe_symbols: list[str] | None = None
+    # Membership a caller already resolved (the API's market-refresh guard),
+    # so the scan uses the same active set instead of resolving again.
+    resolved_universe: ResolvedUniverse | None = None
 
     # Screener configuration
     screeners: list[str] = field(default_factory=lambda: ["minervini"])
@@ -498,7 +502,9 @@ class CreateScanUseCase:
                     self._raise_active_scan_conflict(active_scan)
 
             # ── Resolve universe symbols ─────────────────────────────
-            resolved = uow.universe.resolve(cmd.universe_def)
+            resolved = cmd.resolved_universe
+            if resolved is None:
+                resolved = uow.universe.resolve(cmd.universe_def)
             symbols = resolved.symbols
             if not symbols:
                 raise ValidationError(

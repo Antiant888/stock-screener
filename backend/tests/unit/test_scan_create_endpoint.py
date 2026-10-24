@@ -1005,3 +1005,39 @@ async def test_custom_scan_guard_keeps_inactive_symbols_the_scan_will_use(client
     assert response.json()["detail"]["code"] == "market_refresh_active"
     assert response.json()["detail"]["market"] == "HK"
     assert dispatcher.dispatched == []
+
+
+class _CountingUniverseRepository(SqlUniverseRepository):
+    def __init__(self, session):
+        super().__init__(session)
+        self.resolve_calls = 0
+
+    def resolve(self, universe_def):
+        self.resolve_calls += 1
+        return super().resolve(universe_def)
+
+
+@pytest.mark.asyncio
+async def test_custom_scan_resolves_its_universe_once_for_guard_and_scan(
+    client, universe_session, caplog
+):
+    universe = _CountingUniverseRepository(universe_session)
+    dispatcher = FakeTaskDispatcher()
+    app.dependency_overrides[get_uow] = lambda: FakeUnitOfWork(universe=universe)
+    app.dependency_overrides[get_create_scan_use_case] = lambda: CreateScanUseCase(dispatcher)
+    try:
+        with caplog.at_level("WARNING", logger="app.services.universe_resolver"):
+            response = await client.post(
+                "/api/v1/scans",
+                json={"universe_def": {"type": "custom", "symbols": ["NVDA", "ZZZZ", "0700.HK"]}},
+            )
+    finally:
+        app.dependency_overrides.pop(get_uow, None)
+        app.dependency_overrides.pop(get_create_scan_use_case, None)
+
+    assert response.status_code == 200
+    assert universe.resolve_calls == 1
+    assert [record.getMessage() for record in caplog.records if "Dropped" in record.getMessage()] == [
+        "Dropped 1 inactive or unknown symbols from custom universe: ZZZZ"
+    ]
+    assert dispatcher.dispatched[0][1] == ["NVDA", "0700.HK"]
