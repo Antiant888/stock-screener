@@ -86,7 +86,7 @@ def _scan_warnings_from_payloads(
 ) -> tuple[ScanWarning, ...]:
     warnings: list[ScanWarning] = []
     for payload in payloads or ():
-        if isinstance(payload, (FreshnessOmissionWarning, SymbolsNotInUniverseWarning)):
+        if isinstance(payload, tuple(SCAN_WARNING_TYPES.values())):
             warnings.append(payload)
         elif isinstance(payload, dict) and payload.get("code") in SCAN_WARNING_TYPES:
             try:

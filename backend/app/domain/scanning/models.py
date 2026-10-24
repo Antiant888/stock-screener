@@ -186,6 +186,7 @@ class SymbolsNotInUniverseWarning:
     dropped_count: int
 
     _MESSAGE_SAMPLE = 20
+    _STORED_SAMPLE = 200
 
     @classmethod
     def for_dropped(cls, dropped_symbols: tuple[str, ...]) -> "SymbolsNotInUniverseWarning":
@@ -199,7 +200,7 @@ class SymbolsNotInUniverseWarning:
                 f"Skipped {len(dropped_symbols)} {noun} not in the active "
                 f"stock universe: {sample}"
             ),
-            dropped_symbols=dropped_symbols,
+            dropped_symbols=dropped_symbols[: cls._STORED_SAMPLE],
             dropped_count=len(dropped_symbols),
         )
 

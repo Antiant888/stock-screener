@@ -907,8 +907,8 @@ def universe_session():
     )
     StockUniverse.__table__.create(engine)
     session = sessionmaker(bind=engine)()
-    for symbol in ("NVDA", "ANET", "0700.HK"):
-        session.add(StockUniverse(symbol=symbol, name=symbol, market="US", is_active=True))
+    for symbol, market in (("NVDA", "US"), ("ANET", "US"), ("0700.HK", "HK")):
+        session.add(StockUniverse(symbol=symbol, name=symbol, market=market, is_active=True))
     session.commit()
     yield session
     session.close()

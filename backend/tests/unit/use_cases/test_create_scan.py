@@ -586,6 +586,22 @@ class TestFreshnessChecker:
             }
         ]
 
+    def test_dropped_symbols_warning_stores_a_bounded_sample(self):
+        dropped = tuple(f"GONE{i:03d}" for i in range(250))
+        uow = FakeUnitOfWork(
+            universe=FakeUniverseRepository(["NVDA"], dropped_symbols=dropped)
+        )
+        uc = CreateScanUseCase(dispatcher=FakeTaskDispatcher())
+
+        result = uc.execute(
+            uow, _make_command(universe_type="custom", universe_key="custom:big")
+        )
+
+        stored = uow.scans.rows[0].warnings[0]
+        assert stored["dropped_count"] == 250
+        assert stored["dropped_symbols"] == [f"GONE{i:03d}" for i in range(200)]
+        assert result.warnings[0].dropped_count == 250
+
     def test_feature_run_hash_uses_filtered_symbols(self):
         from datetime import date
 
