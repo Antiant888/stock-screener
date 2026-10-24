@@ -23,7 +23,7 @@ from ...models.industry import IBDIndustryGroup
 from ...schemas.user_watchlist import (
     WatchlistCreate, WatchlistUpdate, WatchlistResponse,
     WatchlistItemCreate, WatchlistItemUpdate, WatchlistItemResponse,
-    WatchlistDataResponse, WatchlistListResponse,
+    WatchlistDataResponse, WatchlistListResponse, WatchlistSymbolsResponse,
     WatchlistMembershipResponse,
     WatchlistStockData, PriceChangeBounds,
     ReorderWatchlistsRequest, ReorderItemsRequest,
@@ -38,6 +38,7 @@ from ...services.watchlist_import_service import (
     split_import_results,
 )
 from ...services.watchlist_stewardship_service import WatchlistStewardshipService
+from ...services.watchlist_symbols import watchlist_symbols
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -184,6 +185,15 @@ def delete_watchlist(watchlist_id: int, db: Session = Depends(get_db)):
     db.delete(watchlist)
     db.commit()
     return {"status": "deleted", "watchlist_id": watchlist_id}
+
+
+@router.get("/{watchlist_id}/symbols", response_model=WatchlistSymbolsResponse)
+def get_watchlist_symbols(watchlist_id: int, db: Session = Depends(get_db)):
+    """Get a watchlist's symbols in display order, without market data."""
+    symbols = watchlist_symbols(db, watchlist_id)
+    if symbols is None:
+        raise HTTPException(status_code=404, detail="Watchlist not found")
+    return WatchlistSymbolsResponse(symbols=symbols)
 
 
 # ================= Watchlist Data (with sparklines and price changes) =================

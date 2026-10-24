@@ -118,6 +118,11 @@ class WatchlistDataResponse(BaseModel):
     price_change_bounds: Dict[str, PriceChangeBounds]
 
 
+class WatchlistSymbolsResponse(BaseModel):
+    """A watchlist's symbols in display order."""
+    symbols: List[str]
+
+
 class WatchlistListResponse(BaseModel):
     """List of watchlists for selector"""
     watchlists: List[WatchlistResponse]
