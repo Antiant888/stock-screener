@@ -41,7 +41,8 @@ _TRADINGVIEW_PREFIX_SUFFIXES = {
 # A ``###Section name`` cell runs to the next comma or newline. Dropping it
 # whole keeps a multi-word name such as ``###Top AI Picks`` from leaking AI.
 _TRADINGVIEW_SECTION_RE = re.compile(r"(?:^|(?<=[,\n]))[ \t]*###[^,\n]*")
-_TRADINGVIEW_SYMBOL_RE = re.compile(r"^[A-Z][A-Z0-9_]*:\S+$")
+# A slash marks a URL such as https://x, never a ticker.
+_TRADINGVIEW_SYMBOL_RE = re.compile(r"^[A-Z][A-Z0-9_]*:[^\s/]+$")
 
 
 @dataclass(frozen=True)
@@ -78,23 +79,14 @@ def parse_watchlist_import_tokens(
     if normalized_hint not in {"auto", "text", "csv"}:
         raise ValueError(f"Unsupported import format: {format_hint}")
 
-    text_tokens = _parse_text_symbols(_TRADINGVIEW_SECTION_RE.sub("", stripped))
-    # A TradingView export has only EXCHANGE:TICKER tokens, so it never takes
-    # the tabular path, which would keep just its first column.
-    tradingview_export = all(
-        _TRADINGVIEW_SYMBOL_RE.match(token.upper()) for token in text_tokens
-    )
-    if not tradingview_export and (
-        normalized_hint == "csv"
-        or (
-            normalized_hint == "auto"
-            and "\n" in stripped
-            and any(delimiter in stripped for delimiter in (",", "\t", ";"))
-        )
+    if normalized_hint == "csv" or (
+        normalized_hint == "auto"
+        and "\n" in stripped
+        and any(delimiter in stripped for delimiter in (",", "\t", ";"))
     ):
         raw_tokens = _parse_tabular_symbols(stripped)
     else:
-        raw_tokens = text_tokens
+        raw_tokens = _parse_text_symbols(_TRADINGVIEW_SECTION_RE.sub("", stripped))
     tokens = [_import_token(token.strip().upper()) for token in raw_tokens]
 
     deduped: list[ImportToken] = []
@@ -157,17 +149,26 @@ def _parse_tabular_symbols(content: str) -> list[str]:
                 symbols.append(candidate)
         return symbols
 
-    flattened_cells = [cell.strip() for row in rows for cell in row if cell.strip()]
-    if flattened_cells and all(_looks_like_symbol_token(cell) for cell in flattened_cells):
-        return flattened_cells
+    cells = [
+        cell.split()
+        for cell in re.split(r"[,;\t\n]", _TRADINGVIEW_SECTION_RE.sub("", content))
+    ]
+    if all(_is_symbol_cell(words) for words in cells if words):
+        return [word for words in cells for word in words]
 
     for row in rows:
-        if not row:
-            continue
-        candidate = row[0].strip()
-        if candidate:
-            symbols.append(candidate)
+        cells_after_sections = [cell.strip() for cell in row if not cell.strip().startswith("###")]
+        if cells_after_sections and cells_after_sections[0]:
+            symbols.append(cells_after_sections[0])
     return symbols
+
+
+def _is_symbol_cell(words: list[str]) -> bool:
+    # Several words make a symbol cell only when each is EXCHANGE:TICKER, so a
+    # name such as "NVIDIA Corp" keeps a header-less paste a table.
+    if all(_TRADINGVIEW_SYMBOL_RE.match(word.upper()) for word in words):
+        return True
+    return len(words) == 1 and _looks_like_symbol_token(words[0])
 
 
 def _parse_text_symbols(content: str) -> list[str]:

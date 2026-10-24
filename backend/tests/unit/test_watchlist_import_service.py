@@ -1,3 +1,5 @@
+import pytest
+
 from app.services.watchlist_import_service import (
     ImportToken,
     parse_watchlist_import_tokens,
@@ -205,11 +207,133 @@ def test_section_names_never_leak_from_a_mixed_paste():
     known = {"NVDA", "ANET", *_TRAP_TICKERS}
 
     assert _added("###Top AI Picks,NVDA,NASDAQ:ANET", known) == ["NVDA", "ANET"]
-    assert _added(
-        "###Top AI Picks,NVDA\n###ON Watch,NASDAQ:ANET", known, format_hint="text"
-    ) == ["NVDA", "ANET"]
+    assert _added("###Top AI Picks,NVDA\n###ON Watch,NASDAQ:ANET", known) == ["NVDA", "ANET"]
 
 
 def test_plain_dotted_class_share_also_tries_the_dashed_form():
     assert _texts_and_candidates("BRK.B") == [("BRK.B", ("BRK.B", "BRK-B"))]
     assert _added("BRK.B,BF.B", {"BRK-B", "BF.B"}) == ["BRK-B", "BF.B"]
+
+
+def test_multi_line_paste_mixing_prefixed_and_plain_cells_keeps_every_cell():
+    known = {"NVDA", "AMD", "ANET", "MSFT", "AAPL", "TSLA", *_TRAP_TICKERS}
+
+    assert _added("NASDAQ:NVDA,NASDAQ:AMD\nMSFT,AAPL", known) == ["NVDA", "AMD", "MSFT", "AAPL"]
+    assert _added("NASDAQ:NVDA,NASDAQ:AMD,NYSE:ANET\nMSFT", known) == ["NVDA", "AMD", "ANET", "MSFT"]
+    assert _added("NVDA,NASDAQ:AAPL\nMSFT,NASDAQ:TSLA", known) == ["NVDA", "AAPL", "MSFT", "TSLA"]
+
+
+def test_headerless_table_with_a_link_column_reads_only_the_first_column():
+    known = {"NVDA", "AAPL", *_TRAP_TICKERS}
+
+    assert _added("NVDA,USA,https://x\nAAPL,USA,https://y", known) == ["NVDA", "AAPL"]
+
+
+def test_headerless_table_with_names_drops_section_cells_before_the_first_column():
+    known = {"NVDA", "AMD", "CORP", "MICRO", *_TRAP_TICKERS}
+
+    assert _added(
+        "###Top AI Picks,NVDA,NVIDIA Corp\n###ON Watch,AMD,Advanced Micro", known
+    ) == ["NVDA", "AMD"]
+
+
+_UNIVERSE = {
+    "NVDA", "AMD", "ANET", "MSFT", "AAPL", "TSLA", "BRK-B", "BF.B", "247540.KQ",
+    "005930.KS", "0700.HK", "0005.HK", "9988.HK", "6758.T", "SPY", "AIR", "BP",
+    "MC", "DXY", "BTCUSDT", *_TRAP_TICKERS,
+}
+_ALREADY_IN_WATCHLIST = {"MSFT"}
+
+
+def _outcome_by_cell(content):
+    tokens = parse_watchlist_import_tokens(content, "auto")
+    added, existing, invalid = split_import_results(tokens, _UNIVERSE, _ALREADY_IN_WATCHLIST)
+    outcome = {}
+    for token in tokens:
+        if token.text in invalid:
+            outcome[token.text] = "invalid"
+        elif any(candidate in added for candidate in token.candidates):
+            outcome[token.text] = "added"
+        elif any(candidate in existing for candidate in token.candidates):
+            outcome[token.text] = "existing"
+        else:
+            outcome[token.text] = "lost"
+    return outcome
+
+
+@pytest.mark.parametrize(
+    ("content", "expected"),
+    [
+        (
+            "NASDAQ:NVDA,NASDAQ:AMD\nMSFT,AAPL",
+            {"NASDAQ:NVDA": "added", "NASDAQ:AMD": "added", "MSFT": "existing", "AAPL": "added"},
+        ),
+        (
+            "NASDAQ:NVDA,NASDAQ:AMD,NYSE:ANET\nMSFT",
+            {"NASDAQ:NVDA": "added", "NASDAQ:AMD": "added", "NYSE:ANET": "added", "MSFT": "existing"},
+        ),
+        (
+            "NVDA,NASDAQ:AAPL\nMSFT,NASDAQ:TSLA",
+            {"NVDA": "added", "NASDAQ:AAPL": "added", "MSFT": "existing", "NASDAQ:TSLA": "added"},
+        ),
+        ("###Top AI Picks,NVDA\n###ON Watch,NASDAQ:ANET", {"NVDA": "added", "NASDAQ:ANET": "added"}),
+        ("###Top AI Picks,NVDA,NASDAQ:ANET", {"NVDA": "added", "NASDAQ:ANET": "added"}),
+        ("###Top AI Picks,NASDAQ:NVDA,###ON Watch,NYSE:ANET", {"NASDAQ:NVDA": "added", "NYSE:ANET": "added"}),
+        ("###Top AI Picks\nNASDAQ:NVDA NYSE:ANET", {"NASDAQ:NVDA": "added", "NYSE:ANET": "added"}),
+        (
+            "###Leaders,NASDAQ:NVDA\r\n###Watch,HKEX:700\n",
+            {"NASDAQ:NVDA": "added", "HKEX:700": "added"},
+        ),
+        (
+            "NASDAQ:NVDA,NYSE:ANET\nHKEX:700,TSE:6758",
+            {"NASDAQ:NVDA": "added", "NYSE:ANET": "added", "HKEX:700": "added", "TSE:6758": "added"},
+        ),
+        ("symbol,notes\nNVDA,BUY:NOW\nMSFT,ON", {"NVDA": "added", "MSFT": "existing"}),
+        ("Symbol,Notes\nNVDA,PT:200\nMSFT,NOW\nAAPL,", {"NVDA": "added", "MSFT": "existing", "AAPL": "added"}),
+        ("symbol,notes\nNVDA,NYSE:ON", {"NVDA": "added"}),
+        ("Ticker,Country,Link\nNVDA,USA,https://x\nAAPL,USA,https://y", {"NVDA": "added", "AAPL": "added"}),
+        ("symbol,name\nNVDA,NVIDIA\nMSFT,Microsoft\n", {"NVDA": "added", "MSFT": "existing"}),
+        ("symbol\tname\nAAPL\tApple Inc.\nMSFT\tMicrosoft\n", {"AAPL": "added", "MSFT": "existing"}),
+        (
+            "NVDA AAPL MSFT\nNASDAQ:TSLA",
+            {"NVDA": "added", "AAPL": "added", "MSFT": "existing", "NASDAQ:TSLA": "added"},
+        ),
+        ("NVDA MSFT,NASDAQ:AAPL", {"NVDA": "added", "MSFT": "existing", "NASDAQ:AAPL": "added"}),
+        (
+            "NASDAQ:NVDA NYSE:BRK.B\nNASDAQ:AAPL",
+            {"NASDAQ:NVDA": "added", "NYSE:BRK.B": "added", "NASDAQ:AAPL": "added"},
+        ),
+        ("NASDAQ:NVDA;NYSE:ANET", {"NASDAQ:NVDA": "added", "NYSE:ANET": "added"}),
+        (
+            "NASDAQ:NVDA NYSE:BRK.B\tTVC:DXY",
+            {"NASDAQ:NVDA": "added", "NYSE:BRK.B": "added", "TVC:DXY": "invalid"},
+        ),
+        (
+            "EURONEXT:AIR,LSE:BP,EURONEXT:MC,TVC:DXY,BINANCE:BTCUSDT",
+            {
+                "EURONEXT:AIR": "invalid",
+                "LSE:BP": "invalid",
+                "EURONEXT:MC": "invalid",
+                "TVC:DXY": "invalid",
+                "BINANCE:BTCUSDT": "invalid",
+            },
+        ),
+        (
+            "KRX:247540,KRX:005930,NYSE:BRK.B,NYSE:BF.B,EURONEXT:AIR,NASDAQ:NVDA,NVDA",
+            {
+                "KRX:247540": "added",
+                "KRX:005930": "added",
+                "NYSE:BRK.B": "added",
+                "NYSE:BF.B": "added",
+                "EURONEXT:AIR": "invalid",
+                "NASDAQ:NVDA": "added",
+                "NVDA": "added",
+            },
+        ),
+        ("NVDA, msft\nAAPL\tNVDA\n\n", {"NVDA": "added", "MSFT": "existing", "AAPL": "added"}),
+        ("AAPL,MSFT\nNVDA", {"AAPL": "added", "MSFT": "existing", "NVDA": "added"}),
+        ("BRK.B,BF.B", {"BRK.B": "added", "BF.B": "added"}),
+    ],
+)
+def test_every_symbol_cell_is_imported_skipped_or_reported(content, expected):
+    assert _outcome_by_cell(content) == expected
