@@ -90,68 +90,6 @@ vi.mock('../api/userWatchlists', async (importOriginal) => ({
   getWatchlistSymbols: vi.fn(),
 }));
 
-const NVDA_ROW = { symbol: 'NVDA', company_name: 'NVIDIA', composite_score: 98, current_price: 900 };
-
-// A latest:<market> bootstrap whose backend-resolved default is ``scanId``.
-const marketBootstrap = (market, { scanId = `${market}-scan`, recentScans, results = [NVDA_ROW] } = {}) => ({
-  is_stale: false,
-  published_at: new Date().toISOString(),
-  payload: {
-    market,
-    universe_stats: { active: 1 },
-    recent_scans: recentScans ?? { scans: [{ scan_id: scanId, status: 'completed' }] },
-    selected_scan: { scan_id: scanId, status: 'completed' },
-    selected_scan_status: { status: 'completed' },
-    filter_options: { ibd_industries: [], gics_sectors: [], ratings: [] },
-    results_page: { scan_id: scanId, total: results.length, results },
-  },
-});
-
-// A latest:<market> bootstrap when no scan of the market's own qualifies.
-const noDefaultBootstrap = (market, recentScans) => ({
-  is_stale: false,
-  published_at: new Date().toISOString(),
-  payload: {
-    market,
-    universe_stats: { active: 1 },
-    recent_scans: recentScans,
-    selected_scan: null,
-    selected_scan_status: null,
-    filter_options: { ibd_industries: [], gics_sectors: [], ratings: [] },
-    results_page: { scan_id: '', total: 0, results: [] },
-  },
-});
-
-// A latest bootstrap naming ``scanId`` as the default. It carries no market
-// and no results page, so history and rows load from their live endpoints.
-const defaultScanBootstrap = (scanId) => ({
-  is_stale: false,
-  published_at: new Date().toISOString(),
-  payload: {
-    selected_scan: { scan_id: scanId, status: 'completed' },
-    filter_options: { ibd_industries: [], gics_sectors: [], ratings: [] },
-  },
-});
-
-// Serves ``market``'s latest variant (any market's when omitted) naming
-// ``scanId``; explicit scan variants stay unpublished.
-const serveDefaultScan = (scanId, market) => scanApi.getScanBootstrap.mockImplementation(
-  async (requestedScanId, requestedMarket) => {
-    if (requestedScanId || (market && requestedMarket !== market)) {
-      throw new Error('no snapshot');
-    }
-    return defaultScanBootstrap(scanId);
-  },
-);
-
-const watchlistScan = (scanId, status = 'completed') => ({
-  scan_id: scanId,
-  status,
-  passed_stocks: 1,
-  total_stocks: 1,
-  universe_def: { type: 'custom', symbols: ['AAPL'] },
-});
-
 beforeEach(() => {
   window.history.replaceState(null, '', '/scan');
   vi.clearAllMocks();
@@ -357,6 +295,24 @@ describe('ScanPage', () => {
   });
 
   describe('market-scoped scan bootstrap', () => {
+    const marketBootstrap = (market, { scanId = `${market}-scan`, recentScans } = {}) => ({
+      is_stale: false,
+      published_at: new Date().toISOString(),
+      payload: {
+        market,
+        universe_stats: { active: 1 },
+        recent_scans: recentScans ?? { scans: [{ scan_id: scanId, status: 'completed' }] },
+        selected_scan: { scan_id: scanId, status: 'completed' },
+        selected_scan_status: { status: 'completed' },
+        filter_options: { ibd_industries: [], gics_sectors: [], ratings: [] },
+        results_page: {
+          scan_id: scanId,
+          total: 1,
+          results: [{ symbol: 'NVDA', company_name: 'NVIDIA', composite_score: 98, current_price: 900 }],
+        },
+      },
+    });
+
     beforeEach(() => {
       runtimeState.runtimeReady = true;
     });
@@ -386,8 +342,7 @@ describe('ScanPage', () => {
         scanId
           // Explicit variants never go stale, so their lists can be old.
           ? marketBootstrap('US', { scanId, recentScans: { scans: [{ scan_id: 'us-old', status: 'completed' }] } })
-          // Awaiting republish, it still names the previous default.
-          : { ...marketBootstrap('US', { scanId: 'us-old' }), is_stale: true }
+          : { ...marketBootstrap('US'), is_stale: true }
       ));
 
       const { queryClient } = renderWithProviders(<ScanPage />);
@@ -399,106 +354,6 @@ describe('ScanPage', () => {
         expect(screen.getByText(/Results:\s*1 stocks/i)).toBeInTheDocument();
       });
       expect(queryClient.getQueryData(['scanHistory', 'US'])).toEqual(liveHistory);
-    });
-
-    it('loads the new market\'s own scan on a switch when its history lists only watchlist scans', async () => {
-      marketState.selectedMarket = 'US';
-      const hkWatchlists = { scans: [watchlistScan('hk-watchlist')] };
-      scanApi.getScans.mockImplementation(async ({ market } = {}) => (
-        market === 'HK' ? hkWatchlists : { scans: [{ scan_id: 'us-market', status: 'completed' }] }
-      ));
-      scanApi.getScanBootstrap.mockImplementation(async (_scanId, market) => (
-        market === 'HK'
-          ? marketBootstrap('HK', {
-            scanId: 'hk-market',
-            recentScans: hkWatchlists,
-            results: [
-              { symbol: '0700.HK', company_name: 'Tencent', composite_score: 90, current_price: 400 },
-              { symbol: '9988.HK', company_name: 'Alibaba', composite_score: 85, current_price: 80 },
-            ],
-          })
-          : marketBootstrap('US', { scanId: 'us-market' })
-      ));
-
-      const { rerender } = renderWithProviders(<ScanPage />);
-      expect(await screen.findByText(/Results:\s*1 stocks/i)).toBeInTheDocument();
-
-      marketState.selectedMarket = 'HK';
-      rerender(<ScanPage />);
-
-      expect(await screen.findByText(/Results:\s*2 stocks/i)).toBeInTheDocument();
-    });
-
-    it('auto-loads a market scan that finishes after only watchlist scans had', async () => {
-      marketState.selectedMarket = 'US';
-      const watchlists = { scans: [watchlistScan('us-watchlist')] };
-      scanApi.getScans.mockResolvedValue(watchlists);
-      scanApi.getScanBootstrap.mockResolvedValue(noDefaultBootstrap('US', watchlists));
-
-      const { queryClient } = renderWithProviders(<ScanPage />);
-      await waitFor(() => expect(queryClient.getQueryData(['scanHistory', 'US'])).toEqual(watchlists));
-
-      const withMarketScan = { scans: [{ scan_id: 'us-market', status: 'completed' }, ...watchlists.scans] };
-      scanApi.getScans.mockResolvedValue(withMarketScan);
-      scanApi.getScanBootstrap.mockResolvedValue(marketBootstrap('US', { scanId: 'us-market', recentScans: withMarketScan }));
-      await act(async () => {
-        await queryClient.invalidateQueries({ queryKey: ['scanHistory'] });
-        await queryClient.invalidateQueries({ queryKey: ['scanBootstrap'] });
-      });
-
-      expect(await screen.findByText(/Results:\s*1 stocks/i)).toBeInTheDocument();
-    });
-
-    it('reloads the market\'s own scan after visiting a market with none', async () => {
-      marketState.selectedMarket = 'US';
-      scanApi.getScanBootstrap.mockImplementation(async (_scanId, market) => (
-        market === 'HK'
-          ? noDefaultBootstrap('HK', { scans: [watchlistScan('hk-watchlist')] })
-          : marketBootstrap('US', { scanId: 'us-market' })
-      ));
-
-      const { rerender } = renderWithProviders(<ScanPage />);
-      expect(await screen.findByText(/Results:\s*1 stocks/i)).toBeInTheDocument();
-
-      marketState.selectedMarket = 'HK';
-      rerender(<ScanPage />);
-      await waitFor(() => expect(screen.queryByText(/Results:\s*1 stocks/i)).not.toBeInTheDocument());
-
-      marketState.selectedMarket = 'US';
-      rerender(<ScanPage />);
-      expect(await screen.findByText(/Results:\s*1 stocks/i)).toBeInTheDocument();
-    });
-
-    it('never replaces a scan the user opened with a later market scan', async () => {
-      const user = userEvent.setup();
-      marketState.selectedMarket = 'US';
-      const queuedWatchlist = { scans: [watchlistScan('us-watchlist', 'queued')] };
-      scanApi.getScans.mockResolvedValue(queuedWatchlist);
-      scanApi.getScanBootstrap.mockImplementation(async (scanId) => {
-        if (scanId) {
-          throw new Error('no explicit snapshot');
-        }
-        return noDefaultBootstrap('US', queuedWatchlist);
-      });
-
-      const { queryClient } = renderWithProviders(<ScanPage />);
-      await user.click(await screen.findByRole('combobox', { name: 'Previous Scans' }));
-      await user.click(await screen.findByRole('option', { name: /Custom \(1\)/ }));
-      await waitFor(() => expect(scanApi.getScanStatus).toHaveBeenCalledWith('us-watchlist'));
-
-      scanApi.getScans.mockResolvedValue({
-        scans: [{ scan_id: 'us-market', status: 'completed' }, watchlistScan('us-watchlist')],
-      });
-      scanApi.getScanBootstrap.mockResolvedValue(marketBootstrap('US', { scanId: 'us-market' }));
-      await act(async () => {
-        await queryClient.invalidateQueries({ queryKey: ['scanHistory'] });
-        await queryClient.invalidateQueries({ queryKey: ['scanBootstrap'] });
-      });
-      await waitFor(() => expect(queryClient.getQueryData(['scanHistory', 'US']).scans).toHaveLength(2));
-
-      expect(screen.getByRole('combobox', { name: 'Previous Scans' })).toHaveTextContent('Custom (1)');
-      expect(scanApi.getScanBootstrap.mock.calls.map(([scanId]) => scanId)).toEqual([null, 'us-watchlist']);
-      expect(screen.queryByText(/Results:\s*1 stocks/i)).not.toBeInTheDocument();
     });
   });
 
@@ -631,7 +486,6 @@ describe('ScanPage', () => {
       }
       return usesSurvivorFilter ? legacyUnsafe : legacySafe;
     });
-    serveDefaultScan('scan-capable');
 
     renderWithProviders(<ScanPage />);
 
@@ -889,6 +743,81 @@ describe('ScanPage', () => {
     await waitFor(() => {
       expect(screen.queryByText(STALE_TAIL_WARNING.message)).not.toBeInTheDocument();
     });
+  });
+
+  it('auto-loads the latest completed scan after scan history refreshes from running-only state', async () => {
+    runtimeState.runtimeReady = true;
+    scanApi.getScans
+      .mockResolvedValueOnce({
+        scans: [
+          {
+            scan_id: 'scan-running',
+            status: 'running',
+            created_at: '2026-04-09T00:00:00Z',
+          },
+        ],
+      })
+      .mockResolvedValueOnce({
+        scans: [
+          {
+            scan_id: 'scan-complete',
+            status: 'completed',
+            created_at: '2026-04-09T00:05:00Z',
+          },
+        ],
+      });
+    scanApi.getScanStatus.mockResolvedValue({ status: 'completed' });
+    scanApi.queryScanResults.mockResolvedValue({
+      total: 1,
+      results: [
+        {
+          symbol: 'NVDA',
+          company_name: 'NVIDIA',
+          composite_score: 98,
+          minervini_score: 92,
+          current_price: 900,
+          stage: 2,
+        },
+      ],
+    });
+
+    const { queryClient } = renderWithProviders(<ScanPage />);
+
+    await waitFor(() => {
+      expect(scanApi.getScans).toHaveBeenCalledTimes(1);
+    });
+
+    await act(async () => {
+      await queryClient.invalidateQueries({ queryKey: ['scanHistory'] });
+    });
+
+    await waitFor(() => {
+      expect(scanApi.getScans).toHaveBeenCalledTimes(2);
+    });
+    await waitFor(() => {
+      expect(scanApi.getScanStatus).toHaveBeenCalledWith('scan-complete');
+    });
+    await waitFor(() => {
+      expect(screen.getByText(/Results:\s*1 stocks/i)).toBeInTheDocument();
+    });
+  });
+
+  it('auto-loads the market scan beneath a newer watchlist scan in history', async () => {
+    runtimeState.runtimeReady = true;
+    marketState.selectedMarket = 'US';
+    scanApi.getScans.mockResolvedValue({
+      scans: [
+        { scan_id: 'watchlist-scan', status: 'completed', universe_def: { type: 'custom', symbols: ['AAPL'] } },
+        { scan_id: 'us-scan', status: 'completed', universe_def: { type: 'market', market: 'US' } },
+      ],
+    });
+
+    renderWithProviders(<ScanPage />);
+
+    await waitFor(() => {
+      expect(scanApi.getScanStatus).toHaveBeenCalledWith('us-scan');
+    });
+    expect(scanApi.getScanBootstrap.mock.calls.map(([scanId]) => scanId)).toEqual([null, 'us-scan']);
   });
 
   it('disables scan creation with a hover warning when prices refresh is active for the selected market', async () => {
@@ -1332,7 +1261,6 @@ describe('ScanPage', () => {
       scanApi.getScans.mockResolvedValue({
         scans: [{ scan_id: 'snap-old', status: 'completed', published_source: OLD_SOURCE }],
       });
-      serveDefaultScan('snap-old');
       scanApi.queryScanResults.mockResolvedValue(NVDA_PAGE);
 
       renderWithProviders(<ScanPage />);
@@ -1401,7 +1329,6 @@ describe('ScanPage', () => {
           { scan_id: 'scan-b', status: 'completed' },
         ],
       });
-      serveDefaultScan('scan-a');
       scanApi.queryScanResults.mockResolvedValue(NVDA_PAGE);
       let resolveCreate;
       scanApi.createScan.mockReturnValueOnce(new Promise((resolve) => { resolveCreate = resolve; }));
@@ -1443,7 +1370,6 @@ describe('ScanPage', () => {
       scanApi.getScans.mockImplementation(async ({ market } = {}) => (
         market === 'US' ? { scans: [{ scan_id: 'us-done', status: 'completed' }] } : { scans: [] }
       ));
-      serveDefaultScan('us-done', 'US');
       scanApi.queryScanResults.mockResolvedValue(NVDA_PAGE);
       scanApi.createScan.mockResolvedValueOnce({ scan_id: 'scan-new', status: 'queued', total_stocks: 500 });
       scanApi.getScanStatus.mockImplementation(async (scanId) => (
@@ -1470,9 +1396,9 @@ describe('ScanPage', () => {
       expect(screen.queryByText(/Results:\s*1 stocks/i)).not.toBeInTheDocument();
     });
 
-    it('tracks a scan started before the market default loads', async () => {
-      let resolveBootstrap;
-      scanApi.getScanBootstrap.mockReturnValueOnce(new Promise((resolve) => { resolveBootstrap = resolve; }));
+    it('tracks a scan started before history auto-loads the latest one', async () => {
+      let resolveHistory;
+      scanApi.getScans.mockReturnValueOnce(new Promise((resolve) => { resolveHistory = resolve; }));
       scanApi.queryScanResults.mockResolvedValue(NVDA_PAGE);
       let resolveCreate;
       scanApi.createScan.mockReturnValueOnce(new Promise((resolve) => { resolveCreate = resolve; }));
@@ -1486,9 +1412,9 @@ describe('ScanPage', () => {
 
       fireEvent.click(await screen.findByText('Scan', { selector: 'button' }, { timeout: 3000 }));
       await act(async () => {
-        resolveBootstrap(defaultScanBootstrap('scan-done'));
+        resolveHistory({ scans: [{ scan_id: 'scan-done', status: 'completed' }] });
       });
-      expect(await screen.findByText(/Results:\s*1 stocks/i, {}, { timeout: 3000 })).toBeInTheDocument();
+      await waitFor(() => expect(scanApi.getScanStatus).toHaveBeenCalledWith('scan-done'));
       await act(async () => {
         resolveCreate({ scan_id: 'scan-new', status: 'queued', total_stocks: 5 });
       });
@@ -1565,7 +1491,6 @@ describe('ScanPage', () => {
       scanApi.getScans.mockResolvedValue({
         scans: [{ scan_id: 'scan-done', status: 'completed' }],
       });
-      serveDefaultScan('scan-done');
       scanApi.queryScanResults.mockResolvedValue(NVDA_PAGE);
       scanApi.createScan.mockResolvedValueOnce({ scan_id: 'scan-new', status: 'queued', total_stocks: 500 });
       scanApi.getScanStatus.mockImplementation(async (scanId) => (

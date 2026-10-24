@@ -68,12 +68,12 @@ const DEFAULT_SCAN_QUERY_KEY = stableScanFilterQueryKey(DEFAULT_SCAN_QUERY);
 // Create-scan rejections that describe the submitted request, not the system.
 const REQUEST_SCOPED_ERROR_CODES = new Set(['snapshot_unavailable', 'market_data_stale']);
 
-// "No market's scan selection settled yet" marker.
-const NO_SETTLED_MARKET = Symbol('no-settled-market');
+// "No market auto-loaded yet" marker for the scan auto-load ref.
+const NO_MARKET_AUTOLOADED = Symbol('no-market-autoloaded');
 
-// How often an unsettled market re-asks for its default scan, so a market
-// scan that finishes later, or a stale snapshot once republished, still loads.
-const MARKET_DEFAULT_RETRY_MS = 30_000;
+// Symbol-list universes, as in the backend's Scan.represents_market_view: the
+// history lists their scans, but they never stand in for the market's scan.
+const SYMBOL_LIST_UNIVERSE_TYPES = new Set(['custom', 'test']);
 
 function getMutationErrorMessage(error) {
   if (!error) {
@@ -105,11 +105,10 @@ function ScanPage() {
   const { selectedMarket: globalMarket } = useMarket();
   const { activeProfileDetail } = useStrategyProfileData();
   const scanDefaultsAppliedRef = useRef(null);
-  // Market whose scan selection is settled: its default scan loaded, or the
-  // user opened or created a scan. Until then the market's default loads when
-  // it appears. The sentinel can never collide with a market code or with
-  // null (the no-provider market value).
-  const [settledMarket, setSettledMarket] = useState(NO_SETTLED_MARKET);
+  // Market whose latest scan is already auto-loaded. Changing the global
+  // market re-arms the auto-load for the new market. The sentinel can never
+  // collide with a market code or with null (the no-provider market value).
+  const autoLoadedMarketRef = useRef(NO_MARKET_AUTOLOADED);
   const globalMarketRef = useRef(globalMarket);
   globalMarketRef.current = globalMarket;
   const scanHistoryRef = useRef([]);
@@ -237,14 +236,12 @@ function ScanPage() {
     }
   }, [universeMarket, universeScope, universeSelections]);
 
-  // Another market's results must never stand in for this market's scan,
-  // and a market switch re-arms the new market's default.
+  // Another market's results must never stand in for this market's scan.
   const lastFinishedMarketRef = useRef(globalMarket);
   useEffect(() => {
     if (lastFinishedMarketRef.current !== globalMarket) {
       lastFinishedMarketRef.current = globalMarket;
       setLastFinishedScan(null);
-      setSettledMarket(NO_SETTLED_MARKET);
     }
   }, [globalMarket]);
 
@@ -360,15 +357,31 @@ function ScanPage() {
     onUnsupportedPreset: clearActivePreset,
   });
 
-  const {
-    data: latestBootstrap,
-    isFetching: latestBootstrapFetching,
-    isPending: latestBootstrapPending,
-  } = useQuery({
+  const scanBootstrapQuery = useQuery({
     ...latestScanBootstrapQuery(globalMarket),
-    enabled: settledMarket !== globalMarket,
-    refetchInterval: MARKET_DEFAULT_RETRY_MS,
+    enabled: !currentScanId && !initialBootstrapSettled,
   });
+
+  useEffect(() => {
+    if (scanBootstrapQuery.isError) {
+      setInitialBootstrapSettled(true);
+      return;
+    }
+    if (!scanBootstrapQuery.isSuccess) {
+      return;
+    }
+    if (scanBootstrapQuery.data?.is_stale) {
+      setInitialBootstrapSettled(true);
+      return;
+    }
+    applyScanBootstrapSnapshot(scanBootstrapQuery.data);
+    setInitialBootstrapSettled(true);
+  }, [
+    applyScanBootstrapSnapshot,
+    scanBootstrapQuery.data,
+    scanBootstrapQuery.isError,
+    scanBootstrapQuery.isSuccess,
+  ]);
 
   const handleLoadScan = useCallback(
     async (scanId) => {
@@ -379,6 +392,7 @@ function ScanPage() {
         setScanStatus(null);
         setLastFinishedScan(null);
         requestPage(1);
+        autoLoadedMarketRef.current = globalMarketRef.current;
         return;
       }
 
@@ -427,7 +441,6 @@ function ScanPage() {
   const handleUserLoadScan = useCallback((scanId) => {
     scanSelectionRef.current += 1;
     setLateCreatedScanId(null);
-    setSettledMarket(globalMarketRef.current);
     handleLoadScan(scanId);
   }, [handleLoadScan]);
 
@@ -453,41 +466,34 @@ function ScanPage() {
     scanHistoryRef.current = scanHistory?.scans ?? [];
   }, [scanHistory?.scans]);
 
-  // On first load and on every market switch, show the market's own scan:
-  // the latest bootstrap's selection, which the backend resolves over every
-  // scan. The history list only lists scans and never picks the default.
+  // Keep the loaded scan coherent with the global market selector: on first
+  // load and on every market switch, load that market's newest finished scan
+  // (the history list is already market-scoped), as the bootstrap selects it.
   useEffect(() => {
-    if (latestBootstrapPending || latestBootstrapFetching) {
+    if (autoLoadedMarketRef.current === globalMarket) {
       return;
     }
-    setInitialBootstrapSettled(true);
-    if (settledMarket === globalMarket || scanStatus === 'running' || scanStatus === 'queued') {
+    if (scanStatus === 'running' || scanStatus === 'queued') {
       return;
     }
-    // A failed refetch keeps the last answer; a failed first fetch has none.
-    const defaultScanId = latestBootstrap?.payload?.selected_scan?.scan_id;
-    if (defaultScanId && !latestBootstrap.is_stale) {
-      applyScanBootstrapSnapshot(latestBootstrap);
-      setSettledMarket(globalMarket);
-    } else if (defaultScanId) {
-      // A newer default awaits republishing; show the previous one meanwhile.
-      if (currentScanIdRef.current !== defaultScanId) {
-        handleLoadScan(defaultScanId);
-      }
-    } else if (currentScanIdRef.current) {
-      // Another market's scan must not stand in for this market's.
-      handleLoadScan(null);
+    const finishedScans = (scanHistory?.scans ?? []).filter(
+      (scan) => scan.status === 'completed' || scan.status === 'cancelled'
+    );
+    if (finishedScans.length === 0) {
+      // Nothing finished yet (e.g. a scan is still running) — leave the
+      // marker unset so the next history refresh can auto-load.
+      return;
     }
-  }, [
-    applyScanBootstrapSnapshot,
-    globalMarket,
-    handleLoadScan,
-    latestBootstrap,
-    latestBootstrapFetching,
-    latestBootstrapPending,
-    scanStatus,
-    settledMarket,
-  ]);
+    // Set even when only watchlist scans finished, so a market scan landing
+    // later never replaces the watchlist scan the user opened.
+    autoLoadedMarketRef.current = globalMarket;
+    const latestMarketScan = finishedScans.find(
+      (scan) => !SYMBOL_LIST_UNIVERSE_TYPES.has(scan.universe_def?.type)
+    );
+    if (latestMarketScan && latestMarketScan.scan_id !== currentScanId) {
+      handleLoadScan(latestMarketScan.scan_id);
+    }
+  }, [currentScanId, globalMarket, handleLoadScan, scanHistory, scanStatus]);
 
   const createScanMutation = useMutation({
     mutationFn: createScan,
@@ -508,7 +514,6 @@ function ScanPage() {
       }
       // Set now so a late response for the previous scan is recognised.
       currentScanIdRef.current = data.scan_id;
-      setSettledMarket(globalMarketRef.current);
       setCurrentScanId(data.scan_id);
       setBootstrappedScanId(null);
       setScanStatus(data.status);
