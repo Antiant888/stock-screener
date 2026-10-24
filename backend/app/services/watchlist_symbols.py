@@ -1,4 +1,4 @@
-"""Resolve a saved watchlist to its symbols, for scans and the API."""
+"""Resolve a saved watchlist to its symbols in display order."""
 
 from __future__ import annotations
 
