@@ -538,6 +538,14 @@ class SetupDetailsResponse(BaseModel):
     se_candidates: Optional[list[Any]] = None
 
 
+class ScanWatchlistSource(BaseModel):
+    """The watchlist a daily watchlist scan was created for."""
+
+    id: int
+    name: str
+    market: str
+
+
 class ScanListItem(BaseModel):
     """Individual scan in the list."""
 
@@ -552,6 +560,7 @@ class ScanListItem(BaseModel):
     source: Optional[str] = None
     warnings: List[ScanWarningResponse] = Field(default_factory=list)
     published_source: Optional[Dict[str, Any]] = None
+    watchlist: Optional[ScanWatchlistSource] = None
 
 
 class ScanListResponse(BaseModel):

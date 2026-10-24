@@ -283,6 +283,14 @@ def published_source_of(scan: object) -> dict | None:
     return None
 
 
+def watchlist_source_of(scan: object) -> dict | None:
+    """The watchlist a daily watchlist scan was created for."""
+    metadata = getattr(scan, "metadata_json", None)
+    if isinstance(metadata, dict) and isinstance(metadata.get("watchlist"), dict):
+        return metadata["watchlist"]
+    return None
+
+
 # ── Use Case ─────────────────────────────────────────────────────────────
 
 

@@ -71,7 +71,7 @@ from app.services.theme_discovery_service import ThemeDiscoveryService
 from app.services.theme_pipeline_state_service import compute_pipeline_observability
 from app.services.theme_taxonomy_service import ThemeTaxonomyService
 from app.tasks.market_queues import SUPPORTED_MARKETS
-from app.use_cases.scanning.create_scan import published_source_of
+from app.use_cases.scanning.create_scan import published_source_of, watchlist_source_of
 from app.use_cases.scanning.get_filter_options import (
     GetFilterOptionsQuery,
     GetFilterOptionsUseCase,
@@ -724,6 +724,7 @@ class UISnapshotService:
                         getattr(scan, "warnings", None)
                     ),
                     published_source=published_source_of(scan),
+                    watchlist=watchlist_source_of(scan),
                 )
                 for scan in scans
             ]
@@ -774,6 +775,7 @@ class UISnapshotService:
                         getattr(selected_scan, "warnings", None)
                     ),
                     published_source=published_source_of(selected_scan),
+                    watchlist=watchlist_source_of(selected_scan),
                 ).model_dump(mode="json"),
             )
             completed_stocks = selected_scan.total_stocks or 0

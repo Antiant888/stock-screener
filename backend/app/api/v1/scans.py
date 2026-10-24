@@ -47,6 +47,7 @@ from ...use_cases.scanning.create_scan import (
     SnapshotUnavailableError,
     StaleMarketDataError,
     published_source_of,
+    watchlist_source_of,
 )
 
 logger = logging.getLogger(__name__)
@@ -178,6 +179,7 @@ def list_scans(
                         getattr(scan, "warnings", None)
                     ),
                     published_source=published_source_of(scan),
+                    watchlist=watchlist_source_of(scan),
                 ))
 
         return ScanListResponse(scans=scan_items)

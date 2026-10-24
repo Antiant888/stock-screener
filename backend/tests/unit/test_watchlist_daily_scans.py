@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import UTC, date, datetime
 
+import httpx
 import pytest
 
 from app.database import SessionLocal
@@ -13,9 +14,11 @@ from app.domain.scanning.defaults import get_default_scan_profile
 from app.domain.scanning.signature import build_scan_signature_payload, hash_scan_signature
 from app.infra.db.repositories.feature_run_repo import SqlFeatureRunRepository
 from app.infra.db.repositories.feature_store_repo import SqlFeatureStoreRepository
+from app.main import app
 from app.models.scan_result import Scan, ScanResult
 from app.models.stock_universe import StockUniverse
 from app.models.user_watchlist import UserWatchlist, WatchlistItem
+from app.services import server_auth
 from app.services.watchlist_daily_scans import (
     WatchlistScanOutcome,
     WatchlistScanStatus,
@@ -280,3 +283,32 @@ def test_pipeline_stage_records_a_failure_instead_of_ending_the_chain(monkeypatc
     assert payload["auto_scan_id"] == "auto-1"
     assert payload["watchlist_scans"]["status"] == "failed"
     assert "connection refused" in payload["watchlist_scans"]["reason"]
+
+
+@pytest.mark.asyncio
+async def test_scan_list_names_the_watchlist_and_the_market_scan_stays_the_default(db, monkeypatch):
+    monkeypatch.setattr(server_auth.settings, "server_auth_enabled", False)
+    _list(db, {"AAPL": "US"})
+    _publish(db, "US", {"AAPL": True})
+    leaders = _watchlist(db, "Leaders", ["AAPL"])
+    market_scan_time = datetime(2026, 1, 2, 21, 30, tzinfo=UTC)
+    db.add(Scan(
+        scan_id="auto-us", status="completed", trigger_source="auto", universe="US Market",
+        universe_key="market:US", universe_type="market", universe_market="US",
+        total_stocks=1, passed_stocks=1, started_at=market_scan_time, completed_at=market_scan_time,
+    ))
+    db.commit()
+    [outcome] = scan_flagged_watchlists(_use_case(FakeTaskDispatcher()), market="US", session_date=SESSION)
+
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+        listed = (await client.get("/api/v1/scans", params={"market": "US"})).json()["scans"]
+        bootstrap = (await client.get("/api/v1/scans/bootstrap", params={"market": "US"})).json()
+
+    assert [(scan["scan_id"], scan["trigger_source"], scan["watchlist"]) for scan in listed] == [
+        (outcome.scan_id, "watchlist", {"id": leaders, "name": "Leaders", "market": "US"}),
+        ("auto-us", "auto", None),
+    ]
+    assert bootstrap["payload"]["selected_scan"]["scan_id"] == "auto-us"
+    assert [scan["scan_id"] for scan in bootstrap["payload"]["recent_scans"]["scans"]] == [
+        outcome.scan_id, "auto-us",
+    ]
