@@ -10,6 +10,7 @@ from sqlalchemy.orm import sessionmaker
 
 from app.database import Base
 from app.infra.db.models.feature_store import FeatureRun
+from app.infra.db.repositories.scan_repo import SqlScanRepository
 from app.models.scan_result import SCAN_TRIGGER_SOURCE_AUTO, Scan
 from app.services.bootstrap_readiness_service import BootstrapReadinessService
 from app.services.daily_snapshot_service import latest_completed_scan
@@ -71,6 +72,22 @@ def test_all_markets_scan_bootstrap_selects_the_newest_market_scan(scans):
 
     assert snapshot.source_revision == "hk-1"
     assert snapshot.payload["selected_scan"]["scan_id"] == "hk-1"
+
+
+def test_symbol_list_scans_show_in_every_markets_history(scans):
+    with scans() as db:
+        repo = SqlScanRepository(db)
+        assert [s.scan_id for s in repo.list_recent(market="US")] == [
+            "test-1", "watchlist-us", "watchlist-unscoped", "us-1", "us-old",
+        ]
+        assert [s.scan_id for s in repo.list_recent(market="HK")] == [
+            "test-1", "watchlist-us", "watchlist-unscoped", "hk-1",
+        ]
+
+    snapshot = UISnapshotService(scans).publish_scan_bootstrap(market="US")
+    assert [s["scan_id"] for s in snapshot.payload["recent_scans"]["scans"]] == [
+        "test-1", "watchlist-us", "watchlist-unscoped", "us-1", "us-old",
+    ]
 
 
 def test_bootstrap_readiness_waits_for_the_markets_own_auto_scan(session_factory):

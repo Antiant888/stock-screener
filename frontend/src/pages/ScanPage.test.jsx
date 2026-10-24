@@ -802,6 +802,24 @@ describe('ScanPage', () => {
     });
   });
 
+  it('auto-loads the market scan beneath a newer watchlist scan in history', async () => {
+    runtimeState.runtimeReady = true;
+    marketState.selectedMarket = 'US';
+    scanApi.getScans.mockResolvedValue({
+      scans: [
+        { scan_id: 'watchlist-scan', status: 'completed', universe_def: { type: 'custom', symbols: ['AAPL'] } },
+        { scan_id: 'us-scan', status: 'completed', universe_def: { type: 'market', market: 'US' } },
+      ],
+    });
+
+    renderWithProviders(<ScanPage />);
+
+    await waitFor(() => {
+      expect(scanApi.getScanStatus).toHaveBeenCalledWith('us-scan');
+    });
+    expect(scanApi.getScanBootstrap.mock.calls.map(([scanId]) => scanId)).toEqual([null, 'us-scan']);
+  });
+
   it('disables scan creation with a hover warning when prices refresh is active for the selected market', async () => {
     const user = userEvent.setup();
     runtimeState.runtimeReady = true;

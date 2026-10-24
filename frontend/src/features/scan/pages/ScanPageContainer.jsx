@@ -71,6 +71,10 @@ const REQUEST_SCOPED_ERROR_CODES = new Set(['snapshot_unavailable', 'market_data
 // "No market auto-loaded yet" marker for the scan auto-load ref.
 const NO_MARKET_AUTOLOADED = Symbol('no-market-autoloaded');
 
+// Symbol-list universes, as in the backend's Scan.represents_market_view: the
+// history lists their scans, but they never stand in for the market's scan.
+const SYMBOL_LIST_UNIVERSE_TYPES = new Set(['custom', 'test']);
+
 function getMutationErrorMessage(error) {
   if (!error) {
     return null;
@@ -128,7 +132,7 @@ function ScanPage() {
   // via a notice so it never runs unseen.
   const [lateCreatedScanId, setLateCreatedScanId] = useState(null);
   // published_source per scan, kept with the scan's identity: some scans
-  // (custom symbols, other markets) never appear in the market's history.
+  // (other markets) never appear in the market's history.
   const [scanSources, setScanSources] = useState({});
   const rememberScanSource = useCallback((scanId, source) => {
     if (!scanId || !source) {
@@ -464,7 +468,7 @@ function ScanPage() {
 
   // Keep the loaded scan coherent with the global market selector: on first
   // load and on every market switch, load that market's newest finished scan
-  // (the history list is already market-scoped).
+  // (the history list is already market-scoped), as the bootstrap selects it.
   useEffect(() => {
     if (autoLoadedMarketRef.current === globalMarket) {
       return;
@@ -472,21 +476,22 @@ function ScanPage() {
     if (scanStatus === 'running' || scanStatus === 'queued') {
       return;
     }
-    const scans = scanHistory?.scans ?? [];
-    if (scans.length === 0) {
-      return;
-    }
-    const latestCompletedScan = scans.find(
+    const finishedScans = (scanHistory?.scans ?? []).filter(
       (scan) => scan.status === 'completed' || scan.status === 'cancelled'
     );
-    if (!latestCompletedScan) {
+    if (finishedScans.length === 0) {
       // Nothing finished yet (e.g. a scan is still running) — leave the
       // marker unset so the next history refresh can auto-load.
       return;
     }
+    // Set even when only watchlist scans finished, so a market scan landing
+    // later never replaces the watchlist scan the user opened.
     autoLoadedMarketRef.current = globalMarket;
-    if (latestCompletedScan.scan_id !== currentScanId) {
-      handleLoadScan(latestCompletedScan.scan_id);
+    const latestMarketScan = finishedScans.find(
+      (scan) => !SYMBOL_LIST_UNIVERSE_TYPES.has(scan.universe_def?.type)
+    );
+    if (latestMarketScan && latestMarketScan.scan_id !== currentScanId) {
+      handleLoadScan(latestMarketScan.scan_id);
     }
   }, [currentScanId, globalMarket, handleLoadScan, scanHistory, scanStatus]);
 

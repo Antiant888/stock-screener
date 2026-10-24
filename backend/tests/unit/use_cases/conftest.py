@@ -165,6 +165,7 @@ class FakeScanRepository(ScanRepository):
             rows = [
                 scan for scan in rows
                 if (getattr(scan, "universe_market", None) or "").upper() == market.upper()
+                or getattr(scan, "universe_type", None) in ("custom", "test")
             ]
         return sorted(
             rows,

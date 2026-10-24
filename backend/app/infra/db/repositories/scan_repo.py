@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
+from sqlalchemy import or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -89,7 +90,11 @@ class SqlScanRepository(ScanRepository):
     def list_recent(self, limit: int = 20, market: str | None = None) -> list[Scan]:
         query = self._session.query(Scan)
         if market:
-            query = query.filter(Scan.universe_market == market.upper())
+            # A symbol-list scan has no market of its own, so every market's
+            # history lists it.
+            query = query.filter(
+                or_(Scan.universe_market == market.upper(), ~Scan.represents_market_view())
+            )
         return (
             query
             .order_by(Scan.started_at.desc(), Scan.id.desc())  # id: deterministic ties
