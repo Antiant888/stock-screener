@@ -324,9 +324,9 @@ _BOOTSTRAP_ENQUEUE_TRANSPORT_OPTIONS = {
 def queue_scan_bootstrap_publish(scan_id: str) -> None:
     """Queue the bootstrap rebuild for a request handler instead of building it inline.
 
-    A failed enqueue only delays the snapshot: the scan page treats an absent or
-    stale bootstrap as missing and reads the regular scan endpoints, so the
-    request still succeeds.
+    A failed enqueue only delays the snapshot, so the request still succeeds.
+    The scan page lists history from the regular scan endpoints, shows a stale
+    latest snapshot's previous default scan, and re-asks until one is fresh.
 
     The send uses its own short-timeout broker connection so an outage fails
     within about a second: with no socket timeouts, connecting to an
