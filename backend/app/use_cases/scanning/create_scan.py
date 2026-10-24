@@ -718,6 +718,8 @@ class CreateScanUseCase:
                     else 0,
                 )
                 uow.commit()
+                # Computed scans prune in the post-scan pipeline, which instant scans skip.
+                uow.scans.prune_history(cmd.universe_key)
                 return CreateScanResult(
                     scan_id=scan_id,
                     status="completed",
@@ -775,6 +777,7 @@ class CreateScanUseCase:
                     passed,
                     len(symbols),
                 )
+                uow.scans.prune_history(cmd.universe_key)
                 return CreateScanResult(
                     scan_id=scan_id,
                     status="completed",
