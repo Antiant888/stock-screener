@@ -698,7 +698,13 @@ class UISnapshotService:
         return "|".join(parts)
 
     def _build_scan_payload(self, scan_id: str | None, market: str | None = None) -> dict[str, Any]:
-        """Bootstrap payload; ``recent_scans`` matches ``GET /scans?limit=20&market=``."""
+        """Bootstrap payload; ``recent_scans`` is ``GET /scans?limit=20&market=`` at publish time.
+
+        A finished custom or test scan republishes only its own market's latest
+        variant (the all-markets one when it stores none), so another market's
+        list can miss it until that variant next publishes. It never changes
+        any market's selected scan.
+        """
         filter_use_case = GetFilterOptionsUseCase()
         results_use_case = GetScanResultsUseCase()
         with SqlUnitOfWork(self._session_factory) as uow:

@@ -262,8 +262,8 @@ function ScanPage() {
       const isLatestVariant = requestedScanId == null;
       queryClient.setQueryData(['universeStats'], payload.universe_stats ?? null);
       if (isLatestVariant && payloadMarket) {
-        // The market-scoped latest list is exactly GET /scans?limit=20&market=.
-        // Dating it by its publish time keeps the normal staleness refetch.
+        // The market-scoped latest list is GET /scans?limit=20&market= as of
+        // its publish time, so it is dated by that time and refetched once stale.
         // Explicit scan variants never go stale, so their lists are not used.
         queryClient.setQueryData(
           ['scanHistory', payloadMarket],
