@@ -84,6 +84,14 @@ def test_tradingview_export_spanning_lines_keeps_every_row():
     ]
 
 
+def test_prefixed_tokens_pasted_with_spaces_still_map():
+    assert _texts_and_candidates("NASDAQ:NVDA NYSE:BRK.B\tTVC:DXY") == [
+        ("NASDAQ:NVDA", ("NVDA",)),
+        ("NYSE:BRK.B", ("BRK.B", "BRK-B")),
+        ("TVC:DXY", ()),
+    ]
+
+
 def test_tradingview_unmapped_prefixes_have_no_candidate():
     assert _texts_and_candidates("EURONEXT:AIR,LSE:BP,EURONEXT:MC,TVC:DXY,BINANCE:BTCUSDT") == [
         ("EURONEXT:AIR", ()),

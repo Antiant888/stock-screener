@@ -82,7 +82,7 @@ def parse_watchlist_import_tokens(
         for cell in cells
     ):
         tokens = [
-            _tradingview_token(cell)
+            _import_token(cell)
             for cell in cells
             if cell and not cell.startswith(_TRADINGVIEW_SECTION_PREFIX)
         ]
@@ -95,10 +95,7 @@ def parse_watchlist_import_tokens(
             raw_tokens = _parse_tabular_symbols(stripped)
         else:
             raw_tokens = _parse_text_symbols(stripped)
-        tokens = [
-            ImportToken(symbol, (symbol,))
-            for symbol in (token.strip().upper() for token in raw_tokens)
-        ]
+        tokens = [_import_token(token.strip().upper()) for token in raw_tokens]
 
     deduped: list[ImportToken] = []
     seen: set[str] = set()
@@ -110,7 +107,7 @@ def parse_watchlist_import_tokens(
     return deduped
 
 
-def _tradingview_token(cell: str) -> ImportToken:
+def _import_token(cell: str) -> ImportToken:
     prefix, separator, ticker = cell.partition(":")
     if not separator:
         return ImportToken(cell, (cell,))
