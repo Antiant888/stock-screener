@@ -726,6 +726,65 @@ class TestFeatureRunBinding:
         assert scan.passed_stocks == 42
         assert len(dispatcher.dispatched) == 0
 
+    def test_manual_instant_market_scans_keep_the_auto_scan(self):
+        """The nightly auto scan shares its universe key with manual market scans."""
+        from datetime import date, datetime
+
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+
+        from app.database import Base
+        from app.domain.feature_store.models import RunStats, RunType
+        from app.domain.scanning.signature import (
+            build_scan_signature_payload,
+            hash_scan_signature,
+            hash_universe_symbols,
+        )
+        from app.infra.db.models.feature_store import FeatureRun
+        from app.infra.db.repositories.scan_repo import SqlScanRepository
+        from app.models.scan_result import Scan
+        from app.services.bootstrap_readiness_service import BootstrapReadinessService
+
+        engine = create_engine("sqlite://")
+        Base.metadata.create_all(engine)
+        db = sessionmaker(bind=engine)()
+        db.add(FeatureRun(id=1, as_of_date=date(2026, 10, 23), run_type="daily_snapshot", status="published"))
+        db.add(Scan(
+            scan_id="auto-us", status="completed", trigger_source="auto", feature_run_id=1,
+            universe_key="market:US", universe_type="market", universe_market="US",
+            started_at=datetime(2026, 10, 23, 21), completed_at=datetime(2026, 10, 23, 22),
+        ))
+        db.commit()
+
+        feature_runs = FakeFeatureRunRepository()
+        signature = build_scan_signature_payload(
+            universe_type="market", screeners=["minervini"], composite_method="weighted_average", criteria=None,
+        )
+        run = feature_runs.start_run(
+            as_of_date=date(2026, 10, 23),
+            run_type=RunType.DAILY_SNAPSHOT,
+            universe_hash=hash_universe_symbols(["AAPL"]),
+            input_hash=hash_scan_signature(signature),
+        )
+        feature_runs.mark_completed(run.id, stats=RunStats(
+            total_symbols=1, processed_symbols=1, failed_symbols=0, duration_seconds=1.0, passed_symbols=1,
+        ))
+        feature_runs.publish_atomically(run.id)
+        uow = FakeUnitOfWork(
+            scans=SqlScanRepository(db),
+            universe=FakeUniverseRepository(["AAPL"]),
+            feature_runs=feature_runs,
+        )
+        command = _make_command(
+            universe_def="market:US", universe_label="US", universe_key="market:US",
+            universe_type="market", universe_market="US",
+        )
+
+        results = [CreateScanUseCase(dispatcher=FakeTaskDispatcher()).execute(uow, command) for _ in range(3)]
+
+        assert [result.status for result in results] == ["completed", "completed", "completed"]
+        assert BootstrapReadinessService().has_completed_auto_scan(db, "US") is True
+
     def test_non_matching_published_run_leaves_feature_run_id_none(self):
         from datetime import date
 
