@@ -25,6 +25,9 @@ export function useWatchlistUniverseSelections({
     queryKey: ['userWatchlistSymbols', selectedWatchlistId],
     queryFn: () => getWatchlistSymbols(selectedWatchlistId),
     enabled: selectedWatchlistId !== null,
+    // The list can change in another tab or through MCP; never scan a cached copy.
+    staleTime: 0,
+    refetchOnWindowFocus: true,
   });
   const watchlists = watchlistsQuery.data?.watchlists;
   const selectedRemoved = selectedWatchlistId !== null
