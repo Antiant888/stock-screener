@@ -14,12 +14,6 @@ import {
 } from '../../../api/scans';
 import FilterPanel from '../components/FilterPanelContainer';
 import ChartViewerModal from '../../../components/Scan/ChartViewerModalLazy';
-import {
-  fetchPriceHistory,
-  prefetchPriceHistoryBatch,
-  priceHistoryKeys,
-  PRICE_HISTORY_STALE_TIME,
-} from '../../../api/priceHistory';
 import { useFilterPresets } from '../../../hooks/useFilterPresets';
 import { useRuntimeActivity } from '../../../hooks/useRuntimeActivity';
 import { useRuntime } from '../../../contexts/RuntimeContext';
@@ -29,7 +23,7 @@ import { scanBootstrapQuery as latestScanBootstrapQuery } from '../../../pageBoo
 import { DEFAULT_SCAN_DEFAULTS } from '../../../constants/scanDefaults';
 import { buildDefaultScanFilters } from '../defaultFilters';
 import { normalizeScanFilterOptions } from '../filterOptions';
-import { DEFAULT_FILTER_KEY, MAX_CUSTOM_UNIVERSE_SYMBOLS } from '../constants';
+import { MAX_CUSTOM_UNIVERSE_SYMBOLS } from '../constants';
 import ScanControlBar from '../components/ScanControlBar';
 import ScanResultsSection from '../components/ScanResultsSection';
 import GuidedFilterBuilderDialog from '../components/GuidedFilterBuilderDialog';
@@ -50,6 +44,7 @@ import {
   stableScanFilterQueryKey,
 } from '../hooks/useScanFilterQueryState';
 import { useScanResultsController } from '../hooks/useScanResultsController';
+import { useScanResultsPrefetch } from '../hooks/useScanResultsPrefetch';
 import { useWatchlistUniverseSelections } from '../hooks/useWatchlistUniverseSelections';
 import { canOfferLastPublished, describePublishedSource } from '../publishedSource';
 import {
@@ -68,8 +63,6 @@ const DEFAULT_SCAN_FILTERS = buildDefaultScanFilters();
 const DEFAULT_SCAN_EXPRESSION = legacyFiltersToExpression(DEFAULT_SCAN_FILTERS);
 const DEFAULT_SCAN_QUERY = createScanFilterQuery(DEFAULT_SCAN_EXPRESSION);
 const DEFAULT_SCAN_QUERY_KEY = stableScanFilterQueryKey(DEFAULT_SCAN_QUERY);
-
-const ROW_HOVER_PREFETCH_DELAY_MS = 150;
 
 // Create-scan rejections that describe the submitted request, not the system.
 const REQUEST_SCOPED_ERROR_CODES = new Set(['snapshot_unavailable', 'market_data_stale']);
@@ -764,76 +757,13 @@ function ScanPage() {
     setImportedSymbols([]);
   }, []);
 
-  // Prefetch only once the pointer rests on a row; sweeping across the table
-  // would otherwise fire one history request per row passed over.
-  const hoverPrefetchTimerRef = useRef(null);
-  const handleRowHover = useCallback(
-    (symbol) => {
-      clearTimeout(hoverPrefetchTimerRef.current);
-      hoverPrefetchTimerRef.current = setTimeout(() => {
-        queryClient.prefetchQuery({
-          queryKey: priceHistoryKeys.symbol(symbol, '6mo'),
-          queryFn: () => fetchPriceHistory(symbol, '6mo'),
-          staleTime: PRICE_HISTORY_STALE_TIME,
-        });
-      }, ROW_HOVER_PREFETCH_DELAY_MS);
-    },
-    [queryClient]
-  );
-  useEffect(() => () => clearTimeout(hoverPrefetchTimerRef.current), []);
-
-  useEffect(() => {
-    if (!displayedResultsData?.results || displayedResultsData.results.length === 0) {
-      return;
-    }
-    if (
-      bootstrappedScanId === viewScanId &&
-      displayedQuery.page === 1 &&
-      displayedQuery.perPage === 50 &&
-      displayedQuery.sortBy === 'composite_score' &&
-      displayedQuery.sortOrder === 'desc' &&
-      stableFilterKey === DEFAULT_FILTER_KEY
-    ) {
-      return;
-    }
-
-    const visibleSymbols = displayedResultsData.results
-      .slice(0, 20)
-      .map((result) => result.symbol)
-      .filter(Boolean);
-    if (visibleSymbols.length === 0) {
-      return;
-    }
-
-    let cancelled = false;
-    const run = () => {
-      if (cancelled) return;
-      prefetchPriceHistoryBatch(queryClient, visibleSymbols, '6mo');
-    };
-
-    if ('requestIdleCallback' in window) {
-      const handle = window.requestIdleCallback(run, { timeout: 1000 });
-      return () => {
-        cancelled = true;
-        if (window.cancelIdleCallback) window.cancelIdleCallback(handle);
-      };
-    }
-    const timer = setTimeout(run, 0);
-    return () => {
-      cancelled = true;
-      clearTimeout(timer);
-    };
-  }, [
-    bootstrappedScanId,
+  const handleRowHover = useScanResultsPrefetch({
+    results: displayedResultsData?.results,
     viewScanId,
-    queryClient,
-    displayedResultsData?.results,
-    displayedQuery.page,
-    displayedQuery.perPage,
-    displayedQuery.sortBy,
-    displayedQuery.sortOrder,
+    bootstrappedScanId,
+    displayedQuery,
     stableFilterKey,
-  ]);
+  });
 
   if (!runtimeReady) {
     return (
