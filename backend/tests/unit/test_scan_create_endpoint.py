@@ -5,6 +5,9 @@ from __future__ import annotations
 import httpx
 import pytest
 import pytest_asyncio
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
 from types import SimpleNamespace
 from unittest.mock import ANY, MagicMock, patch
 
@@ -24,6 +27,10 @@ from app.use_cases.scanning.create_scan import (
     StaleMarketDataError,
 )
 from app.use_cases.scanning.published_snapshot import SnapshotIneligible
+from app.infra.db.repositories.universe_repo import SqlUniverseRepository
+from app.models.stock_universe import StockUniverse
+from app.use_cases.scanning.create_scan import CreateScanUseCase
+from tests.unit.use_cases.conftest import FakeTaskDispatcher, FakeUnitOfWork
 
 
 class _FakeUoW:
@@ -870,3 +877,68 @@ async def test_create_scan_rejects_unknown_data_mode(client):
     )
 
     assert response.status_code == 422
+
+
+@pytest.fixture
+def universe_session():
+    # The sync endpoint runs in a worker thread, so the in-memory DB must be
+    # one connection shared across threads.
+    engine = create_engine(
+        "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool
+    )
+    StockUniverse.__table__.create(engine)
+    session = sessionmaker(bind=engine)()
+    for symbol in ("NVDA", "ANET", "0700.HK"):
+        session.add(StockUniverse(symbol=symbol, name=symbol, market="US", is_active=True))
+    session.commit()
+    yield session
+    session.close()
+    engine.dispose()
+
+
+async def _create_custom_scan_against_universe(client, universe_session, symbols):
+    dispatcher = FakeTaskDispatcher()
+    app.dependency_overrides[get_uow] = lambda: FakeUnitOfWork(
+        universe=SqlUniverseRepository(universe_session)
+    )
+    app.dependency_overrides[get_create_scan_use_case] = lambda: CreateScanUseCase(dispatcher)
+    try:
+        response = await client.post(
+            "/api/v1/scans",
+            json={"universe_def": {"type": "custom", "symbols": symbols}},
+        )
+    finally:
+        app.dependency_overrides.pop(get_uow, None)
+        app.dependency_overrides.pop(get_create_scan_use_case, None)
+    return response, dispatcher
+
+
+@pytest.mark.asyncio
+async def test_custom_scan_reports_symbols_missing_from_the_universe(client, universe_session):
+    response, dispatcher = await _create_custom_scan_against_universe(
+        client, universe_session, ["NVDA", "ZZZZ", "ANET", "QQQQ.HK"]
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["total_stocks"] == 2
+    assert payload["warnings"] == [
+        {
+            "code": "symbols_not_in_universe",
+            "message": "Skipped 2 symbols not in the active stock universe: ZZZZ, QQQQ.HK",
+            "dropped_symbols": ["ZZZZ", "QQQQ.HK"],
+            "dropped_count": 2,
+        }
+    ]
+    assert dispatcher.dispatched[0][1] == ["NVDA", "ANET"]
+
+
+@pytest.mark.asyncio
+async def test_custom_scan_of_known_symbols_has_no_warning(client, universe_session):
+    response, _ = await _create_custom_scan_against_universe(
+        client, universe_session, ["NVDA", "0700.HK"]
+    )
+
+    assert response.status_code == 200
+    assert response.json()["total_stocks"] == 2
+    assert response.json()["warnings"] == []

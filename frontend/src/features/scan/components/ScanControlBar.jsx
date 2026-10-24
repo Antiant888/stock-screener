@@ -26,6 +26,8 @@ import { SCREENER_OPTIONS } from '../constants';
 import { selectRuntimeUniverseOption } from '../runtimeUniverseSelections';
 import { getSelectionCount } from '../universeSelection';
 
+const DISPLAYED_WARNING_CODES = new Set(['market_data_stale_tail_omitted', 'symbols_not_in_universe']);
+
 function stockCountLabel(universeMarket, universeScope, universeStats, statsLoading, selectedScopeOption) {
   if (!universeMarket) {
     return 'Pick a market to start';
@@ -146,8 +148,8 @@ function ScanControlBar({
         : refreshStaleDataErrorDetail?.message)
       || refreshStaleDataError?.message;
   const staleMarket = staleRefreshMarket(createScanError, universeMarket);
-  const staleTailWarnings = scanWarnings.filter(
-    (warning) => warning?.code === 'market_data_stale_tail_omitted' && warning?.message
+  const displayedWarnings = scanWarnings.filter(
+    (warning) => DISPLAYED_WARNING_CODES.has(warning?.code) && warning?.message
   );
 
   return (
@@ -453,9 +455,9 @@ function ScanControlBar({
           Error: {refreshStaleDataErrorMessage}
         </Alert>
       )}
-      {staleTailWarnings.map((warning, index) => (
+      {displayedWarnings.map((warning) => (
         <Alert
-          key={`${warning.code}-${warning.omitted_count ?? index}`}
+          key={warning.code}
           severity="warning"
           sx={{ mt: 1 }}
         >

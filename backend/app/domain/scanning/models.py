@@ -94,6 +94,7 @@ class ScanWarningCode(str, Enum):
     """Durable scan warning codes exposed through the scan API."""
 
     STALE_TAIL_OMITTED = "market_data_stale_tail_omitted"
+    SYMBOLS_NOT_IN_UNIVERSE = "symbols_not_in_universe"
 
 
 @dataclass(frozen=True)
@@ -172,6 +173,67 @@ class FreshnessOmissionWarning:
             "expected_dates": self.expected_dates,
             "oldest_last_cached_dates": self.oldest_last_cached_dates,
         }
+
+
+@dataclass(frozen=True)
+class SymbolsNotInUniverseWarning:
+    """Durable warning naming requested symbols the active universe lacks."""
+
+    code: str
+    message: str
+    dropped_symbols: tuple[str, ...]
+    dropped_count: int
+
+    _MESSAGE_SAMPLE = 20
+
+    @classmethod
+    def for_dropped(cls, dropped_symbols: tuple[str, ...]) -> "SymbolsNotInUniverseWarning":
+        sample = ", ".join(dropped_symbols[: cls._MESSAGE_SAMPLE])
+        if len(dropped_symbols) > cls._MESSAGE_SAMPLE:
+            sample += ", ..."
+        noun = "symbol" if len(dropped_symbols) == 1 else "symbols"
+        return cls(
+            code=ScanWarningCode.SYMBOLS_NOT_IN_UNIVERSE.value,
+            message=(
+                f"Skipped {len(dropped_symbols)} {noun} not in the active "
+                f"stock universe: {sample}"
+            ),
+            dropped_symbols=dropped_symbols,
+            dropped_count=len(dropped_symbols),
+        )
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> "SymbolsNotInUniverseWarning":
+        return cls(
+            code=str(payload["code"]),
+            message=str(payload["message"]),
+            dropped_symbols=tuple(str(value) for value in payload["dropped_symbols"]),
+            dropped_count=int(payload["dropped_count"]),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "code": self.code,
+            "message": self.message,
+            "dropped_symbols": list(self.dropped_symbols),
+            "dropped_count": self.dropped_count,
+        }
+
+
+ScanWarning = FreshnessOmissionWarning | SymbolsNotInUniverseWarning
+
+SCAN_WARNING_TYPES: dict[str, type[FreshnessOmissionWarning] | type[SymbolsNotInUniverseWarning]] = {
+    ScanWarningCode.STALE_TAIL_OMITTED.value: FreshnessOmissionWarning,
+    ScanWarningCode.SYMBOLS_NOT_IN_UNIVERSE.value: SymbolsNotInUniverseWarning,
+}
+
+
+@dataclass(frozen=True)
+class ResolvedUniverse:
+    """Symbols a universe resolves to, plus requested symbols it had to drop."""
+
+    symbols: list[str]
+    dropped_symbols: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

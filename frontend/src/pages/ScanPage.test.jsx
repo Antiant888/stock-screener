@@ -529,6 +529,30 @@ describe('ScanPage', () => {
     expect(await screen.findByText(STALE_TAIL_WARNING.message)).toBeInTheDocument();
   });
 
+  it('renders the symbols-not-in-universe warning returned by scan creation', async () => {
+    runtimeState.runtimeReady = true;
+    window.history.replaceState(null, '', '/scan?symbols=NVDA%2CZZZZ');
+    scanApi.createScan.mockResolvedValueOnce({
+      scan_id: 'custom-warning',
+      status: 'queued',
+      total_stocks: 1,
+      warnings: [{
+        code: 'symbols_not_in_universe',
+        message: 'Skipped 1 symbol not in the active stock universe: ZZZZ',
+        dropped_symbols: ['ZZZZ'],
+        dropped_count: 1,
+      }],
+    });
+
+    renderWithProviders(<ScanPage />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Scan' }));
+
+    expect(
+      await screen.findByText('Skipped 1 symbol not in the active stock universe: ZZZZ')
+    ).toBeInTheDocument();
+  });
+
   it('renders bootstrap stale-tail warning and clears it for a new scan', async () => {
     const user = userEvent.setup();
     runtimeState.runtimeReady = true;

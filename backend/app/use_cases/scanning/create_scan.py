@@ -32,10 +32,12 @@ from app.domain.scanning.materialization import (
     with_opportunity_state_materialization,
 )
 from app.domain.scanning.models import (
+    SCAN_WARNING_TYPES,
     FreshnessDecision,
     FreshnessOmissionWarning,
     ScanFreshnessPolicy,
-    ScanWarningCode,
+    ScanWarning,
+    SymbolsNotInUniverseWarning,
 )
 from app.domain.scanning.ports import TaskDispatcher
 from app.domain.scanning.signature import (
@@ -81,17 +83,14 @@ class FreshnessEvaluator(Protocol):
 
 def _scan_warnings_from_payloads(
     payloads: Iterable[object] | None,
-) -> tuple[FreshnessOmissionWarning, ...]:
-    warnings: list[FreshnessOmissionWarning] = []
+) -> tuple[ScanWarning, ...]:
+    warnings: list[ScanWarning] = []
     for payload in payloads or ():
-        if isinstance(payload, FreshnessOmissionWarning):
+        if isinstance(payload, (FreshnessOmissionWarning, SymbolsNotInUniverseWarning)):
             warnings.append(payload)
-        elif (
-            isinstance(payload, dict)
-            and payload.get("code") == ScanWarningCode.STALE_TAIL_OMITTED.value
-        ):
+        elif isinstance(payload, dict) and payload.get("code") in SCAN_WARNING_TYPES:
             try:
-                warnings.append(FreshnessOmissionWarning.from_dict(payload))
+                warnings.append(SCAN_WARNING_TYPES[payload["code"]].from_dict(payload))
             except (KeyError, TypeError, ValueError):
                 continue
     return tuple(warnings)
@@ -194,7 +193,7 @@ class CreateScanResult:
     total_stocks: int
     is_duplicate: bool
     feature_run_id: int | None = None
-    warnings: tuple[FreshnessOmissionWarning, ...] = ()
+    warnings: tuple[ScanWarning, ...] = ()
     published_source: dict | None = None
 
 
@@ -499,7 +498,8 @@ class CreateScanUseCase:
                     self._raise_active_scan_conflict(active_scan)
 
             # ── Resolve universe symbols ─────────────────────────────
-            symbols = uow.universe.resolve_symbols(cmd.universe_def)
+            resolved = uow.universe.resolve(cmd.universe_def)
+            symbols = resolved.symbols
             if not symbols:
                 raise ValidationError(
                     f"No symbols found for universe '{cmd.universe_label}'. "
@@ -528,6 +528,12 @@ class CreateScanUseCase:
                         f"No fresh symbols remain for universe '{cmd.universe_label}'. "
                         "Refresh market data before starting a scan."
                     )
+            scan_warnings: tuple[ScanWarning, ...] = freshness_warnings
+            if resolved.dropped_symbols:
+                scan_warnings = (
+                    SymbolsNotInUniverseWarning.for_dropped(resolved.dropped_symbols),
+                    *freshness_warnings,
+                )
 
             feature_run_id = None
             instant_match = None
@@ -668,7 +674,7 @@ class CreateScanUseCase:
                     task_id=None,
                     idempotency_key=cmd.idempotency_key,
                     feature_run_id=feature_run_id,
-                    warnings=[warning.to_dict() for warning in freshness_warnings],
+                    warnings=[warning.to_dict() for warning in scan_warnings],
                 )
             except SingleActiveScanViolation:
                 uow.rollback()
@@ -708,7 +714,7 @@ class CreateScanUseCase:
                     total_stocks=len(symbols),
                     is_duplicate=False,
                     feature_run_id=feature_run_id,
-                    warnings=freshness_warnings,
+                    warnings=scan_warnings,
                     published_source=published_source,
                 )
 
@@ -765,7 +771,7 @@ class CreateScanUseCase:
                     total_stocks=len(symbols),
                     is_duplicate=False,
                     feature_run_id=None,
-                    warnings=freshness_warnings,
+                    warnings=scan_warnings,
                     published_source=published_source,
                 )
 
@@ -794,5 +800,5 @@ class CreateScanUseCase:
             total_stocks=len(symbols),
             is_duplicate=False,
             feature_run_id=feature_run_id,
-            warnings=freshness_warnings,
+            warnings=scan_warnings,
         )

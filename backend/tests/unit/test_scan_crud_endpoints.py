@@ -232,6 +232,31 @@ class TestListScans:
         finally:
             app.dependency_overrides.pop(get_uow, None)
 
+    async def test_includes_persisted_dropped_symbols_warning(self, client):
+        dropped_warning = {
+            "code": "symbols_not_in_universe",
+            "message": "Skipped 1 symbol not in the active stock universe: ZZZZ",
+            "dropped_symbols": ["ZZZZ"],
+            "dropped_count": 1,
+        }
+        scan_repo = FakeScanRepository()
+        s1 = _make_scan(
+            "scan-custom",
+            started_at=datetime(2024, 1, 2),
+            warnings=[dropped_warning, _unknown_warning_payload()],
+        )
+        scan_repo.scans = {"scan-custom": s1}
+        scan_repo.rows = [s1]
+
+        uow = _FakeUoW(scans=scan_repo)
+        app.dependency_overrides[get_uow] = lambda: uow
+        try:
+            resp = await client.get("/api/v1/scans")
+            assert resp.status_code == 200
+            assert resp.json()["scans"][0]["warnings"] == [dropped_warning]
+        finally:
+            app.dependency_overrides.pop(get_uow, None)
+
     async def test_drops_unknown_persisted_warnings(self, client):
         scan_repo = FakeScanRepository()
         s1 = _make_scan(

@@ -498,6 +498,30 @@ class TestFreshnessChecker:
         assert result2.warnings[0].omitted_symbols == ("LHSW",)
         assert calls == 1
 
+    def test_idempotent_duplicate_returns_stored_dropped_symbols_warning(self):
+        uow = FakeUnitOfWork(
+            universe=FakeUniverseRepository(["NVDA"], dropped_symbols=("ZZZZ",))
+        )
+        uc = CreateScanUseCase(dispatcher=FakeTaskDispatcher())
+        command = _make_command(
+            idempotency_key="custom-retry",
+            universe_type="custom",
+            universe_key="custom:abc",
+        )
+
+        uc.execute(uow, command)
+        retried = uc.execute(uow, command)
+
+        assert retried.is_duplicate is True
+        assert [warning.to_dict() for warning in retried.warnings] == [
+            {
+                "code": "symbols_not_in_universe",
+                "message": "Skipped 1 symbol not in the active stock universe: ZZZZ",
+                "dropped_symbols": ["ZZZZ"],
+                "dropped_count": 1,
+            }
+        ]
+
     def test_feature_run_hash_uses_filtered_symbols(self):
         from datetime import date
 
