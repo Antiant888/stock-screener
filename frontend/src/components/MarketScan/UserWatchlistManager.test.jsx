@@ -1,5 +1,6 @@
 import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
+import userEvent from '@testing-library/user-event';
 
 import { renderWithProviders } from '../../test/renderWithProviders';
 import UserWatchlistManager from './UserWatchlistManager';
@@ -61,6 +62,32 @@ describe('UserWatchlistManager import flow', () => {
         content: 'NVDA\nMSFT\nAAPL',
         format: 'auto',
       });
+    });
+  }, 20000);
+
+  it('imports a TradingView export chosen as a file', async () => {
+    const user = userEvent.setup();
+    const exportText = '###Leaders,NASDAQ:NVDA,NYSE:ANET,###Watch,HKEX:700';
+    renderWithProviders(
+      <UserWatchlistManager open={true} onClose={vi.fn()} onUpdate={vi.fn()} />
+    );
+
+    fireEvent.click(await screen.findByText('Leaders'));
+    fireEvent.click(screen.getByRole('button', { name: 'Import' }));
+    const importDialog = await screen.findByRole('dialog', { name: 'Import Symbols' });
+
+    await user.upload(
+      within(importDialog).getByLabelText('Choose file'),
+      new File([exportText], 'leaders.txt', { type: 'text/plain' })
+    );
+
+    await waitFor(() => {
+      expect(within(importDialog).getByRole('textbox', { name: 'Symbols to import' })).toHaveValue(exportText);
+    });
+    fireEvent.click(within(importDialog).getByRole('button', { name: 'Import' }));
+
+    await waitFor(() => {
+      expect(api.importItems).toHaveBeenCalledWith(1, { content: exportText, format: 'auto' });
     });
   }, 20000);
 });

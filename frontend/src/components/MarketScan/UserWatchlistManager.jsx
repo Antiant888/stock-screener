@@ -498,8 +498,24 @@ function UserWatchlistManager({ open, onClose, onUpdate }) {
         <DialogTitle>Import Symbols</DialogTitle>
         <DialogContent>
           <Typography id="watchlist-import-help" variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
-            Paste newline, comma, tab, or CSV-formatted symbols. The importer will dedupe entries and report invalid symbols.
+            Paste newline, comma, tab, or CSV-formatted symbols, or choose a .txt/.csv file such as a
+            TradingView watchlist export. The importer will dedupe entries and report invalid symbols.
           </Typography>
+          <Button component="label" size="small" startIcon={<UploadFileIcon />} sx={{ mb: 1.5 }}>
+            Choose file
+            <input
+              hidden
+              type="file"
+              accept=".txt,.csv,text/plain,text/csv"
+              onChange={async (event) => {
+                const [file] = event.target.files;
+                event.target.value = '';
+                if (file) {
+                  setImportContent(await file.text());
+                }
+              }}
+            />
+          </Button>
           <TextField
             autoFocus
             multiline
