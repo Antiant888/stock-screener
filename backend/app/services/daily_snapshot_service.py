@@ -255,6 +255,7 @@ def latest_completed_scan(db: Session, market: str) -> Scan | None:
         .filter(
             Scan.status == "completed",
             Scan.universe_market == market.upper(),
+            Scan.represents_market_view(),
         )
         .order_by(Scan.completed_at.desc().nullslast(), Scan.id.desc())
         .first()

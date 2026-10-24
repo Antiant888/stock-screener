@@ -1383,8 +1383,22 @@ def test_repair_current_us_group_metadata_updates_latest_published_run_and_repub
                 status="completed",
                 feature_run_id=31,
                 universe_market="US",
+                started_at=datetime(2026, 4, 2, 21, 0),
             )
         )
+        # Newer watchlist scans, bound and legacy, are not the market's scans.
+        for scan_id, feature_run_id in (("watchlist-bound", 31), ("watchlist-legacy", None)):
+            db.add(
+                Scan(
+                    scan_id=scan_id,
+                    status="completed",
+                    feature_run_id=feature_run_id,
+                    universe_type="custom",
+                    universe_market="US",
+                    universe_symbols=["NVDA"],
+                    started_at=datetime(2026, 4, 2, 22, 0),
+                )
+            )
         db.add(IBDIndustryGroup(symbol="NVDA", industry_group="Semiconductors"))
         db.add(
             IBDGroupRank(

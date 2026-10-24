@@ -408,6 +408,7 @@ def _repair_current_us_group_metadata(
                         Scan.feature_run_id == feature_run_id,
                         Scan.universe_market == "US",
                         Scan.status.in_(completed_statuses),
+                        Scan.represents_market_view(),
                     )
                     .order_by(Scan.started_at.desc(), Scan.id.desc())
                     .limit(1)
@@ -423,6 +424,7 @@ def _repair_current_us_group_metadata(
                     Scan.feature_run_id.is_(None),
                     Scan.universe_market == "US",
                     Scan.status.in_(completed_statuses),
+                    Scan.represents_market_view(),
                 )
                 .order_by(Scan.started_at.desc(), Scan.id.desc())
                 .limit(1)

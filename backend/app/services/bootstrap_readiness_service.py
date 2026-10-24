@@ -311,6 +311,7 @@ class BootstrapReadinessService:
                 Scan.universe_market == normalized_market,
                 Scan.status == "completed",
                 Scan.trigger_source == SCAN_TRIGGER_SOURCE_AUTO,
+                Scan.represents_market_view(),
                 FeatureRun.status == "published",
             )
         )

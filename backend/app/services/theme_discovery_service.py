@@ -494,7 +494,7 @@ class ThemeDiscoveryService:
     def _latest_completed_scan_id(self) -> Optional[str]:
         from ..models.scan_result import Scan
         return self.db.query(Scan.scan_id).filter(
-            Scan.status == "completed"
+            Scan.status == "completed", Scan.represents_market_view()
         ).order_by(Scan.completed_at.desc()).limit(1).scalar()
 
     def calculate_screener_metrics(self, theme_cluster_id: int) -> dict:
