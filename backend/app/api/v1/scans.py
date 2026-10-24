@@ -103,7 +103,8 @@ def _resolve_scan_guard_market(universe_def: Any) -> str | None:
 def _scan_guard_markets(universe_def: Any, uow: Any) -> list[str]:
     if universe_def.type == UniverseType.CUSTOM:
         with uow:
-            return sorted(set(uow.universe.resolve_markets(universe_def.symbols).values()))
+            scanned = uow.universe.resolve_symbols(universe_def)
+            return sorted(set(uow.universe.resolve_markets(scanned).values()))
     market = _resolve_scan_guard_market(universe_def)
     return [market] if market else []
 
