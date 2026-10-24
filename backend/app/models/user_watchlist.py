@@ -1,5 +1,5 @@
 """User-defined watchlists for Market Scan Watchlists tab"""
-from sqlalchemy import Column, Integer, String, DateTime, Text, ForeignKey, UniqueConstraint, Index
+from sqlalchemy import Boolean, Column, Integer, String, DateTime, Text, ForeignKey, UniqueConstraint, Index, false
 from sqlalchemy.sql import func
 from ..database import Base
 
@@ -16,6 +16,7 @@ class UserWatchlist(Base):
     description = Column(Text, nullable=True)
     color = Column(String(20), nullable=True)
     position = Column(Integer, nullable=False, default=0)
+    include_in_daily_scan = Column(Boolean, nullable=False, default=False, server_default=false())
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
