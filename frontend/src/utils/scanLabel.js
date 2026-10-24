@@ -1,7 +1,12 @@
 const NYSE_TIMEZONE = 'America/New_York';
 const ISO_WITHOUT_TZ = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?$/;
 
+const isAutomaticScan = (triggerSource) => triggerSource === 'auto' || triggerSource === 'watchlist';
+
 const formatUniverseLabel = (scan) => {
+  if (scan.watchlist) {
+    return `Watchlist: ${scan.watchlist.name} (${scan.watchlist.market})`;
+  }
   const ud = scan.universe_def;
   if (!ud || !ud.type) {
     return 'Unknown';
@@ -34,7 +39,7 @@ const formatScanTimestamp = (startedAt, triggerSource) => {
     return '-';
   }
 
-  const isAuto = triggerSource === 'auto';
+  const isAuto = isAutomaticScan(triggerSource);
   return new Intl.DateTimeFormat('en-US', {
     timeZone: NYSE_TIMEZONE,
     month: 'short',
@@ -45,7 +50,7 @@ const formatScanTimestamp = (startedAt, triggerSource) => {
 };
 
 export const formatScanDropdownLabel = (scan) => {
-  const sourceLabel = scan.trigger_source === 'auto' ? 'auto' : 'man';
+  const sourceLabel = isAutomaticScan(scan.trigger_source) ? 'auto' : 'man';
   const summary = `${formatUniverseLabel(scan)} (${scan.passed_stocks}/${scan.total_stocks})`;
   return `${sourceLabel} ${formatScanTimestamp(scan.started_at, scan.trigger_source)} | ${summary}`;
 };

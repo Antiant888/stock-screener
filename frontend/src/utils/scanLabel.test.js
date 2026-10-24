@@ -71,6 +71,17 @@ describe('formatScanDropdownLabel', () => {
     })).toBe('man Mar 29, 2026, 5:45 PM | Test (3) (2/3)');
   });
 
+  it('names the watchlist and market on a daily watchlist scan', () => {
+    expect(formatScanDropdownLabel({
+      trigger_source: 'watchlist',
+      started_at: '2026-10-23T21:45:00Z',
+      universe_def: { type: 'custom', symbols: ['AAPL', 'MSFT'] },
+      watchlist: { id: 4, name: 'Leaders', market: 'US' },
+      passed_stocks: 1,
+      total_stocks: 2,
+    })).toBe('auto Oct 23, 2026 | Watchlist: Leaders (US) (1/2)');
+  });
+
   it('falls back to Unknown when universe_def is missing', () => {
     expect(formatScanDropdownLabel({
       trigger_source: 'manual',

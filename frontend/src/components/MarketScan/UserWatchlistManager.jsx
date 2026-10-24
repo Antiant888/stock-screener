@@ -3,6 +3,7 @@
  *
  * Allows users to:
  * - Create/rename/delete watchlists
+ * - Include a watchlist in the daily scan
  * - Add/remove stocks from watchlists
  * - Reorder watchlists and stocks via drag-and-drop
  */
@@ -25,6 +26,8 @@ import {
   Typography,
   Alert,
   Stack,
+  FormControlLabel,
+  Switch,
 } from '@mui/material';
 import DeleteIcon from '@mui/icons-material/Delete';
 import AddIcon from '@mui/icons-material/Add';
@@ -101,6 +104,16 @@ function UserWatchlistManager({ open, onClose, onUpdate }) {
       onUpdate?.();
     },
     onError: (err) => setFeedback({ severity: 'error', message: getErrorMessage(err, 'Failed to update watchlist') }),
+  });
+
+  const dailyScanMutation = useMutation({
+    mutationFn: ({ id, include }) => updateWatchlist(id, { include_in_daily_scan: include }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['userWatchlists'] });
+      setFeedback(null);
+      onUpdate?.();
+    },
+    onError: (err) => setFeedback({ severity: 'error', message: getErrorMessage(err, 'Failed to update the daily scan setting') }),
   });
 
   const deleteMutation = useMutation({
@@ -397,6 +410,27 @@ function UserWatchlistManager({ open, onClose, onUpdate }) {
                       </IconButton>
                     </>
                   )}
+                </Box>
+
+                <Box mb={2}>
+                  <FormControlLabel
+                    control={(
+                      <Switch
+                        size="small"
+                        checked={Boolean(selectedWatchlist.include_in_daily_scan)}
+                        disabled={dailyScanMutation.isPending}
+                        onChange={(e) => dailyScanMutation.mutate({
+                          id: selectedWatchlist.id,
+                          include: e.target.checked,
+                        })}
+                      />
+                    )}
+                    label="Include in daily scan"
+                  />
+                  <Typography variant="caption" color="text.secondary" display="block">
+                    Scanned after each of its markets&apos; daily scans, with the default screeners.
+                    Any watchlist can still be scanned manually.
+                  </Typography>
                 </Box>
 
                 {/* Add symbol */}
