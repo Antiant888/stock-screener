@@ -77,7 +77,7 @@ def cleanup_old_scans(db: Session, universe_key: str, keep_count: int = 3) -> No
         completed_scans = db.query(Scan).filter(
             Scan.universe_key == universe_key,
             Scan.status == "completed",
-        ).order_by(Scan.completed_at.desc()).all()
+        ).order_by(Scan.completed_at.desc(), Scan.id.desc()).all()
 
         scans_to_delete = completed_scans[keep_count:]
         if scans_to_delete:
