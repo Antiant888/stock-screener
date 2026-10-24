@@ -22,7 +22,7 @@ import RefreshIcon from '@mui/icons-material/Refresh';
 import StopIcon from '@mui/icons-material/Stop';
 import ScanProgress from '../../../components/Scan/ScanProgress';
 import { formatScanDropdownLabel } from '../../../utils/scanLabel';
-import { SCREENER_OPTIONS } from '../constants';
+import { SCREENER_OPTIONS, WATCHLIST_MARKET } from '../constants';
 import { selectRuntimeUniverseOption } from '../runtimeUniverseSelections';
 import { getSelectionCount } from '../universeSelection';
 
@@ -114,6 +114,7 @@ function ScanControlBar({
     scopeOption: selectedScopeOption,
   } = selectRuntimeUniverseOption(universeSelections, universeMarket, universeScope);
   const hasCustomSymbols = customSymbols.length > 0;
+  const scopeLabel = universeMarket === WATCHLIST_MARKET ? 'Watchlist' : 'Universe';
   const needsScope = universeMarket && universeMarket !== 'TEST' && !hasCustomSymbols;
   const startDisabled =
     createScanPending
@@ -207,11 +208,11 @@ function ScanControlBar({
 
         {needsScope && (
           <FormControl size="small" sx={{ minWidth: 150 }}>
-            <InputLabel id="universe-scope-label">Universe</InputLabel>
+            <InputLabel id="universe-scope-label">{scopeLabel}</InputLabel>
             <Select
               labelId="universe-scope-label"
               value={universeScope ?? ''}
-              label="Universe"
+              label={scopeLabel}
               onChange={(event) => onUniverseScopeChange(event.target.value || null)}
               disabled={controlsDisabled}
             >

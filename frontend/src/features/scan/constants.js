@@ -28,6 +28,9 @@ export const TEST_SYMBOLS = [
 // Mirrors MAX_CUSTOM_UNIVERSE_SYMBOLS in backend/app/schemas/universe.py.
 export const MAX_CUSTOM_UNIVERSE_SYMBOLS = 2000;
 
+// Pseudo-market whose scopes are the user's saved watchlists.
+export const WATCHLIST_MARKET = 'WATCHLIST';
+
 export const DEFAULT_FILTER_KEY = stableExpressionKey(
   legacyFiltersToExpression(buildDefaultScanFilters()),
 );

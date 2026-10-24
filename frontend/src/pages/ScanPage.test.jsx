@@ -5,6 +5,7 @@ import userEvent from '@testing-library/user-event';
 import ScanPage from './ScanPage';
 import { DEFAULT_SCAN_DEFAULTS } from '../constants/scanDefaults';
 import * as scanApi from '../api/scans';
+import * as watchlistApi from '../api/userWatchlists';
 import { renderWithProviders } from '../test/renderWithProviders';
 
 const runtimeState = {
@@ -82,6 +83,12 @@ vi.mock('../api/scans', () => ({
   refreshScanCache: vi.fn(),
 }));
 
+vi.mock('../api/userWatchlists', async (importOriginal) => ({
+  ...(await importOriginal()),
+  getWatchlists: vi.fn(),
+  getWatchlistData: vi.fn(),
+}));
+
 beforeEach(() => {
   window.history.replaceState(null, '', '/scan');
   vi.clearAllMocks();
@@ -130,6 +137,40 @@ describe('ScanPage', () => {
         universe_def: { type: 'custom', symbols: ['0700', '9988'] },
       })
     ));
+  });
+
+  it('scans a saved watchlist as a custom universe sent in the request body', async () => {
+    const user = userEvent.setup();
+    runtimeState.runtimeReady = true;
+    watchlistApi.getWatchlists.mockResolvedValue({
+      watchlists: [{ id: 7, name: 'Leaders' }, { id: 8, name: 'Laggards' }],
+      total: 2,
+    });
+    watchlistApi.getWatchlistData.mockResolvedValue({
+      id: 7,
+      name: 'Leaders',
+      items: [{ symbol: 'NVDA' }, { symbol: '0700.HK' }, { symbol: 'ANET' }],
+      price_change_bounds: {},
+    });
+    scanApi.createScan.mockResolvedValueOnce({ scan_id: 'watchlist-scan', status: 'queued' });
+
+    renderWithProviders(<ScanPage />);
+
+    await user.click(await screen.findByRole('combobox', { name: 'Market' }));
+    await user.click(await screen.findByRole('option', { name: 'Watchlist' }));
+    await user.click(await screen.findByRole('combobox', { name: 'Watchlist' }));
+    await user.click(await screen.findByRole('option', { name: 'Leaders' }));
+
+    expect(await screen.findByText('3 stocks')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Scan' }));
+
+    await waitFor(() => expect(scanApi.createScan.mock.calls[0][0]).toEqual(
+      expect.objectContaining({
+        universe_def: { type: 'custom', symbols: ['NVDA', '0700.HK', 'ANET'] },
+      })
+    ));
+    expect(watchlistApi.getWatchlistData).toHaveBeenCalledWith(7);
+    expect(window.location.search).toBe('');
   });
 
   it('caps a Social selection at the 2000-symbol custom universe limit', async () => {
