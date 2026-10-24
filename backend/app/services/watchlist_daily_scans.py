@@ -8,13 +8,14 @@ from datetime import date
 from enum import Enum
 from typing import Any
 
+from celery.exceptions import SoftTimeLimitExceeded
 from sqlalchemy.orm import Session
 
 from app.database import SessionLocal
 from app.domain.common.errors import ValidationError
 from app.domain.scanning.defaults import get_default_scan_profile
 from app.domain.scanning.models import ScanWarningCode, SymbolsNotInSnapshotWarning
-from app.infra.db.models.feature_store import StockFeatureDaily
+from app.infra.db.models.feature_store import FeatureRun, StockFeatureDaily
 from app.infra.db.repositories.universe_repo import SqlUniverseRepository
 from app.infra.db.uow import SqlUnitOfWork
 from app.models.scan_result import SCAN_TRIGGER_SOURCE_WATCHLIST
@@ -38,6 +39,7 @@ class WatchlistScanStatus(str, Enum):
     DUPLICATE = "duplicate"
     NO_SYMBOLS_IN_MARKET = "no_symbols_in_market"
     SNAPSHOT_UNAVAILABLE = "snapshot_unavailable"
+    SKIPPED = "skipped"
     FAILED = "failed"
 
 
@@ -108,14 +110,24 @@ def scan_flagged_watchlists(
     run has rows for; it warns about the rest. The scans use the default
     profile the snapshot is built with, so they reuse its stored scores and
     never compute or fetch prices. One watchlist failing records its outcome
-    and the rest still run.
+    and the rest still run; the task's soft time limit stops them all. A
+    ``session_date`` other than the run's skips every watchlist.
     """
     db = SessionLocal()
     try:
         watchlists = flagged_watchlists_in_market(db, market)
+        run_session = db.query(FeatureRun.as_of_date).filter(FeatureRun.id == run_id).scalar()
         covered = _symbols_with_rows(db, run_id, [symbol for w in watchlists for symbol in w.symbols])
     finally:
         db.close()
+    if run_session != session_date:
+        # The idempotency key names session_date, so a scan from another
+        # session's run would claim that day's key with the wrong data.
+        logger.warning("%s run %s is for %s, not %s", market, run_id, run_session, session_date)
+        return [
+            WatchlistScanOutcome(w.watchlist_id, WatchlistScanStatus.SKIPPED, reason="session_run_mismatch")
+            for w in watchlists
+        ]
     profile = get_default_scan_profile(market)
     return [
         _scan_watchlist(
@@ -183,6 +195,8 @@ def _scan_watchlist(
     except ValidationError as exc:
         logger.warning("Daily %s scan of watchlist %s rejected: %s", market, watchlist_id, exc)
         return WatchlistScanOutcome(watchlist_id, WatchlistScanStatus.FAILED, reason=str(exc))
+    except SoftTimeLimitExceeded:
+        raise
     except Exception as exc:
         logger.warning("Daily %s scan of watchlist %s failed", market, watchlist_id, exc_info=True)
         return WatchlistScanOutcome(watchlist_id, WatchlistScanStatus.FAILED, reason=str(exc))

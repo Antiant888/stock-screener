@@ -413,10 +413,12 @@ def scan_watchlists_after_snapshot(result: dict | None = None, *, market: str) -
     publication, so no partial bar or provider fetch is involved. Never fails
     the chain: a failure is logged and recorded in the payload.
     """
-    payload = dict(result or {})
+    payload = dict(result) if isinstance(result, dict) else {}
     market_code = _normalize_pipeline_market(market)
-    run_id, as_of_date = payload.get("run_id"), payload.get("as_of_date")
-    if run_id is None or as_of_date is None:
+    try:
+        run_id = int(payload["run_id"])
+        session_date = date.fromisoformat(str(payload["as_of_date"]))
+    except (KeyError, TypeError, ValueError):
         payload["watchlist_scans"] = {"status": "skipped", "reason": "snapshot_run_unknown"}
         return payload
     try:
@@ -424,10 +426,7 @@ def scan_watchlists_after_snapshot(result: dict | None = None, *, market: str) -
         from app.wiring.bootstrap import get_create_scan_use_case
 
         outcomes = scan_flagged_watchlists(
-            get_create_scan_use_case(),
-            market=market_code,
-            run_id=int(run_id),
-            session_date=date.fromisoformat(str(as_of_date)),
+            get_create_scan_use_case(), market=market_code, run_id=run_id, session_date=session_date
         )
     except Exception as exc:
         logger.warning("Could not run the daily watchlist scans for %s", market_code, exc_info=True)

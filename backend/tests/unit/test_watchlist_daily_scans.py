@@ -397,6 +397,66 @@ def test_pipeline_stage_skips_when_the_guard_names_no_run(db):
     assert _scans(db) == []
 
 
+@pytest.mark.parametrize(
+    ("result", "expected"),
+    [
+        ("bad", {}),
+        ({"run_id": "abc", "as_of_date": "2026-10-23"}, {"run_id": "abc", "as_of_date": "2026-10-23"}),
+        ({"run_id": 5, "as_of_date": "not-a-date"}, {"run_id": 5, "as_of_date": "not-a-date"}),
+    ],
+)
+def test_pipeline_stage_skips_a_payload_it_cannot_read(result, expected):
+    from app.tasks import daily_market_pipeline_tasks as module
+
+    payload = module.scan_watchlists_after_snapshot.run(result, market="US")
+
+    assert payload == {**expected, "watchlist_scans": {"status": "skipped", "reason": "snapshot_run_unknown"}}
+
+
+def test_a_session_other_than_the_runs_gets_no_scan(db):
+    _list(db, {"AAPL": "US"})
+    run_id = _publish(db, "US", {"AAPL": True})
+    leaders = _watchlist(db, "Leaders", ["AAPL"])
+
+    outcomes = scan_flagged_watchlists(
+        _use_case(FakeTaskDispatcher()), market="US", run_id=run_id, session_date=date(2026, 10, 22)
+    )
+
+    assert outcomes == [
+        WatchlistScanOutcome(leaders, WatchlistScanStatus.SKIPPED, reason="session_run_mismatch")
+    ]
+    assert _scans(db) == []
+
+
+def test_a_soft_time_limit_stops_the_remaining_watchlists(db, monkeypatch):
+    from celery.exceptions import SoftTimeLimitExceeded
+
+    from app.tasks import daily_market_pipeline_tasks as module
+
+    _list(db, {"AAPL": "US", "MSFT": "US"})
+    run_id = _publish(db, "US", {"AAPL": True, "MSFT": True})
+    _watchlist(db, "First", ["MSFT"], position=0)
+    _watchlist(db, "Second", ["AAPL"], position=1)
+    scanned = []
+
+    class TimedOutUseCase:
+        def execute(self, uow, cmd):
+            scanned.append(cmd.universe_symbols)
+            raise SoftTimeLimitExceeded("soft limit")
+
+    monkeypatch.setattr("app.wiring.bootstrap.get_create_scan_use_case", TimedOutUseCase)
+    guarded = {"auto_scan_id": "auto-1", "run_id": run_id, "as_of_date": "2026-10-23"}
+
+    payload = module.scan_watchlists_after_snapshot.run(guarded, market="US")
+
+    assert payload == {
+        **guarded,
+        "watchlist_scans": {"status": "failed", "reason": "SoftTimeLimitExceeded('soft limit',)"},
+    }
+    assert scanned == [["MSFT"]]
+    assert _scans(db) == []
+
+
 def test_pipeline_stage_records_a_failure_instead_of_ending_the_chain(monkeypatch):
     from sqlalchemy.exc import OperationalError
 
