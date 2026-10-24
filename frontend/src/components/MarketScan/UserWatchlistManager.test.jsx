@@ -43,9 +43,10 @@ describe('UserWatchlistManager import flow', () => {
   });
 
   it('opens the import dialog and submits pasted content', async () => {
-    renderWithProviders(
+    const { queryClient } = renderWithProviders(
       <UserWatchlistManager open={true} onClose={vi.fn()} onUpdate={vi.fn()} />
     );
+    queryClient.setQueryData(['userWatchlistSymbols', 1], { symbols: ['AAPL'] });
 
     expect(await screen.findByText('Leaders')).toBeInTheDocument();
     fireEvent.click(screen.getByText('Leaders'));
@@ -62,6 +63,9 @@ describe('UserWatchlistManager import flow', () => {
         content: 'NVDA\nMSFT\nAAPL',
         format: 'auto',
       });
+    });
+    await waitFor(() => {
+      expect(queryClient.getQueryState(['userWatchlistSymbols', 1]).isInvalidated).toBe(true);
     });
   }, 20000);
 
@@ -89,5 +93,41 @@ describe('UserWatchlistManager import flow', () => {
     await waitFor(() => {
       expect(api.importItems).toHaveBeenCalledWith(1, { content: exportText, format: 'auto' });
     });
+  }, 20000);
+
+  const openImportDialog = async () => {
+    fireEvent.click(await screen.findByText('Leaders'));
+    fireEvent.click(screen.getByRole('button', { name: 'Import' }));
+    return screen.findByRole('dialog', { name: 'Import Symbols' });
+  };
+
+  it('rejects a file over 1 MB without reading it', async () => {
+    const user = userEvent.setup();
+    renderWithProviders(
+      <UserWatchlistManager open={true} onClose={vi.fn()} onUpdate={vi.fn()} />
+    );
+    const importDialog = await openImportDialog();
+    const file = new File(['x'.repeat(1_000_001)], 'huge.csv', { type: 'text/csv' });
+    file.text = vi.fn();
+
+    await user.upload(within(importDialog).getByLabelText('Choose file'), file);
+
+    expect(await within(importDialog).findByText('huge.csv is over 1 MB.')).toBeInTheDocument();
+    expect(file.text).not.toHaveBeenCalled();
+    expect(within(importDialog).getByRole('textbox', { name: 'Symbols to import' })).toHaveValue('');
+  }, 20000);
+
+  it('reports a file that cannot be read', async () => {
+    const user = userEvent.setup();
+    renderWithProviders(
+      <UserWatchlistManager open={true} onClose={vi.fn()} onUpdate={vi.fn()} />
+    );
+    const importDialog = await openImportDialog();
+    const file = new File(['NVDA'], 'locked.txt', { type: 'text/plain' });
+    file.text = () => Promise.reject(new Error('NotReadableError'));
+
+    await user.upload(within(importDialog).getByLabelText('Choose file'), file);
+
+    expect(await within(importDialog).findByText('Could not read locked.txt.')).toBeInTheDocument();
   }, 20000);
 });

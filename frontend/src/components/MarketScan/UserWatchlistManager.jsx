@@ -44,6 +44,10 @@ import {
   reorderItems,
   importItems,
 } from '../../api/userWatchlists';
+import { invalidateWatchlistItems } from '../../api/userWatchlistQueries';
+
+// Matches the backend's 1,000,000-character import cap; a 2000-symbol export is ~50 KB.
+const MAX_IMPORT_FILE_BYTES = 1_000_000;
 
 function UserWatchlistManager({ open, onClose, onUpdate }) {
   const queryClient = useQueryClient();
@@ -56,6 +60,7 @@ function UserWatchlistManager({ open, onClose, onUpdate }) {
   const [importDialogOpen, setImportDialogOpen] = useState(false);
   const [importContent, setImportContent] = useState('');
   const [importDraftWatchlistId, setImportDraftWatchlistId] = useState(null);
+  const [importFileError, setImportFileError] = useState(null);
 
   // Fetch watchlists
   const { data: watchlistsData, isLoading: watchlistsLoading } = useQuery({
@@ -113,7 +118,7 @@ function UserWatchlistManager({ open, onClose, onUpdate }) {
   const addItemMutation = useMutation({
     mutationFn: ({ watchlistId, data }) => addItem(watchlistId, data),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['userWatchlistData', selectedWatchlistId] });
+      invalidateWatchlistItems(queryClient, selectedWatchlistId);
       setNewSymbol('');
       setFeedback(null);
       onUpdate?.();
@@ -124,7 +129,7 @@ function UserWatchlistManager({ open, onClose, onUpdate }) {
   const removeItemMutation = useMutation({
     mutationFn: (id) => removeItem(id),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['userWatchlistData', selectedWatchlistId] });
+      invalidateWatchlistItems(queryClient, selectedWatchlistId);
       setFeedback(null);
       onUpdate?.();
     },
@@ -142,7 +147,7 @@ function UserWatchlistManager({ open, onClose, onUpdate }) {
   const reorderItemsMutation = useMutation({
     mutationFn: ({ watchlistId, itemIds }) => reorderItems(watchlistId, itemIds),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['userWatchlistData', selectedWatchlistId] });
+      invalidateWatchlistItems(queryClient, selectedWatchlistId);
       onUpdate?.();
     },
   });
@@ -150,7 +155,7 @@ function UserWatchlistManager({ open, onClose, onUpdate }) {
   const importItemsMutation = useMutation({
     mutationFn: ({ watchlistId, payload }) => importItems(watchlistId, payload),
     onSuccess: (result, variables) => {
-      queryClient.invalidateQueries({ queryKey: ['userWatchlistData', variables.watchlistId] });
+      invalidateWatchlistItems(queryClient, variables.watchlistId);
       setImportContent('');
       setImportDialogOpen(false);
       const parts = [
@@ -208,6 +213,7 @@ function UserWatchlistManager({ open, onClose, onUpdate }) {
   };
 
   const handleOpenImportDialog = () => {
+    setImportFileError(null);
     if (importDraftWatchlistId !== selectedWatchlistId) {
       setImportContent('');
       setImportDraftWatchlistId(selectedWatchlistId);
@@ -510,12 +516,27 @@ function UserWatchlistManager({ open, onClose, onUpdate }) {
               onChange={async (event) => {
                 const [file] = event.target.files;
                 event.target.value = '';
-                if (file) {
+                if (!file) {
+                  return;
+                }
+                if (file.size > MAX_IMPORT_FILE_BYTES) {
+                  setImportFileError(`${file.name} is over 1 MB.`);
+                  return;
+                }
+                try {
                   setImportContent(await file.text());
+                  setImportFileError(null);
+                } catch {
+                  setImportFileError(`Could not read ${file.name}.`);
                 }
               }}
             />
           </Button>
+          {importFileError && (
+            <Alert severity="error" sx={{ mb: 1.5 }}>
+              {importFileError}
+            </Alert>
+          )}
           <TextField
             autoFocus
             multiline
