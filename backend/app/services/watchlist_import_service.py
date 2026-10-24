@@ -150,7 +150,7 @@ def _parse_tabular_symbols(content: str) -> list[str]:
         return symbols
 
     cells = [
-        cell.split()
+        _unquote(cell).split()
         for cell in re.split(r"[,;\t\n]", _TRADINGVIEW_SECTION_RE.sub("", content))
     ]
     if all(_is_symbol_cell(words) for words in cells if words):
@@ -161,6 +161,13 @@ def _parse_tabular_symbols(content: str) -> list[str]:
         if cells_after_sections and cells_after_sections[0]:
             symbols.append(cells_after_sections[0])
     return symbols
+
+
+def _unquote(cell: str) -> str:
+    # Only a fully quoted cell is unwrapped, so a quoted name holding a comma
+    # such as "Apple, Inc." splits into pieces that are not symbols.
+    cell = cell.strip()
+    return cell[1:-1] if len(cell) >= 2 and cell[0] == cell[-1] == '"' else cell
 
 
 def _is_symbol_cell(words: list[str]) -> bool:

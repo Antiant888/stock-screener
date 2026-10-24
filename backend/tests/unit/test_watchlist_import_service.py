@@ -333,6 +333,8 @@ def _outcome_by_cell(content):
         ("NVDA, msft\nAAPL\tNVDA\n\n", {"NVDA": "added", "MSFT": "existing", "AAPL": "added"}),
         ("AAPL,MSFT\nNVDA", {"AAPL": "added", "MSFT": "existing", "NVDA": "added"}),
         ("BRK.B,BF.B", {"BRK.B": "added", "BF.B": "added"}),
+        ('"NVDA","MSFT"\n"AAPL"', {"NVDA": "added", "MSFT": "existing", "AAPL": "added"}),
+        ('AAPL,"Apple, Inc."\nMSFT,"Microsoft, Corp"', {"AAPL": "added", "MSFT": "existing"}),
     ],
 )
 def test_every_symbol_cell_is_imported_skipped_or_reported(content, expected):
