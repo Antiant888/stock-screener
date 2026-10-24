@@ -232,3 +232,51 @@ def test_retention_keeps_the_three_newest_daily_scans_per_watchlist_and_market(d
         f"watchlist-daily:{leaders}:US:2026-10-22",
         f"watchlist-daily:{leaders}:US:2026-10-23",
     ]
+
+
+def test_pipeline_stage_adds_the_outcomes_to_the_snapshot_payload(db, monkeypatch):
+    from app.tasks import daily_market_pipeline_tasks as module
+
+    _list(db, {"AAPL": "US"})
+    _publish(db, "US", {"AAPL": True})
+    leaders = _watchlist(db, "Leaders", ["AAPL"])
+    dispatcher = FakeTaskDispatcher()
+    monkeypatch.setattr("app.wiring.bootstrap.get_create_scan_use_case", lambda: _use_case(dispatcher))
+
+    payload = module.scan_watchlists_after_snapshot.run(
+        {"status": "ok", "stage": "scan", "auto_scan_id": "auto-1"}, market="us", as_of_date="2026-10-23"
+    )
+
+    [scan] = _scans(db)
+    assert payload == {
+        "status": "ok",
+        "stage": "scan",
+        "auto_scan_id": "auto-1",
+        "watchlist_scans": {
+            "status": "completed",
+            "outcomes": [
+                {"watchlist_id": leaders, "status": "created", "scan_id": scan.scan_id, "reason": None}
+            ],
+        },
+    }
+    assert scan.idempotency_key == f"watchlist-daily:{leaders}:US:2026-10-23"
+    assert dispatcher.dispatched == []
+
+
+def test_pipeline_stage_records_a_failure_instead_of_ending_the_chain(monkeypatch):
+    from sqlalchemy.exc import OperationalError
+
+    from app.tasks import daily_market_pipeline_tasks as module
+
+    def _unreachable(db, market):
+        raise OperationalError("SELECT", {}, Exception("connection refused"))
+
+    monkeypatch.setattr("app.services.watchlist_daily_scans.flagged_watchlists_in_market", _unreachable)
+
+    payload = module.scan_watchlists_after_snapshot.run(
+        {"auto_scan_id": "auto-1"}, market="HK", as_of_date="2026-10-23"
+    )
+
+    assert payload["auto_scan_id"] == "auto-1"
+    assert payload["watchlist_scans"]["status"] == "failed"
+    assert "connection refused" in payload["watchlist_scans"]["reason"]

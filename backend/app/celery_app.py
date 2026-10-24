@@ -429,6 +429,7 @@ _MARKET_JOB_TASKS = (
     'app.tasks.daily_market_pipeline_tasks.guard_group_result',
     'app.tasks.daily_market_pipeline_tasks.guard_snapshot_result',
     'app.tasks.daily_market_pipeline_tasks.dispatch_options_after_snapshot',
+    'app.tasks.daily_market_pipeline_tasks.scan_watchlists_after_snapshot',
     'app.tasks.daily_market_pipeline_tasks.release_daily_market_pipeline_claim',
 )
 
