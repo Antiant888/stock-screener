@@ -414,7 +414,71 @@ class TestFreshnessChecker:
         assert uow.scans.rows[0].warnings[0]["omitted_symbols"] == ["LHSW"]
         assert result.warnings[0].omitted_count == 1
 
-    def test_custom_universe_does_not_allow_stale_tail(self):
+    def test_custom_universe_omits_a_stale_tail_like_broad_scans(self):
+        from datetime import date
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        from app.services import market_data_freshness
+
+        fresh = [f"FRESH{i:03d}" for i in range(99)]
+        symbols = [*fresh, "HALTED"]
+        rows = [
+            SimpleNamespace(symbol=symbol, market="US", last_date=date(2026, 6, 18))
+            for symbol in fresh
+        ] + [SimpleNamespace(symbol="HALTED", market="US", last_date=date(2026, 5, 13))]
+        session = SimpleNamespace(close=lambda: None)
+        for method in ("query", "outerjoin", "filter", "group_by"):
+            setattr(session, method, lambda *args, **kwargs: session)
+        session.all = lambda: rows
+        uow = _make_uow(symbols)
+        dispatcher = FakeTaskDispatcher()
+        uc = CreateScanUseCase(
+            dispatcher=dispatcher,
+            freshness_evaluator=market_data_freshness.evaluate_symbol_freshness,
+        )
+
+        with (
+            patch.object(market_data_freshness, "SessionLocal", return_value=session),
+            patch.object(
+                market_data_freshness,
+                "get_market_calendar_service",
+                return_value=SimpleNamespace(
+                    last_completed_trading_day=lambda market, now=None: date(2026, 6, 18)
+                ),
+            ),
+            patch.object(
+                market_data_freshness,
+                "get_market_refresh_state",
+                return_value={
+                    "market": "US",
+                    "status": "completed",
+                    "last_refreshed_trading_day": "2026-06-18",
+                },
+            ),
+            patch.object(
+                market_data_freshness,
+                "_latest_benchmark_bar",
+                return_value=(("SPY",), date.max),
+            ),
+        ):
+            result = uc.execute(
+                uow,
+                _make_command(
+                    universe_type="custom",
+                    universe_key="custom:watchlist",
+                    universe_symbols=symbols,
+                ),
+            )
+
+        assert dispatcher.dispatched[0][1] == fresh
+        assert [warning.code for warning in result.warnings] == [
+            "market_data_stale_tail_omitted"
+        ]
+        assert result.warnings[0].omitted_symbols == ("HALTED",)
+        assert uow.scans.rows[0].warnings[0]["omitted_count"] == 1
+
+    def test_test_universe_still_blocks_on_any_stale_symbol(self):
         uow = _make_uow(["AAPL", "LHSW"])
         dispatcher = FakeTaskDispatcher()
         captured: list[bool] = []
@@ -427,8 +491,8 @@ class TestFreshnessChecker:
         uc.execute(
             uow,
             _make_command(
-                universe_type="custom",
-                universe_key="custom:AAPL,LHSW",
+                universe_type="test",
+                universe_key="test:AAPL,LHSW",
                 universe_symbols=["AAPL", "LHSW"],
             ),
         )

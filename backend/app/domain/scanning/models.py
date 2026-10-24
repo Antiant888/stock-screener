@@ -122,6 +122,7 @@ class ScanFreshnessPolicy:
                 "market",
                 "exchange",
                 "index",
+                "custom",
             }
         )
 
