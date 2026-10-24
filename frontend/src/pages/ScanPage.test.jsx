@@ -908,6 +908,89 @@ describe('ScanPage', () => {
       expect(loadedScanIds()).toEqual([null]);
       expect(scanApi.getScanStatus).not.toHaveBeenCalledWith('us-scan');
     });
+
+    describe('after a market switch', () => {
+      let usScans;
+      const switchMarket = async (rerender, market) => {
+        marketState.selectedMarket = market;
+        rerender(<ScanPage />);
+        await waitFor(() => expect(scanApi.getScans).toHaveBeenCalledWith(expect.objectContaining({ market })));
+        await act(async () => {});
+      };
+      const usScanLands = async (queryClient, scans) => {
+        usScans = scans;
+        await act(async () => {
+          await queryClient.invalidateQueries({ queryKey: ['scanHistory'] });
+        });
+        await waitFor(() => expect(scanApi.getScanStatus).toHaveBeenCalledWith('us-scan'));
+      };
+
+      beforeEach(() => {
+        usScans = [WATCHLIST_SCAN];
+        scanApi.getScans.mockImplementation(async ({ market } = {}) => (
+          market === 'US' ? { scans: usScans } : { scans: [] }
+        ));
+      });
+
+      it('auto-loads a US market scan after an opened scan and a round trip through HK', async () => {
+        const { queryClient, rerender } = renderWithProviders(<ScanPage />);
+
+        await historyHolds(queryClient, [WATCHLIST_SCAN]);
+        fireEvent.mouseDown(await screen.findByLabelText('Previous Scans'));
+        const option = await waitFor(() => {
+          const element = document.querySelector('[role="option"][data-value="watchlist-scan"]');
+          expect(element).not.toBeNull();
+          return element;
+        });
+        fireEvent.click(option);
+        await waitFor(() => expect(scanApi.getScanStatus).toHaveBeenCalledWith('watchlist-scan'));
+
+        await switchMarket(rerender, 'HK');
+        await switchMarket(rerender, 'US');
+        await usScanLands(queryClient, [US_SCAN, WATCHLIST_SCAN]);
+
+        expect(loadedScanIds()).toEqual([null, 'watchlist-scan', 'us-scan']);
+      });
+
+      it('auto-loads a US market scan after a created scan and a round trip through HK', async () => {
+        const createdScan = { ...WATCHLIST_SCAN, scan_id: 'scan-new' };
+        scanApi.createScan.mockImplementationOnce(async () => {
+          usScans = [createdScan, WATCHLIST_SCAN];
+          return { scan_id: 'scan-new', status: 'completed', total_stocks: 1 };
+        });
+
+        const { queryClient, rerender } = renderWithProviders(<ScanPage />);
+
+        await historyHolds(queryClient, [WATCHLIST_SCAN]);
+        fireEvent.click(await screen.findByText('Scan', { selector: 'button' }, { timeout: 3000 }));
+        await historyHolds(queryClient, [createdScan, WATCHLIST_SCAN]);
+
+        await switchMarket(rerender, 'HK');
+        await switchMarket(rerender, 'US');
+        await usScanLands(queryClient, [createdScan, US_SCAN, WATCHLIST_SCAN]);
+
+        expect(loadedScanIds()).toEqual([null, 'us-scan']);
+      });
+
+      it('stops showing US results after switching to a market with no finished market scan', async () => {
+        usScans = [US_SCAN];
+        scanApi.queryScanResults.mockResolvedValue({
+          total: 1,
+          results: [{ symbol: 'NVDA', company_name: 'NVIDIA', composite_score: 98, current_price: 900, stage: 2 }],
+        });
+
+        const { rerender } = renderWithProviders(<ScanPage />);
+
+        await waitFor(
+          () => expect(screen.getByText(/Results:\s*1 stocks/i)).toBeInTheDocument(),
+          { timeout: 3000 },
+        );
+        await switchMarket(rerender, 'JP');
+
+        await waitFor(() => expect(screen.queryByText(/Results:\s*1 stocks/i)).not.toBeInTheDocument());
+        expect(screen.queryByText('NVIDIA')).not.toBeInTheDocument();
+      });
+    });
   });
 
   it('disables scan creation with a hover warning when prices refresh is active for the selected market', async () => {

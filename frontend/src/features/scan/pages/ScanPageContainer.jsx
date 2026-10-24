@@ -107,9 +107,9 @@ function ScanPage() {
   const scanDefaultsAppliedRef = useRef(null);
   // Market whose scan selection is settled: its latest market scan was
   // auto-loaded, or the user opened or created a scan, which auto-load must
-  // never replace. Changing the global market re-arms the auto-load for the
-  // new market. The sentinel can never
-  // collide with a market code or with null (the no-provider market value).
+  // never replace. Changing the global market resets it to the sentinel, which
+  // can never collide with a market code or with null (the no-provider market
+  // value).
   const autoLoadedMarketRef = useRef(NO_MARKET_AUTOLOADED);
   const globalMarketRef = useRef(globalMarket);
   globalMarketRef.current = globalMarket;
@@ -238,14 +238,24 @@ function ScanPage() {
     }
   }, [universeMarket, universeScope, universeSelections]);
 
+  const clearScanView = useCallback(() => {
+    currentScanIdRef.current = null;
+    setCurrentScanId(null);
+    setBootstrappedScanId(null);
+    setScanStatus(null);
+    setLastFinishedScan(null);
+    requestPage(1);
+  }, [requestPage]);
+
   // Another market's results must never stand in for this market's scan.
-  const lastFinishedMarketRef = useRef(globalMarket);
+  const viewMarketRef = useRef(globalMarket);
   useEffect(() => {
-    if (lastFinishedMarketRef.current !== globalMarket) {
-      lastFinishedMarketRef.current = globalMarket;
-      setLastFinishedScan(null);
+    if (viewMarketRef.current !== globalMarket) {
+      viewMarketRef.current = globalMarket;
+      autoLoadedMarketRef.current = NO_MARKET_AUTOLOADED;
+      clearScanView();
     }
-  }, [globalMarket]);
+  }, [clearScanView, globalMarket]);
 
   useEffect(() => {
     if (currentScanId && (scanStatus === 'completed' || scanStatus === 'cancelled')) {
@@ -388,12 +398,7 @@ function ScanPage() {
   const handleLoadScan = useCallback(
     async (scanId) => {
       if (!scanId) {
-        currentScanIdRef.current = null;
-        setCurrentScanId(null);
-        setBootstrappedScanId(null);
-        setScanStatus(null);
-        setLastFinishedScan(null);
-        requestPage(1);
+        clearScanView();
         autoLoadedMarketRef.current = globalMarketRef.current;
         return;
       }
@@ -437,7 +442,7 @@ function ScanPage() {
         }
       }
     },
-    [applyScanBootstrapSnapshot, queryClient, rememberScanSource, requestPage]
+    [applyScanBootstrapSnapshot, clearScanView, queryClient, rememberScanSource, requestPage]
   );
 
   const handleUserLoadScan = useCallback((scanId) => {
