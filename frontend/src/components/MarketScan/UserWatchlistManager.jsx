@@ -45,9 +45,10 @@ import {
   importItems,
 } from '../../api/userWatchlists';
 import { invalidateWatchlistItems } from '../../api/userWatchlistQueries';
+import { getErrorMessage } from '../../utils/errorMessage';
 
 // Matches the backend's 1,000,000-character import cap; a 2000-symbol export is ~50 KB.
-const MAX_IMPORT_FILE_BYTES = 1_000_000;
+const MAX_IMPORT_CHARS = 1_000_000;
 
 function UserWatchlistManager({ open, onClose, onUpdate }) {
   const queryClient = useQueryClient();
@@ -88,7 +89,7 @@ function UserWatchlistManager({ open, onClose, onUpdate }) {
       setSelectedWatchlistId(newWatchlist.id);
       onUpdate?.();
     },
-    onError: (err) => setFeedback({ severity: 'error', message: err.response?.data?.detail || 'Failed to create watchlist' }),
+    onError: (err) => setFeedback({ severity: 'error', message: getErrorMessage(err, 'Failed to create watchlist') }),
   });
 
   const updateMutation = useMutation({
@@ -99,7 +100,7 @@ function UserWatchlistManager({ open, onClose, onUpdate }) {
       setFeedback(null);
       onUpdate?.();
     },
-    onError: (err) => setFeedback({ severity: 'error', message: err.response?.data?.detail || 'Failed to update watchlist' }),
+    onError: (err) => setFeedback({ severity: 'error', message: getErrorMessage(err, 'Failed to update watchlist') }),
   });
 
   const deleteMutation = useMutation({
@@ -112,7 +113,7 @@ function UserWatchlistManager({ open, onClose, onUpdate }) {
       setFeedback(null);
       onUpdate?.();
     },
-    onError: (err) => setFeedback({ severity: 'error', message: err.response?.data?.detail || 'Failed to delete watchlist' }),
+    onError: (err) => setFeedback({ severity: 'error', message: getErrorMessage(err, 'Failed to delete watchlist') }),
   });
 
   const addItemMutation = useMutation({
@@ -123,7 +124,7 @@ function UserWatchlistManager({ open, onClose, onUpdate }) {
       setFeedback(null);
       onUpdate?.();
     },
-    onError: (err) => setFeedback({ severity: 'error', message: err.response?.data?.detail || 'Failed to add stock' }),
+    onError: (err) => setFeedback({ severity: 'error', message: getErrorMessage(err, 'Failed to add stock') }),
   });
 
   const removeItemMutation = useMutation({
@@ -133,7 +134,7 @@ function UserWatchlistManager({ open, onClose, onUpdate }) {
       setFeedback(null);
       onUpdate?.();
     },
-    onError: (err) => setFeedback({ severity: 'error', message: err.response?.data?.detail || 'Failed to remove stock' }),
+    onError: (err) => setFeedback({ severity: 'error', message: getErrorMessage(err, 'Failed to remove stock') }),
   });
 
   const reorderWatchlistsMutation = useMutation({
@@ -170,7 +171,7 @@ function UserWatchlistManager({ open, onClose, onUpdate }) {
       setFeedback({ severity: 'success', message: parts.join(', ') });
       onUpdate?.();
     },
-    onError: (err) => setFeedback({ severity: 'error', message: err.response?.data?.detail || 'Failed to import symbols' }),
+    onError: (err) => setFeedback({ severity: 'error', message: getErrorMessage(err, 'Failed to import symbols') }),
   });
 
   const handleCreate = () => {
@@ -257,6 +258,7 @@ function UserWatchlistManager({ open, onClose, onUpdate }) {
   };
 
   const selectedWatchlist = watchlists.find((w) => w.id === selectedWatchlistId);
+  const importTooLong = importContent.length > MAX_IMPORT_CHARS;
 
   return (
     <Dialog open={open} onClose={onClose} maxWidth="md" fullWidth>
@@ -519,7 +521,7 @@ function UserWatchlistManager({ open, onClose, onUpdate }) {
                 if (!file) {
                   return;
                 }
-                if (file.size > MAX_IMPORT_FILE_BYTES) {
+                if (file.size > MAX_IMPORT_CHARS) {
                   setImportFileError(`${file.name} is over 1 MB.`);
                   return;
                 }
@@ -532,9 +534,9 @@ function UserWatchlistManager({ open, onClose, onUpdate }) {
               }}
             />
           </Button>
-          {importFileError && (
+          {(importFileError || importTooLong) && (
             <Alert severity="error" sx={{ mb: 1.5 }}>
-              {importFileError}
+              {importFileError || `This text is over ${MAX_IMPORT_CHARS.toLocaleString('en-US')} characters.`}
             </Alert>
           )}
           <TextField
@@ -559,7 +561,9 @@ function UserWatchlistManager({ open, onClose, onUpdate }) {
               watchlistId: selectedWatchlistId,
               payload: { content: importContent, format: 'auto' },
             })}
-            disabled={!selectedWatchlistId || !importContent.trim() || importItemsMutation.isPending}
+            disabled={
+              !selectedWatchlistId || !importContent.trim() || importTooLong || importItemsMutation.isPending
+            }
           >
             Import
           </Button>

@@ -19,6 +19,7 @@ import {
 import { previewWatchlistAdd } from '../../api/assistant';
 import { bulkAddItems, getWatchlists } from '../../api/userWatchlists';
 import { invalidateWatchlistItems } from '../../api/userWatchlistQueries';
+import { getErrorMessage } from '../../utils/errorMessage';
 
 function AssistantWatchlistDialog({ open, symbols, onClose }) {
   const queryClient = useQueryClient();
@@ -92,9 +93,7 @@ function AssistantWatchlistDialog({ open, symbols, onClose }) {
             </Box>
           ) : watchlistsQuery.isError ? (
             <Alert severity="error">
-              {watchlistsQuery.error?.response?.data?.detail
-                || watchlistsQuery.error?.message
-                || 'Failed to load watchlists.'}
+              {getErrorMessage(watchlistsQuery.error, 'Failed to load watchlists.')}
             </Alert>
           ) : noWatchlists ? (
             <Alert severity="info">Create a watchlist first to add assistant suggestions.</Alert>
@@ -124,9 +123,7 @@ function AssistantWatchlistDialog({ open, symbols, onClose }) {
 
           {selectedWatchlist && previewQuery.isError && (
             <Alert severity="error">
-              {previewQuery.error?.response?.data?.detail
-                || previewQuery.error?.message
-                || 'Failed to preview symbols for this watchlist.'}
+              {getErrorMessage(previewQuery.error, 'Failed to preview symbols for this watchlist.')}
             </Alert>
           )}
 
@@ -148,7 +145,7 @@ function AssistantWatchlistDialog({ open, symbols, onClose }) {
 
           {addMutation.isError && (
             <Alert severity="error">
-              {addMutation.error?.response?.data?.detail || addMutation.error?.message || 'Failed to add symbols.'}
+              {getErrorMessage(addMutation.error, 'Failed to add symbols.')}
             </Alert>
           )}
         </Stack>

@@ -37,23 +37,7 @@ import {
   bulkAddItems,
 } from '../../api/userWatchlists';
 import { invalidateWatchlistItems } from '../../api/userWatchlistQueries';
-
-const formatErrorDetail = (detail) => {
-  if (typeof detail === 'string') return detail;
-  if (Array.isArray(detail)) {
-    return detail.map(formatErrorDetail).filter(Boolean).join('; ');
-  }
-  if (detail && typeof detail === 'object') {
-    return typeof detail.msg === 'string' ? detail.msg : JSON.stringify(detail);
-  }
-  return detail == null ? '' : String(detail);
-};
-
-const getErrorMessage = (error) => (
-  formatErrorDetail(error?.response?.data?.detail)
-  || error?.message
-  || 'Unable to update watchlist'
-);
+import { getErrorMessage } from '../../utils/errorMessage';
 
 function AddToWatchlistMenu({ symbols, trigger, onSuccess, size = 'small' }) {
   const [anchorEl, setAnchorEl] = useState(null);
@@ -220,7 +204,7 @@ function AddToWatchlistMenu({ symbols, trigger, onSuccess, size = 'small' }) {
 
         {visibleError && (
           <Alert severity="error" sx={{ mx: 1, my: 1 }}>
-            {getErrorMessage(visibleError)}
+            {getErrorMessage(visibleError, 'Unable to update watchlist')}
           </Alert>
         )}
 

@@ -113,4 +113,18 @@ describe('AssistantWatchlistDialog', () => {
       expect(screen.getByRole('button', { name: 'Confirm add' })).toBeDisabled();
     });
   });
+
+  it('shows a validation error list from the add as text', async () => {
+    bulkAddItems.mockRejectedValue({
+      response: { status: 422, data: { detail: [{ loc: ['body', 'symbols'], msg: 'Field required' }] } },
+    });
+    renderWithProviders(
+      <AssistantWatchlistDialog open symbols={['NVDA', 'AVGO']} onClose={vi.fn()} />,
+    );
+
+    expect(await screen.findByText('1 symbol can be added to Leaders.')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm add' }));
+
+    expect(await screen.findByText('Field required')).toBeInTheDocument();
+  });
 });

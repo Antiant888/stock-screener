@@ -130,4 +130,66 @@ describe('UserWatchlistManager import flow', () => {
 
     expect(await within(importDialog).findByText('Could not read locked.txt.')).toBeInTheDocument();
   }, 20000);
+
+  it('shows a readable message when the server rejects the import with a validation list', async () => {
+    api.importItems.mockRejectedValue({
+      response: {
+        status: 422,
+        data: {
+          detail: [{
+            type: 'string_too_long',
+            loc: ['body', 'content'],
+            msg: 'String should have at most 1000000 characters',
+            input: 'NVDA,NVDA',
+            ctx: { max_length: 1000000 },
+          }],
+        },
+      },
+    });
+    renderWithProviders(
+      <UserWatchlistManager open={true} onClose={vi.fn()} onUpdate={vi.fn()} />
+    );
+    const importDialog = await openImportDialog();
+
+    fireEvent.change(
+      within(importDialog).getByRole('textbox', { name: 'Symbols to import' }),
+      { target: { value: 'NVDA' } },
+    );
+    fireEvent.click(within(importDialog).getByRole('button', { name: 'Import' }));
+
+    expect(await screen.findByText('String should have at most 1000000 characters')).toBeInTheDocument();
+  }, 20000);
+
+  it('shows the watchlist size limit the server reports', async () => {
+    const limit = 'A watchlist holds at most 2,000 symbols. This one has 1, and adding 2,000 more would make 2,001.';
+    api.importItems.mockRejectedValue({ response: { status: 400, data: { detail: limit } } });
+    renderWithProviders(
+      <UserWatchlistManager open={true} onClose={vi.fn()} onUpdate={vi.fn()} />
+    );
+    const importDialog = await openImportDialog();
+
+    fireEvent.change(
+      within(importDialog).getByRole('textbox', { name: 'Symbols to import' }),
+      { target: { value: 'NVDA' } },
+    );
+    fireEvent.click(within(importDialog).getByRole('button', { name: 'Import' }));
+
+    expect(await screen.findByText(limit)).toBeInTheDocument();
+  }, 20000);
+
+  it('blocks pasted text over the import limit before sending it', async () => {
+    renderWithProviders(
+      <UserWatchlistManager open={true} onClose={vi.fn()} onUpdate={vi.fn()} />
+    );
+    const importDialog = await openImportDialog();
+
+    fireEvent.change(
+      within(importDialog).getByRole('textbox', { name: 'Symbols to import' }),
+      { target: { value: 'N'.repeat(1_000_001) } },
+    );
+
+    expect(within(importDialog).getByText('This text is over 1,000,000 characters.')).toBeInTheDocument();
+    expect(within(importDialog).getByRole('button', { name: 'Import' })).toBeDisabled();
+    expect(api.importItems).not.toHaveBeenCalled();
+  }, 20000);
 });
