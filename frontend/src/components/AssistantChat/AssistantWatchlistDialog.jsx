@@ -18,6 +18,7 @@ import {
 } from '@mui/material';
 import { previewWatchlistAdd } from '../../api/assistant';
 import { bulkAddItems, getWatchlists } from '../../api/userWatchlists';
+import { invalidateWatchlistItems } from '../../api/userWatchlistQueries';
 
 function AssistantWatchlistDialog({ open, symbols, onClose }) {
   const queryClient = useQueryClient();
@@ -64,7 +65,7 @@ function AssistantWatchlistDialog({ open, symbols, onClose }) {
     mutationFn: () => bulkAddItems(Number(selectedWatchlistId), previewQuery.data?.addable_symbols || []),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['userWatchlists'] });
-      queryClient.invalidateQueries({ queryKey: ['userWatchlistData', Number(selectedWatchlistId)] });
+      invalidateWatchlistItems(queryClient, Number(selectedWatchlistId));
       onClose();
     },
   });

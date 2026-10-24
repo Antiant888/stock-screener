@@ -185,7 +185,7 @@ describe('withWatchlistUniverse', () => {
   const watchlists = [{ id: 7, name: 'Leaders' }, { id: 8, name: 'Laggards' }];
 
   it('lists watchlists under a Watchlist market placed before Test Mode', () => {
-    const selections = withWatchlistUniverse(base, watchlists);
+    const selections = withWatchlistUniverse(base, { watchlists });
 
     expect(selections.markets.map((option) => option.value)).toEqual(['US', 'WATCHLIST', 'TEST']);
     expect(selections.scopesByMarket.WATCHLIST.map((option) => [option.value, option.label])).toEqual([
@@ -195,7 +195,7 @@ describe('withWatchlistUniverse', () => {
   });
 
   it('turns the loaded watchlist into a counted custom universe', () => {
-    const selections = withWatchlistUniverse(base, watchlists, { id: '7', symbols: ['NVDA', 'ANET'] });
+    const selections = withWatchlistUniverse(base, { watchlists, selected: { id: '7', symbols: ['NVDA', 'ANET'] } });
     const [leaders] = selections.scopesByMarket.WATCHLIST;
 
     expect(buildUniverseDef('WATCHLIST', '7', selections)).toEqual({
@@ -206,10 +206,10 @@ describe('withWatchlistUniverse', () => {
   });
 
   it('blocks an empty watchlist and one over the 2000-symbol limit', () => {
-    const empty = withWatchlistUniverse(base, watchlists, { id: '7', symbols: [] });
-    const oversized = withWatchlistUniverse(base, watchlists, {
-      id: '7',
-      symbols: Array.from({ length: 2001 }, (_, index) => `S${index}`),
+    const empty = withWatchlistUniverse(base, { watchlists, selected: { id: '7', symbols: [] } });
+    const oversized = withWatchlistUniverse(base, {
+      watchlists,
+      selected: { id: '7', symbols: Array.from({ length: 2001 }, (_, index) => `S${index}`) },
     });
 
     expect(empty.scopesByMarket.WATCHLIST[0].disabledReason).toBe('Empty');

@@ -87,6 +87,7 @@ vi.mock('../api/userWatchlists', async (importOriginal) => ({
   ...(await importOriginal()),
   getWatchlists: vi.fn(),
   getWatchlistData: vi.fn(),
+  getWatchlistSymbols: vi.fn(),
 }));
 
 beforeEach(() => {
@@ -139,6 +140,15 @@ describe('ScanPage', () => {
     ));
   });
 
+  const pickWatchlist = async (user, name) => {
+    await user.click(await screen.findByRole('combobox', { name: 'Market' }));
+    await user.click(await screen.findByRole('option', { name: 'Watchlist' }));
+    await user.click(await screen.findByRole('combobox', { name: 'Watchlist' }));
+    if (name) {
+      await user.click(await screen.findByRole('option', { name }));
+    }
+  };
+
   it('scans a saved watchlist as a custom universe sent in the request body', async () => {
     const user = userEvent.setup();
     runtimeState.runtimeReady = true;
@@ -146,20 +156,11 @@ describe('ScanPage', () => {
       watchlists: [{ id: 7, name: 'Leaders' }, { id: 8, name: 'Laggards' }],
       total: 2,
     });
-    watchlistApi.getWatchlistData.mockResolvedValue({
-      id: 7,
-      name: 'Leaders',
-      items: [{ symbol: 'NVDA' }, { symbol: '0700.HK' }, { symbol: 'ANET' }],
-      price_change_bounds: {},
-    });
+    watchlistApi.getWatchlistSymbols.mockResolvedValue({ symbols: ['NVDA', '0700.HK', 'ANET'] });
     scanApi.createScan.mockResolvedValueOnce({ scan_id: 'watchlist-scan', status: 'queued' });
 
     renderWithProviders(<ScanPage />);
-
-    await user.click(await screen.findByRole('combobox', { name: 'Market' }));
-    await user.click(await screen.findByRole('option', { name: 'Watchlist' }));
-    await user.click(await screen.findByRole('combobox', { name: 'Watchlist' }));
-    await user.click(await screen.findByRole('option', { name: 'Leaders' }));
+    await pickWatchlist(user, 'Leaders');
 
     expect(await screen.findByText('3 stocks')).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Scan' }));
@@ -169,8 +170,65 @@ describe('ScanPage', () => {
         universe_def: { type: 'custom', symbols: ['NVDA', '0700.HK', 'ANET'] },
       })
     ));
-    expect(watchlistApi.getWatchlistData).toHaveBeenCalledWith(7);
+    expect(watchlistApi.getWatchlistSymbols).toHaveBeenCalledWith(7);
+    expect(watchlistApi.getWatchlistData).not.toHaveBeenCalled();
     expect(window.location.search).toBe('');
+  });
+
+  it('drops a selected watchlist that was deleted elsewhere', async () => {
+    const user = userEvent.setup();
+    runtimeState.runtimeReady = true;
+    watchlistApi.getWatchlists.mockResolvedValue({ watchlists: [{ id: 7, name: 'Leaders' }], total: 1 });
+    watchlistApi.getWatchlistSymbols.mockResolvedValue({ symbols: ['NVDA'] });
+
+    const { queryClient } = renderWithProviders(<ScanPage />);
+    await pickWatchlist(user, 'Leaders');
+    expect(await screen.findByText('1 stocks')).toBeInTheDocument();
+    expect(screen.getByRole('combobox', { name: 'Watchlist' })).toHaveTextContent('Leaders');
+
+    watchlistApi.getWatchlists.mockResolvedValue({ watchlists: [{ id: 8, name: 'Laggards' }], total: 1 });
+    await act(() => queryClient.invalidateQueries({ queryKey: ['userWatchlists'] }));
+
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Scan' })).toBeDisabled());
+    expect(screen.getByText('...')).toBeInTheDocument();
+    expect(screen.getByRole('combobox', { name: 'Watchlist' })).not.toHaveTextContent('Leaders');
+  });
+
+  it.each([
+    ['there are none', () => watchlistApi.getWatchlists.mockResolvedValue({ watchlists: [], total: 0 }), 'No watchlists yet'],
+    ['the list fails to load', () => watchlistApi.getWatchlists.mockRejectedValue(new Error('down')), 'Could not load watchlists'],
+  ])('shows a disabled hint when %s', async (_, arrange, hint) => {
+    const user = userEvent.setup();
+    runtimeState.runtimeReady = true;
+    arrange();
+
+    renderWithProviders(<ScanPage />);
+    await pickWatchlist(user);
+
+    expect(await screen.findByRole('option', { name: hint })).toHaveAttribute('aria-disabled', 'true');
+    await user.keyboard('{Escape}');
+    expect(await screen.findByRole('button', { name: 'Scan' })).toBeDisabled();
+  });
+
+  it('never offers to refresh the Watchlist pseudo-market', async () => {
+    const user = userEvent.setup();
+    runtimeState.runtimeReady = true;
+    watchlistApi.getWatchlists.mockResolvedValue({ watchlists: [{ id: 7, name: 'Leaders' }], total: 1 });
+    watchlistApi.getWatchlistSymbols.mockResolvedValue({ symbols: ['NVDA'] });
+    scanApi.createScan.mockRejectedValueOnce({
+      response: {
+        status: 409,
+        data: { detail: { code: 'market_data_stale', message: 'Some symbols have no market.' } },
+      },
+      message: 'Request failed with status code 409',
+    });
+
+    renderWithProviders(<ScanPage />);
+    await pickWatchlist(user, 'Leaders');
+    await user.click(await screen.findByRole('button', { name: 'Scan' }));
+
+    expect(await screen.findByText('Error: Some symbols have no market.')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /refresh .* data/i })).not.toBeInTheDocument();
   });
 
   it('caps a Social selection at the 2000-symbol custom universe limit', async () => {
@@ -592,6 +650,22 @@ describe('ScanPage', () => {
     expect(
       await screen.findByText('Skipped 1 symbol not in the active stock universe: ZZZZ')
     ).toBeInTheDocument();
+  });
+
+  it('renders any scan warning that carries a message', async () => {
+    runtimeState.runtimeReady = true;
+    window.history.replaceState(null, '', '/scan?symbols=NVDA');
+    scanApi.createScan.mockResolvedValueOnce({
+      scan_id: 'future-warning',
+      status: 'queued',
+      total_stocks: 1,
+      warnings: [{ code: 'some_future_warning', message: 'A newer server says hello.' }],
+    });
+
+    renderWithProviders(<ScanPage />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Scan' }));
+
+    expect(await screen.findByText('A newer server says hello.')).toBeInTheDocument();
   });
 
   it('renders bootstrap stale-tail warning and clears it for a new scan', async () => {

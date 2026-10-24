@@ -50,23 +50,38 @@ function watchlistDisabledReason({ symbols, failed }) {
   return null;
 }
 
+function watchlistListHint(watchlists, listFailed) {
+  if (!watchlists) {
+    return listFailed ? 'Could not load watchlists' : 'Loading watchlists';
+  }
+  return watchlists.length === 0 ? 'No watchlists yet' : null;
+}
+
+function watchlistScope(watchlist, selected) {
+  const value = String(watchlist.id);
+  if (value !== selected?.id) {
+    return { value, label: watchlist.name, disabled: false, disabledReason: null };
+  }
+  const disabledReason = watchlistDisabledReason(selected);
+  return {
+    value,
+    label: watchlist.name,
+    disabled: Boolean(disabledReason),
+    disabledReason,
+    universe_def: disabledReason ? undefined : { type: 'custom', symbols: selected.symbols },
+  };
+}
+
 // The selected watchlist's scope option carries its custom universe_def, so
 // buildUniverseDef and getSelectionCount read it like any runtime scope.
-export function withWatchlistUniverse(universeSelections, watchlists, selected = null) {
-  const scopes = (watchlists ?? []).map((watchlist) => {
-    const value = String(watchlist.id);
-    if (value !== selected?.id) {
-      return { value, label: watchlist.name, disabled: false, disabledReason: null };
-    }
-    const disabledReason = watchlistDisabledReason(selected);
-    return {
-      value,
-      label: watchlist.name,
-      disabled: Boolean(disabledReason),
-      disabledReason,
-      universe_def: disabledReason ? undefined : { type: 'custom', symbols: selected.symbols },
-    };
-  });
+export function withWatchlistUniverse(
+  universeSelections,
+  { watchlists, listFailed = false, selected = null } = {},
+) {
+  const hint = watchlistListHint(watchlists, listFailed);
+  const scopes = hint
+    ? [{ value: 'none', label: hint, disabled: true, disabledReason: null }]
+    : watchlists.map((watchlist) => watchlistScope(watchlist, selected));
   const markets = universeSelections?.markets ?? [];
   const testIndex = markets.findIndex((option) => option.value === 'TEST');
   const insertAt = testIndex === -1 ? markets.length : testIndex;

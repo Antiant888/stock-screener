@@ -12,7 +12,6 @@ import {
   getUniverseStats,
   refreshScanCache,
 } from '../../../api/scans';
-import { getWatchlistData, getWatchlists } from '../../../api/userWatchlists';
 import FilterPanel from '../components/FilterPanelContainer';
 import ChartViewerModal from '../../../components/Scan/ChartViewerModalLazy';
 import {
@@ -30,7 +29,7 @@ import { scanBootstrapQuery as latestScanBootstrapQuery } from '../../../pageBoo
 import { DEFAULT_SCAN_DEFAULTS } from '../../../constants/scanDefaults';
 import { buildDefaultScanFilters } from '../defaultFilters';
 import { normalizeScanFilterOptions } from '../filterOptions';
-import { DEFAULT_FILTER_KEY, MAX_CUSTOM_UNIVERSE_SYMBOLS, WATCHLIST_MARKET } from '../constants';
+import { DEFAULT_FILTER_KEY, MAX_CUSTOM_UNIVERSE_SYMBOLS } from '../constants';
 import ScanControlBar from '../components/ScanControlBar';
 import ScanResultsSection from '../components/ScanResultsSection';
 import GuidedFilterBuilderDialog from '../components/GuidedFilterBuilderDialog';
@@ -51,11 +50,11 @@ import {
   stableScanFilterQueryKey,
 } from '../hooks/useScanFilterQueryState';
 import { useScanResultsController } from '../hooks/useScanResultsController';
+import { useWatchlistUniverseSelections } from '../hooks/useWatchlistUniverseSelections';
 import { canOfferLastPublished, describePublishedSource } from '../publishedSource';
 import {
   buildUniverseDef,
   parseLegacyUniverseDefault,
-  withWatchlistUniverse,
 } from '../universeSelection';
 import {
   buildRuntimeUniverseSelections,
@@ -203,36 +202,12 @@ function ScanPage() {
     () => buildRuntimeUniverseSelections(universeOptions, runtimeActivityQuery.data),
     [runtimeActivityQuery.data, universeOptions]
   );
-  const watchlistMarketSelected = universeMarket === WATCHLIST_MARKET;
-  const selectedWatchlistId = watchlistMarketSelected && universeScope ? Number(universeScope) : null;
-  const watchlistsQuery = useQuery({
-    queryKey: ['userWatchlists'],
-    queryFn: getWatchlists,
-    enabled: watchlistMarketSelected,
+  const pickerSelections = useWatchlistUniverseSelections({
+    universeSelections,
+    universeMarket,
+    universeScope,
+    setUniverseScope,
   });
-  const selectedWatchlistQuery = useQuery({
-    queryKey: ['userWatchlistData', selectedWatchlistId],
-    queryFn: () => getWatchlistData(selectedWatchlistId),
-    enabled: selectedWatchlistId !== null,
-  });
-  const pickerSelections = useMemo(
-    () => withWatchlistUniverse(
-      universeSelections,
-      watchlistsQuery.data?.watchlists,
-      selectedWatchlistId === null ? null : {
-        id: String(selectedWatchlistId),
-        symbols: selectedWatchlistQuery.data?.items.map((item) => item.symbol),
-        failed: selectedWatchlistQuery.isError,
-      },
-    ),
-    [
-      selectedWatchlistId,
-      selectedWatchlistQuery.data,
-      selectedWatchlistQuery.isError,
-      universeSelections,
-      watchlistsQuery.data,
-    ]
-  );
 
   useEffect(() => {
     if (!runtimeReady) {
@@ -889,6 +864,7 @@ function ScanPage() {
         onCompositeMethodChange={setCompositeMethod}
         createScanPending={createScanMutation.isPending}
         scanStatus={scanStatus}
+        scanRequestReady={scanRequest !== null}
         onStartScan={handleStartScan}
         onCancelScan={handleCancelScan}
         cancelScanPending={cancelScanMutation.isPending}

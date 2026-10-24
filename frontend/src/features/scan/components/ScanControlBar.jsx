@@ -26,8 +26,6 @@ import { SCREENER_OPTIONS, WATCHLIST_MARKET } from '../constants';
 import { selectRuntimeUniverseOption } from '../runtimeUniverseSelections';
 import { getSelectionCount } from '../universeSelection';
 
-const DISPLAYED_WARNING_CODES = new Set(['market_data_stale_tail_omitted', 'symbols_not_in_universe']);
-
 function stockCountLabel(universeMarket, universeScope, universeStats, statsLoading, selectedScopeOption) {
   if (!universeMarket) {
     return 'Pick a market to start';
@@ -88,6 +86,7 @@ function ScanControlBar({
   onCompositeMethodChange,
   createScanPending,
   scanStatus,
+  scanRequestReady,
   onStartScan,
   onCancelScan,
   cancelScanPending,
@@ -116,10 +115,14 @@ function ScanControlBar({
   const hasCustomSymbols = customSymbols.length > 0;
   const scopeLabel = universeMarket === WATCHLIST_MARKET ? 'Watchlist' : 'Universe';
   const needsScope = universeMarket && universeMarket !== 'TEST' && !hasCustomSymbols;
+  // A stale error that names no market falls back to the picked market only
+  // when the scan was that market's own universe.
+  const refreshableMarket = hasCustomSymbols || universeMarket === 'TEST' || universeMarket === WATCHLIST_MARKET
+    ? null
+    : universeMarket;
   const startDisabled =
     createScanPending
-    || (!hasCustomSymbols && !universeMarket)
-    || (needsScope && !universeScope)
+    || !scanRequestReady
     || Boolean(selectedMarketOption?.disabled)
     || Boolean(selectedScopeOption?.disabled)
     || Boolean(refreshConflict);
@@ -130,8 +133,7 @@ function ScanControlBar({
     // Starting another scan now would stop tracking the user's own scan.
     || scanStatus === 'running'
     || scanStatus === 'queued'
-    || (!hasCustomSymbols && !universeMarket)
-    || (needsScope && !universeScope)
+    || !scanRequestReady
     || (!refreshConflict && (
       Boolean(selectedMarketOption?.disabled) || Boolean(selectedScopeOption?.disabled)
     ));
@@ -148,10 +150,8 @@ function ScanControlBar({
         ? refreshStaleDataErrorDetail
         : refreshStaleDataErrorDetail?.message)
       || refreshStaleDataError?.message;
-  const staleMarket = staleRefreshMarket(createScanError, universeMarket);
-  const displayedWarnings = scanWarnings.filter(
-    (warning) => DISPLAYED_WARNING_CODES.has(warning?.code) && warning?.message
-  );
+  const staleMarket = staleRefreshMarket(createScanError, refreshableMarket);
+  const displayedWarnings = scanWarnings.filter((warning) => warning?.message);
 
   return (
     <Paper elevation={1} sx={{ p: 1.5, mb: 2 }}>
@@ -456,9 +456,9 @@ function ScanControlBar({
           Error: {refreshStaleDataErrorMessage}
         </Alert>
       )}
-      {displayedWarnings.map((warning) => (
+      {displayedWarnings.map((warning, index) => (
         <Alert
-          key={warning.code}
+          key={`${warning.code}-${index}`}
           severity="warning"
           sx={{ mt: 1 }}
         >

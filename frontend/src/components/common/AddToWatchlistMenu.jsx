@@ -36,6 +36,7 @@ import {
   addItem,
   bulkAddItems,
 } from '../../api/userWatchlists';
+import { invalidateWatchlistItems } from '../../api/userWatchlistQueries';
 
 const formatErrorDetail = (detail) => {
   if (typeof detail === 'string') return detail;
@@ -121,7 +122,7 @@ function AddToWatchlistMenu({ symbols, trigger, onSuccess, size = 'small' }) {
   const addItemMutation = useMutation({
     mutationFn: ({ watchlistId, data }) => addItem(watchlistId, data),
     onSuccess: (_, variables) => {
-      queryClient.invalidateQueries({ queryKey: ['userWatchlistData', variables.watchlistId] });
+      invalidateWatchlistItems(queryClient, variables.watchlistId);
       recordMembership(variables.watchlistId, [variables.data.symbol]);
       onSuccess?.();
     },
@@ -131,7 +132,7 @@ function AddToWatchlistMenu({ symbols, trigger, onSuccess, size = 'small' }) {
   const bulkAddMutation = useMutation({
     mutationFn: ({ watchlistId, symbols }) => bulkAddItems(watchlistId, symbols),
     onSuccess: (addedItems, variables) => {
-      queryClient.invalidateQueries({ queryKey: ['userWatchlistData', variables.watchlistId] });
+      invalidateWatchlistItems(queryClient, variables.watchlistId);
       recordMembership(
         variables.watchlistId,
         variables.symbols,
