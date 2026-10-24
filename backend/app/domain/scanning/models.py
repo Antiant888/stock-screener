@@ -123,6 +123,17 @@ class ScanFreshnessPolicy:
         return cls(allow_stale_tail=universe_type in {"all", "market", "exchange", "index"})
 
 
+# A scan warning names this many symbols in its message and stores this many;
+# its count field keeps the true total.
+WARNING_MESSAGE_SYMBOL_SAMPLE = 20
+WARNING_STORED_SYMBOL_SAMPLE = 200
+
+
+def warning_symbol_sample(symbols: tuple[str, ...]) -> str:
+    sample = ", ".join(symbols[:WARNING_MESSAGE_SYMBOL_SAMPLE])
+    return f"{sample}, ..." if len(symbols) > WARNING_MESSAGE_SYMBOL_SAMPLE else sample
+
+
 @dataclass(frozen=True)
 class FreshnessOmissionWarning:
     """Durable warning describing symbols omitted from a degraded scan."""
@@ -181,22 +192,16 @@ class SymbolsNotInUniverseWarning:
     dropped_symbols: tuple[str, ...]
     dropped_count: int
 
-    _MESSAGE_SAMPLE = 20
-    _STORED_SAMPLE = 200
-
     @classmethod
     def for_dropped(cls, dropped_symbols: tuple[str, ...]) -> "SymbolsNotInUniverseWarning":
-        sample = ", ".join(dropped_symbols[: cls._MESSAGE_SAMPLE])
-        if len(dropped_symbols) > cls._MESSAGE_SAMPLE:
-            sample += ", ..."
         noun = "symbol" if len(dropped_symbols) == 1 else "symbols"
         return cls(
             code=ScanWarningCode.SYMBOLS_NOT_IN_UNIVERSE.value,
             message=(
                 f"Skipped {len(dropped_symbols)} {noun} not in the active "
-                f"stock universe: {sample}"
+                f"stock universe: {warning_symbol_sample(dropped_symbols)}"
             ),
-            dropped_symbols=dropped_symbols[: cls._STORED_SAMPLE],
+            dropped_symbols=dropped_symbols[:WARNING_STORED_SYMBOL_SAMPLE],
             dropped_count=len(dropped_symbols),
         )
 

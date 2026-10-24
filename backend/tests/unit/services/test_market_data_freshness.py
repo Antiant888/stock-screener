@@ -660,13 +660,13 @@ def _evaluate_us_custom(fresh, stale, *, policy=None, refresh_state=None, calend
         (
             [f"FRESH{i}" for i in range(9)],
             ["HALTED"],
-            "Omitted 1 stale symbol from this scan (90.00% fresh).",
+            "Omitted 1 stale symbol from this scan (90.00% fresh): HALTED",
         ),
-        (["NVDA"], ["HALTED"], "Omitted 1 stale symbol from this scan (50.00% fresh)."),
+        (["NVDA"], ["HALTED"], "Omitted 1 stale symbol from this scan (50.00% fresh): HALTED"),
         (
             [f"FRESH{i}" for i in range(8)],
             ["HALTED", "SUSPENDED"],
-            "Omitted 2 stale symbols from this scan (80.00% fresh).",
+            "Omitted 2 stale symbols from this scan (80.00% fresh): HALTED, SUSPENDED",
         ),
     ],
     ids=["10_with_1_stale", "2_with_1_stale", "10_with_2_stale"],
@@ -678,6 +678,23 @@ def test_custom_scan_omits_stale_symbols_while_one_fresh_symbol_remains(fresh, s
     assert decision.symbols_to_scan == tuple(fresh)
     assert [warning.message for warning in decision.warnings] == [message]
     assert decision.warnings[0].omitted_symbols == tuple(stale)
+
+
+def test_custom_scan_stores_at_most_200_omitted_symbols_and_names_20():
+    stale = [f"STALE{i:03d}" for i in range(250)]
+
+    decision = _evaluate_us_custom(["NVDA"], stale)
+
+    [warning] = decision.warnings
+    assert decision.symbols_to_scan == ("NVDA",)
+    assert warning.omitted_count == 250
+    assert warning.omitted_symbols == tuple(stale[:200])
+    assert warning.message == (
+        "Omitted 250 stale symbols from this scan (0.40% fresh): "
+        "STALE000, STALE001, STALE002, STALE003, STALE004, STALE005, STALE006, "
+        "STALE007, STALE008, STALE009, STALE010, STALE011, STALE012, STALE013, "
+        "STALE014, STALE015, STALE016, STALE017, STALE018, STALE019, ..."
+    )
 
 
 def test_custom_scan_with_every_symbol_stale_still_blocks():
