@@ -30,7 +30,11 @@ from app.use_cases.scanning.published_snapshot import SnapshotIneligible
 from app.infra.db.repositories.universe_repo import SqlUniverseRepository
 from app.models.stock_universe import StockUniverse
 from app.use_cases.scanning.create_scan import CreateScanUseCase
-from tests.unit.use_cases.conftest import FakeTaskDispatcher, FakeUnitOfWork
+from tests.unit.use_cases.conftest import (
+    FakeTaskDispatcher,
+    FakeUnitOfWork,
+    FakeUniverseRepository,
+)
 
 
 class _FakeUoW:
@@ -439,7 +443,9 @@ def _price_refresh(market, task_id, *, percent=55.0, current=550, total=1000):
 
 
 async def _post_scan_during_activity(client, universe_def, activity):
-    fake_uow = _FakeUoW()
+    fake_uow = FakeUnitOfWork(
+        universe=FakeUniverseRepository(markets={"NVDA": "US", "0700.HK": "HK", "ZZZZ.T": "JP"})
+    )
     fake_use_case = _FakeCreateScanUseCase(
         CreateScanResult(
             scan_id="scan-during-activity",
@@ -525,6 +531,12 @@ async def _post_scan_during_activity(client, universe_def, activity):
             )
             for index_name, market in [("HSI", "HK"), ("NIKKEI225", "JP"), ("TAIEX", "TW")]
         ),
+        pytest.param(
+            {"type": "custom", "symbols": ["NVDA", "0700.HK"]},
+            _price_refresh("HK", "task-hk"),
+            {"market": "HK", "active_stages": ["prices"]},
+            id="custom_symbols_when_one_of_their_markets_refreshes",
+        ),
     ],
 )
 async def test_create_scan_returns_409_when_scan_market_refresh_is_active(
@@ -578,6 +590,13 @@ async def test_create_scan_returns_409_when_scan_market_refresh_is_active(
             "universe_exchange",
             "KOSPI",
             id="kr_exchange_ignores_us_refresh_activity",
+        ),
+        pytest.param(
+            {"type": "custom", "symbols": ["NVDA", "0700.HK"]},
+            _price_refresh("JP", "task-jp"),
+            "universe_symbols",
+            ["NVDA", "0700.HK"],
+            id="custom_symbols_ignore_other_market_refresh",
         ),
     ],
 )
