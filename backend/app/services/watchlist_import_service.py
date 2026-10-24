@@ -7,7 +7,38 @@ import io
 import re
 from collections.abc import Iterable
 
+from ..domain.markets.symbol_suffixes import market_symbol_suffix_registry
 from .symbol_format import SYMBOL_SHAPE_RE
+
+# TradingView ``EXCHANGE:TICKER`` prefix -> Market. The symbol suffix comes
+# from the market suffix registry, keyed by the same prefix, so TPEX lands on
+# ``.TWO`` and BSE on Bombay's ``.BO``. Unlisted prefixes keep the bare ticker.
+_TRADINGVIEW_PREFIX_MARKETS = {
+    "NASDAQ": "US",
+    "NYSE": "US",
+    "AMEX": "US",
+    "NYSEARCA": "US",
+    "BATS": "US",
+    "CBOE": "US",
+    "OTC": "US",
+    "HKEX": "HK",
+    "TSE": "JP",
+    "TWSE": "TW",
+    "TPEX": "TW",
+    "KRX": "KR",
+    "SSE": "CN",
+    "SZSE": "CN",
+    "SGX": "SG",
+    "ASX": "AU",
+    "MYX": "MY",
+    "TSX": "CA",
+    "TSXV": "CA",
+    "XETR": "DE",
+    "FWB": "DE",
+    "NSE": "IN",
+    "BSE": "IN",
+}
+_TRADINGVIEW_SECTION_PREFIX = "###"
 
 _HEADER_TOKENS = {
     "symbol",
@@ -47,12 +78,28 @@ def parse_watchlist_import_symbols(
     deduped: list[str] = []
     seen: set[str] = set()
     for token in tokens:
-        symbol = token.strip().upper()
+        symbol = _repo_symbol(token.strip().upper())
         if not symbol or symbol.lower() in _HEADER_TOKENS or symbol in seen:
             continue
         seen.add(symbol)
         deduped.append(symbol)
     return deduped
+
+
+def _repo_symbol(token: str) -> str:
+    """Map a TradingView token to the universe symbol form; others pass through."""
+
+    if token.startswith(_TRADINGVIEW_SECTION_PREFIX):
+        return ""
+    prefix, separator, ticker = token.partition(":")
+    if not separator:
+        return token
+    market = _TRADINGVIEW_PREFIX_MARKETS.get(prefix)
+    if market is None or not ticker:
+        return ticker
+    if market == "HK" and ticker.isdigit():
+        ticker = f"{int(ticker):04d}"
+    return ticker + (market_symbol_suffix_registry.suffix_for(market, prefix) or "")
 
 
 def _looks_like_symbol_token(token: str) -> bool:
