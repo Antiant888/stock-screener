@@ -57,6 +57,7 @@ import {
   resolveUniverseScopeValue,
 } from '../runtimeUniverseSelections';
 import { PageSkeleton } from '../../../components/common/LoadingSkeletons';
+import { getErrorMessage } from '../../../utils/errorMessage';
 
 const INITIAL_UNIVERSE_SELECTION = parseLegacyUniverseDefault(DEFAULT_SCAN_DEFAULTS.universe);
 const DEFAULT_SCAN_FILTERS = buildDefaultScanFilters();
@@ -76,8 +77,7 @@ function getMutationErrorMessage(error) {
   }
   return error?.response?.data?.detail?.message
     || error?.response?.data?.message
-    || error?.message
-    || 'Failed to start scan.';
+    || getErrorMessage(error, 'Failed to start scan.');
 }
 
 function getMutationErrorDetail(error) {

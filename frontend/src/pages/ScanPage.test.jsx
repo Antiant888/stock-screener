@@ -231,6 +231,28 @@ describe('ScanPage', () => {
     expect(screen.queryByRole('button', { name: /refresh .* data/i })).not.toBeInTheDocument();
   });
 
+  it('shows a plain-string rejection of a watchlist scan as its text', async () => {
+    const user = userEvent.setup();
+    runtimeState.runtimeReady = true;
+    watchlistApi.getWatchlists.mockResolvedValue({ watchlists: [{ id: 7, name: 'Leaders' }], total: 1 });
+    watchlistApi.getWatchlistSymbols.mockResolvedValue({ symbols: ['ZZZZ'] });
+    scanApi.createScan.mockRejectedValueOnce({
+      response: {
+        status: 400,
+        data: { detail: 'None of the requested symbols are in the active stock universe.' },
+      },
+      message: 'Request failed with status code 400',
+    });
+
+    renderWithProviders(<ScanPage />);
+    await pickWatchlist(user, 'Leaders');
+    await user.click(await screen.findByRole('button', { name: 'Scan' }));
+
+    expect(
+      await screen.findByText('Error: None of the requested symbols are in the active stock universe.')
+    ).toBeInTheDocument();
+  });
+
   it('caps a Social selection at the 2000-symbol custom universe limit', async () => {
     runtimeState.runtimeReady = true;
     const symbols = Array.from({ length: 2001 }, (_, index) => `S${index}`).join(',');
