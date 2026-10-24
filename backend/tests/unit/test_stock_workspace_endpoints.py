@@ -1107,6 +1107,101 @@ async def test_watchlist_import_endpoint_downgrades_duplicate_insert_race(client
     assert payload["invalid_symbols"] == []
 
 
+def _seed_capacity_watchlist(session, *, items, extra_universe):
+    """A watchlist holding ``items`` symbols plus ``extra_universe`` addable ones."""
+    held = [f"H{i:04d}" for i in range(items)]
+    addable = [f"N{i:04d}" for i in range(extra_universe)]
+    session.add_all([
+        StockUniverse(symbol=symbol, name=symbol, is_active=True, status="active")
+        for symbol in (*held, *addable)
+    ])
+    watchlist = UserWatchlist(name="Capacity", position=0)
+    session.add(watchlist)
+    session.commit()
+    session.add_all([
+        WatchlistItem(watchlist_id=watchlist.id, symbol=symbol, position=index)
+        for index, symbol in enumerate(held)
+    ])
+    session.commit()
+    return watchlist, addable
+
+
+def _watchlist_size(session, watchlist):
+    return session.query(WatchlistItem).filter(WatchlistItem.watchlist_id == watchlist.id).count()
+
+
+@pytest.mark.asyncio
+async def test_watchlist_import_endpoint_fills_a_watchlist_to_2000_symbols(client, session):
+    app.dependency_overrides[get_db] = _override_db(session)
+    watchlist, addable = _seed_capacity_watchlist(session, items=1, extra_universe=1999)
+
+    response = await client.post(
+        f"/api/v1/user-watchlists/{watchlist.id}/items/import",
+        json={"content": "\n".join(addable), "format": "text"},
+    )
+
+    assert response.status_code == 200
+    assert len(response.json()["added"]) == 1999
+    assert _watchlist_size(session, watchlist) == 2000
+
+
+@pytest.mark.asyncio
+async def test_watchlist_import_endpoint_rejects_an_import_past_2000_symbols(client, session):
+    app.dependency_overrides[get_db] = _override_db(session)
+    watchlist, addable = _seed_capacity_watchlist(session, items=1, extra_universe=2000)
+
+    response = await client.post(
+        f"/api/v1/user-watchlists/{watchlist.id}/items/import",
+        json={"content": "\n".join(["H0000", "UNKNOWN", *addable]), "format": "text"},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == (
+        "A watchlist holds at most 2,000 symbols. "
+        "This one has 1, and adding 2,000 more would make 2,001."
+    )
+    assert _watchlist_size(session, watchlist) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("items", "status"), [(1999, 200), (2000, 400)])
+async def test_watchlist_add_item_endpoint_stops_at_2000_symbols(client, session, items, status):
+    app.dependency_overrides[get_db] = _override_db(session)
+    watchlist, addable = _seed_capacity_watchlist(session, items=items, extra_universe=1)
+
+    response = await client.post(
+        f"/api/v1/user-watchlists/{watchlist.id}/items", json={"symbol": addable[0]}
+    )
+
+    assert response.status_code == status
+    assert _watchlist_size(session, watchlist) == 2000
+    if status == 400:
+        assert response.json()["detail"] == (
+            "A watchlist holds at most 2,000 symbols. "
+            "This one has 2,000, and adding 1 more would make 2,001."
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("extra", "status"), [(2, 200), (3, 400)])
+async def test_watchlist_bulk_add_endpoint_stops_at_2000_symbols(client, session, extra, status):
+    app.dependency_overrides[get_db] = _override_db(session)
+    watchlist, addable = _seed_capacity_watchlist(session, items=1998, extra_universe=extra)
+
+    response = await client.post(
+        f"/api/v1/user-watchlists/{watchlist.id}/items/bulk",
+        json={"symbols": [*addable, "H0000", "UNKNOWN"]},
+    )
+
+    assert response.status_code == status
+    assert _watchlist_size(session, watchlist) == (2000 if status == 200 else 1998)
+    if status == 400:
+        assert response.json()["detail"] == (
+            "A watchlist holds at most 2,000 symbols. "
+            "This one has 1,998, and adding 3 more would make 2,001."
+        )
+
+
 @pytest.mark.asyncio
 async def test_watchlist_memberships_returns_watchlist_ids_by_normalized_symbol(client, session):
     app.dependency_overrides[get_db] = _override_db(session)

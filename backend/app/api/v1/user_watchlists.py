@@ -20,6 +20,7 @@ from ...models.user_watchlist import UserWatchlist, WatchlistItem
 from ...models.stock import StockPrice
 from ...models.stock_universe import StockUniverse
 from ...models.industry import IBDIndustryGroup
+from ...schemas.universe import MAX_CUSTOM_UNIVERSE_SYMBOLS
 from ...schemas.user_watchlist import (
     WatchlistCreate, WatchlistUpdate, WatchlistResponse,
     WatchlistItemCreate, WatchlistItemUpdate, WatchlistItemResponse,
@@ -64,6 +65,26 @@ def _is_duplicate_watchlist_symbol_error(exc: IntegrityError) -> bool:
             and "symbol" in message
         )
     )
+
+
+def _ensure_watchlist_capacity(existing_count: int, adding_count: int) -> None:
+    """Reject growing a watchlist past what a custom-universe scan accepts."""
+    total = existing_count + adding_count
+    if adding_count and total > MAX_CUSTOM_UNIVERSE_SYMBOLS:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"A watchlist holds at most {MAX_CUSTOM_UNIVERSE_SYMBOLS:,} symbols. "
+                f"This one has {existing_count:,}, and adding {adding_count:,} more "
+                f"would make {total:,}."
+            ),
+        )
+
+
+def _watchlist_item_count(db: Session, watchlist_id: int) -> int:
+    return db.query(func.count(WatchlistItem.id)).filter(
+        WatchlistItem.watchlist_id == watchlist_id
+    ).scalar()
 
 
 # ================= Watchlist CRUD =================
@@ -456,6 +477,7 @@ def add_item(
     ).first()
     if existing:
         raise HTTPException(status_code=400, detail="Stock already exists in watchlist")
+    _ensure_watchlist_capacity(_watchlist_item_count(db, watchlist_id), 1)
 
     max_pos = db.query(func.max(WatchlistItem.position)).filter(
         WatchlistItem.watchlist_id == watchlist_id
@@ -515,6 +537,9 @@ def bulk_add_items(
         else []
     )
     known_symbols = {row.symbol for row in known_rows}
+    _ensure_watchlist_capacity(
+        len(existing_items), sum(symbol in known_symbols for symbol in candidates)
+    )
 
     max_pos = db.query(func.max(WatchlistItem.position)).filter(
         WatchlistItem.watchlist_id == watchlist_id
@@ -591,6 +616,7 @@ def import_items(
         known_symbols,
         existing_symbols,
     )
+    _ensure_watchlist_capacity(len(existing_items), len(addable_symbols))
 
     max_pos = db.query(func.max(WatchlistItem.position)).filter(
         WatchlistItem.watchlist_id == watchlist_id
