@@ -1028,6 +1028,35 @@ async def test_watchlist_import_endpoint_handles_tsv_with_auto_format(client, se
 
 
 @pytest.mark.asyncio
+async def test_watchlist_import_endpoint_resolves_tradingview_rows_against_the_universe(client, session):
+    app.dependency_overrides[get_db] = _override_db(session)
+    watchlist = _seed_search_and_import_data(session)
+    session.add_all([
+        StockUniverse(symbol=symbol, name=symbol, is_active=True, status="active")
+        for symbol in ("AI", "ON", "AIR", "BRK-B", "247540.KQ")
+    ])
+    session.commit()
+
+    response = await client.post(
+        f"/api/v1/user-watchlists/{watchlist.id}/items/import",
+        json={
+            "content": (
+                "###Top AI Picks,NASDAQ:NVDA,NYSE:BRK.B\n"
+                "###ON Watch,KRX:247540,EURONEXT:AIR,NASDAQ:AAPL\n"
+            ),
+            "format": "auto",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["requested_count"] == 5
+    assert payload["added"] == ["NVDA", "BRK-B", "247540.KQ"]
+    assert payload["skipped_existing"] == ["AAPL"]
+    assert payload["invalid_symbols"] == ["EURONEXT:AIR"]
+
+
+@pytest.mark.asyncio
 async def test_watchlist_import_endpoint_downgrades_duplicate_insert_race(client, session, monkeypatch):
     app.dependency_overrides[get_db] = _override_db(session)
     watchlist = _seed_search_and_import_data(session)

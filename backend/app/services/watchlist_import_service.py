@@ -6,39 +6,49 @@ import csv
 import io
 import re
 from collections.abc import Iterable
+from dataclasses import dataclass
 
-from ..domain.markets.symbol_suffixes import market_symbol_suffix_registry
 from .symbol_format import SYMBOL_SHAPE_RE
 
-# TradingView ``EXCHANGE:TICKER`` prefix -> Market. The symbol suffix comes
-# from the market suffix registry, keyed by the same prefix, so TPEX lands on
-# ``.TWO`` and BSE on Bombay's ``.BO``. Unlisted prefixes keep the bare ticker.
-_TRADINGVIEW_PREFIX_MARKETS = {
-    "NASDAQ": "US",
-    "NYSE": "US",
-    "AMEX": "US",
-    "NYSEARCA": "US",
-    "BATS": "US",
-    "CBOE": "US",
-    "OTC": "US",
-    "HKEX": "HK",
-    "TSE": "JP",
-    "TWSE": "TW",
-    "TPEX": "TW",
-    "KRX": "KR",
-    "SSE": "CN",
-    "SZSE": "CN",
-    "SGX": "SG",
-    "ASX": "AU",
-    "MYX": "MY",
-    "TSX": "CA",
-    "TSXV": "CA",
-    "XETR": "DE",
-    "FWB": "DE",
-    "NSE": "IN",
-    "BSE": "IN",
+# TradingView ``EXCHANGE:TICKER`` prefix -> universe symbol suffixes to try,
+# best first. KRX covers both KOSPI (.KS) and KOSDAQ (.KQ). A prefix missing
+# here gives no candidate, so ``EURONEXT:AIR`` is reported, never read as AIR.
+_TRADINGVIEW_PREFIX_SUFFIXES = {
+    "NASDAQ": ("",),
+    "NYSE": ("",),
+    "AMEX": ("",),
+    "NYSEARCA": ("",),
+    "BATS": ("",),
+    "CBOE": ("",),
+    "OTC": ("",),
+    "HKEX": (".HK",),
+    "TSE": (".T",),
+    "TWSE": (".TW",),
+    "TPEX": (".TWO",),
+    "KRX": (".KS", ".KQ"),
+    "SSE": (".SS",),
+    "SZSE": (".SZ",),
+    "SGX": (".SI",),
+    "ASX": (".AX",),
+    "MYX": (".KL",),
+    "TSX": (".TO",),
+    "TSXV": (".V",),
+    "XETR": (".DE",),
+    "FWB": (".F",),
+    "NSE": (".NS",),
+    "BSE": (".BO",),
 }
 _TRADINGVIEW_SECTION_PREFIX = "###"
+_TRADINGVIEW_SYMBOL_RE = re.compile(r"^[A-Z][A-Z0-9_]*:\S+$")
+
+
+@dataclass(frozen=True)
+class ImportToken:
+    """One imported token and the universe symbols it may name, best first."""
+
+    text: str
+    candidates: tuple[str, ...]
+
 
 _HEADER_TOKENS = {
     "symbol",
@@ -52,11 +62,11 @@ _HEADER_TOKENS = {
 _SYMBOL_HEURISTIC_PATTERN = re.compile(r"^(?=.*[A-Z])[A-Z0-9][A-Z0-9.\-]{0,19}$")
 
 
-def parse_watchlist_import_symbols(
+def parse_watchlist_import_tokens(
     content: str,
     format_hint: str | None = "auto",
-) -> list[str]:
-    """Parse pasted watchlist content into de-duplicated uppercase symbols."""
+) -> list[ImportToken]:
+    """Parse pasted watchlist content into de-duplicated uppercase tokens."""
 
     normalized_hint = (format_hint or "auto").lower()
     stripped = content.strip()
@@ -66,40 +76,50 @@ def parse_watchlist_import_symbols(
     if normalized_hint not in {"auto", "text", "csv"}:
         raise ValueError(f"Unsupported import format: {format_hint}")
 
-    if normalized_hint == "csv" or (
-        normalized_hint == "auto"
-        and "\n" in stripped
-        and any(delimiter in stripped for delimiter in (",", "\t", ";"))
+    cells = [cell.strip().upper() for cell in re.split(r"[,\n]", stripped)]
+    if any(
+        cell.startswith(_TRADINGVIEW_SECTION_PREFIX) or _TRADINGVIEW_SYMBOL_RE.match(cell)
+        for cell in cells
     ):
-        tokens = _parse_tabular_symbols(stripped)
+        tokens = [
+            _tradingview_token(cell)
+            for cell in cells
+            if cell and not cell.startswith(_TRADINGVIEW_SECTION_PREFIX)
+        ]
     else:
-        tokens = _parse_text_symbols(stripped)
+        if normalized_hint == "csv" or (
+            normalized_hint == "auto"
+            and "\n" in stripped
+            and any(delimiter in stripped for delimiter in (",", "\t", ";"))
+        ):
+            raw_tokens = _parse_tabular_symbols(stripped)
+        else:
+            raw_tokens = _parse_text_symbols(stripped)
+        tokens = [
+            ImportToken(symbol, (symbol,))
+            for symbol in (token.strip().upper() for token in raw_tokens)
+        ]
 
-    deduped: list[str] = []
+    deduped: list[ImportToken] = []
     seen: set[str] = set()
     for token in tokens:
-        symbol = _repo_symbol(token.strip().upper())
-        if not symbol or symbol.lower() in _HEADER_TOKENS or symbol in seen:
+        if not token.text or token.text.lower() in _HEADER_TOKENS or token.text in seen:
             continue
-        seen.add(symbol)
-        deduped.append(symbol)
+        seen.add(token.text)
+        deduped.append(token)
     return deduped
 
 
-def _repo_symbol(token: str) -> str:
-    """Map a TradingView token to the universe symbol form; others pass through."""
-
-    if token.startswith(_TRADINGVIEW_SECTION_PREFIX):
-        return ""
-    prefix, separator, ticker = token.partition(":")
+def _tradingview_token(cell: str) -> ImportToken:
+    prefix, separator, ticker = cell.partition(":")
     if not separator:
-        return token
-    market = _TRADINGVIEW_PREFIX_MARKETS.get(prefix)
-    if market is None or not ticker:
-        return ticker
-    if market == "HK" and ticker.isdigit():
+        return ImportToken(cell, (cell,))
+    suffixes = _TRADINGVIEW_PREFIX_SUFFIXES.get(prefix, ())
+    if prefix == "HKEX" and ticker.isdigit():
         ticker = f"{int(ticker):04d}"
-    return ticker + (market_symbol_suffix_registry.suffix_for(market, prefix) or "")
+    # Class shares are BRK.B on TradingView; the universe may hold BRK-B.
+    tickers = dict.fromkeys((ticker, ticker.replace(".", "-")))
+    return ImportToken(cell, tuple(t + suffix for t in tickers for suffix in suffixes))
 
 
 def _looks_like_symbol_token(token: str) -> bool:
@@ -157,23 +177,35 @@ def _parse_text_symbols(content: str) -> list[str]:
 
 
 def split_import_results(
-    symbols: Iterable[str],
+    tokens: Iterable[ImportToken],
     known_symbols: set[str],
     existing_symbols: set[str],
 ) -> tuple[list[str], list[str], list[str]]:
-    """Classify parsed symbols into addable, existing, and invalid groups."""
+    """Classify tokens into addable, existing, and invalid groups.
+
+    Each token resolves to its first candidate in ``known_symbols`` (else its
+    first one already in the watchlist). Unresolved tokens are reported under
+    their original text.
+    """
 
     added_candidates: list[str] = []
     skipped_existing: list[str] = []
     invalid_symbols: list[str] = []
+    resolved_symbols: set[str] = set()
 
-    for symbol in symbols:
-        upper_symbol = symbol.upper()
-        if upper_symbol in existing_symbols:
-            skipped_existing.append(upper_symbol)
-        elif upper_symbol not in known_symbols or not SYMBOL_SHAPE_RE.match(upper_symbol):
-            invalid_symbols.append(upper_symbol)
+    for token in tokens:
+        symbol = next(
+            (c for c in token.candidates if c in known_symbols), None
+        ) or next((c for c in token.candidates if c in existing_symbols), None)
+        if symbol in resolved_symbols:
+            continue
+        if symbol is not None:
+            resolved_symbols.add(symbol)
+        if symbol in existing_symbols:
+            skipped_existing.append(symbol)
+        elif symbol is None or not SYMBOL_SHAPE_RE.match(symbol):
+            invalid_symbols.append(token.text)
         else:
-            added_candidates.append(upper_symbol)
+            added_candidates.append(symbol)
 
     return added_candidates, skipped_existing, invalid_symbols

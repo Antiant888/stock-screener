@@ -34,7 +34,7 @@ from ...schemas.user_watchlist import (
 from ...services.price_row_normalization import stock_price_frame
 from ...services.symbol_format import normalize_symbol
 from ...services.watchlist_import_service import (
-    parse_watchlist_import_symbols,
+    parse_watchlist_import_tokens,
     split_import_results,
 )
 from ...services.watchlist_stewardship_service import WatchlistStewardshipService
@@ -545,11 +545,11 @@ def import_items(
     if not watchlist:
         raise HTTPException(status_code=404, detail="Watchlist not found")
 
-    parsed_symbols = parse_watchlist_import_symbols(
+    tokens = parse_watchlist_import_tokens(
         import_data.content,
         format_hint=import_data.format,
     )
-    if not parsed_symbols:
+    if not tokens:
         return WatchlistImportResult(
             requested_count=0,
             added=[],
@@ -568,14 +568,16 @@ def import_items(
         for row in db.query(StockUniverse.symbol)
         .filter(
             StockUniverse.active_filter(),
-            StockUniverse.symbol.in_(parsed_symbols),
+            StockUniverse.symbol.in_(
+                {candidate for token in tokens for candidate in token.candidates}
+            ),
         )
         .all()
         if row.symbol
     }
 
     addable_symbols, skipped_existing, invalid_symbols = split_import_results(
-        parsed_symbols,
+        tokens,
         known_symbols,
         existing_symbols,
     )
@@ -611,7 +613,7 @@ def import_items(
         db.refresh(item)
 
     return WatchlistImportResult(
-        requested_count=len(parsed_symbols),
+        requested_count=len(tokens),
         added=added_symbols,
         skipped_existing=skipped_existing,
         invalid_symbols=invalid_symbols,
