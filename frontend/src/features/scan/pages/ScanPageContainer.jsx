@@ -29,7 +29,7 @@ import { scanBootstrapQuery as latestScanBootstrapQuery } from '../../../pageBoo
 import { DEFAULT_SCAN_DEFAULTS } from '../../../constants/scanDefaults';
 import { buildDefaultScanFilters } from '../defaultFilters';
 import { normalizeScanFilterOptions } from '../filterOptions';
-import { DEFAULT_FILTER_KEY } from '../constants';
+import { DEFAULT_FILTER_KEY, MAX_CUSTOM_UNIVERSE_SYMBOLS } from '../constants';
 import ScanControlBar from '../components/ScanControlBar';
 import ScanResultsSection from '../components/ScanResultsSection';
 import GuidedFilterBuilderDialog from '../components/GuidedFilterBuilderDialog';
@@ -99,7 +99,7 @@ function importedSymbolList(value) {
   return [...new Set(String(value || '').split(',')
     .map((symbol) => symbol.trim().replace(/^\$+/, '').toUpperCase())
     .filter((symbol) => /^[A-Z0-9][A-Z0-9.-]{0,19}$/.test(symbol)))]
-    .slice(0, 500);
+    .slice(0, MAX_CUSTOM_UNIVERSE_SYMBOLS);
 }
 
 function ScanPage() {

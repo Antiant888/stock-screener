@@ -25,6 +25,9 @@ export const TEST_SYMBOLS = [
   'KO',
 ];
 
+// Mirrors MAX_CUSTOM_UNIVERSE_SYMBOLS in backend/app/schemas/universe.py.
+export const MAX_CUSTOM_UNIVERSE_SYMBOLS = 2000;
+
 export const DEFAULT_FILTER_KEY = stableExpressionKey(
   legacyFiltersToExpression(buildDefaultScanFilters()),
 );

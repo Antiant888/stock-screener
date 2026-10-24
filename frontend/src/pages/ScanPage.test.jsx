@@ -132,6 +132,16 @@ describe('ScanPage', () => {
     ));
   });
 
+  it('caps a Social selection at the 2000-symbol custom universe limit', async () => {
+    runtimeState.runtimeReady = true;
+    const symbols = Array.from({ length: 2001 }, (_, index) => `S${index}`).join(',');
+    window.history.replaceState(null, '', `/scan?symbols=${symbols}`);
+
+    renderWithProviders(<ScanPage />);
+
+    expect(await screen.findByText('Social selection: 2000 symbols')).toBeInTheDocument();
+  });
+
   it('renders without a temporal-dead-zone crash before runtime bootstrap completes', () => {
     renderWithProviders(<ScanPage />);
 
