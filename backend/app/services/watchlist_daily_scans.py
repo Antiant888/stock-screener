@@ -13,13 +13,15 @@ from sqlalchemy.orm import Session
 from app.database import SessionLocal
 from app.domain.common.errors import ValidationError
 from app.domain.scanning.defaults import get_default_scan_profile
+from app.domain.scanning.models import ScanWarningCode, SymbolsNotInSnapshotWarning
+from app.infra.db.models.feature_store import StockFeatureDaily
 from app.infra.db.repositories.universe_repo import SqlUniverseRepository
 from app.infra.db.uow import SqlUnitOfWork
 from app.models.scan_result import SCAN_TRIGGER_SOURCE_WATCHLIST
 from app.models.user_watchlist import UserWatchlist
 from app.schemas.universe import UniverseDefinition, UniverseType
 from app.services.scan_execution import cleanup_old_scans
-from app.services.ui_snapshot_service import safe_publish_scan_bootstrap
+from app.services.ui_snapshot_service import safe_publish_scan_variant
 from app.services.watchlist_symbols import watchlist_symbols
 from app.use_cases.scanning.create_scan import (
     CreateScanCommand,
@@ -84,23 +86,42 @@ def flagged_watchlists_in_market(db: Session, market: str) -> list[WatchlistInMa
     ]
 
 
+def _symbols_with_rows(db: Session, run_id: int, symbols: list[str]) -> set[str]:
+    if not symbols:
+        return set()
+    return {
+        symbol
+        for (symbol,) in db.query(StockFeatureDaily.symbol).filter(
+            StockFeatureDaily.run_id == run_id,
+            StockFeatureDaily.symbol.in_({symbol.upper() for symbol in symbols}),
+        )
+    }
+
+
 def scan_flagged_watchlists(
-    use_case: CreateScanUseCase, *, market: str, session_date: date
+    use_case: CreateScanUseCase, *, market: str, run_id: int, session_date: date
 ) -> list[WatchlistScanOutcome]:
     """Create one completed scan per flagged watchlist with symbols in ``market``.
 
-    The scans use the default profile the market's snapshot is built with, so
-    they reuse its stored scores and never compute or fetch prices. One
-    watchlist failing records its outcome and the rest still run.
+    Each scan answers from ``run_id``, the published run the market's snapshot
+    guard passed for ``session_date``, and covers the watchlist's symbols that
+    run has rows for; it warns about the rest. The scans use the default
+    profile the snapshot is built with, so they reuse its stored scores and
+    never compute or fetch prices. One watchlist failing records its outcome
+    and the rest still run.
     """
     db = SessionLocal()
     try:
         watchlists = flagged_watchlists_in_market(db, market)
+        covered = _symbols_with_rows(db, run_id, [symbol for w in watchlists for symbol in w.symbols])
     finally:
         db.close()
     profile = get_default_scan_profile(market)
     return [
-        _scan_watchlist(use_case, watchlist, market=market, session_date=session_date, profile=profile)
+        _scan_watchlist(
+            use_case, watchlist, covered,
+            market=market, run_id=run_id, session_date=session_date, profile=profile,
+        )
         for watchlist in watchlists
     ]
 
@@ -108,17 +129,28 @@ def scan_flagged_watchlists(
 def _scan_watchlist(
     use_case: CreateScanUseCase,
     watchlist: WatchlistInMarket,
+    covered: set[str],
     *,
     market: str,
+    run_id: int,
     session_date: date,
     profile: dict[str, Any],
 ) -> WatchlistScanOutcome:
     watchlist_id = watchlist.watchlist_id
     if not watchlist.symbols:
         return WatchlistScanOutcome(watchlist_id, WatchlistScanStatus.NO_SYMBOLS_IN_MARKET)
+    symbols = [symbol for symbol in watchlist.symbols if symbol.upper() in covered]
+    uncovered = tuple(symbol for symbol in watchlist.symbols if symbol.upper() not in covered)
+    if not symbols:
+        logger.warning("%s snapshot run %s has no row for any symbol of watchlist %s", market, run_id, watchlist_id)
+        return WatchlistScanOutcome(
+            watchlist_id,
+            WatchlistScanStatus.SNAPSHOT_UNAVAILABLE,
+            reason=ScanWarningCode.SYMBOLS_NOT_IN_SNAPSHOT.value,
+        )
     universe_key = f"watchlist:{watchlist_id}:{market}"
     try:
-        universe = UniverseDefinition(type=UniverseType.CUSTOM, symbols=watchlist.symbols)
+        universe = UniverseDefinition(type=UniverseType.CUSTOM, symbols=symbols)
         projection = universe.storage_projection()
         result = use_case.execute(SqlUnitOfWork(SessionLocal), CreateScanCommand(
             universe_def=universe,
@@ -136,7 +168,10 @@ def _scan_watchlist(
             idempotency_key=f"watchlist-daily:{watchlist_id}:{market}:{session_date.isoformat()}",
             trigger_source=SCAN_TRIGGER_SOURCE_WATCHLIST,
             data_mode=DATA_MODE_LAST_PUBLISHED,
+            # The idempotency key names this run's session, so no other run may answer.
+            published_run_id=run_id,
             metadata={"watchlist": {"id": watchlist_id, "name": watchlist.name, "market": market}},
+            warnings=(SymbolsNotInSnapshotWarning.for_dropped(uncovered),) if uncovered else (),
         ))
     except SnapshotUnavailableError as exc:
         logger.warning(
@@ -159,5 +194,7 @@ def _scan_watchlist(
         cleanup_old_scans(db, universe_key)
     finally:
         db.close()
-    safe_publish_scan_bootstrap(result.scan_id)
+    # Only its own variant. The scan is never its market's latest, and the
+    # market's history list refetches once its published copy goes stale.
+    safe_publish_scan_variant(result.scan_id)
     return WatchlistScanOutcome(watchlist_id, WatchlistScanStatus.CREATED, scan_id=result.scan_id)

@@ -94,7 +94,7 @@ def test_daily_market_pipeline_orders_refresh_compute_and_scan(monkeypatch):
         "calculation_date": "2026-03-16",
         "execution_policy": "refresh_guarded",
     }
-    assert signatures[9].kwargs == {"market": "HK", "as_of_date": "2026-03-16"}
+    assert signatures[9].kwargs == {"market": "HK"}
     assert signatures[9].options["queue"] == "market_jobs_hk"
     assert signatures[10].kwargs == {
         "market": "HK",

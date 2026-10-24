@@ -95,6 +95,7 @@ class ScanWarningCode(str, Enum):
 
     STALE_TAIL_OMITTED = "market_data_stale_tail_omitted"
     SYMBOLS_NOT_IN_UNIVERSE = "symbols_not_in_universe"
+    SYMBOLS_NOT_IN_SNAPSHOT = "symbols_not_in_snapshot"
 
 
 @dataclass(frozen=True)
@@ -223,11 +224,30 @@ class SymbolsNotInUniverseWarning:
         }
 
 
+@dataclass(frozen=True)
+class SymbolsNotInSnapshotWarning(SymbolsNotInUniverseWarning):
+    """Durable warning naming requested symbols the published snapshot has no row for."""
+
+    @classmethod
+    def for_dropped(cls, dropped_symbols: tuple[str, ...]) -> "SymbolsNotInSnapshotWarning":
+        noun = "symbol" if len(dropped_symbols) == 1 else "symbols"
+        return cls(
+            code=ScanWarningCode.SYMBOLS_NOT_IN_SNAPSHOT.value,
+            message=(
+                f"Skipped {len(dropped_symbols)} {noun} with no row in the "
+                f"published snapshot: {warning_symbol_sample(dropped_symbols)}"
+            ),
+            dropped_symbols=dropped_symbols[:WARNING_STORED_SYMBOL_SAMPLE],
+            dropped_count=len(dropped_symbols),
+        )
+
+
 ScanWarning = FreshnessOmissionWarning | SymbolsNotInUniverseWarning
 
 SCAN_WARNING_TYPES: dict[str, type[FreshnessOmissionWarning] | type[SymbolsNotInUniverseWarning]] = {
     ScanWarningCode.STALE_TAIL_OMITTED.value: FreshnessOmissionWarning,
     ScanWarningCode.SYMBOLS_NOT_IN_UNIVERSE.value: SymbolsNotInUniverseWarning,
+    ScanWarningCode.SYMBOLS_NOT_IN_SNAPSHOT.value: SymbolsNotInSnapshotWarning,
 }
 
 

@@ -182,10 +182,15 @@ class CreateScanCommand:
     # ``last_published`` answers only from a pinned published snapshot and
     # never computes (see ``published_snapshot``).
     data_mode: str = DATA_MODE_CURRENT
+    # Answer only from this published feature run. A snapshot answer is
+    # refused once the Market's pointer names another run.
+    published_run_id: int | None = None
 
     # Caller-owned entries stored in the scan's metadata_json beside the
     # backend's own keys, which win on a clash.
     metadata: dict | None = None
+    # Caller-owned warnings stored with the scan's own.
+    warnings: tuple[ScanWarning, ...] = ()
 
 
 # ── Result (output) ──────────────────────────────────────────────────────
@@ -358,6 +363,7 @@ class CreateScanUseCase:
                     session_for=session_for,
                     require_current=require_current,
                     rs_run_id_for=self._rs_run_id_for if self._current_rs_run_id else None,
+                    run_id=cmd.published_run_id,
                 )
         except Exception:
             logger.warning("Pinned snapshot lookup failed", exc_info=True)
@@ -549,11 +555,11 @@ class CreateScanUseCase:
                         f"No fresh symbols remain for universe '{cmd.universe_label}'. "
                         "Refresh market data before starting a scan."
                     )
-            scan_warnings: tuple[ScanWarning, ...] = freshness_warnings
+            scan_warnings: tuple[ScanWarning, ...] = (*cmd.warnings, *freshness_warnings)
             if resolved.dropped_symbols:
                 scan_warnings = (
                     SymbolsNotInUniverseWarning.for_dropped(resolved.dropped_symbols),
-                    *freshness_warnings,
+                    *scan_warnings,
                 )
 
             feature_run_id = None

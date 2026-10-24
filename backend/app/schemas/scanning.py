@@ -111,8 +111,18 @@ class SymbolsNotInUniverseWarningResponse(BaseModel):
     dropped_count: int
 
 
+class SymbolsNotInSnapshotWarningResponse(SymbolsNotInUniverseWarningResponse):
+    """Warning emitted when a daily watchlist scan skips symbols its snapshot has no row for."""
+
+    code: Literal[ScanWarningCode.SYMBOLS_NOT_IN_SNAPSHOT.value]
+
+
 ScanWarningResponse = Annotated[
-    Union[StaleTailOmissionWarningResponse, SymbolsNotInUniverseWarningResponse],
+    Union[
+        StaleTailOmissionWarningResponse,
+        SymbolsNotInUniverseWarningResponse,
+        SymbolsNotInSnapshotWarningResponse,
+    ],
     Field(discriminator="code"),
 ]
 _SCAN_WARNING_ADAPTER: TypeAdapter[ScanWarningResponse] = TypeAdapter(ScanWarningResponse)
