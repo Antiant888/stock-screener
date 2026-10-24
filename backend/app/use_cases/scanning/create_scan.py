@@ -173,10 +173,9 @@ class CreateScanCommand:
     # Idempotency
     idempotency_key: str | None = None
 
-    # Provenance — determines cache_only policy in the runner.
-    # Manual scans must run cache-only (no yfinance/Finviz fallback); bootstrap
-    # and other internal scans populate the cache and therefore must allow
-    # live fetch. See scan_tasks._run_bulk_scan_via_use_case.
+    # Provenance — determines cache_only policy in the runner, which lets
+    # only allowlisted internal sources fall back to live fetches. See
+    # scan_tasks._SCAN_SOURCES_ALLOWED_TO_FETCH.
     trigger_source: str = "manual"
 
     # ``current`` keeps freshness checks and compute admission;

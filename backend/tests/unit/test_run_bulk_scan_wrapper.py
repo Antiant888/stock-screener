@@ -330,6 +330,39 @@ class TestRunBulkScanViaUseCase:
         assert captured_cmd.parallel_workers == 2
         mock_resolve.assert_called_once_with(0)
 
+    @pytest.mark.parametrize(
+        ("trigger_source", "cache_only"),
+        [("watchlist", True), ("nightly_digest", True), ("auto", False)],
+    )
+    @patch(f"{_WRAPPER_PATH}._run_post_scan_pipeline")
+    @patch(f"{_WRAPPER_PATH}.settings")
+    def test_only_allowlisted_sources_may_fetch(
+        self, mock_settings, mock_pipeline, trigger_source, cache_only
+    ):
+        mock_settings.scan_usecase_chunk_size = 25
+        mock_settings.scan_compute_processes = 0
+        mock_use_case = MagicMock()
+        mock_use_case.execute.return_value = _FakeResult()
+        fake_session = MagicMock()
+        fake_session.query.return_value.filter.return_value.first.return_value = MagicMock(
+            trigger_source=trigger_source
+        )
+        task_instance = MagicMock()
+        task_instance.request.id = "task-id"
+
+        with (
+            patch(f"{_WRAPPER_PATH}.SessionLocal", return_value=fake_session),
+            patch("app.wiring.bootstrap.get_run_bulk_scan_use_case", return_value=mock_use_case),
+            patch("app.infra.db.uow.SqlUnitOfWork"),
+            patch("app.infra.tasks.progress_sink.CeleryProgressSink"),
+            patch("app.infra.tasks.cancellation.DbCancellationToken"),
+        ):
+            from app.tasks.scan_tasks import _run_bulk_scan_via_use_case
+            _run_bulk_scan_via_use_case(task_instance, "scan-001", ["AAPL"], {})
+
+        [(_, cmd, _, _)] = [c.args for c in mock_use_case.execute.call_args_list]
+        assert cmd.cache_only is cache_only
+
     @patch(f"{_WRAPPER_PATH}._run_post_scan_pipeline")
     @patch(f"{_WRAPPER_PATH}.settings")
     def test_command_built_with_correct_params(self, mock_settings, mock_pipeline):
