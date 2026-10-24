@@ -38,7 +38,9 @@ _TRADINGVIEW_PREFIX_SUFFIXES = {
     "NSE": (".NS",),
     "BSE": (".BO",),
 }
-_TRADINGVIEW_SECTION_PREFIX = "###"
+# A ``###Section name`` cell runs to the next comma or newline. Dropping it
+# whole keeps a multi-word name such as ``###Top AI Picks`` from leaking AI.
+_TRADINGVIEW_SECTION_RE = re.compile(r"(?:^|(?<=[,\n]))[ \t]*###[^,\n]*")
 _TRADINGVIEW_SYMBOL_RE = re.compile(r"^[A-Z][A-Z0-9_]*:\S+$")
 
 
@@ -76,26 +78,24 @@ def parse_watchlist_import_tokens(
     if normalized_hint not in {"auto", "text", "csv"}:
         raise ValueError(f"Unsupported import format: {format_hint}")
 
-    cells = [cell.strip().upper() for cell in re.split(r"[,\n]", stripped)]
-    if any(
-        cell.startswith(_TRADINGVIEW_SECTION_PREFIX) or _TRADINGVIEW_SYMBOL_RE.match(cell)
-        for cell in cells
-    ):
-        tokens = [
-            _import_token(cell)
-            for cell in cells
-            if cell and not cell.startswith(_TRADINGVIEW_SECTION_PREFIX)
-        ]
-    else:
-        if normalized_hint == "csv" or (
+    text_tokens = _parse_text_symbols(_TRADINGVIEW_SECTION_RE.sub("", stripped))
+    # A TradingView export has only EXCHANGE:TICKER tokens, so it never takes
+    # the tabular path, which would keep just its first column.
+    tradingview_export = all(
+        _TRADINGVIEW_SYMBOL_RE.match(token.upper()) for token in text_tokens
+    )
+    if not tradingview_export and (
+        normalized_hint == "csv"
+        or (
             normalized_hint == "auto"
             and "\n" in stripped
             and any(delimiter in stripped for delimiter in (",", "\t", ";"))
-        ):
-            raw_tokens = _parse_tabular_symbols(stripped)
-        else:
-            raw_tokens = _parse_text_symbols(stripped)
-        tokens = [_import_token(token.strip().upper()) for token in raw_tokens]
+        )
+    ):
+        raw_tokens = _parse_tabular_symbols(stripped)
+    else:
+        raw_tokens = text_tokens
+    tokens = [_import_token(token.strip().upper()) for token in raw_tokens]
 
     deduped: list[ImportToken] = []
     seen: set[str] = set()
@@ -110,11 +110,12 @@ def parse_watchlist_import_tokens(
 def _import_token(cell: str) -> ImportToken:
     prefix, separator, ticker = cell.partition(":")
     if not separator:
-        return ImportToken(cell, (cell,))
-    suffixes = _TRADINGVIEW_PREFIX_SUFFIXES.get(prefix, ())
-    if prefix == "HKEX" and ticker.isdigit():
-        ticker = f"{int(ticker):04d}"
-    # Class shares are BRK.B on TradingView; the universe may hold BRK-B.
+        ticker, suffixes = cell, ("",)
+    else:
+        suffixes = _TRADINGVIEW_PREFIX_SUFFIXES.get(prefix, ())
+        if prefix == "HKEX" and ticker.isdigit():
+            ticker = f"{int(ticker):04d}"
+    # Class shares are often written BRK.B; the universe may hold BRK-B.
     tickers = dict.fromkeys((ticker, ticker.replace(".", "-")))
     return ImportToken(cell, tuple(t + suffix for t in tickers for suffix in suffixes))
 

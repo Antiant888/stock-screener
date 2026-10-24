@@ -158,3 +158,58 @@ def test_split_import_results_classifies_existing_and_invalid_symbols():
     assert added == ["NVDA", "MSFT"]
     assert existing == ["AAPL"]
     assert invalid == ["BAD$"]
+
+
+def _added(content, known_symbols, format_hint="auto"):
+    added, _, _ = split_import_results(
+        parse_watchlist_import_tokens(content, format_hint), known_symbols, set()
+    )
+    return added
+
+
+_TRAP_TICKERS = {"ON", "NOW", "USA", "AI", "TOP", "PICKS", "WATCH", "LINK", "PT"}
+
+
+def test_csv_with_prefix_shaped_notes_reads_only_the_symbol_column():
+    known = {"NVDA", "MSFT", "AAPL", *_TRAP_TICKERS}
+
+    assert _added("symbol,notes\nNVDA,BUY:NOW\nMSFT,ON", known) == ["NVDA", "MSFT"]
+    assert _added("Symbol,Notes\nNVDA,PT:200\nMSFT,NOW\nAAPL,", known) == ["NVDA", "MSFT", "AAPL"]
+    assert _added("symbol,notes\nNVDA,NYSE:ON", known, format_hint="csv") == ["NVDA"]
+
+
+def test_csv_with_a_link_column_reads_only_the_symbol_column():
+    known = {"NVDA", "AAPL", *_TRAP_TICKERS}
+
+    assert _added(
+        "Ticker,Country,Link\nNVDA,USA,https://x\nAAPL,USA,https://y", known
+    ) == ["NVDA", "AAPL"]
+
+
+def test_mixed_plain_and_prefixed_pastes_keep_every_symbol():
+    known = {"NVDA", "AAPL", "MSFT", "TSLA"}
+
+    assert _added("NVDA AAPL MSFT\nNASDAQ:TSLA", known) == ["NVDA", "AAPL", "MSFT", "TSLA"]
+    assert _added("NVDA MSFT,NASDAQ:AAPL", known, format_hint="text") == ["NVDA", "MSFT", "AAPL"]
+
+
+def test_tradingview_cells_holding_several_symbols_are_split():
+    known = {"NVDA", "ANET", "AAPL", "BRK-B", *_TRAP_TICKERS}
+
+    assert _added("NASDAQ:NVDA NYSE:BRK.B\nNASDAQ:AAPL", known) == ["NVDA", "BRK-B", "AAPL"]
+    assert _added("###Top AI Picks\nNASDAQ:NVDA NYSE:ANET", known) == ["NVDA", "ANET"]
+    assert _added("NASDAQ:NVDA;NYSE:ANET", known) == ["NVDA", "ANET"]
+
+
+def test_section_names_never_leak_from_a_mixed_paste():
+    known = {"NVDA", "ANET", *_TRAP_TICKERS}
+
+    assert _added("###Top AI Picks,NVDA,NASDAQ:ANET", known) == ["NVDA", "ANET"]
+    assert _added(
+        "###Top AI Picks,NVDA\n###ON Watch,NASDAQ:ANET", known, format_hint="text"
+    ) == ["NVDA", "ANET"]
+
+
+def test_plain_dotted_class_share_also_tries_the_dashed_form():
+    assert _texts_and_candidates("BRK.B") == [("BRK.B", ("BRK.B", "BRK-B"))]
+    assert _added("BRK.B,BF.B", {"BRK-B", "BF.B"}) == ["BRK-B", "BF.B"]
