@@ -1057,6 +1057,20 @@ async def test_watchlist_import_endpoint_resolves_tradingview_rows_against_the_u
 
 
 @pytest.mark.asyncio
+async def test_watchlist_import_endpoint_rejects_content_over_one_megabyte(client, session):
+    app.dependency_overrides[get_db] = _override_db(session)
+    watchlist = _seed_search_and_import_data(session)
+
+    response = await client.post(
+        f"/api/v1/user-watchlists/{watchlist.id}/items/import",
+        json={"content": "NVDA," * 200_000 + "X", "format": "auto"},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"][0]["type"] == "string_too_long"
+
+
+@pytest.mark.asyncio
 async def test_watchlist_import_endpoint_downgrades_duplicate_insert_race(client, session, monkeypatch):
     app.dependency_overrides[get_db] = _override_db(session)
     watchlist = _seed_search_and_import_data(session)
