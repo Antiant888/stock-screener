@@ -182,8 +182,9 @@ class CreateScanCommand:
     # ``last_published`` answers only from a pinned published snapshot and
     # never computes (see ``published_snapshot``).
     data_mode: str = DATA_MODE_CURRENT
-    # Answer only from this published feature run. A snapshot answer is
-    # refused once the Market's pointer names another run.
+    # For ``last_published`` mode: answer only from this published feature run,
+    # and refuse once the Market's pointer names another run. ``current``
+    # mode's exact-match and compile paths never read it.
     published_run_id: int | None = None
 
     # Caller-owned entries stored in the scan's metadata_json beside the

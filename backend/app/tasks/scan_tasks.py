@@ -21,9 +21,10 @@ from .workload_coordination import serialized_market_workload
 
 logger = logging.getLogger(__name__)
 
-# Internal scans that fill the cache may fall back to live provider fetches.
-# Every other source, manual, watchlist or one added later, runs cache-only.
-_SCAN_SOURCES_ALLOWED_TO_FETCH = frozenset({SCAN_TRIGGER_SOURCE_AUTO, "bootstrap"})
+# Only listed sources may fall back to live provider fetches; every other
+# source runs cache-only. Today only manual scans reach this runner, so every
+# scan it runs is cache-only.
+_SCAN_SOURCES_ALLOWED_TO_FETCH = frozenset({SCAN_TRIGGER_SOURCE_AUTO})
 
 
 def cleanup_old_scans(db: Session, universe_key: str, keep_count: int = 3) -> None:
