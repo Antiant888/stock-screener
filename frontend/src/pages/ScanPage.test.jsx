@@ -820,6 +820,96 @@ describe('ScanPage', () => {
     expect(scanApi.getScanBootstrap.mock.calls.map(([scanId]) => scanId)).toEqual([null, 'us-scan']);
   });
 
+  describe('history auto-load around watchlist scans', () => {
+    const WATCHLIST_SCAN = { scan_id: 'watchlist-scan', status: 'completed', universe_def: { type: 'custom', symbols: ['AAPL'] } };
+    const US_SCAN = { scan_id: 'us-scan', status: 'completed', universe_def: { type: 'market', market: 'US' } };
+    const loadedScanIds = () => scanApi.getScanBootstrap.mock.calls.map(([scanId]) => scanId);
+    const historyHolds = async (queryClient, scans) => {
+      await waitFor(() => expect(queryClient.getQueryData(['scanHistory', 'US'])).toEqual({ scans }));
+      await act(async () => {});
+    };
+
+    beforeEach(() => {
+      runtimeState.runtimeReady = true;
+      runtimeState.scanDefaults = { ...DEFAULT_SCAN_DEFAULTS, universe: 'market:us' };
+      marketState.selectedMarket = 'US';
+    });
+
+    it('auto-loads a market scan that lands after only watchlist scans had finished', async () => {
+      scanApi.getScans
+        .mockResolvedValueOnce({ scans: [WATCHLIST_SCAN] })
+        .mockResolvedValue({ scans: [US_SCAN, WATCHLIST_SCAN] });
+
+      const { queryClient } = renderWithProviders(<ScanPage />);
+
+      await historyHolds(queryClient, [WATCHLIST_SCAN]);
+      expect(loadedScanIds()).toEqual([null]);
+
+      await act(async () => {
+        await queryClient.invalidateQueries({ queryKey: ['scanHistory'] });
+      });
+
+      await waitFor(() => expect(scanApi.getScanStatus).toHaveBeenCalledWith('us-scan'));
+      expect(loadedScanIds()).toEqual([null, 'us-scan']);
+    });
+
+    it('auto-loads the market scan beneath 25 newer watchlist scans', async () => {
+      const watchlistScans = Array.from({ length: 25 }, (_, index) => ({
+        ...WATCHLIST_SCAN,
+        scan_id: `watchlist-scan-${index}`,
+      }));
+      scanApi.getScans.mockResolvedValue({ scans: [...watchlistScans, US_SCAN] });
+
+      renderWithProviders(<ScanPage />);
+
+      await waitFor(() => expect(scanApi.getScanStatus).toHaveBeenCalledWith('us-scan'));
+      expect(loadedScanIds()).toEqual([null, 'us-scan']);
+    });
+
+    it('keeps an opened watchlist scan when a market scan lands later', async () => {
+      scanApi.getScans
+        .mockResolvedValueOnce({ scans: [WATCHLIST_SCAN] })
+        .mockResolvedValue({ scans: [US_SCAN, WATCHLIST_SCAN] });
+
+      const { queryClient } = renderWithProviders(<ScanPage />);
+
+      await historyHolds(queryClient, [WATCHLIST_SCAN]);
+      fireEvent.mouseDown(await screen.findByLabelText('Previous Scans'));
+      const option = await waitFor(() => {
+        const element = document.querySelector('[role="option"][data-value="watchlist-scan"]');
+        expect(element).not.toBeNull();
+        return element;
+      });
+      fireEvent.click(option);
+      await waitFor(() => expect(scanApi.getScanStatus).toHaveBeenCalledWith('watchlist-scan'));
+
+      await act(async () => {
+        await queryClient.invalidateQueries({ queryKey: ['scanHistory'] });
+      });
+      await waitFor(() => expect(scanApi.getScans).toHaveBeenCalledTimes(2));
+
+      expect(loadedScanIds()).toEqual([null, 'watchlist-scan']);
+      expect(scanApi.getScanStatus).not.toHaveBeenCalledWith('us-scan');
+    });
+
+    it('keeps a created scan when a market scan lands with it', async () => {
+      const createdScan = { ...WATCHLIST_SCAN, scan_id: 'scan-new' };
+      scanApi.getScans
+        .mockResolvedValueOnce({ scans: [WATCHLIST_SCAN] })
+        .mockResolvedValue({ scans: [createdScan, US_SCAN, WATCHLIST_SCAN] });
+      scanApi.createScan.mockResolvedValueOnce({ scan_id: 'scan-new', status: 'completed', total_stocks: 1 });
+
+      const { queryClient } = renderWithProviders(<ScanPage />);
+
+      await historyHolds(queryClient, [WATCHLIST_SCAN]);
+      fireEvent.click(await screen.findByText('Scan', { selector: 'button' }, { timeout: 3000 }));
+      await waitFor(() => expect(scanApi.getScans).toHaveBeenCalledTimes(2));
+
+      expect(loadedScanIds()).toEqual([null]);
+      expect(scanApi.getScanStatus).not.toHaveBeenCalledWith('us-scan');
+    });
+  });
+
   it('disables scan creation with a hover warning when prices refresh is active for the selected market', async () => {
     const user = userEvent.setup();
     runtimeState.runtimeReady = true;
