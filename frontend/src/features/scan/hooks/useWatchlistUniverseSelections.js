@@ -25,7 +25,9 @@ export function useWatchlistUniverseSelections({
     queryKey: ['userWatchlistSymbols', selectedWatchlistId],
     queryFn: () => getWatchlistSymbols(selectedWatchlistId),
     enabled: selectedWatchlistId !== null,
-    // The list can change in another tab or through MCP; never scan a cached copy.
+    // The list can change in another tab or through MCP, so refetch on mount
+    // and when this tab becomes visible again. An edit made while this tab
+    // stays visible is not seen until then.
     staleTime: 0,
     refetchOnWindowFocus: true,
   });
