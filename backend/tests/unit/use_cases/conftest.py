@@ -160,18 +160,23 @@ class FakeScanRepository(ScanRepository):
         self.status_history.append((scan_id, status))
 
     def list_recent(self, limit: int = 20, market: str | None = None) -> list[FakeScan]:
-        rows = self.rows
-        if market:
+        def newest(symbol_list: bool) -> list[FakeScan]:
             rows = [
-                scan for scan in rows
-                if (getattr(scan, "universe_market", None) or "").upper() == market.upper()
-                or getattr(scan, "universe_type", None) in ("custom", "test")
+                scan for scan in self.rows
+                if (getattr(scan, "universe_type", None) in ("custom", "test")) == symbol_list
+                and (
+                    not market
+                    or (getattr(scan, "universe_market", None) or "").upper() == market.upper()
+                    or (symbol_list and getattr(scan, "universe_market", None) is None)
+                )
             ]
+            return sorted(rows, key=lambda s: s.started_at or datetime.min, reverse=True)[:limit]
+
         return sorted(
-            rows,
+            newest(False) + newest(True),
             key=lambda s: s.started_at or datetime.min,
             reverse=True,
-        )[:limit]
+        )
 
     def delete(self, scan_id: str) -> bool:
         if scan_id in self.scans:
