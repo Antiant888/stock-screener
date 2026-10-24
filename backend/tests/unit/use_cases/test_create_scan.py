@@ -60,7 +60,7 @@ def _stale_detail_decision(detail):
 def _omission_warning():
     return FreshnessOmissionWarning(
         code="market_data_stale_tail_omitted",
-        message="Omitted 1 stale symbol from this broad scan (66.67% fresh).",
+        message="Omitted 1 stale symbol from this scan (66.67% fresh).",
         markets=("US",),
         omitted_symbols=("LHSW",),
         omitted_count=1,
@@ -414,14 +414,14 @@ class TestFreshnessChecker:
         assert uow.scans.rows[0].warnings[0]["omitted_symbols"] == ["LHSW"]
         assert result.warnings[0].omitted_count == 1
 
-    def test_custom_universe_omits_a_stale_tail_like_broad_scans(self):
+    def test_custom_universe_omits_a_stale_symbol_from_a_small_list(self):
         from datetime import date
         from types import SimpleNamespace
         from unittest.mock import patch
 
         from app.services import market_data_freshness
 
-        fresh = [f"FRESH{i:03d}" for i in range(99)]
+        fresh = [f"FRESH{i:03d}" for i in range(9)]
         symbols = [*fresh, "HALTED"]
         rows = [
             SimpleNamespace(symbol=symbol, market="US", last_date=date(2026, 6, 18))

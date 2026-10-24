@@ -19,7 +19,7 @@ const filterPresetsState = vi.hoisted(() => ({ presets: [] }));
 const CAPABILITY_TRANSITION_TIMEOUT = 10_000;
 const STALE_TAIL_WARNING = {
   code: 'market_data_stale_tail_omitted',
-  message: 'Omitted 1 stale symbol from this broad scan (99.00% fresh).',
+  message: 'Omitted 1 stale symbol from this scan (99.00% fresh).',
   omitted_symbols: ['LHSW'],
   omitted_count: 1,
 };

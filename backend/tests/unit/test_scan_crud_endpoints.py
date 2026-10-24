@@ -69,7 +69,7 @@ def _make_scan(scan_id="scan-001", status="completed", **kwargs) -> FakeScan:
 def _warning_payload():
     return {
         "code": "market_data_stale_tail_omitted",
-        "message": "Omitted 1 stale symbol from this broad scan (99.00% fresh).",
+        "message": "Omitted 1 stale symbol from this scan (99.00% fresh).",
         "markets": ["US"],
         "omitted_symbols": ["LHSW"],
         "omitted_count": 1,

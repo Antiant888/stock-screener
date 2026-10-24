@@ -103,7 +103,7 @@ class ScanFreshnessPolicy:
 
     allow_stale_tail: bool = False
     min_freshness_rate: float = 0.99
-    max_omitted_symbols: int = 100
+    max_omitted_symbols: int | None = 100
     stale_symbol_sample_limit: int = 20
 
     @classmethod
@@ -116,20 +116,16 @@ class ScanFreshnessPolicy:
 
     @classmethod
     def for_universe_type(cls, universe_type: str) -> "ScanFreshnessPolicy":
-        return cls(
-            allow_stale_tail=universe_type in {
-                "all",
-                "market",
-                "exchange",
-                "index",
-                "custom",
-            }
-        )
+        if universe_type == "custom":
+            # A hand-picked list is scanned for whatever is fresh: one halted
+            # name in a 10-symbol watchlist must not block the other nine.
+            return cls(allow_stale_tail=True, min_freshness_rate=0.0, max_omitted_symbols=None)
+        return cls(allow_stale_tail=universe_type in {"all", "market", "exchange", "index"})
 
 
 @dataclass(frozen=True)
 class FreshnessOmissionWarning:
-    """Durable warning describing symbols omitted from a degraded broad scan."""
+    """Durable warning describing symbols omitted from a degraded scan."""
 
     code: str
     message: str

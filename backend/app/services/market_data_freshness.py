@@ -319,8 +319,8 @@ def _build_omission_warning(
     return FreshnessOmissionWarning(
         code=ScanWarningCode.STALE_TAIL_OMITTED.value,
         message=(
-            f"Omitted {omitted_count} stale symbols from this broad scan "
-            f"({freshness_rate:.2%} fresh)."
+            f"Omitted {omitted_count} stale {'symbol' if omitted_count == 1 else 'symbols'} "
+            f"from this scan ({freshness_rate:.2%} fresh)."
         ),
         markets=tuple(sorted(expected_dates)),
         omitted_symbols=omitted_symbols,
@@ -365,7 +365,8 @@ def _decide_scan_freshness(
         and not unresolved_symbols
         and not hard_block
         and omitted_count > 0
-        and omitted_count <= policy.max_omitted_symbols
+        and fresh_count > 0
+        and (policy.max_omitted_symbols is None or omitted_count <= policy.max_omitted_symbols)
         and freshness_rate >= policy.min_freshness_rate
     )
     if can_omit_tail:

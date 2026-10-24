@@ -88,7 +88,7 @@ class ScanCreateRequest(BaseModel):
 
 
 class StaleTailOmissionWarningResponse(BaseModel):
-    """Warning emitted when a broad scan omits a small stale symbol tail."""
+    """Warning emitted when a scan omits stale symbols and scans the rest."""
 
     code: Literal[ScanWarningCode.STALE_TAIL_OMITTED.value]
     message: str
