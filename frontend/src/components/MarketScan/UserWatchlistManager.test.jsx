@@ -157,7 +157,9 @@ describe('UserWatchlistManager import flow', () => {
     );
     fireEvent.click(within(importDialog).getByRole('button', { name: 'Import' }));
 
-    expect(await screen.findByText('String should have at most 1000000 characters')).toBeInTheDocument();
+    expect(await within(importDialog).findByRole('alert')).toHaveTextContent(
+      'String should have at most 1000000 characters',
+    );
   }, 20000);
 
   it('shows the watchlist size limit the server reports', async () => {
@@ -174,7 +176,13 @@ describe('UserWatchlistManager import flow', () => {
     );
     fireEvent.click(within(importDialog).getByRole('button', { name: 'Import' }));
 
-    expect(await screen.findByText(limit)).toBeInTheDocument();
+    expect(await within(importDialog).findByRole('alert')).toHaveTextContent(limit);
+
+    fireEvent.click(within(importDialog).getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Import Symbols' })).toBeNull());
+    fireEvent.click(screen.getByRole('button', { name: 'Import' }));
+    const reopened = await screen.findByRole('dialog', { name: 'Import Symbols' });
+    expect(within(reopened).queryByRole('alert')).toBeNull();
   }, 20000);
 
   it('blocks pasted text over the import limit before sending it', async () => {

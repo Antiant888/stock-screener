@@ -171,7 +171,6 @@ function UserWatchlistManager({ open, onClose, onUpdate }) {
       setFeedback({ severity: 'success', message: parts.join(', ') });
       onUpdate?.();
     },
-    onError: (err) => setFeedback({ severity: 'error', message: getErrorMessage(err, 'Failed to import symbols') }),
   });
 
   const handleCreate = () => {
@@ -215,6 +214,7 @@ function UserWatchlistManager({ open, onClose, onUpdate }) {
 
   const handleOpenImportDialog = () => {
     setImportFileError(null);
+    importItemsMutation.reset();
     if (importDraftWatchlistId !== selectedWatchlistId) {
       setImportContent('');
       setImportDraftWatchlistId(selectedWatchlistId);
@@ -259,6 +259,9 @@ function UserWatchlistManager({ open, onClose, onUpdate }) {
 
   const selectedWatchlist = watchlists.find((w) => w.id === selectedWatchlistId);
   const importTooLong = importContent.length > MAX_IMPORT_CHARS;
+  const importError = importFileError
+    || (importTooLong && `This text is over ${MAX_IMPORT_CHARS.toLocaleString('en-US')} characters.`)
+    || (importItemsMutation.isError && getErrorMessage(importItemsMutation.error, 'Failed to import symbols'));
 
   return (
     <Dialog open={open} onClose={onClose} maxWidth="md" fullWidth>
@@ -535,9 +538,9 @@ function UserWatchlistManager({ open, onClose, onUpdate }) {
               }}
             />
           </Button>
-          {(importFileError || importTooLong) && (
+          {importError && (
             <Alert severity="error" sx={{ mb: 1.5 }}>
-              {importFileError || `This text is over ${MAX_IMPORT_CHARS.toLocaleString('en-US')} characters.`}
+              {importError}
             </Alert>
           )}
           <TextField
