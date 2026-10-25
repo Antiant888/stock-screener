@@ -34,6 +34,7 @@ from app.domain.feature_store.quality import DQInputs
 from app.domain.scanning.models import (
     FilterOptions,
     ProgressEvent,
+    ResolvedUniverse,
     ResultPage,
     ScanResultItemDomain,
 )
@@ -159,17 +160,23 @@ class FakeScanRepository(ScanRepository):
         self.status_history.append((scan_id, status))
 
     def list_recent(self, limit: int = 20, market: str | None = None) -> list[FakeScan]:
-        rows = self.rows
-        if market:
+        def newest(symbol_list: bool) -> list[FakeScan]:
             rows = [
-                scan for scan in rows
-                if (getattr(scan, "universe_market", None) or "").upper() == market.upper()
+                scan for scan in self.rows
+                if (getattr(scan, "universe_type", None) in ("custom", "test")) == symbol_list
+                and (
+                    not market
+                    or (getattr(scan, "universe_market", None) or "").upper() == market.upper()
+                    or (symbol_list and getattr(scan, "universe_market", None) is None)
+                )
             ]
+            return sorted(rows, key=lambda s: s.started_at or datetime.min, reverse=True)[:limit]
+
         return sorted(
-            rows,
+            newest(False) + newest(True),
             key=lambda s: s.started_at or datetime.min,
             reverse=True,
-        )[:limit]
+        )
 
     def delete(self, scan_id: str) -> bool:
         if scan_id in self.scans:
@@ -332,15 +339,17 @@ class FakeUniverseRepository(UniverseRepository):
         symbols: list[str] | None = None,
         *,
         markets: dict[str, str] | None = None,
+        dropped_symbols: tuple[str, ...] = (),
     ) -> None:
         self._symbols = symbols or []
         # Default: every symbol is a US listing.
         self._markets = markets
+        self._dropped_symbols = dropped_symbols
         self.resolve_calls: list[object] = []
 
-    def resolve_symbols(self, universe_def: object) -> list[str]:
+    def resolve(self, universe_def: object) -> ResolvedUniverse:
         self.resolve_calls.append(universe_def)
-        return self._symbols
+        return ResolvedUniverse(self._symbols, self._dropped_symbols)
 
     def resolve_markets(self, symbols: list[str]) -> dict[str, str]:
         if self._markets is None:

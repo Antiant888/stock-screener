@@ -23,7 +23,13 @@ from app.domain.relative_strength import (
 from app.domain.common.query import PageSpec, SortSpec
 
 from .filter_expression_model import FilterExpression, QuerySpec
-from .models import FilterOptions, ProgressEvent, ResultPage, ScanResultItemDomain
+from .models import (
+    FilterOptions,
+    ProgressEvent,
+    ResolvedUniverse,
+    ResultPage,
+    ScanResultItemDomain,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -86,7 +92,10 @@ class ScanRepository(abc.ABC):
     def list_recent(self, limit: int = 20, market: str | None = None) -> list[object]:
         """Return the most recent scans, ordered by started_at descending.
 
-        ``market`` restricts results to scans of one universe market.
+        Up to ``limit`` market scans and up to ``limit`` custom and test scans,
+        so one kind never crowds out the other. ``market`` restricts market
+        scans to that universe market, and custom and test scans to that
+        market or none.
         """
         ...
 
@@ -259,8 +268,11 @@ class UniverseRepository(abc.ABC):
     """Resolve which symbols belong to a universe."""
 
     @abc.abstractmethod
-    def resolve_symbols(self, universe_def: object) -> list[str]:
+    def resolve(self, universe_def: object) -> ResolvedUniverse:
         ...
+
+    def resolve_symbols(self, universe_def: object) -> list[str]:
+        return self.resolve(universe_def).symbols
 
     @abc.abstractmethod
     def resolve_markets(self, symbols: list[str]) -> dict[str, str]:

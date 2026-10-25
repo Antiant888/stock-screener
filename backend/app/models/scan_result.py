@@ -13,6 +13,7 @@ from sqlalchemy import (
     Integer,
     String,
     false,
+    or_,
     text,
 )
 from sqlalchemy.orm import relationship
@@ -96,6 +97,16 @@ class Scan(Base):
             unique=True,
         ),
     )
+
+    @classmethod
+    def represents_market_view(cls):
+        """Filter for scans that can stand for a market's own latest scan.
+
+        Custom (watchlist) and test scans are user symbol lists, whatever market
+        they store, so they never feed pages that read a market's latest scan.
+        A NULL type is a pre-migration row and stays eligible.
+        """
+        return or_(cls.universe_type.is_(None), cls.universe_type.notin_(("custom", "test")))
 
     def get_universe_definition(self):
         """Reconstruct a UniverseDefinition from the structured DB fields."""

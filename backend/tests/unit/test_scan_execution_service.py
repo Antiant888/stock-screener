@@ -179,3 +179,24 @@ def test_cleanup_old_scans_uses_bulk_delete_for_scan_rows(monkeypatch):
     finally:
         db.close()
         engine.dispose()
+
+
+def test_cleanup_old_scans_keeps_the_newest_rows_when_completed_at_ties():
+    import app.services.scan_execution as module
+
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine, tables=[Scan.__table__, ScanResult.__table__])
+    db = sessionmaker(bind=engine)()
+    try:
+        completed_at = datetime(2026, 10, 23, 22)
+        for scan_id in ("tie-1", "tie-2", "tie-3", "tie-4"):
+            db.add(Scan(scan_id=scan_id, universe_key="all", status="completed", completed_at=completed_at))
+            db.flush()
+        db.commit()
+
+        module.cleanup_old_scans(db, "all", keep_count=3)
+
+        assert sorted(scan.scan_id for scan in db.query(Scan).all()) == ["tie-2", "tie-3", "tie-4"]
+    finally:
+        db.close()
+        engine.dispose()

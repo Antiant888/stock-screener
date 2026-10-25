@@ -1388,3 +1388,34 @@ def test_update_all_theme_metrics_looks_up_latest_scan_once_per_run(db_session):
     assert service.calculate_screener_metrics(themes[0].id) == {
         "num_passing_minervini": 0, "num_stage_2": 0, "avg_rs_rating": 5.0,
     }
+
+
+def test_screener_metrics_ignore_a_newer_watchlist_or_test_scan(db_session):
+    """A custom (watchlist) or test scan finishing last must not feed theme metrics."""
+    from app.models.scan_result import Scan, ScanResult
+
+    now = datetime(2026, 2, 24, 18, 0, 0)
+    theme = _make_theme(db_session, name="Grid Demand", canonical_key="grid_demand", state="active", now=now)
+    db_session.add(ThemeConstituent(
+        theme_cluster_id=theme.id, symbol="AAPL", source="manual", confidence=1.0, is_active=True,
+    ))
+    for scan_id, universe_type, market, completed_at, minervini, stage, rs in (
+        ("old-us-scan", "market", "US", now - timedelta(hours=4), 10.0, 1, 10.0),
+        ("us-scan", "market", "US", now - timedelta(hours=3), 80.0, 2, 90.0),
+        ("watchlist-scan", "custom", None, now - timedelta(hours=2), 10.0, 1, 20.0),
+        ("test-scan", "test", None, now - timedelta(hours=1), 10.0, 3, 30.0),
+    ):
+        db_session.add(Scan(
+            scan_id=scan_id, status="completed", universe_type=universe_type, universe_market=market,
+            started_at=completed_at - timedelta(minutes=5), completed_at=completed_at,
+        ))
+        db_session.add(ScanResult(
+            scan_id=scan_id, symbol="AAPL", minervini_score=minervini, stage=stage, rs_rating=rs,
+        ))
+    db_session.commit()
+
+    service = ThemeDiscoveryService(db_session, pipeline="technical")
+
+    assert service.calculate_screener_metrics(theme.id) == {
+        "num_passing_minervini": 1, "num_stage_2": 1, "avg_rs_rating": 90.0,
+    }

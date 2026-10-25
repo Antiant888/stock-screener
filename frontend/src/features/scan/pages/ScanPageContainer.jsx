@@ -14,12 +14,6 @@ import {
 } from '../../../api/scans';
 import FilterPanel from '../components/FilterPanelContainer';
 import ChartViewerModal from '../../../components/Scan/ChartViewerModalLazy';
-import {
-  fetchPriceHistory,
-  prefetchPriceHistoryBatch,
-  priceHistoryKeys,
-  PRICE_HISTORY_STALE_TIME,
-} from '../../../api/priceHistory';
 import { useFilterPresets } from '../../../hooks/useFilterPresets';
 import { useRuntimeActivity } from '../../../hooks/useRuntimeActivity';
 import { useRuntime } from '../../../contexts/RuntimeContext';
@@ -29,7 +23,7 @@ import { scanBootstrapQuery as latestScanBootstrapQuery } from '../../../pageBoo
 import { DEFAULT_SCAN_DEFAULTS } from '../../../constants/scanDefaults';
 import { buildDefaultScanFilters } from '../defaultFilters';
 import { normalizeScanFilterOptions } from '../filterOptions';
-import { DEFAULT_FILTER_KEY } from '../constants';
+import { MAX_CUSTOM_UNIVERSE_SYMBOLS } from '../constants';
 import ScanControlBar from '../components/ScanControlBar';
 import ScanResultsSection from '../components/ScanResultsSection';
 import GuidedFilterBuilderDialog from '../components/GuidedFilterBuilderDialog';
@@ -50,6 +44,8 @@ import {
   stableScanFilterQueryKey,
 } from '../hooks/useScanFilterQueryState';
 import { useScanResultsController } from '../hooks/useScanResultsController';
+import { useScanResultsPrefetch } from '../hooks/useScanResultsPrefetch';
+import { useWatchlistUniverseSelections } from '../hooks/useWatchlistUniverseSelections';
 import { canOfferLastPublished, describePublishedSource } from '../publishedSource';
 import {
   buildUniverseDef,
@@ -61,6 +57,7 @@ import {
   resolveUniverseScopeValue,
 } from '../runtimeUniverseSelections';
 import { PageSkeleton } from '../../../components/common/LoadingSkeletons';
+import { getErrorMessage } from '../../../utils/errorMessage';
 
 const INITIAL_UNIVERSE_SELECTION = parseLegacyUniverseDefault(DEFAULT_SCAN_DEFAULTS.universe);
 const DEFAULT_SCAN_FILTERS = buildDefaultScanFilters();
@@ -68,13 +65,15 @@ const DEFAULT_SCAN_EXPRESSION = legacyFiltersToExpression(DEFAULT_SCAN_FILTERS);
 const DEFAULT_SCAN_QUERY = createScanFilterQuery(DEFAULT_SCAN_EXPRESSION);
 const DEFAULT_SCAN_QUERY_KEY = stableScanFilterQueryKey(DEFAULT_SCAN_QUERY);
 
-const ROW_HOVER_PREFETCH_DELAY_MS = 150;
-
 // Create-scan rejections that describe the submitted request, not the system.
 const REQUEST_SCOPED_ERROR_CODES = new Set(['snapshot_unavailable', 'market_data_stale']);
 
 // "No market auto-loaded yet" marker for the scan auto-load ref.
 const NO_MARKET_AUTOLOADED = Symbol('no-market-autoloaded');
+
+// Symbol-list universes, as in the backend's Scan.represents_market_view: the
+// history lists their scans, but they never stand in for the market's scan.
+const SYMBOL_LIST_UNIVERSE_TYPES = new Set(['custom', 'test']);
 
 function getMutationErrorMessage(error) {
   if (!error) {
@@ -82,8 +81,7 @@ function getMutationErrorMessage(error) {
   }
   return error?.response?.data?.detail?.message
     || error?.response?.data?.message
-    || error?.message
-    || 'Failed to start scan.';
+    || getErrorMessage(error, 'Failed to start scan.');
 }
 
 function getMutationErrorDetail(error) {
@@ -99,7 +97,7 @@ function importedSymbolList(value) {
   return [...new Set(String(value || '').split(',')
     .map((symbol) => symbol.trim().replace(/^\$+/, '').toUpperCase())
     .filter((symbol) => /^[A-Z0-9][A-Z0-9.-]{0,19}$/.test(symbol)))]
-    .slice(0, 500);
+    .slice(0, MAX_CUSTOM_UNIVERSE_SYMBOLS);
 }
 
 function ScanPage() {
@@ -107,9 +105,11 @@ function ScanPage() {
   const { selectedMarket: globalMarket } = useMarket();
   const { activeProfileDetail } = useStrategyProfileData();
   const scanDefaultsAppliedRef = useRef(null);
-  // Market whose latest scan is already auto-loaded. Changing the global
-  // market re-arms the auto-load for the new market. The sentinel can never
-  // collide with a market code or with null (the no-provider market value).
+  // Market whose scan selection is settled: its latest market scan was
+  // auto-loaded, or the user opened or created a scan, which auto-load must
+  // never replace. Changing the global market resets it to the sentinel, which
+  // can never collide with a market code or with null (the no-provider market
+  // value).
   const autoLoadedMarketRef = useRef(NO_MARKET_AUTOLOADED);
   const globalMarketRef = useRef(globalMarket);
   globalMarketRef.current = globalMarket;
@@ -134,7 +134,7 @@ function ScanPage() {
   // via a notice so it never runs unseen.
   const [lateCreatedScanId, setLateCreatedScanId] = useState(null);
   // published_source per scan, kept with the scan's identity: some scans
-  // (custom symbols, other markets) never appear in the market's history.
+  // (other markets) never appear in the market's history.
   const [scanSources, setScanSources] = useState({});
   const rememberScanSource = useCallback((scanId, source) => {
     if (!scanId || !source) {
@@ -201,6 +201,12 @@ function ScanPage() {
     () => buildRuntimeUniverseSelections(universeOptions, runtimeActivityQuery.data),
     [runtimeActivityQuery.data, universeOptions]
   );
+  const pickerSelections = useWatchlistUniverseSelections({
+    universeSelections,
+    universeMarket,
+    universeScope,
+    setUniverseScope,
+  });
 
   useEffect(() => {
     if (!runtimeReady) {
@@ -232,14 +238,24 @@ function ScanPage() {
     }
   }, [universeMarket, universeScope, universeSelections]);
 
+  const clearScanView = useCallback(() => {
+    currentScanIdRef.current = null;
+    setCurrentScanId(null);
+    setBootstrappedScanId(null);
+    setScanStatus(null);
+    setLastFinishedScan(null);
+    requestPage(1);
+  }, [requestPage]);
+
   // Another market's results must never stand in for this market's scan.
-  const lastFinishedMarketRef = useRef(globalMarket);
+  const viewMarketRef = useRef(globalMarket);
   useEffect(() => {
-    if (lastFinishedMarketRef.current !== globalMarket) {
-      lastFinishedMarketRef.current = globalMarket;
-      setLastFinishedScan(null);
+    if (viewMarketRef.current !== globalMarket) {
+      viewMarketRef.current = globalMarket;
+      autoLoadedMarketRef.current = NO_MARKET_AUTOLOADED;
+      clearScanView();
     }
-  }, [globalMarket]);
+  }, [clearScanView, globalMarket]);
 
   useEffect(() => {
     if (currentScanId && (scanStatus === 'completed' || scanStatus === 'cancelled')) {
@@ -258,8 +274,8 @@ function ScanPage() {
       const isLatestVariant = requestedScanId == null;
       queryClient.setQueryData(['universeStats'], payload.universe_stats ?? null);
       if (isLatestVariant && payloadMarket) {
-        // The market-scoped latest list is exactly GET /scans?limit=20&market=.
-        // Dating it by its publish time keeps the normal staleness refetch.
+        // The market-scoped latest list is GET /scans?limit=20&market= as of
+        // its publish time, so it is dated by that time and refetched once stale.
         // Explicit scan variants never go stale, so their lists are not used.
         queryClient.setQueryData(
           ['scanHistory', payloadMarket],
@@ -382,12 +398,7 @@ function ScanPage() {
   const handleLoadScan = useCallback(
     async (scanId) => {
       if (!scanId) {
-        currentScanIdRef.current = null;
-        setCurrentScanId(null);
-        setBootstrappedScanId(null);
-        setScanStatus(null);
-        setLastFinishedScan(null);
-        requestPage(1);
+        clearScanView();
         autoLoadedMarketRef.current = globalMarketRef.current;
         return;
       }
@@ -431,11 +442,12 @@ function ScanPage() {
         }
       }
     },
-    [applyScanBootstrapSnapshot, queryClient, rememberScanSource, requestPage]
+    [applyScanBootstrapSnapshot, clearScanView, queryClient, rememberScanSource, requestPage]
   );
 
   const handleUserLoadScan = useCallback((scanId) => {
     scanSelectionRef.current += 1;
+    autoLoadedMarketRef.current = globalMarketRef.current;
     setLateCreatedScanId(null);
     handleLoadScan(scanId);
   }, [handleLoadScan]);
@@ -464,7 +476,7 @@ function ScanPage() {
 
   // Keep the loaded scan coherent with the global market selector: on first
   // load and on every market switch, load that market's newest finished scan
-  // (the history list is already market-scoped).
+  // (the history list is already market-scoped), as the bootstrap selects it.
   useEffect(() => {
     if (autoLoadedMarketRef.current === globalMarket) {
       return;
@@ -472,21 +484,18 @@ function ScanPage() {
     if (scanStatus === 'running' || scanStatus === 'queued') {
       return;
     }
-    const scans = scanHistory?.scans ?? [];
-    if (scans.length === 0) {
-      return;
-    }
-    const latestCompletedScan = scans.find(
-      (scan) => scan.status === 'completed' || scan.status === 'cancelled'
+    const latestMarketScan = (scanHistory?.scans ?? []).find(
+      (scan) => (scan.status === 'completed' || scan.status === 'cancelled')
+        && !SYMBOL_LIST_UNIVERSE_TYPES.has(scan.universe_def?.type)
     );
-    if (!latestCompletedScan) {
-      // Nothing finished yet (e.g. a scan is still running) — leave the
-      // marker unset so the next history refresh can auto-load.
+    if (!latestMarketScan) {
+      // No finished market scan yet: leave the marker unset so the next
+      // history refresh can auto-load one.
       return;
     }
     autoLoadedMarketRef.current = globalMarket;
-    if (latestCompletedScan.scan_id !== currentScanId) {
-      handleLoadScan(latestCompletedScan.scan_id);
+    if (latestMarketScan.scan_id !== currentScanId) {
+      handleLoadScan(latestMarketScan.scan_id);
     }
   }, [currentScanId, globalMarket, handleLoadScan, scanHistory, scanStatus]);
 
@@ -507,6 +516,7 @@ function ScanPage() {
         refetchScans();
         return;
       }
+      autoLoadedMarketRef.current = globalMarketRef.current;
       // Set now so a late response for the previous scan is recognised.
       currentScanIdRef.current = data.scan_id;
       setCurrentScanId(data.scan_id);
@@ -614,7 +624,7 @@ function ScanPage() {
   const scanRequest = useMemo(() => {
     const universeDef = importedSymbols.length
       ? { type: 'custom', symbols: importedSymbols }
-      : buildUniverseDef(universeMarket, universeScope, universeSelections);
+      : buildUniverseDef(universeMarket, universeScope, pickerSelections);
     if (!universeDef) {
       return null;
     }
@@ -633,10 +643,10 @@ function ScanPage() {
     customFilters,
     importedSymbols,
     includeVcp,
+    pickerSelections,
     selectedScreeners,
     universeMarket,
     universeScope,
-    universeSelections,
   ]);
   // These rejections were judged on the request's own symbols, so they stop
   // applying once the universe or criteria change. scan_already_active is
@@ -757,76 +767,13 @@ function ScanPage() {
     setImportedSymbols([]);
   }, []);
 
-  // Prefetch only once the pointer rests on a row; sweeping across the table
-  // would otherwise fire one history request per row passed over.
-  const hoverPrefetchTimerRef = useRef(null);
-  const handleRowHover = useCallback(
-    (symbol) => {
-      clearTimeout(hoverPrefetchTimerRef.current);
-      hoverPrefetchTimerRef.current = setTimeout(() => {
-        queryClient.prefetchQuery({
-          queryKey: priceHistoryKeys.symbol(symbol, '6mo'),
-          queryFn: () => fetchPriceHistory(symbol, '6mo'),
-          staleTime: PRICE_HISTORY_STALE_TIME,
-        });
-      }, ROW_HOVER_PREFETCH_DELAY_MS);
-    },
-    [queryClient]
-  );
-  useEffect(() => () => clearTimeout(hoverPrefetchTimerRef.current), []);
-
-  useEffect(() => {
-    if (!displayedResultsData?.results || displayedResultsData.results.length === 0) {
-      return;
-    }
-    if (
-      bootstrappedScanId === viewScanId &&
-      displayedQuery.page === 1 &&
-      displayedQuery.perPage === 50 &&
-      displayedQuery.sortBy === 'composite_score' &&
-      displayedQuery.sortOrder === 'desc' &&
-      stableFilterKey === DEFAULT_FILTER_KEY
-    ) {
-      return;
-    }
-
-    const visibleSymbols = displayedResultsData.results
-      .slice(0, 20)
-      .map((result) => result.symbol)
-      .filter(Boolean);
-    if (visibleSymbols.length === 0) {
-      return;
-    }
-
-    let cancelled = false;
-    const run = () => {
-      if (cancelled) return;
-      prefetchPriceHistoryBatch(queryClient, visibleSymbols, '6mo');
-    };
-
-    if ('requestIdleCallback' in window) {
-      const handle = window.requestIdleCallback(run, { timeout: 1000 });
-      return () => {
-        cancelled = true;
-        if (window.cancelIdleCallback) window.cancelIdleCallback(handle);
-      };
-    }
-    const timer = setTimeout(run, 0);
-    return () => {
-      cancelled = true;
-      clearTimeout(timer);
-    };
-  }, [
-    bootstrappedScanId,
+  const handleRowHover = useScanResultsPrefetch({
+    results: displayedResultsData?.results,
     viewScanId,
-    queryClient,
-    displayedResultsData?.results,
-    displayedQuery.page,
-    displayedQuery.perPage,
-    displayedQuery.sortBy,
-    displayedQuery.sortOrder,
+    bootstrappedScanId,
+    displayedQuery,
     stableFilterKey,
-  ]);
+  });
 
   if (!runtimeReady) {
     return (
@@ -847,7 +794,7 @@ function ScanPage() {
         onUniverseMarketChange={handleUniverseMarketChange}
         onUniverseScopeChange={setUniverseScope}
         universeStats={universeStats}
-        universeSelections={universeSelections}
+        universeSelections={pickerSelections}
         statsLoading={statsLoading}
         selectedScreeners={selectedScreeners}
         onScreenerToggle={handleScreenerToggle}
@@ -857,6 +804,7 @@ function ScanPage() {
         onCompositeMethodChange={setCompositeMethod}
         createScanPending={createScanMutation.isPending}
         scanStatus={scanStatus}
+        scanRequestReady={scanRequest !== null}
         onStartScan={handleStartScan}
         onCancelScan={handleCancelScan}
         cancelScanPending={cancelScanMutation.isPending}

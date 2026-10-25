@@ -616,12 +616,13 @@ class UISnapshotService:
     ) -> str:
         if scan_id:
             return scan_id
-        query = db.query(Scan.scan_id).filter(Scan.status.in_(("completed", "cancelled")))
+        query = db.query(Scan.scan_id).filter(
+            Scan.status.in_(("completed", "cancelled")), Scan.represents_market_view()
+        )
         if market:
-            # Same scoping as GET /scans?market= (list_recent): the scan's universe market.
             query = query.filter(Scan.universe_market == market)
-        # Same order as list_recent, so "latest" is the first finished scan in the
-        # history list, which is also the scan the scan page auto-loads.
+        # Same order as list_recent, so "latest" is the first finished market scan
+        # in the history list, which is also the scan the scan page auto-loads.
         latest = query.order_by(Scan.started_at.desc(), Scan.id.desc()).first()
         return latest[0] if latest else "none"
 
@@ -697,7 +698,13 @@ class UISnapshotService:
         return "|".join(parts)
 
     def _build_scan_payload(self, scan_id: str | None, market: str | None = None) -> dict[str, Any]:
-        """Bootstrap payload; ``recent_scans`` matches ``GET /scans?limit=20&market=``."""
+        """Bootstrap payload; ``recent_scans`` is ``GET /scans?limit=20&market=`` at publish time.
+
+        A finished custom or test scan republishes only its own market's latest
+        variant (the all-markets one when it stores none), so another market's
+        list can miss it until that variant next publishes. It never changes
+        any market's selected scan.
+        """
         filter_use_case = GetFilterOptionsUseCase()
         results_use_case = GetScanResultsUseCase()
         with SqlUnitOfWork(self._session_factory) as uow:
@@ -722,10 +729,8 @@ class UISnapshotService:
             ]
             recent_scans = ScanListResponse(scans=scan_items).model_dump(mode="json")
 
-            selected_scan = uow.scans.get_by_scan_id(scan_id) if scan_id else next(
-                (scan for scan in scans if scan.status in {"completed", "cancelled"}),
-                None,
-            )
+            # Latest variants pass the resolved scan; no scan means none qualified.
+            selected_scan = uow.scans.get_by_scan_id(scan_id) if scan_id else None
             payload: dict[str, Any] = {
                 # Market the scan list and latest selection are scoped to (None: all
                 # markets). Universe stats stay global.

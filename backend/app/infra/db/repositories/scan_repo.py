@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
+from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -87,13 +88,28 @@ class SqlScanRepository(ScanRepository):
         self._session.flush()
 
     def list_recent(self, limit: int = 20, market: str | None = None) -> list[Scan]:
-        query = self._session.query(Scan)
+        market_view = [Scan.represents_market_view()]
+        symbol_lists = [~Scan.represents_market_view()]
         if market:
-            query = query.filter(Scan.universe_market == market.upper())
+            market_view.append(Scan.universe_market == market.upper())
+            # A symbol list with no stored market belongs to every market.
+            symbol_lists.append(
+                or_(Scan.universe_market == market.upper(), Scan.universe_market.is_(None))
+            )
+
+        def newest(*criteria):
+            # Limited apart, so newer symbol-list scans never push out the market's own.
+            return (
+                select(Scan.id)
+                .where(*criteria)
+                .order_by(Scan.started_at.desc(), Scan.id.desc())
+                .limit(limit)
+            )
+
         return (
-            query
+            self._session.query(Scan)
+            .filter(or_(Scan.id.in_(newest(*market_view)), Scan.id.in_(newest(*symbol_lists))))
             .order_by(Scan.started_at.desc(), Scan.id.desc())  # id: deterministic ties
-            .limit(limit)
             .all()
         )
 
