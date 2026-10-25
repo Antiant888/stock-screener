@@ -285,3 +285,54 @@ describe('UserWatchlistManager item mutations', () => {
     expect(invalidated(8)).toBe(false);
   }, 20000);
 });
+
+describe('UserWatchlistManager daily scan toggle', () => {
+  beforeEach(() => {
+    Object.values(api).forEach((mockFn) => mockFn.mockReset());
+    api.getWatchlistData.mockResolvedValue({
+      id: 1,
+      name: 'Leaders',
+      items: [],
+      price_change_bounds: {},
+    });
+  });
+
+  it('saves the flag through the update endpoint and shows the refreshed list', async () => {
+    api.getWatchlists
+      .mockResolvedValueOnce({ watchlists: [{ id: 1, name: 'Leaders', include_in_daily_scan: false }], total: 1 })
+      .mockResolvedValue({ watchlists: [{ id: 1, name: 'Leaders', include_in_daily_scan: true }], total: 1 });
+    api.updateWatchlist.mockResolvedValue({ id: 1, name: 'Leaders', include_in_daily_scan: true });
+    const onUpdate = vi.fn();
+    renderWithProviders(<UserWatchlistManager open={true} onClose={vi.fn()} onUpdate={onUpdate} />);
+
+    fireEvent.click(await screen.findByText('Leaders'));
+    const toggle = screen.getByRole('checkbox', { name: 'Include in daily scan' });
+    expect(toggle).not.toBeChecked();
+
+    fireEvent.click(toggle);
+
+    await waitFor(() => {
+      expect(api.updateWatchlist).toHaveBeenCalledWith(1, { include_in_daily_scan: true });
+    });
+    await waitFor(() => {
+      expect(screen.getByRole('checkbox', { name: 'Include in daily scan' })).toBeChecked();
+    });
+    expect(api.getWatchlists).toHaveBeenCalledTimes(2);
+    expect(onUpdate).toHaveBeenCalledTimes(1);
+  }, 20000);
+
+  it('keeps the flag off and reports the error when saving fails', async () => {
+    api.getWatchlists.mockResolvedValue({
+      watchlists: [{ id: 1, name: 'Leaders', include_in_daily_scan: false }],
+      total: 1,
+    });
+    api.updateWatchlist.mockRejectedValue({ response: { data: { detail: 'Watchlist not found' } } });
+    renderWithProviders(<UserWatchlistManager open={true} onClose={vi.fn()} onUpdate={vi.fn()} />);
+
+    fireEvent.click(await screen.findByText('Leaders'));
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Include in daily scan' }));
+
+    expect(await screen.findByText('Watchlist not found')).toBeInTheDocument();
+    expect(screen.getByRole('checkbox', { name: 'Include in daily scan' })).not.toBeChecked();
+  }, 20000);
+});

@@ -32,12 +32,14 @@ class WatchlistUpdate(BaseModel):
     description: Optional[str] = None
     color: Optional[str] = None
     position: Optional[int] = None
+    include_in_daily_scan: Optional[bool] = None
 
 
 class WatchlistResponse(WatchlistBase):
     """Response schema for a watchlist"""
     id: int
     position: int
+    include_in_daily_scan: bool
     created_at: datetime
     updated_at: datetime
 

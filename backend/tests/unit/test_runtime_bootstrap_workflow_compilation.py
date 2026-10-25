@@ -301,6 +301,9 @@ def test_bootstrap_includes_every_daily_pipeline_compute_step():
         if "guard" not in task
         and "smart_refresh" not in task
         and "ensure_benchmark_prices" not in task
+        # Watchlist scans reuse the default profile's scores, which bootstrap's
+        # lighter snapshot profile never publishes.
+        and "scan_watchlists_after_snapshot" not in task
     }
 
     plan = build_bootstrap_plan(

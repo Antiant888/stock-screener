@@ -25,6 +25,8 @@ logger = logging.getLogger(__name__)
 
 SCAN_TRIGGER_SOURCE_MANUAL = "manual"
 SCAN_TRIGGER_SOURCE_AUTO = "auto"
+# A flagged watchlist's daily scan, answered from its market's published snapshot.
+SCAN_TRIGGER_SOURCE_WATCHLIST = "watchlist"
 
 
 class Scan(Base):

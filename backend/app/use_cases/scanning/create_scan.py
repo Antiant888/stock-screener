@@ -173,16 +173,25 @@ class CreateScanCommand:
     # Idempotency
     idempotency_key: str | None = None
 
-    # Provenance — determines cache_only policy in the runner.
-    # Manual scans must run cache-only (no yfinance/Finviz fallback); bootstrap
-    # and other internal scans populate the cache and therefore must allow
-    # live fetch. See scan_tasks._run_bulk_scan_via_use_case.
+    # Provenance — determines cache_only policy in the runner, which lets
+    # only allowlisted internal sources fall back to live fetches. See
+    # scan_tasks._SCAN_SOURCES_ALLOWED_TO_FETCH.
     trigger_source: str = "manual"
 
     # ``current`` keeps freshness checks and compute admission;
     # ``last_published`` answers only from a pinned published snapshot and
     # never computes (see ``published_snapshot``).
     data_mode: str = DATA_MODE_CURRENT
+    # For ``last_published`` mode: answer only from this published feature run,
+    # and refuse once the Market's pointer names another run. ``current``
+    # mode's exact-match and compile paths never read it.
+    published_run_id: int | None = None
+
+    # Caller-owned entries stored in the scan's metadata_json beside the
+    # backend's own keys, which win on a clash.
+    metadata: dict | None = None
+    # Caller-owned warnings stored with the scan's own.
+    warnings: tuple[ScanWarning, ...] = ()
 
 
 # ── Result (output) ──────────────────────────────────────────────────────
@@ -279,6 +288,14 @@ def published_source_of(scan: object) -> dict | None:
     return None
 
 
+def watchlist_source_of(scan: object) -> dict | None:
+    """The watchlist a daily watchlist scan was created for."""
+    metadata = getattr(scan, "metadata_json", None)
+    if isinstance(metadata, dict) and isinstance(metadata.get("watchlist"), dict):
+        return metadata["watchlist"]
+    return None
+
+
 # ── Use Case ─────────────────────────────────────────────────────────────
 
 
@@ -347,6 +364,7 @@ class CreateScanUseCase:
                     session_for=session_for,
                     require_current=require_current,
                     rs_run_id_for=self._rs_run_id_for if self._current_rs_run_id else None,
+                    run_id=cmd.published_run_id,
                 )
         except Exception:
             logger.warning("Pinned snapshot lookup failed", exc_info=True)
@@ -538,11 +556,11 @@ class CreateScanUseCase:
                         f"No fresh symbols remain for universe '{cmd.universe_label}'. "
                         "Refresh market data before starting a scan."
                     )
-            scan_warnings: tuple[ScanWarning, ...] = freshness_warnings
+            scan_warnings: tuple[ScanWarning, ...] = (*cmd.warnings, *freshness_warnings)
             if resolved.dropped_symbols:
                 scan_warnings = (
                     SymbolsNotInUniverseWarning.for_dropped(resolved.dropped_symbols),
-                    *freshness_warnings,
+                    *scan_warnings,
                 )
 
             feature_run_id = None
@@ -652,6 +670,8 @@ class CreateScanUseCase:
                     expected_session=session,
                 )
                 scan_metadata = {**(scan_metadata or {}), "published_source": published_source}
+            if cmd.metadata:
+                scan_metadata = {**cmd.metadata, **(scan_metadata or {})}
 
             completed_instantly = (
                 instant_match is not None

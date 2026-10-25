@@ -71,7 +71,7 @@ from app.services.theme_discovery_service import ThemeDiscoveryService
 from app.services.theme_pipeline_state_service import compute_pipeline_observability
 from app.services.theme_taxonomy_service import ThemeTaxonomyService
 from app.tasks.market_queues import SUPPORTED_MARKETS
-from app.use_cases.scanning.create_scan import published_source_of
+from app.use_cases.scanning.create_scan import published_source_of, watchlist_source_of
 from app.use_cases.scanning.get_filter_options import (
     GetFilterOptionsQuery,
     GetFilterOptionsUseCase,
@@ -155,8 +155,9 @@ class UISnapshotService:
             )
         )
 
-    def publish_scan_bootstraps_for(self, scan_id: str) -> SnapshotResult:
-        """Publish a scan's own variant and its market's latest variant.
+    def publish_scan_bootstraps_for(self, scan_id: str, *, with_latest: bool = True) -> SnapshotResult:
+        """Publish a scan's own variant and, unless ``with_latest`` is false,
+        its market's latest variant.
 
         Both are scoped to the scan's market. When the scan is that market's
         latest, one payload is built and stored under both variants.
@@ -174,6 +175,8 @@ class UISnapshotService:
                 payload=payload,
                 retry_on_conflict=True,  # cancel request and cancelled worker can race
             )
+            if not with_latest:
+                return explicit
             latest_scan_id = self._resolve_scan_source_revision(db, None, market)
             try:
                 self._publish_scan_latest(
@@ -724,6 +727,7 @@ class UISnapshotService:
                         getattr(scan, "warnings", None)
                     ),
                     published_source=published_source_of(scan),
+                    watchlist=watchlist_source_of(scan),
                 )
                 for scan in scans
             ]
@@ -774,6 +778,7 @@ class UISnapshotService:
                         getattr(selected_scan, "warnings", None)
                     ),
                     published_source=published_source_of(selected_scan),
+                    watchlist=watchlist_source_of(selected_scan),
                 ).model_dump(mode="json"),
             )
             completed_stocks = selected_scan.total_stocks or 0
@@ -1254,6 +1259,19 @@ def safe_publish_scan_bootstrap(scan_id: str | None = None) -> dict[str, Any] | 
         variant_key=variant_key,
         source_revision=scan_id,
         fn=lambda: get_ui_snapshot_service().publish_scan_bootstrap(scan_id),
+    )
+
+
+def safe_publish_scan_variant(scan_id: str) -> dict[str, Any] | None:
+    """Publish only ``scan:<id>``; its market's latest variant is left as is."""
+    from app.wiring.bootstrap import get_ui_snapshot_service
+
+    return _safe_publish(
+        "publish_scan_bootstrap",
+        view_key=SCAN_VIEW_KEY,
+        variant_key=f"scan:{scan_id}",
+        source_revision=scan_id,
+        fn=lambda: get_ui_snapshot_service().publish_scan_bootstraps_for(scan_id, with_latest=False),
     )
 
 

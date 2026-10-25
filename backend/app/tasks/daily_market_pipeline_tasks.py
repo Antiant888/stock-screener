@@ -401,6 +401,44 @@ def dispatch_options_after_snapshot(
     return payload
 
 
+@celery_app.task(
+    name="app.tasks.daily_market_pipeline_tasks.scan_watchlists_after_snapshot",
+    queue="celery",
+)
+def scan_watchlists_after_snapshot(result: dict | None = None, *, market: str) -> dict:
+    """Scan every watchlist flagged for the daily scan from the snapshot run
+    the guard just passed, and add each watchlist's outcome to the payload.
+
+    The snapshot publishes after the close, and the scans read only that
+    publication, so no partial bar or provider fetch is involved. Never fails
+    the chain: a failure is logged and recorded in the payload.
+    """
+    payload = dict(result) if isinstance(result, dict) else {}
+    market_code = _normalize_pipeline_market(market)
+    try:
+        run_id = int(payload["run_id"])
+        session_date = date.fromisoformat(str(payload["as_of_date"]))
+    except (KeyError, TypeError, ValueError):
+        payload["watchlist_scans"] = {"status": "skipped", "reason": "snapshot_run_unknown"}
+        return payload
+    try:
+        from app.services.watchlist_daily_scans import scan_flagged_watchlists
+        from app.wiring.bootstrap import get_create_scan_use_case
+
+        outcomes = scan_flagged_watchlists(
+            get_create_scan_use_case(), market=market_code, run_id=run_id, session_date=session_date
+        )
+    except Exception as exc:
+        logger.warning("Could not run the daily watchlist scans for %s", market_code, exc_info=True)
+        payload["watchlist_scans"] = {"status": "failed", "reason": str(exc)}
+        return payload
+    payload["watchlist_scans"] = {
+        "status": "completed",
+        "outcomes": [outcome.to_dict() for outcome in outcomes],
+    }
+    return payload
+
+
 def _build_daily_market_pipeline_signatures(
     market: str, trading_date: date, *, rerun_attempt: int = 0
 ) -> list:
@@ -463,6 +501,11 @@ def _build_daily_market_pipeline_signatures(
                 queue=market_jobs_queue_for_market(market_code)
             )
         )
+    signatures.append(
+        scan_watchlists_after_snapshot.s(market=market_code).set(
+            queue=market_jobs_queue_for_market(market_code)
+        )
+    )
     # Breadth and exposure run last: groups and the snapshot never read them,
     # and a breadth failure (its guard raises, or an OOM kill the task cannot
     # catch) ends the chain. Here it can no longer cost the day's scan.

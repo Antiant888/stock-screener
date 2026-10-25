@@ -14,12 +14,17 @@ from sqlalchemy.orm import Session
 
 from ..celery_app import celery_app
 from ..database import SessionLocal, is_corruption_error, safe_rollback
-from ..models.scan_result import Scan, ScanResult
+from ..models.scan_result import SCAN_TRIGGER_SOURCE_AUTO, Scan, ScanResult
 from ..config import settings
 from ..utils.parallelism import resolve_scan_compute_processes
 from .workload_coordination import serialized_market_workload
 
 logger = logging.getLogger(__name__)
+
+# Only listed sources may fall back to live provider fetches; every other
+# source runs cache-only. Today only manual scans reach this runner, so every
+# scan it runs is cache-only.
+_SCAN_SOURCES_ALLOWED_TO_FETCH = frozenset({SCAN_TRIGGER_SOURCE_AUTO})
 
 
 def cleanup_old_scans(db: Session, universe_key: str, keep_count: int = 3) -> None:
@@ -218,18 +223,16 @@ def _run_bulk_scan_via_use_case(task_instance, scan_id, symbol_list, criteria):
     cancel = DbCancellationToken(SessionLocal, scan_id)
 
     try:
-        # Manual scans run cache-only (no yfinance/Finviz fallback). Bootstrap
-        # and other internal scans *populate* the cache — they must allow live
-        # fetches. This lookup has to live inside the try block so a transient
-        # DB error still runs the cancel-token cleanup and lets the use case
-        # (via its own exception handler) mark the scan failed.
+        # This lookup has to live inside the try block so a transient DB error
+        # still runs the cancel-token cleanup and lets the use case (via its
+        # own exception handler) mark the scan failed.
         db = SessionLocal()
         try:
             scan_row = db.query(Scan).filter(Scan.scan_id == scan_id).first()
             trigger_source = (getattr(scan_row, "trigger_source", None) or "manual").lower()
         finally:
             db.close()
-        cache_only = trigger_source == "manual"
+        cache_only = trigger_source not in _SCAN_SOURCES_ALLOWED_TO_FETCH
 
         uow = SqlUnitOfWork(SessionLocal)
         use_case = get_run_bulk_scan_use_case()

@@ -71,6 +71,7 @@ def test_daily_market_pipeline_orders_refresh_compute_and_scan(monkeypatch):
         "app.tasks.daily_market_pipeline_tasks.guard_group_result",
         "app.interfaces.tasks.feature_store_tasks.build_daily_snapshot",
         "app.tasks.daily_market_pipeline_tasks.guard_snapshot_result",
+        "app.tasks.daily_market_pipeline_tasks.scan_watchlists_after_snapshot",
         # Last: a breadth failure (guarded, or an uncatchable OOM kill) must
         # not cost the day's group rankings or scan.
         "app.tasks.breadth_tasks.calculate_daily_breadth_with_gapfill",
@@ -93,7 +94,9 @@ def test_daily_market_pipeline_orders_refresh_compute_and_scan(monkeypatch):
         "calculation_date": "2026-03-16",
         "execution_policy": "refresh_guarded",
     }
-    assert signatures[9].kwargs == {
+    assert signatures[9].kwargs == {"market": "HK"}
+    assert signatures[9].options["queue"] == "market_jobs_hk"
+    assert signatures[10].kwargs == {
         "market": "HK",
         "calculation_date": "2026-03-16",
         "execution_policy": "refresh_guarded",

@@ -190,6 +190,8 @@ def update_watchlist(watchlist_id: int, updates: WatchlistUpdate, db: Session = 
         watchlist.color = updates.color
     if updates.position is not None:
         watchlist.position = updates.position
+    if updates.include_in_daily_scan is not None:
+        watchlist.include_in_daily_scan = updates.include_in_daily_scan
 
     db.commit()
     db.refresh(watchlist)

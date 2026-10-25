@@ -61,6 +61,7 @@ _REASON_MESSAGES = {
     "mixed_market_universe": "The symbols span more than one market; no single publication covers them.",
     "no_published_run": "No published snapshot exists for this market.",
     "source_market_mismatch": "The market's snapshot pointer references another market's run.",
+    "source_run_changed": "The market's snapshot was republished after this scan was requested.",
     "snapshot_not_current": "The latest published snapshot is older than the last completed session.",
     "rs_not_canonical": "The published snapshot has no canonical RS identity, so it cannot be reused for a subset.",
     "rs_source_changed": "Market RS has been republished since this snapshot was built.",
@@ -148,6 +149,7 @@ def resolve_pinned_snapshot(
     session_for: Callable[[str], date | None],
     require_current: bool,
     rs_run_id_for: Callable[[str], int | None] | None = None,
+    run_id: int | None = None,
 ) -> PinnedSnapshot | SnapshotIneligible:
     """Return the pinned snapshot answer, or why there is none.
 
@@ -155,7 +157,8 @@ def resolve_pinned_snapshot(
     (the Market's last completed session) and that its Market RS run is
     the one async compute would read now (``rs_run_id_for(market)``); an
     unknown session or RS run makes the request ineligible rather than
-    guessing.
+    guessing. ``run_id`` demands that the Market's pointer still names
+    that run.
     """
     if universe_type not in PINNED_SNAPSHOT_UNIVERSE_TYPES:
         return SnapshotIneligible("unsupported_universe")
@@ -176,6 +179,8 @@ def resolve_pinned_snapshot(
         return SnapshotIneligible("no_published_run", {"market": market})
     config = run.config if isinstance(run.config, dict) else {}
     source = {"market": market, "feature_run_id": run.id, "as_of_date": run.as_of_date.isoformat()}
+    if run_id is not None and run.id != run_id:
+        return SnapshotIneligible("source_run_changed", {**source, "expected_run_id": run_id})
     universe = config.get("universe") if isinstance(config.get("universe"), dict) else {}
     run_market = str(config.get("market") or universe.get("market") or "").strip().upper()
     if run_market != market:
