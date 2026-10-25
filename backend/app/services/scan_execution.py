@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.database import is_corruption_error, safe_rollback
-from app.models.scan_result import Scan, ScanResult
+from app.models.scan_result import SCAN_TRIGGER_SOURCE_AUTO, Scan, ScanResult
 
 logger = logging.getLogger(__name__)
 SessionFactory = Callable[[], Session]
@@ -79,7 +79,20 @@ def cleanup_old_scans(db: Session, universe_key: str, keep_count: int = 3) -> No
             Scan.status == "completed",
         ).order_by(Scan.completed_at.desc(), Scan.id.desc()).all()
 
-        scans_to_delete = completed_scans[keep_count:]
+        # Manual scans share universe keys (e.g. ``market:US``) with the nightly
+        # auto scan, so always keep the newest auto scan: bootstrap readiness
+        # depends on it, and losing it reopens the setup screen (#682).
+        newest_auto = next(
+            (
+                scan
+                for scan in completed_scans
+                if scan.trigger_source == SCAN_TRIGGER_SOURCE_AUTO
+            ),
+            None,
+        )
+        scans_to_delete = [
+            scan for scan in completed_scans[keep_count:] if scan is not newest_auto
+        ]
         if scans_to_delete:
             logger.info(
                 "Cleaning up %d old completed scans for universe_key '%s'",
