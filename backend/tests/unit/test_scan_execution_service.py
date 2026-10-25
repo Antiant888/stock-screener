@@ -200,3 +200,65 @@ def test_cleanup_old_scans_keeps_the_newest_rows_when_completed_at_ties():
     finally:
         db.close()
         engine.dispose()
+
+
+def test_manual_scans_never_prune_the_markets_newest_auto_scan(monkeypatch):
+    """Three computed manual US scans must not delete the nightly auto scan (#682)."""
+    import app.services.scan_execution as module
+    from datetime import date
+
+    from sqlalchemy.pool import StaticPool
+
+    from app.infra.db.models.feature_store import FeatureRun
+    from app.models.scan_result import SCAN_TRIGGER_SOURCE_AUTO, SCAN_TRIGGER_SOURCE_MANUAL
+    from app.services.bootstrap_readiness_service import BootstrapReadinessService
+
+    engine = create_engine(
+        "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool
+    )
+    Base.metadata.create_all(engine)
+    session_factory = sessionmaker(bind=engine)
+
+    monkeypatch.setattr(module, "compute_industry_peer_metrics", MagicMock())
+    monkeypatch.setattr(module, "_log_setup_engine_distribution", MagicMock())
+    monkeypatch.setitem(
+        sys.modules,
+        "app.tasks.cache_tasks",
+        SimpleNamespace(prewarm_chart_cache_for_scan=MagicMock()),
+    )
+
+    def add_scan(scan_id, trigger_source, completed_at, **fields):
+        with session_factory() as db:
+            db.add(
+                Scan(
+                    scan_id=scan_id,
+                    status="completed",
+                    universe_key="market:US",
+                    universe_type="market",
+                    universe_market="US",
+                    trigger_source=trigger_source,
+                    started_at=completed_at,
+                    completed_at=completed_at,
+                    **fields,
+                )
+            )
+            db.commit()
+
+    try:
+        with session_factory() as db:
+            db.add(FeatureRun(id=1, as_of_date=date(2026, 10, 23), run_type="daily_snapshot", status="published"))
+            db.commit()
+        add_scan("old-auto", SCAN_TRIGGER_SOURCE_AUTO, datetime(2026, 10, 22, 22), feature_run_id=1)
+        add_scan("auto", SCAN_TRIGGER_SOURCE_AUTO, datetime(2026, 10, 23, 22), feature_run_id=1)
+
+        for n in range(1, 4):
+            scan_id = f"manual-{n}"
+            add_scan(scan_id, SCAN_TRIGGER_SOURCE_MANUAL, datetime(2026, 10, 24, n))
+            module.run_post_scan_pipeline(scan_id, session_factory=session_factory)
+
+        with session_factory() as db:
+            remaining = sorted(scan.scan_id for scan in db.query(Scan).all())
+            assert remaining == ["auto", "manual-1", "manual-2", "manual-3"]
+            assert BootstrapReadinessService().has_completed_auto_scan(db, "US") is True
+    finally:
+        engine.dispose()
