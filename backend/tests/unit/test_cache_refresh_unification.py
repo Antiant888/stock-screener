@@ -1181,6 +1181,11 @@ def test_task_registry_triggers_daily_market_pipeline_with_market(monkeypatch):
     fake_task = MagicMock()
     fake_task.apply_async.return_value = SimpleNamespace(id="task-123")
     monkeypatch.setattr(service, "_get_task", lambda task_name: fake_task)
+    # The pre-flight reads the real market clock, so pin "no blocker" or the
+    # test fails on HK non-trading days.
+    monkeypatch.setattr(
+        "app.services.task_registry_service._run_blockers", lambda tasks: {}
+    )
 
     db = MagicMock()
 
