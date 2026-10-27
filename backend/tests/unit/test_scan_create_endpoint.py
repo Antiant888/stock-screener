@@ -197,6 +197,26 @@ async def test_create_scan_completed_still_returns_when_bootstrap_enqueue_fails(
 
 
 @pytest.mark.asyncio
+async def test_create_scan_never_prunes_for_an_idempotent_duplicate(client):
+    fake_use_case = _FakeCreateScanUseCase(
+        CreateScanResult(
+            scan_id="scan-123", status="completed", total_stocks=10, is_duplicate=True, feature_run_id=17
+        )
+    )
+    app.dependency_overrides[get_uow] = lambda: _FakeUoW()
+    app.dependency_overrides[get_create_scan_use_case] = lambda: fake_use_case
+    try:
+        with patch("app.tasks.scan_tasks.publish_scan_bootstrap_snapshots.apply_async") as mock_enqueue:
+            response = await client.post("/api/v1/scans", json={"universe": "all"})
+    finally:
+        app.dependency_overrides.pop(get_uow, None)
+        app.dependency_overrides.pop(get_create_scan_use_case, None)
+
+    assert response.status_code == 200
+    mock_enqueue.assert_called_once_with(args=["scan-123"], retry=False, connection=ANY)
+
+
+@pytest.mark.asyncio
 async def test_create_scan_returns_completed_and_queues_bootstrap_publish(client):
     fake_uow = _FakeUoW()
     fake_use_case = _FakeCreateScanUseCase(
@@ -241,7 +261,10 @@ async def test_create_scan_returns_completed_and_queues_bootstrap_publish(client
     assert fake_use_case.received_cmd.universe_market is None
     # The snapshot rebuild runs on the general queue, not in the request.
     mock_publish.assert_not_called()
-    mock_enqueue.assert_called_once_with(args=["scan-123"], retry=False, connection=ANY)
+    # It completed without the post-scan pipeline, so the task also prunes.
+    mock_enqueue.assert_called_once_with(
+        args=["scan-123"], kwargs={"prune_history": True}, retry=False, connection=ANY
+    )
 
 
 @pytest.mark.asyncio
@@ -790,6 +813,45 @@ async def test_scan_bootstrap_passes_normalized_market_to_snapshot_service(clien
 
     assert response.status_code == 200
     service.get_scan_bootstrap.assert_called_once_with(None, market="HK")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("params", "expected_market"),
+    [({"market": "hk"}, "HK"), ({}, None)],
+    ids=["market", "all-markets"],
+)
+async def test_a_missing_latest_scan_bootstrap_queues_its_publish(client, params, expected_market):
+    from app.wiring.bootstrap import get_ui_snapshot_service
+
+    service = MagicMock()
+    service.get_scan_bootstrap.return_value = None
+    app.dependency_overrides[get_ui_snapshot_service] = lambda: service
+    try:
+        with patch("app.tasks.scan_tasks.publish_scan_latest_bootstrap.apply_async") as mock_enqueue:
+            response = await client.get("/api/v1/scans/bootstrap", params=params)
+    finally:
+        app.dependency_overrides.pop(get_ui_snapshot_service, None)
+
+    assert response.status_code == 404
+    mock_enqueue.assert_called_once_with(args=[expected_market], retry=False, connection=ANY)
+
+
+@pytest.mark.asyncio
+async def test_a_missing_scan_variant_queues_nothing(client):
+    from app.wiring.bootstrap import get_ui_snapshot_service
+
+    service = MagicMock()
+    service.get_scan_bootstrap.return_value = None
+    app.dependency_overrides[get_ui_snapshot_service] = lambda: service
+    try:
+        with patch("app.tasks.scan_tasks.publish_scan_latest_bootstrap.apply_async") as mock_enqueue:
+            response = await client.get("/api/v1/scans/bootstrap", params={"scan_id": "gone"})
+    finally:
+        app.dependency_overrides.pop(get_ui_snapshot_service, None)
+
+    assert response.status_code == 404
+    mock_enqueue.assert_not_called()
 
 
 @pytest.mark.asyncio

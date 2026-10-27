@@ -1264,6 +1264,19 @@ def safe_publish_scan_bootstrap(scan_id: str | None = None) -> dict[str, Any] | 
     )
 
 
+def safe_publish_scan_latest(market: str | None) -> dict[str, Any] | None:
+    """Publish only ``latest:<market>`` (``latest`` for all markets)."""
+    from app.wiring.bootstrap import get_ui_snapshot_service
+
+    return _safe_publish(
+        "publish_scan_bootstrap",
+        view_key=SCAN_VIEW_KEY,
+        variant_key=f"latest:{market}" if market else "latest",
+        source_revision=None,
+        fn=lambda: get_ui_snapshot_service().publish_scan_bootstrap(market=market),
+    )
+
+
 def safe_publish_scan_variant(scan_id: str) -> dict[str, Any] | None:
     """Publish only ``scan:<id>``; its market's latest variant is left as is."""
     from app.wiring.bootstrap import get_ui_snapshot_service

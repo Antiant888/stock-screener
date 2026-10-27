@@ -241,15 +241,20 @@ def _log_setup_engine_distribution(db: Session, scan_id: str) -> None:
         logger.debug("SE distribution telemetry skipped: %s", exc)
 
 
+def prune_history_of_scan(db: Session, scan_id: str) -> None:
+    """Apply retention to the universe key of a scan that just completed."""
+    scan = db.query(Scan).filter(Scan.scan_id == scan_id).first()
+    if scan and scan.universe_key:
+        cleanup_old_scans(db, scan.universe_key)
+
+
 def run_post_scan_pipeline(scan_id: str, *, session_factory: SessionFactory) -> None:
     """Post-scan pipeline used by both Celery and local desktop runs."""
     db = session_factory()
     try:
         compute_industry_peer_metrics(db, scan_id)
         _log_setup_engine_distribution(db, scan_id)
-        scan = db.query(Scan).filter(Scan.scan_id == scan_id).first()
-        if scan and scan.universe_key:
-            cleanup_old_scans(db, scan.universe_key)
+        prune_history_of_scan(db, scan_id)
         try:
             from app.tasks.cache_tasks import prewarm_chart_cache_for_scan
 

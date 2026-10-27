@@ -262,3 +262,62 @@ def test_manual_scans_never_prune_the_markets_newest_auto_scan(monkeypatch):
             assert BootstrapReadinessService().has_completed_auto_scan(db, "US") is True
     finally:
         engine.dispose()
+
+
+def test_bootstrap_publish_prunes_an_instant_scans_history_but_keeps_the_auto_scan(monkeypatch):
+    """Instant scans skip the post-scan pipeline; the publish task prunes for them (#681)."""
+    import app.services.ui_snapshot_service as ui_snapshot_service
+    import app.tasks.scan_tasks as scan_tasks
+    from app.models.scan_result import SCAN_TRIGGER_SOURCE_AUTO
+
+    from sqlalchemy.pool import StaticPool
+
+    engine = create_engine(
+        "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool
+    )
+    Base.metadata.create_all(engine, tables=[Scan.__table__, ScanResult.__table__])
+    session_factory = sessionmaker(bind=engine)
+    published = []
+    monkeypatch.setattr(scan_tasks, "SessionLocal", session_factory)
+    monkeypatch.setattr(ui_snapshot_service, "safe_publish_scan_bootstrap", published.append)
+
+    try:
+        with session_factory() as db:
+            db.add(
+                Scan(
+                    scan_id="auto",
+                    status="completed",
+                    universe_key="market:US",
+                    trigger_source=SCAN_TRIGGER_SOURCE_AUTO,
+                    completed_at=datetime(2026, 10, 23, 22),
+                )
+            )
+            for n in range(1, 5):
+                db.add(
+                    Scan(
+                        scan_id=f"instant-{n}",
+                        status="completed",
+                        universe_key="market:US",
+                        completed_at=datetime(2026, 10, 24, n),
+                    )
+                )
+            db.commit()
+
+        scan_tasks.publish_scan_bootstrap_snapshots("instant-4", prune_history=True)
+
+        with session_factory() as db:
+            assert sorted(scan.scan_id for scan in db.query(Scan)) == [
+                "auto", "instant-2", "instant-3", "instant-4",
+            ]
+        assert published == ["instant-4"]
+
+        # Without the flag (the cancel path) nothing is pruned.
+        with session_factory() as db:
+            db.add(Scan(scan_id="instant-5", status="completed", universe_key="market:US",
+                        completed_at=datetime(2026, 10, 24, 6)))
+            db.commit()
+        scan_tasks.publish_scan_bootstrap_snapshots("instant-5")
+        with session_factory() as db:
+            assert db.query(Scan).count() == 5
+    finally:
+        engine.dispose()

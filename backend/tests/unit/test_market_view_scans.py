@@ -235,3 +235,18 @@ def test_every_latest_scan_picker_agrees_when_scans_finish_out_of_order(session_
         assert snapshot.payload["selected_scan"]["scan_id"] == "us-quick"
         assert latest_completed_scan(db, "US").scan_id == "us-quick"
         assert theme_pick._latest_completed_scan_id() == "us-quick"
+
+
+def test_publishing_a_missing_latest_variant_serves_it_to_readers(scans, monkeypatch):
+    import app.services.ui_snapshot_service as ui_snapshot_service
+    import app.wiring.bootstrap as bootstrap
+
+    service = UISnapshotService(scans)
+    monkeypatch.setattr(bootstrap, "get_ui_snapshot_service", lambda: service)
+    assert service.get_scan_bootstrap(market="US") is None
+
+    ui_snapshot_service.safe_publish_scan_latest("US")
+
+    snapshot = service.get_scan_bootstrap(market="US")
+    assert snapshot is not None and snapshot.is_stale is False
+    assert snapshot.payload["selected_scan"]["scan_id"] == "us-1"

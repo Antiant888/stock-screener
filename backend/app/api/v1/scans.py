@@ -129,10 +129,10 @@ def _normalize_list_market(market: str | None) -> str | None:
     return normalized
 
 
-def _queue_scan_bootstrap_publish(scan_id: str) -> None:
+def _queue_scan_bootstrap_publish(scan_id: str, *, prune_history: bool = False) -> None:
     from ...tasks.scan_tasks import queue_scan_bootstrap_publish
 
-    queue_scan_bootstrap_publish(scan_id)
+    queue_scan_bootstrap_publish(scan_id, prune_history=prune_history)
 
 
 @router.get("/bootstrap", response_model=UISnapshotEnvelope)
@@ -142,8 +142,15 @@ def get_scan_bootstrap(
     snapshot_service: Any = Depends(get_ui_snapshot_service),
 ):
     """Return the published scan bootstrap snapshot if available."""
-    snapshot = snapshot_service.get_scan_bootstrap(scan_id, market=_normalize_list_market(market))
+    normalized_market = _normalize_list_market(market)
+    snapshot = snapshot_service.get_scan_bootstrap(scan_id, market=normalized_market)
     if snapshot is None:
+        if scan_id is None:
+            # Nothing else republishes a missing latest variant before the
+            # market's next scan; the page reads live endpoints meanwhile.
+            from ...tasks.scan_tasks import queue_scan_latest_bootstrap_publish
+
+            queue_scan_latest_bootstrap_publish(normalized_market)
         raise HTTPException(status_code=404, detail="No published scan bootstrap snapshot is available")
     return UISnapshotEnvelope(**snapshot.to_dict())
 
@@ -251,7 +258,8 @@ def create_scan(
         raise HTTPException(status_code=500, detail="Failed to queue scan task")
 
     if result.status == "completed":
-        _queue_scan_bootstrap_publish(result.scan_id)
+        # An instant scan skips the post-scan pipeline, so retention runs here.
+        _queue_scan_bootstrap_publish(result.scan_id, prune_history=not result.is_duplicate)
 
     return ScanCreateResponse(
         scan_id=result.scan_id,
