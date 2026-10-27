@@ -17,7 +17,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.infra.db.models.feature_store import FeatureRunPointer
+from app.infra.db.models.feature_store import FeatureRunPointer, StockFeatureDaily
 from app.infra.serialization import vcp_num_bases_from_details
 from app.interfaces.mcp.market_copilot import CANDIDATE_FIELDS, MarketCopilotService
 from app.schemas.scanning import ScanResultItem
@@ -258,3 +258,67 @@ def test_vcp_num_bases_rejects_a_negative_count(value):
     scan mappers and be handed to MCP clients as a base count.
     """
     assert vcp_num_bases_from_details(_vcp_details(value)) is None
+
+
+# --------------------------------------------------------------------------
+# Every candidate path, not just market_overview, must survive a broken row.
+# --------------------------------------------------------------------------
+
+
+def _corrupt_stored_projection(session_factory, run_id: int, symbol: str) -> None:
+    """Store an opportunity projection the shared schema rejects."""
+    with session_factory() as db:
+        row = (
+            db.query(StockFeatureDaily)
+            .filter(StockFeatureDaily.run_id == run_id, StockFeatureDaily.symbol == symbol)
+            .one()
+        )
+        details = dict(row.details_json)
+        details["opportunity_state"] = {"policy_version": "correction-survivors-v1"}
+        row.details_json = details
+        db.commit()
+
+
+def test_find_candidates_skips_a_broken_row_and_names_it(service, session_factory):
+    _corrupt_stored_projection(session_factory, 2, "NVDA")
+
+    payload = service.call_tool("find_candidates", {"limit": 10})["structuredContent"]
+
+    assert "NVDA" not in payload["symbols"]
+    assert payload["skipped_symbols"] == ["NVDA"]
+    assert any(fact["key"] == "skipped_candidate_count" and fact["value"] == 1 for fact in payload["facts"])
+    assert any("NVDA" in action for action in payload["next_actions"])
+    assert "skipped" in payload["summary"]
+
+
+def test_watchlist_snapshot_skips_a_broken_row_and_names_it(service, session_factory):
+    _corrupt_stored_projection(session_factory, 2, "PANW")
+
+    payload = service.call_tool("watchlist_snapshot", {"watchlist": "Breakouts"})["structuredContent"]
+
+    assert [item["symbol"] for item in payload["items"]] == ["AVGO"]
+    assert payload["missing_symbols"] == []
+    assert payload["skipped_symbols"] == ["PANW"]
+    assert any("PANW" in action for action in payload["next_actions"])
+
+
+def test_explain_symbol_answers_for_the_symbol_instead_of_failing_the_call(service, session_factory):
+    _corrupt_stored_projection(session_factory, 2, "NVDA")
+
+    result = service.call_tool("explain_symbol", {"symbol": "NVDA"})
+    payload = result["structuredContent"]
+
+    assert result.get("isError") is not True, "valid arguments must not read as invalid_arguments"
+    assert payload["result"] is None
+    assert "NVDA" in payload["summary"]
+    assert any(fact["key"] == "skipped_candidate_count" for fact in payload["facts"])
+
+
+def test_stock_snapshot_reports_the_broken_row_for_the_symbol(service, session_factory):
+    _corrupt_stored_projection(session_factory, 2, "NVDA")
+
+    payload = service.call_tool("stock_snapshot", {"symbol": "NVDA"})["structuredContent"]
+
+    assert payload["technicals"] is None
+    assert any(fact["key"] == "skipped_candidate_count" for fact in payload["facts"])
+    assert any("opportunity" in action.lower() for action in payload["next_actions"])
