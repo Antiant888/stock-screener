@@ -140,7 +140,7 @@ class SocialSignalWriter:
             if old.status == "running":
                 historical_ids = tuple(db.scalars(select(SocialRunWork.work_id).where(SocialRunWork.run_id == old.id).order_by(SocialRunWork.work_id)))
             else:
-                historical_ids = old_payload.get("prepared", {}).get("work_ids")
+                historical_ids = (old.prepared_json or {}).get("work_ids")
                 if historical_ids is None and old.status == "failed":
                     failure = old_payload.get("failure", {})
                     if failure.get("reason_code") == "analysis_failed":
@@ -563,7 +563,7 @@ class SocialSignalWriter:
             if run.status == "running":
                 work_ids = tuple(db.scalars(select(SocialRunWork.work_id).where(SocialRunWork.run_id == run_id).order_by(SocialRunWork.work_id)))
             else:
-                manifest = run.application_progress_json.get("prepared", {}).get("work_ids")
+                manifest = (run.prepared_json or {}).get("work_ids")
                 if manifest is None and run.status == "failed":
                     failure = run.application_progress_json.get("failure", {})
                     if failure.get("reason_code") == "analysis_failed":
@@ -621,7 +621,7 @@ class SocialSignalWriter:
             run = db.get(SocialSignalRun, run_id)
             if run is None:
                 raise ValueError("run_unavailable")
-            value = run.application_progress_json.get("prepared", {}).get("context")
+            value = (run.prepared_json or {}).get("context")
             return _restore_record(SocialPublicationContext, value) if value else None
 
     @staticmethod
@@ -792,10 +792,10 @@ class SocialSignalWriter:
                     latest_mention=record.latest_mention, mention_count=record.mention_count,
                     observed_list_count=record.observed_list_count, enabled_list_count=len(frozen_input["sources"]),
                     normalization_scope=record.normalization_scope))
-            run.application_progress_json = {**frozen_input, "prepared": {"work_ids": list(work_ids),
+            run.prepared_json = {"work_ids": list(work_ids),
                 "projection": serialized(projection), "theme_evidence": [serialized(e) for e in theme_evidence],
                 "basket_fingerprint": application.fingerprint, "baskets": [serialized(b) for b in application.baskets],
-                "context": serialized(context) if context else None}}
+                "context": serialized(context) if context else None}
             if context is not None:
                 run.feature_run_ids_json = {b.pinned_run.market: b.pinned_run.run_id for b in context.market_batches}
                 run.exposure_dates_json = {b.pinned_run.market: b.market_context.freshness.actual_session.isoformat()
@@ -822,9 +822,9 @@ class SocialSignalWriter:
             self._validate_inputs(db, run)
             service = SocialThemeProjectionService(db)
             projection = service.prepare(run_id, utc(run.created_at))
-            if serialized(projection) != run.application_progress_json["prepared"]["projection"]:
+            prepared_data = run.prepared_json or {}
+            if serialized(projection) != prepared_data["projection"]:
                 raise ValueError("publication_version_changed")
-            prepared_data = run.application_progress_json["prepared"]
             context = _restore_record(SocialPublicationContext, prepared_data.get("context"))
             self._validate_context(db, context, utc(run.created_at), run_id=run_id)
             application = service.prepare_application(projection, theme_keys=tuple(e["theme_key"] for e in prepared_data["theme_evidence"]))

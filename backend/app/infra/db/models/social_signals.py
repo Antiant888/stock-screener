@@ -3,7 +3,7 @@ from sqlalchemy import (
     BigInteger, CheckConstraint, Column, Date, DateTime, ForeignKey, Index,
     Integer, JSON, Numeric, Text, UniqueConstraint, event, inspect, select, update,
 )
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, deferred
 from sqlalchemy.sql import func
 
 from app.database import Base
@@ -151,6 +151,8 @@ class SocialSignalRun(Base):
     status = Column(Text, nullable=False)
     source_outcomes_json = Column(JSON, nullable=False)
     application_progress_json = Column(JSON, nullable=False)
+    # Megabytes per staged run. Deferred so scans over every generation never load it.
+    prepared_json = deferred(Column(JSON))
     feature_run_ids_json = Column(JSON, nullable=False)
     exposure_dates_json = Column(JSON, nullable=False)
     coverage_json = Column(JSON, nullable=False)

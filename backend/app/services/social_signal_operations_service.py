@@ -130,7 +130,7 @@ class SocialSignalOperationsService:
             ).total_seconds() <= settings.social_stale_after_hours * 3600
             for source in enabled_sources
         )
-        prepared = run.application_progress_json.get("prepared", {}) if run else {}
+        prepared = (run.prepared_json or {}) if run else {}
         failure = run.application_progress_json.get("failure", {}) if run else {}
         context = prepared.get("context") or {}
         unknown_identity_count = _unknown_identity_count(db)
