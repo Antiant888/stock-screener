@@ -349,6 +349,14 @@ def _outcome_by_cell(content):
         # A spreadsheet row splits on tabs only, so names keep their commas.
         ("AAPL\tApple, Inc.\nMSFT\tMicrosoft, Corp", {"AAPL": "added", "MSFT": "existing"}),
         ('AAPL,"The ""Apple"" Co"\nMSFT,"Microsoft\nCorp"', {"AAPL": "added", "MSFT": "existing"}),
+        # A tab line whose cell is itself a symbol list keeps every symbol.
+        (
+            "NVDA,MSFT\tAAPL\nTSLA",
+            {"NVDA": "added", "MSFT": "existing", "AAPL": "added", "TSLA": "added"},
+        ),
+        ("NVDA;AMD\tNASDAQ:ANET\nTSLA", {"NVDA": "added", "AMD": "added", "NASDAQ:ANET": "added", "TSLA": "added"}),
+        # ...but a name with a comma, or a quoted list, stays one cell.
+        ('AAPL\t"NVDA,MSFT"\nTSLA\tTesla, Inc.', {"AAPL": "added", "TSLA": "added"}),
         # Classic Mac line endings: a bare carriage return ends a row too.
         ("NVDA\rMSFT\rAAPL", {"NVDA": "added", "MSFT": "existing", "AAPL": "added"}),
         ("symbol,notes\rNVDA,BUY\r\nAAPL,x", {"NVDA": "added", "AAPL": "added"}),

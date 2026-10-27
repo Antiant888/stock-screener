@@ -51,6 +51,8 @@ _TRADINGVIEW_PREFIX_SUFFIXES = {
 _TRADINGVIEW_SYMBOL_RE = re.compile(r"^[A-Z][A-Z0-9_]*:[^\s/]+$")
 _TEXT_DELIMITERS = ",;\t"
 _TABLE_DELIMITERS = ",;"
+# A spreadsheet cell that is itself a comma or semicolon list: no whitespace.
+_LIST_CELL_RE = re.compile(r"^[^\s,;]+(?:[,;][^\s,;]+)+$")
 
 
 @dataclass(frozen=True)
@@ -132,7 +134,9 @@ def _tokenize_rows(content: str, delimiters: str | None) -> list[list[str]]:
 
     ``delimiters=None`` picks them per line: a line holding a tab is a
     spreadsheet row whose names may hold commas, so tabs alone split it;
-    other lines split on commas and semicolons, mixed freely.
+    other lines split on commas and semicolons, mixed freely. In a tab line,
+    an unquoted cell such as ``NVDA,MSFT`` (no spaces, every piece a symbol)
+    is still a symbol list and splits; a name such as ``Apple, Inc.`` does not.
     """
 
     # \r\n and a bare \r (classic Mac files) each end a row, like \n.
@@ -141,6 +145,7 @@ def _tokenize_rows(content: str, delimiters: str | None) -> list[list[str]]:
     row: list[str] = []
     cell: list[str] = []
     in_quotes = False
+    quoted = False
     index = 0
     row_delimiters = _line_delimiters(content, 0, delimiters)
     while index < len(content):
@@ -155,15 +160,15 @@ def _tokenize_rows(content: str, delimiters: str | None) -> list[list[str]]:
             else:
                 in_quotes = False
         elif char == '"' and not "".join(cell).strip():
-            in_quotes = True
+            in_quotes = quoted = True
             cell = []
         elif char in row_delimiters:
-            row.append(_finish_cell(cell))
-            cell = []
+            row.extend(_finish_cell(cell, quoted, row_delimiters))
+            cell, quoted = [], False
         elif char == "\n":
-            row.append(_finish_cell(cell))
+            row.extend(_finish_cell(cell, quoted, row_delimiters))
             rows.append(row)
-            row, cell = [], []
+            row, cell, quoted = [], [], False
             row_delimiters = _line_delimiters(content, index, delimiters)
         else:
             cell.append(char)
@@ -171,7 +176,7 @@ def _tokenize_rows(content: str, delimiters: str | None) -> list[list[str]]:
         # An unclosed quote would swallow the rest of the paste; read the
         # quote as a plain character instead.
         return _tokenize_rows(content.replace('"', ""), delimiters)
-    row.append(_finish_cell(cell))
+    row.extend(_finish_cell(cell, quoted, row_delimiters))
     rows.append(row)
     return [row for row in rows if any(row)]
 
@@ -184,9 +189,15 @@ def _line_delimiters(content: str, start: int, delimiters: str | None) -> str:
     return "\t" if "\t" in line else _TABLE_DELIMITERS
 
 
-def _finish_cell(chars: list[str]) -> str:
+def _finish_cell(chars: list[str], quoted: bool, row_delimiters: str) -> list[str]:
     cell = "".join(chars).strip()
-    return "" if cell.startswith("###") else cell
+    if cell.startswith("###"):
+        return [""]
+    if not quoted and row_delimiters == "\t" and _LIST_CELL_RE.match(cell):
+        pieces = re.split(r"[,;]", cell)
+        if all(_is_symbol_cell([piece]) for piece in pieces):
+            return pieces
+    return [cell]
 
 
 def _parse_tabular_symbols(content: str) -> list[str]:
