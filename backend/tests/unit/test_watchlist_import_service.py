@@ -349,6 +349,9 @@ def _outcome_by_cell(content):
         # A spreadsheet row splits on tabs only, so names keep their commas.
         ("AAPL\tApple, Inc.\nMSFT\tMicrosoft, Corp", {"AAPL": "added", "MSFT": "existing"}),
         ('AAPL,"The ""Apple"" Co"\nMSFT,"Microsoft\nCorp"', {"AAPL": "added", "MSFT": "existing"}),
+        # Classic Mac line endings: a bare carriage return ends a row too.
+        ("NVDA\rMSFT\rAAPL", {"NVDA": "added", "MSFT": "existing", "AAPL": "added"}),
+        ("symbol,notes\rNVDA,BUY\r\nAAPL,x", {"NVDA": "added", "AAPL": "added"}),
         # An unclosed quote never swallows the rest of the paste.
         ('"NVDA\nAAPL', {"NVDA": "added", "AAPL": "added"}),
     ],
@@ -393,3 +396,7 @@ def test_text_format_unquotes_cells():
         "MSFT",
         "AAPL",
     ]
+
+
+def test_text_format_splits_on_bare_carriage_returns():
+    assert _plain_import_symbols("NVDA\rMSFT\r\nAAPL", format_hint="text") == ["NVDA", "MSFT", "AAPL"]

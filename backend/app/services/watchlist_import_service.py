@@ -135,6 +135,8 @@ def _tokenize_rows(content: str, delimiters: str | None) -> list[list[str]]:
     other lines split on commas and semicolons, mixed freely.
     """
 
+    # \r\n and a bare \r (classic Mac files) each end a row, like \n.
+    content = content.replace("\r\n", "\n").replace("\r", "\n")
     rows: list[list[str]] = []
     row: list[str] = []
     cell: list[str] = []
@@ -163,7 +165,7 @@ def _tokenize_rows(content: str, delimiters: str | None) -> list[list[str]]:
             rows.append(row)
             row, cell = [], []
             row_delimiters = _line_delimiters(content, index, delimiters)
-        elif char != "\r":
+        else:
             cell.append(char)
     if in_quotes:
         # An unclosed quote would swallow the rest of the paste; read the
