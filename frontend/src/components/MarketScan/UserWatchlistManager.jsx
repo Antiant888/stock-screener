@@ -50,6 +50,17 @@ import {
 import { invalidateWatchlistItems } from '../../api/userWatchlistQueries';
 import { getErrorMessage } from '../../utils/errorMessage';
 
+const NAMED_SYMBOL_LIMIT = 10;
+
+const namedSymbols = (symbols) => {
+  if (symbols.length === 0) {
+    return '';
+  }
+  const shown = symbols.slice(0, NAMED_SYMBOL_LIMIT).join(', ');
+  const more = symbols.length - NAMED_SYMBOL_LIMIT;
+  return ` (${more > 0 ? `${shown} and ${more} more` : shown})`;
+};
+
 // Matches the backend's 1,000,000-character import cap; a 2000-symbol export is ~50 KB.
 const MAX_IMPORT_CHARS = 1_000_000;
 
@@ -172,14 +183,16 @@ function UserWatchlistManager({ open, onClose, onUpdate }) {
       invalidateWatchlistItems(queryClient, variables.watchlistId);
       setImportContent('');
       setImportDialogOpen(false);
+      // Naming the symbols lets a stray note or sector word read as a ticker
+      // be spotted; a header-less paste cannot tell the two apart.
       const parts = [
-        `Imported ${result.added.length} symbol${result.added.length === 1 ? '' : 's'}`,
+        `Imported ${result.added.length} symbol${result.added.length === 1 ? '' : 's'}${namedSymbols(result.added)}`,
       ];
       if (result.skipped_existing.length > 0) {
         parts.push(`${result.skipped_existing.length} already existed`);
       }
       if (result.invalid_symbols.length > 0) {
-        parts.push(`${result.invalid_symbols.length} invalid`);
+        parts.push(`${result.invalid_symbols.length} invalid${namedSymbols(result.invalid_symbols)}`);
       }
       setFeedback({ severity: 'success', message: parts.join(', ') });
       onUpdate?.();
@@ -227,9 +240,21 @@ function UserWatchlistManager({ open, onClose, onUpdate }) {
     removeItemMutation.mutate({ itemId, watchlistId: selectedWatchlistId });
   };
 
+  // A server error belongs to the text it rejected, so editing or replacing
+  // that text clears it.
+  const clearImportServerError = () => {
+    if (importItemsMutation.isError) {
+      importItemsMutation.reset();
+    }
+  };
+
   const handleOpenImportDialog = () => {
     setImportFileError(null);
-    importItemsMutation.reset();
+    // Resetting a pending import would detach the dialog from it: its late
+    // error would skip the dialog and Import would re-enable mid-request.
+    if (!importItemsMutation.isPending) {
+      importItemsMutation.reset();
+    }
     if (importDraftWatchlistId !== selectedWatchlistId) {
       setImportContent('');
       setImportDraftWatchlistId(selectedWatchlistId);
@@ -568,6 +593,7 @@ function UserWatchlistManager({ open, onClose, onUpdate }) {
                 try {
                   setImportContent(await file.text());
                   setImportFileError(null);
+                  clearImportServerError();
                 } catch {
                   setImportFileError(`Could not read ${file.name}.`);
                 }
@@ -590,7 +616,10 @@ function UserWatchlistManager({ open, onClose, onUpdate }) {
             }}
             placeholder={'NVDA\nMSFT\nAAPL'}
             value={importContent}
-            onChange={(event) => setImportContent(event.target.value)}
+            onChange={(event) => {
+              setImportContent(event.target.value);
+              clearImportServerError();
+            }}
           />
         </DialogContent>
         <DialogActions>
