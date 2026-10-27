@@ -853,6 +853,17 @@ describe('ScanPage', () => {
       expect(loadedScanIds()).toEqual([null, 'us-scan']);
     });
 
+    it('follows the server market_view flag over the universe type', async () => {
+      // A pre-migration custom row reconstructs as an "all" universe.
+      const legacyCustom = { scan_id: 'legacy-custom', status: 'completed', universe_def: { type: 'all' }, market_view: false };
+      scanApi.getScans.mockResolvedValue({ scans: [legacyCustom, { ...US_SCAN, market_view: true }] });
+
+      renderWithProviders(<ScanPage />);
+
+      await waitFor(() => expect(scanApi.getScanStatus).toHaveBeenCalledWith('us-scan'));
+      expect(loadedScanIds()).toEqual([null, 'us-scan']);
+    });
+
     it('auto-loads the market scan beneath 25 newer watchlist scans', async () => {
       const watchlistScans = Array.from({ length: 25 }, (_, index) => ({
         ...WATCHLIST_SCAN,
@@ -1658,6 +1669,36 @@ describe('ScanPage', () => {
 
       expect(scanApi.getScanStatus).not.toHaveBeenCalledWith('us-late');
       expect(screen.getByText('Open scan', { selector: 'button' })).toBeInTheDocument();
+    });
+
+    it('reloads the scan a market defaults to when the view was cleared while showing it', async () => {
+      marketState.selectedMarket = 'US';
+      const usLate = { scan_id: 'us-late', status: 'completed', universe_def: { type: 'market', market: 'US' } };
+      scanApi.getScans.mockImplementation(async () => ({ scans: [] }));
+      let resolveCreate;
+      scanApi.createScan.mockReturnValueOnce(new Promise((resolve) => { resolveCreate = resolve; }));
+      const loads = () => scanApi.getScanBootstrap.mock.calls.filter(([scanId]) => scanId === 'us-late').length;
+
+      const { queryClient, rerender } = renderWithProviders(<ScanPage />);
+
+      fireEvent.click(await screen.findByText('Scan', { selector: 'button' }, { timeout: 3000 }));
+      marketState.selectedMarket = 'HK';
+      rerender(<ScanPage />);
+      await act(async () => {
+        resolveCreate({ scan_id: 'us-late', status: 'completed', total_stocks: 5 });
+      });
+      fireEvent.click(screen.getByText('Open scan', { selector: 'button' }));
+      await waitFor(() => expect(loads()).toBe(1));
+
+      // US history already names the shown scan when the switch clears the view.
+      scanApi.getScans.mockImplementation(async ({ market } = {}) => (
+        market === 'US' ? { scans: [usLate] } : { scans: [] }
+      ));
+      queryClient.setQueryData(['scanHistory', 'US'], { scans: [usLate] });
+      marketState.selectedMarket = 'US';
+      rerender(<ScanPage />);
+
+      await waitFor(() => expect(loads()).toBe(2));
     });
 
     it('keeps the previous completed results visible while a new scan runs', async () => {
