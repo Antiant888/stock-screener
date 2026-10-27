@@ -76,8 +76,8 @@ function UserWatchlistManager({ open, onClose, onUpdate }) {
   const [importContent, setImportContent] = useState('');
   const [importDraftWatchlistId, setImportDraftWatchlistId] = useState(null);
   // Read when an import settles, which can be after the draft moved on.
+  // Set with the state, never during render.
   const importDraftWatchlistIdRef = useRef(importDraftWatchlistId);
-  importDraftWatchlistIdRef.current = importDraftWatchlistId;
   const [importFileError, setImportFileError] = useState(null);
 
   // Fetch watchlists
@@ -205,7 +205,11 @@ function UserWatchlistManager({ open, onClose, onUpdate }) {
       onUpdate?.();
     },
     // The import dialog shows the error while open; this keeps it once closed.
-    onError: (err) => setFeedback({ severity: 'error', message: getErrorMessage(err, 'Failed to import symbols') }),
+    onError: (err) => setFeedback({
+      severity: 'error',
+      message: getErrorMessage(err, 'Failed to import symbols'),
+      source: 'import',
+    }),
   });
 
   const handleCreate = () => {
@@ -253,6 +257,11 @@ function UserWatchlistManager({ open, onClose, onUpdate }) {
     if (importItemsMutation.isError) {
       importItemsMutation.reset();
     }
+    // The manager alert keeps a copy for once the dialog closes; other
+    // actions' feedback stays.
+    setFeedback((current) => (
+      current?.source === 'import' && current.severity === 'error' ? null : current
+    ));
   };
 
   const handleOpenImportDialog = () => {
@@ -269,6 +278,7 @@ function UserWatchlistManager({ open, onClose, onUpdate }) {
     if (importDraftWatchlistId !== selectedWatchlistId) {
       setImportContent('');
       setImportDraftWatchlistId(selectedWatchlistId);
+      importDraftWatchlistIdRef.current = selectedWatchlistId;
     }
     setImportDialogOpen(true);
   };

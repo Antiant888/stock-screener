@@ -266,6 +266,8 @@ describe('UserWatchlistManager import flow', () => {
 
     fireEvent.change(textbox, { target: { value: 'NVDA\nMSFT' } });
     expect(within(importDialog).queryByRole('alert')).toBeNull();
+    // Nor does the manager's copy of it linger behind the dialog.
+    expect(screen.queryByText('Too many symbols.')).toBeNull();
 
     fireEvent.click(within(importDialog).getByRole('button', { name: 'Import' }));
     expect(await within(importDialog).findByRole('alert')).toHaveTextContent('Too many symbols.');
