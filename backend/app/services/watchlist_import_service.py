@@ -274,8 +274,11 @@ def _parse_tabular_symbols(content: str) -> list[str]:
 
 
 def _is_symbol_cell(words: list[str]) -> bool:
-    # A cell is symbols only when every word is; one name word such as
-    # "Corp" in "NVIDIA Corp" keeps a header-less paste a table.
+    # One word is a symbol in any case ("Nvda"). Several words are symbols
+    # only when none is a mixed-case name word, so "MSFT AMD" is a list but
+    # "NVIDIA Corp" keeps a header-less paste a table.
+    if len(words) == 1:
+        return bool(_TRADINGVIEW_SYMBOL_RE.match(words[0].upper())) or _looks_like_symbol_token(words[0])
     return bool(words) and all(_is_list_word(word) for word in words)
 
 

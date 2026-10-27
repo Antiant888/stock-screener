@@ -360,6 +360,8 @@ def _outcome_by_cell(content):
         # With no delimiter anywhere, every line is a word list, header or not.
         ("symbol\nNVDA MSFT\nAAPL", {"NVDA": "added", "MSFT": "existing", "AAPL": "added"}),
         ("Ticker\nNVDA\nAAPL TSLA", {"NVDA": "added", "AAPL": "added", "TSLA": "added"}),
+        # A one-word cell is a ticker in any case.
+        ("Nvda,Msft\nAapl,Tsla", {"NVDA": "added", "MSFT": "existing", "AAPL": "added", "TSLA": "added"}),
         # A header's columns hold even when a tab row's cell is a list.
         ("notes\tsymbol\nNVDA,MSFT\tAAPL", {"AAPL": "added"}),
         ("Symbol\tNotes\nNVDA\tAMD,TSLA\nMSFT\tx", {"NVDA": "added", "MSFT": "existing"}),
@@ -428,6 +430,8 @@ def test_a_paste_of_only_symbols_imports_every_symbol_whatever_the_separators():
     """Property check over seeded random pastes: no separator mix loses a symbol."""
     import random
 
+    # Title-case tickers ("Nvda") are covered separately: on a tab line or in a
+    # multi-word cell they cannot be told from a name such as "Apple".
     symbols = ["NVDA", "MSFT", "AAPL", "TSLA", "AMD", "BRK.B", "NASDAQ:ANET", "HKEX:700", "0700.HK", "msft"]
     separators = [",", ", ", ";", "\t", " ", "\n", "\r\n", "\r", " ,", "\t\t"]
     prefixes = ["symbol\n", "Ticker\n", "###Top AI Picks,", "###Watch\n", "###Top AI Picks\t"]
@@ -448,3 +452,21 @@ def test_a_paste_of_only_symbols_imports_every_symbol_whatever_the_separators():
         imported = {token.text for token in parse_watchlist_import_tokens(content)}
 
         assert used <= imported, (content, sorted(used - imported))
+
+
+def test_title_case_tickers_import_as_one_word_cells():
+    """Phone autocapitalize can send "Nvda"; one-word cells keep it a ticker."""
+    import random
+
+    symbols = ["Nvda", "Msft", "AAPL", "tsla", "Amd"]
+    rng = random.Random(687)
+    for _ in range(2000):
+        picked = [rng.choice(symbols) for _ in range(rng.randint(2, 6))]
+        content = "".join(
+            symbol + (rng.choice([",", ", ", ";", "\n", "\r\n"]) if index < len(picked) - 1 else "")
+            for index, symbol in enumerate(picked)
+        )
+
+        imported = {token.text for token in parse_watchlist_import_tokens(content)}
+
+        assert {symbol.upper() for symbol in picked} <= imported, content
