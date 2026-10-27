@@ -26,6 +26,7 @@ from app.schemas.scanning import ExplainResponse
 from app.services.breadth.query import breadth_query, latest_breadth
 from app.services.economic_theme_read_service import EconomicThemeReader
 from app.services.task_registry_service import SCHEDULED_TASKS
+from app.services.watchlist_capacity import check_watchlist_capacity, lock_watchlist
 from app.tasks.market_queues import SUPPORTED_MARKETS
 from app.use_cases.feature_store.compare_runs import (
     CompareFeatureRunsUseCase,
@@ -888,6 +889,7 @@ class MarketCopilotService:
                     writes_enabled=False,
                 )
 
+            watchlist = lock_watchlist(db, watchlist.id) or watchlist
             existing_items = (
                 db.query(WatchlistItem)
                 .filter(WatchlistItem.watchlist_id == watchlist.id)
@@ -897,20 +899,33 @@ class MarketCopilotService:
             watchlist_id = watchlist.id
             watchlist_name = watchlist.name
             existing_symbols = {item.symbol for item in existing_items}
-            max_position = existing_items[-1].position if existing_items else -1
+            max_position = max((item.position for item in existing_items), default=-1)
+            # Same rule as the REST endpoints: only active-universe symbols.
             name_map = {
                 row.symbol: row.name
                 for row in db.query(StockUniverse)
-                .filter(StockUniverse.symbol.in_(args.symbols))
+                .filter(
+                    StockUniverse.active_filter(),
+                    StockUniverse.symbol.in_(args.symbols),
+                )
                 .all()
             }
+            skipped = [symbol for symbol in args.symbols if symbol in existing_symbols]
+            invalid = [
+                symbol
+                for symbol in args.symbols
+                if symbol not in existing_symbols and symbol not in name_map
+            ]
+            addable = [
+                symbol
+                for symbol in args.symbols
+                if symbol not in existing_symbols and symbol in name_map
+            ]
+            # A WatchlistCapacityError is a ValueError, which call_tool reports.
+            check_watchlist_capacity(len(existing_items), len(addable))
 
             added: list[dict[str, Any]] = []
-            skipped: list[str] = []
-            for symbol in args.symbols:
-                if symbol in existing_symbols:
-                    skipped.append(symbol)
-                    continue
+            for symbol in addable:
                 max_position += 1
                 item = WatchlistItem(
                     watchlist_id=watchlist_id,
@@ -926,13 +941,17 @@ class MarketCopilotService:
         next_actions = []
         if skipped:
             next_actions.append("Review skipped symbols that were already present in the watchlist.")
+        if invalid:
+            next_actions.append("Check the invalid symbols; they are not in the active stock universe.")
 
         return self._envelope(
-            f"Added {len(added)} symbols to watchlist {watchlist_name}; {len(skipped)} symbols were skipped.",
+            f"Added {len(added)} symbols to watchlist {watchlist_name}; {len(skipped)} symbols were skipped"
+            f" and {len(invalid)} were invalid.",
             facts=[
                 self._fact("writes_enabled", True, "settings"),
                 self._fact("added_count", len(added), "user_watchlists"),
                 self._fact("skipped_count", len(skipped), "user_watchlists"),
+                self._fact("invalid_count", len(invalid), "stock_universe"),
             ],
             citations=[self._citation("watchlist", watchlist_name, f"user_watchlists:{watchlist_id}")],
             next_actions=next_actions,
@@ -940,6 +959,7 @@ class MarketCopilotService:
             watchlist={"id": watchlist_id, "name": watchlist_name},
             added=added,
             skipped=skipped,
+            invalid=invalid,
             writes_enabled=True,
         )
 

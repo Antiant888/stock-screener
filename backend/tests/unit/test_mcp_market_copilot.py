@@ -10,6 +10,7 @@ from sqlalchemy import delete
 from app.interfaces.mcp.market_copilot import MarketCopilotService
 from app.infra.db.models.feature_store import FeatureRun
 from app.models.theme import ThemeMetrics
+from app.models.user_watchlist import WatchlistItem
 from tests.helpers.mcp_fixture import create_mcp_test_session_factory, seed_market_copilot_data
 from tests.helpers.taxonomy_authority import set_economic_authority
 
@@ -223,6 +224,55 @@ def test_watchlist_add_writes_when_enabled(session_factory):
     snapshot = _tool_payload(service.call_tool("watchlist_snapshot", {"watchlist": "Leaders"}))
     symbols = [row["symbol"] for row in snapshot["items"]]
     assert symbols == ["NVDA", "MSFT"]
+
+
+def _writable_service(session_factory):
+    return MarketCopilotService(
+        session_factory,
+        SimpleNamespace(
+            mcp_watchlist_writes_enabled=True,
+            mcp_server_name="stockscreen-market-copilot",
+        ),
+    )
+
+
+def test_watchlist_add_reports_symbols_outside_the_active_universe(session_factory):
+    from app.models.stock_universe import StockUniverse
+
+    with session_factory() as db:
+        db.query(StockUniverse).filter(StockUniverse.symbol == "SNOW").update(
+            {"is_active": False, "status": "delisted"}
+        )
+        db.commit()
+
+    payload = _tool_payload(
+        _writable_service(session_factory).call_tool(
+            "watchlist_add", {"watchlist": "Leaders", "symbols": ["MSFT", "SNOW", "ZZZZ"]}
+        )
+    )
+
+    assert [row["symbol"] for row in payload["added"]] == ["MSFT"]
+    assert payload["invalid"] == ["SNOW", "ZZZZ"]
+    with session_factory() as db:
+        assert {item.symbol for item in db.query(WatchlistItem).filter(WatchlistItem.watchlist_id == 1)} == {
+            "NVDA", "AAPL", "MSFT",
+        }
+
+
+def test_watchlist_add_refuses_to_pass_the_watchlist_cap(session_factory, monkeypatch):
+    import app.services.watchlist_capacity as capacity
+
+    monkeypatch.setattr(capacity, "MAX_CUSTOM_UNIVERSE_SYMBOLS", 3)
+
+    result = _writable_service(session_factory).call_tool(
+        "watchlist_add", {"watchlist": "Leaders", "symbols": ["MSFT", "SNOW"]}
+    )
+
+    error = result["structuredContent"]["error"]
+    assert error["code"] == "invalid_arguments"
+    assert "at most 3 symbols" in error["details"]["message"]
+    with session_factory() as db:
+        assert db.query(WatchlistItem).filter(WatchlistItem.watchlist_id == 1).count() == 2
 
 
 def test_stock_snapshot_only_marks_theme_metrics_fresh_when_metrics_exist(session_factory, read_only_service):
