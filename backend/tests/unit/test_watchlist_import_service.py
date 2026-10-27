@@ -335,7 +335,61 @@ def _outcome_by_cell(content):
         ("BRK.B,BF.B", {"BRK.B": "added", "BF.B": "added"}),
         ('"NVDA","MSFT"\n"AAPL"', {"NVDA": "added", "MSFT": "existing", "AAPL": "added"}),
         ('AAPL,"Apple, Inc."\nMSFT,"Microsoft, Corp"', {"AAPL": "added", "MSFT": "existing"}),
+        # #681: fully quoted single column or single line.
+        ('"NVDA"\n"MSFT"', {"NVDA": "added", "MSFT": "existing"}),
+        ('"NVDA","MSFT","AAPL"', {"NVDA": "added", "MSFT": "existing", "AAPL": "added"}),
+        # #681: lines mixing spaces and commas keep every cell.
+        (
+            "NVDA, AMD, MSFT\nAAPL TSLA",
+            {"NVDA": "added", "AMD": "added", "MSFT": "existing", "AAPL": "added", "TSLA": "added"},
+        ),
+        # #681: a section cell ends at any cell separator.
+        ("###Top AI Picks;NVDA\nAAPL", {"NVDA": "added", "AAPL": "added"}),
+        ("###Top AI Picks\tNVDA\nAAPL", {"NVDA": "added", "AAPL": "added"}),
+        # A spreadsheet row splits on tabs only, so names keep their commas.
+        ("AAPL\tApple, Inc.\nMSFT\tMicrosoft, Corp", {"AAPL": "added", "MSFT": "existing"}),
+        ('AAPL,"The ""Apple"" Co"\nMSFT,"Microsoft\nCorp"', {"AAPL": "added", "MSFT": "existing"}),
+        # An unclosed quote never swallows the rest of the paste.
+        ('"NVDA\nAAPL', {"NVDA": "added", "AAPL": "added"}),
     ],
 )
 def test_every_symbol_cell_is_imported_skipped_or_reported(content, expected):
     assert _outcome_by_cell(content) == expected
+
+
+def test_tradingview_prefix_suffixes_come_from_the_market_registry():
+    from app.services.watchlist_import_service import _TRADINGVIEW_PREFIX_SUFFIXES
+
+    assert _TRADINGVIEW_PREFIX_SUFFIXES == {
+        "NASDAQ": ("",),
+        "NYSE": ("",),
+        "AMEX": ("",),
+        "NYSEARCA": ("",),
+        "BATS": ("",),
+        "CBOE": ("",),
+        "OTC": ("",),
+        "HKEX": (".HK",),
+        "TSE": (".T",),
+        "TWSE": (".TW",),
+        "TPEX": (".TWO",),
+        "KRX": (".KS", ".KQ"),
+        "SSE": (".SS",),
+        "SZSE": (".SZ",),
+        "SGX": (".SI",),
+        "ASX": (".AX",),
+        "MYX": (".KL",),
+        "TSX": (".TO",),
+        "TSXV": (".V",),
+        "XETR": (".DE",),
+        "FWB": (".F",),
+        "NSE": (".NS",),
+        "BSE": (".BO",),
+    }
+
+
+def test_text_format_unquotes_cells():
+    assert _plain_import_symbols('"NVDA"\n"MSFT","AAPL"', format_hint="text") == [
+        "NVDA",
+        "MSFT",
+        "AAPL",
+    ]
