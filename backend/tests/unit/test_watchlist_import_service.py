@@ -360,6 +360,9 @@ def _outcome_by_cell(content):
         # With no delimiter anywhere, every line is a word list, header or not.
         ("symbol\nNVDA MSFT\nAAPL", {"NVDA": "added", "MSFT": "existing", "AAPL": "added"}),
         ("Ticker\nNVDA\nAAPL TSLA", {"NVDA": "added", "AAPL": "added", "TSLA": "added"}),
+        # A tab inside a quoted cell is not a column separator.
+        ('symbol,notes\rNVDA,"Apple\tInc."\rMSFT,Microsoft', {"NVDA": "added", "MSFT": "existing"}),
+        ('NVDA,"Buy zone\nnext\tWeek"\nAAPL,Hold', {"NVDA": "added", "AAPL": "added"}),
         # A lone header word labels a list; it names no column to read.
         ("symbol\nMSFT,NVDA\nAAPL", {"MSFT": "existing", "NVDA": "added", "AAPL": "added"}),
         ("Ticker\nNVDA,NVIDIA Corp\nAMD,Advanced Micro", {"NVDA": "added", "AMD": "added"}),

@@ -186,9 +186,19 @@ def _words(cell: str) -> list[str]:
 def _line_delimiters(content: str, start: int, delimiters: str | None) -> str:
     if delimiters is not None:
         return delimiters
-    end = content.find("\n", start)
-    line = content[start:] if end < 0 else content[start:end]
-    if "\t" not in line:
+    # The line runs to the next newline outside quotes; a tab counts only
+    # outside them too, so "Apple\tInc." in a quoted cell is not a column.
+    unquoted: list[str] = []
+    in_quotes = False
+    end = start
+    while end < len(content) and (in_quotes or content[end] != "\n"):
+        if content[end] == '"':
+            in_quotes = not in_quotes
+        elif not in_quotes:
+            unquoted.append(content[end])
+        end += 1
+    line = content[start:end]
+    if "\t" not in unquoted:
         return _TABLE_DELIMITERS
     # A ###section cell ends at the next separator; its name is not data.
     line = re.sub(r"###[^,;\t]*", "", line.replace('"', ""))
