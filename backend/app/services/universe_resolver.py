@@ -6,6 +6,7 @@ that maps UniverseDefinition → list of stock symbols. Used by the API,
 Celery tasks, and any future scan triggers.
 """
 import logging
+from dataclasses import replace
 from typing import Any, List, Optional
 
 from sqlalchemy.orm import Session
@@ -74,9 +75,14 @@ def resolve_universe(
 ) -> ResolvedUniverse:
     """Resolve a universe, reporting CUSTOM/TEST symbols the active universe lacks.
 
-    Dropped symbols are never added to ``stock_universe``.
+    Dropped symbols are never added to ``stock_universe``. The result records
+    the normalized definition it came from.
     """
     universe_def = normalize_universe_definition(universe_def)
+    return replace(_resolve(db, universe_def, limit), universe_def=universe_def)
+
+
+def _resolve(db: Session, universe_def: Any, limit: Optional[int]) -> ResolvedUniverse:
     t = universe_def.type
 
     if t == UniverseType.ALL:

@@ -494,8 +494,12 @@ class ThemeDiscoveryService:
     def _latest_completed_scan_id(self) -> Optional[str]:
         from ..models.scan_result import Scan
         return self.db.query(Scan.scan_id).filter(
-            Scan.status == "completed", Scan.represents_market_view()
-        ).order_by(Scan.completed_at.desc()).limit(1).scalar()
+            # Theme metrics are US-only, so only a US scan's results apply. A
+            # NULL market is an all-markets or pre-migration (US-era) scan.
+            Scan.status == "completed",
+            or_(Scan.universe_market == "US", Scan.universe_market.is_(None)),
+            Scan.represents_market_view(),
+        ).order_by(*Scan.newest_first()).limit(1).scalar()
 
     def calculate_screener_metrics(self, theme_cluster_id: int) -> dict:
         """

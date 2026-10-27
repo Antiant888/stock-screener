@@ -152,3 +152,121 @@ def test_bootstrap_readiness_waits_for_the_markets_own_auto_scan(session_factory
     _add_scan(session_factory, "us-auto", "market", "US", 10, **auto)
     with session_factory() as db:
         assert service.has_completed_auto_scan(db, "US") is True
+
+
+def test_scan_lists_flag_which_scans_are_market_views(scans):
+    snapshot = UISnapshotService(scans).publish_scan_bootstrap(market="US")
+
+    assert {s["scan_id"]: s["market_view"] for s in snapshot.payload["recent_scans"]["scans"]} == {
+        "test-1": False,
+        "watchlist-us": False,
+        "watchlist-unscoped": False,
+        "us-1": True,
+        "us-old": True,
+    }
+    assert snapshot.payload["selected_scan"]["market_view"] is True
+
+
+@pytest.mark.parametrize(
+    ("universe_type", "universe", "expected"),
+    [
+        ("market", "US Market", True),
+        ("index", "S&P 500", True),
+        ("all", "All Stocks", True),
+        ("custom", "Custom (3 symbols)", False),
+        ("test", "Test (1 symbol)", False),
+        # Pre-migration rows carry only the legacy universe label.
+        (None, "market:us", True),
+        (None, "all", True),
+        (None, None, True),
+        (None, "custom", False),
+        (None, " Custom ", False),
+        (None, "test", False),
+        (None, "Custom (3 symbols)", False),
+    ],
+)
+def test_market_view_rule_agrees_in_python_and_sql(session_factory, universe_type, universe, expected):
+    with session_factory() as db:
+        db.add(Scan(scan_id="row", status="completed", universe_type=universe_type, universe=universe))
+        db.commit()
+        row = db.query(Scan).one()
+
+        assert row.represents_market_view() is expected
+        in_sql = db.query(Scan.scan_id).filter(Scan.represents_market_view()).all()
+        assert bool(in_sql) is expected
+        # The negation must hold for every other row: never SQL NULL.
+        negated = db.query(Scan.scan_id).filter(~Scan.represents_market_view()).all()
+        assert bool(negated) is not expected
+
+
+def test_a_legacy_custom_row_never_stands_in_for_the_market_scan(session_factory):
+    _add_scan(session_factory, "us-1", "market", "US", 9)
+    _add_scan(session_factory, "legacy-custom", None, "US", 10, universe="custom")
+
+    with session_factory() as db:
+        assert latest_completed_scan(db, "US").scan_id == "us-1"
+        # Still listed in history, with the symbol lists.
+        assert [s.scan_id for s in SqlScanRepository(db).list_recent(market="US")] == [
+            "legacy-custom", "us-1",
+        ]
+
+
+def test_every_latest_scan_picker_agrees_when_scans_finish_out_of_order(session_factory):
+    from app.services.theme_discovery_service import ThemeDiscoveryService
+
+    with session_factory() as db:
+        for scan_id, started, completed in (
+            # Started first but finished last.
+            ("us-long", datetime(2026, 9, 30, 9), datetime(2026, 9, 30, 12)),
+            ("us-quick", datetime(2026, 9, 30, 10), datetime(2026, 9, 30, 11)),
+        ):
+            db.add(
+                Scan(
+                    scan_id=scan_id,
+                    status="completed",
+                    universe_type="market",
+                    universe_market="US",
+                    started_at=started,
+                    completed_at=completed,
+                )
+            )
+        db.commit()
+
+        # Newest of all, but theme metrics only read US scans.
+        db.add(
+            Scan(
+                scan_id="hk-newest",
+                status="completed",
+                universe_type="market",
+                universe_market="HK",
+                started_at=datetime(2026, 9, 30, 11),
+                completed_at=datetime(2026, 9, 30, 11, 30),
+            )
+        )
+        db.commit()
+
+    snapshot = UISnapshotService(session_factory).publish_scan_bootstrap(market="US")
+    with session_factory() as db:
+        history = SqlScanRepository(db).list_recent(market="US")
+        theme_pick = ThemeDiscoveryService.__new__(ThemeDiscoveryService)
+        theme_pick.db = db
+
+        assert history[0].scan_id == "us-quick"
+        assert snapshot.payload["selected_scan"]["scan_id"] == "us-quick"
+        assert latest_completed_scan(db, "US").scan_id == "us-quick"
+        assert theme_pick._latest_completed_scan_id() == "us-quick"
+
+
+def test_publishing_a_missing_latest_variant_serves_it_to_readers(scans, monkeypatch):
+    import app.services.ui_snapshot_service as ui_snapshot_service
+    import app.wiring.bootstrap as bootstrap
+
+    service = UISnapshotService(scans)
+    monkeypatch.setattr(bootstrap, "get_ui_snapshot_service", lambda: service)
+    assert service.get_scan_bootstrap(market="US") is None
+
+    ui_snapshot_service.safe_publish_scan_latest("US")
+
+    snapshot = service.get_scan_bootstrap(market="US")
+    assert snapshot is not None and snapshot.is_stale is False
+    assert snapshot.payload["selected_scan"]["scan_id"] == "us-1"

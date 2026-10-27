@@ -7,7 +7,7 @@
  * - Add/remove stocks from watchlists
  * - Reorder watchlists and stocks via drag-and-drop
  */
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   Dialog,
@@ -50,6 +50,17 @@ import {
 import { invalidateWatchlistItems } from '../../api/userWatchlistQueries';
 import { getErrorMessage } from '../../utils/errorMessage';
 
+const NAMED_SYMBOL_LIMIT = 10;
+
+const namedSymbols = (symbols) => {
+  if (symbols.length === 0) {
+    return '';
+  }
+  const shown = symbols.slice(0, NAMED_SYMBOL_LIMIT).join(', ');
+  const more = symbols.length - NAMED_SYMBOL_LIMIT;
+  return ` (${more > 0 ? `${shown} and ${more} more` : shown})`;
+};
+
 // Matches the backend's 1,000,000-character import cap; a 2000-symbol export is ~50 KB.
 const MAX_IMPORT_CHARS = 1_000_000;
 
@@ -64,6 +75,9 @@ function UserWatchlistManager({ open, onClose, onUpdate }) {
   const [importDialogOpen, setImportDialogOpen] = useState(false);
   const [importContent, setImportContent] = useState('');
   const [importDraftWatchlistId, setImportDraftWatchlistId] = useState(null);
+  // Read when an import settles, which can be after the draft moved on.
+  // Set with the state, never during render.
+  const importDraftWatchlistIdRef = useRef(importDraftWatchlistId);
   const [importFileError, setImportFileError] = useState(null);
 
   // Fetch watchlists
@@ -170,22 +184,32 @@ function UserWatchlistManager({ open, onClose, onUpdate }) {
     mutationFn: ({ watchlistId, payload }) => importItems(watchlistId, payload),
     onSuccess: (result, variables) => {
       invalidateWatchlistItems(queryClient, variables.watchlistId);
-      setImportContent('');
-      setImportDialogOpen(false);
+      // A late import for another watchlist must not close or clear the
+      // draft the dialog now holds.
+      if (variables.watchlistId === importDraftWatchlistIdRef.current) {
+        setImportContent('');
+        setImportDialogOpen(false);
+      }
+      // Naming the symbols lets a stray note or sector word read as a ticker
+      // be spotted; a header-less paste cannot tell the two apart.
       const parts = [
-        `Imported ${result.added.length} symbol${result.added.length === 1 ? '' : 's'}`,
+        `Imported ${result.added.length} symbol${result.added.length === 1 ? '' : 's'}${namedSymbols(result.added)}`,
       ];
       if (result.skipped_existing.length > 0) {
         parts.push(`${result.skipped_existing.length} already existed`);
       }
       if (result.invalid_symbols.length > 0) {
-        parts.push(`${result.invalid_symbols.length} invalid`);
+        parts.push(`${result.invalid_symbols.length} invalid${namedSymbols(result.invalid_symbols)}`);
       }
       setFeedback({ severity: 'success', message: parts.join(', ') });
       onUpdate?.();
     },
     // The import dialog shows the error while open; this keeps it once closed.
-    onError: (err) => setFeedback({ severity: 'error', message: getErrorMessage(err, 'Failed to import symbols') }),
+    onError: (err) => setFeedback({
+      severity: 'error',
+      message: getErrorMessage(err, 'Failed to import symbols'),
+      source: 'import',
+    }),
   });
 
   const handleCreate = () => {
@@ -227,12 +251,34 @@ function UserWatchlistManager({ open, onClose, onUpdate }) {
     removeItemMutation.mutate({ itemId, watchlistId: selectedWatchlistId });
   };
 
+  // A server error belongs to the text it rejected, so editing or replacing
+  // that text clears it.
+  const clearImportServerError = () => {
+    if (importItemsMutation.isError) {
+      importItemsMutation.reset();
+    }
+    // The manager alert keeps a copy for once the dialog closes; other
+    // actions' feedback stays.
+    setFeedback((current) => (
+      current?.source === 'import' && current.severity === 'error' ? null : current
+    ));
+  };
+
   const handleOpenImportDialog = () => {
     setImportFileError(null);
-    importItemsMutation.reset();
+    // Resetting a pending import for this watchlist would detach the dialog
+    // from it: its late error would skip the dialog and Import would re-enable
+    // mid-request. One for another watchlist is detached, so it never blocks
+    // this one; its outcome still reaches the manager's alert.
+    const pendingHere = importItemsMutation.isPending
+      && importItemsMutation.variables?.watchlistId === selectedWatchlistId;
+    if (!pendingHere) {
+      importItemsMutation.reset();
+    }
     if (importDraftWatchlistId !== selectedWatchlistId) {
       setImportContent('');
       setImportDraftWatchlistId(selectedWatchlistId);
+      importDraftWatchlistIdRef.current = selectedWatchlistId;
     }
     setImportDialogOpen(true);
   };
@@ -568,6 +614,7 @@ function UserWatchlistManager({ open, onClose, onUpdate }) {
                 try {
                   setImportContent(await file.text());
                   setImportFileError(null);
+                  clearImportServerError();
                 } catch {
                   setImportFileError(`Could not read ${file.name}.`);
                 }
@@ -590,7 +637,10 @@ function UserWatchlistManager({ open, onClose, onUpdate }) {
             }}
             placeholder={'NVDA\nMSFT\nAAPL'}
             value={importContent}
-            onChange={(event) => setImportContent(event.target.value)}
+            onChange={(event) => {
+              setImportContent(event.target.value);
+              clearImportServerError();
+            }}
           />
         </DialogContent>
         <DialogActions>

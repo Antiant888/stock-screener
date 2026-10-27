@@ -71,9 +71,15 @@ const REQUEST_SCOPED_ERROR_CODES = new Set(['snapshot_unavailable', 'market_data
 // "No market auto-loaded yet" marker for the scan auto-load ref.
 const NO_MARKET_AUTOLOADED = Symbol('no-market-autoloaded');
 
-// Symbol-list universes, as in the backend's Scan.represents_market_view: the
-// history lists their scans, but they never stand in for the market's scan.
+// The history lists symbol-list (custom/test) scans, but they never stand in
+// for the market's scan. The server decides via ScanListItem.market_view; the
+// type check covers snapshots published before that flag existed.
 const SYMBOL_LIST_UNIVERSE_TYPES = new Set(['custom', 'test']);
+const isMarketViewScan = (scan) => (
+  typeof scan.market_view === 'boolean'
+    ? scan.market_view
+    : !SYMBOL_LIST_UNIVERSE_TYPES.has(scan.universe_def?.type)
+);
 
 function getMutationErrorMessage(error) {
   if (!error) {
@@ -486,7 +492,7 @@ function ScanPage() {
     }
     const latestMarketScan = (scanHistory?.scans ?? []).find(
       (scan) => (scan.status === 'completed' || scan.status === 'cancelled')
-        && !SYMBOL_LIST_UNIVERSE_TYPES.has(scan.universe_def?.type)
+        && isMarketViewScan(scan)
     );
     if (!latestMarketScan) {
       // No finished market scan yet: leave the marker unset so the next
@@ -494,7 +500,9 @@ function ScanPage() {
       return;
     }
     autoLoadedMarketRef.current = globalMarket;
-    if (latestMarketScan.scan_id !== currentScanId) {
+    // The ref, not the state: a market switch clears the view in this same
+    // commit, and the state would still name the scan it just cleared.
+    if (latestMarketScan.scan_id !== currentScanIdRef.current) {
       handleLoadScan(latestMarketScan.scan_id);
     }
   }, [currentScanId, globalMarket, handleLoadScan, scanHistory, scanStatus]);

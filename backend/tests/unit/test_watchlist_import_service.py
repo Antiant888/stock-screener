@@ -335,7 +335,138 @@ def _outcome_by_cell(content):
         ("BRK.B,BF.B", {"BRK.B": "added", "BF.B": "added"}),
         ('"NVDA","MSFT"\n"AAPL"', {"NVDA": "added", "MSFT": "existing", "AAPL": "added"}),
         ('AAPL,"Apple, Inc."\nMSFT,"Microsoft, Corp"', {"AAPL": "added", "MSFT": "existing"}),
+        # #681: fully quoted single column or single line.
+        ('"NVDA"\n"MSFT"', {"NVDA": "added", "MSFT": "existing"}),
+        ('"NVDA","MSFT","AAPL"', {"NVDA": "added", "MSFT": "existing", "AAPL": "added"}),
+        # #681: lines mixing spaces and commas keep every cell.
+        (
+            "NVDA, AMD, MSFT\nAAPL TSLA",
+            {"NVDA": "added", "AMD": "added", "MSFT": "existing", "AAPL": "added", "TSLA": "added"},
+        ),
+        # #681: a section cell ends at any cell separator.
+        ("###Top AI Picks;NVDA\nAAPL", {"NVDA": "added", "AAPL": "added"}),
+        ("###Top AI Picks\tNVDA\nAAPL", {"NVDA": "added", "AAPL": "added"}),
+        # A spreadsheet row splits on tabs only, so names keep their commas.
+        ("AAPL\tApple, Inc.\nMSFT\tMicrosoft, Corp", {"AAPL": "added", "MSFT": "existing"}),
+        ('AAPL,"The ""Apple"" Co"\nMSFT,"Microsoft\nCorp"', {"AAPL": "added", "MSFT": "existing"}),
+        # A tab line whose cell is itself a symbol list keeps every symbol.
+        (
+            "NVDA,MSFT\tAAPL\nTSLA",
+            {"NVDA": "added", "MSFT": "existing", "AAPL": "added", "TSLA": "added"},
+        ),
+        ("NVDA;AMD\tNASDAQ:ANET\nTSLA", {"NVDA": "added", "AMD": "added", "NASDAQ:ANET": "added", "TSLA": "added"}),
+        # ...but a name with a comma, or a quoted list, stays one cell.
+        ('AAPL\t"NVDA,MSFT"\nTSLA\tTesla, Inc.', {"AAPL": "added", "TSLA": "added"}),
+        # With no delimiter anywhere, every line is a word list, header or not.
+        ("symbol\nNVDA MSFT\nAAPL", {"NVDA": "added", "MSFT": "existing", "AAPL": "added"}),
+        ("Ticker\nNVDA\nAAPL TSLA", {"NVDA": "added", "AAPL": "added", "TSLA": "added"}),
+        # A one-word cell is a ticker in any case.
+        ("Nvda,Msft\nAapl,Tsla", {"NVDA": "added", "MSFT": "existing", "AAPL": "added", "TSLA": "added"}),
+        # A header's columns hold even when a tab row's cell is a list.
+        ("notes\tsymbol\nNVDA,MSFT\tAAPL", {"AAPL": "added"}),
+        ("Symbol\tNotes\nNVDA\tAMD,TSLA\nMSFT\tx", {"NVDA": "added", "MSFT": "existing"}),
+        # A malformed header mixing tabs and commas never raises.
+        ("symbol,name\tx\nNVDA,NVIDIA\ty\nMSFT,Microsoft\tz", {"NVDA": "added", "MSFT,MICROSOFT": "invalid"}),
+        # A tab inside a quoted cell is not a column separator.
+        ('symbol,notes\rNVDA,"Apple\tInc."\rMSFT,Microsoft', {"NVDA": "added", "MSFT": "existing"}),
+        ('NVDA,"Buy zone\nnext\tWeek"\nAAPL,Hold', {"NVDA": "added", "AAPL": "added"}),
+        # A lone header word labels a list; it names no column to read.
+        ("symbol\nMSFT,NVDA\nAAPL", {"MSFT": "existing", "NVDA": "added", "AAPL": "added"}),
+        ("Ticker\nNVDA,NVIDIA Corp\nAMD,Advanced Micro", {"NVDA": "added", "AMD": "added"}),
+        # Classic Mac line endings: a bare carriage return ends a row too.
+        ("NVDA\rMSFT\rAAPL", {"NVDA": "added", "MSFT": "existing", "AAPL": "added"}),
+        ("symbol,notes\rNVDA,BUY\r\nAAPL,x", {"NVDA": "added", "AAPL": "added"}),
+        # An unclosed quote never swallows the rest of the paste.
+        ('"NVDA\nAAPL', {"NVDA": "added", "AAPL": "added"}),
     ],
 )
 def test_every_symbol_cell_is_imported_skipped_or_reported(content, expected):
     assert _outcome_by_cell(content) == expected
+
+
+def test_tradingview_prefix_suffixes_come_from_the_market_registry():
+    from app.services.watchlist_import_service import _TRADINGVIEW_PREFIX_SUFFIXES
+
+    assert _TRADINGVIEW_PREFIX_SUFFIXES == {
+        "NASDAQ": ("",),
+        "NYSE": ("",),
+        "AMEX": ("",),
+        "NYSEARCA": ("",),
+        "BATS": ("",),
+        "CBOE": ("",),
+        "OTC": ("",),
+        "HKEX": (".HK",),
+        "TSE": (".T",),
+        "TWSE": (".TW",),
+        "TPEX": (".TWO",),
+        "KRX": (".KS", ".KQ"),
+        "SSE": (".SS",),
+        "SZSE": (".SZ",),
+        "SGX": (".SI",),
+        "ASX": (".AX",),
+        "MYX": (".KL",),
+        "TSX": (".TO",),
+        "TSXV": (".V",),
+        "XETR": (".DE",),
+        "FWB": (".F",),
+        "NSE": (".NS",),
+        "BSE": (".BO",),
+    }
+
+
+def test_text_format_unquotes_cells():
+    assert _plain_import_symbols('"NVDA"\n"MSFT","AAPL"', format_hint="text") == [
+        "NVDA",
+        "MSFT",
+        "AAPL",
+    ]
+
+
+def test_text_format_splits_on_bare_carriage_returns():
+    assert _plain_import_symbols("NVDA\rMSFT\r\nAAPL", format_hint="text") == ["NVDA", "MSFT", "AAPL"]
+
+
+def test_a_paste_of_only_symbols_imports_every_symbol_whatever_the_separators():
+    """Property check over seeded random pastes: no separator mix loses a symbol."""
+    import random
+
+    # Title-case tickers ("Nvda") are covered separately: on a tab line or in a
+    # multi-word cell they cannot be told from a name such as "Apple".
+    symbols = ["NVDA", "MSFT", "AAPL", "TSLA", "AMD", "BRK.B", "NASDAQ:ANET", "HKEX:700", "0700.HK", "msft"]
+    separators = [",", ", ", ";", "\t", " ", "\n", "\r\n", "\r", " ,", "\t\t"]
+    prefixes = ["symbol\n", "Ticker\n", "###Top AI Picks,", "###Watch\n", "###Top AI Picks\t"]
+    rng = random.Random(681)
+    for _ in range(3000):
+        count = rng.randint(1, 8)
+        used, parts = set(), []
+        for index in range(count):
+            symbol = rng.choice(symbols)
+            used.add(symbol.upper())
+            parts.append(f'"{symbol}"' if rng.random() < 0.15 else symbol)
+            if index < count - 1:
+                parts.append(rng.choice(separators))
+        if rng.random() < 0.2:
+            parts.insert(0, rng.choice(prefixes))
+        content = "".join(parts)
+
+        imported = {token.text for token in parse_watchlist_import_tokens(content)}
+
+        assert used <= imported, (content, sorted(used - imported))
+
+
+def test_title_case_tickers_import_as_one_word_cells():
+    """Phone autocapitalize can send "Nvda"; one-word cells keep it a ticker."""
+    import random
+
+    symbols = ["Nvda", "Msft", "AAPL", "tsla", "Amd"]
+    rng = random.Random(687)
+    for _ in range(2000):
+        picked = [rng.choice(symbols) for _ in range(rng.randint(2, 6))]
+        content = "".join(
+            symbol + (rng.choice([",", ", ", ";", "\n", "\r\n"]) if index < len(picked) - 1 else "")
+            for index, symbol in enumerate(picked)
+        )
+
+        imported = {token.text for token in parse_watchlist_import_tokens(content)}
+
+        assert {symbol.upper() for symbol in picked} <= imported, content

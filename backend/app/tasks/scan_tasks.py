@@ -304,17 +304,49 @@ def finalize_scan_artifacts(scan_id: str):
     queue='celery',
     ignore_result=True,
 )
-def publish_scan_bootstrap_snapshots(scan_id: str):
+def publish_scan_bootstrap_snapshots(scan_id: str, prune_history: bool = False):
     """Rebuild a scan's bootstrap snapshot and its market's "latest" one on the general queue.
 
     Request handlers queue this instead of building snapshots inline. "latest"
     is resolved when the task runs, and the publish re-checks it under the
     variant's advisory lock, so a slow task never moves "latest" back to an older scan.
+
+    ``prune_history`` applies scan retention first, for a scan that completed
+    instantly and so never ran the post-scan pipeline that prunes. Retention
+    keeps the newest auto scan (#682), and deletes cancelled scans, so the
+    cancel path never asks for it.
     """
     from ..services.ui_snapshot_service import safe_publish_scan_bootstrap
 
+    if prune_history:
+        from ..services.scan_execution import prune_history_of_scan
+
+        db = SessionLocal()
+        try:
+            prune_history_of_scan(db, scan_id)
+        except Exception:  # noqa: BLE001 - retention must never block the publish
+            logger.warning("Scan retention failed for %s", scan_id, exc_info=True)
+        finally:
+            db.close()
     safe_publish_scan_bootstrap(scan_id)
     return {"scan_id": scan_id, "status": "published_scan_bootstrap"}
+
+
+@celery_app.task(
+    name='app.tasks.scan_tasks.publish_scan_latest_bootstrap',
+    queue='celery',
+    ignore_result=True,
+)
+def publish_scan_latest_bootstrap(market: str | None = None):
+    """Publish a market's "latest" scan bootstrap that a reader found missing.
+
+    Scan publishes refresh that variant, so a market whose snapshot was reset,
+    or never published, would otherwise stay without one until its next scan.
+    """
+    from ..services.ui_snapshot_service import safe_publish_scan_latest
+
+    safe_publish_scan_latest(market)
+    return {"market": market, "status": "published_scan_latest_bootstrap"}
 
 
 _BOOTSTRAP_ENQUEUE_TRANSPORT_OPTIONS = {
@@ -324,7 +356,7 @@ _BOOTSTRAP_ENQUEUE_TRANSPORT_OPTIONS = {
 }
 
 
-def queue_scan_bootstrap_publish(scan_id: str) -> None:
+def queue_scan_bootstrap_publish(scan_id: str, *, prune_history: bool = False) -> None:
     """Queue the bootstrap rebuild for a request handler instead of building it inline.
 
     A failed enqueue only delays the snapshot: the scan page treats an absent or
@@ -342,10 +374,55 @@ def queue_scan_bootstrap_publish(scan_id: str) -> None:
             transport_options=_BOOTSTRAP_ENQUEUE_TRANSPORT_OPTIONS
         ) as connection:
             publish_scan_bootstrap_snapshots.apply_async(
-                args=[scan_id], retry=False, connection=connection
+                args=[scan_id],
+                **({"kwargs": {"prune_history": True}} if prune_history else {}),
+                retry=False,
+                connection=connection,
             )
     except Exception:
         logger.warning("Could not queue scan bootstrap publish for %s", scan_id, exc_info=True)
+
+
+# One queued publish per missing latest variant at a time: every page load
+# that finds it missing asks, and the build is the same for all of them.
+_LATEST_PUBLISH_CLAIM_SECONDS = 60
+
+
+def queue_scan_latest_bootstrap_publish(market: str | None) -> None:
+    """Queue ``publish_scan_latest_bootstrap``; fails fast like the scan publish.
+
+    A short Redis claim per variant coalesces concurrent requests. Without
+    Redis every request enqueues, which only repeats an idempotent build.
+    """
+    from ..services.redis_pool import get_redis_client
+
+    claim_key = f"scan_bootstrap:latest_publish_queued:{market or 'all'}"
+    redis = None
+    try:
+        redis = get_redis_client()
+        if redis is not None and not redis.set(
+            claim_key, "1", nx=True, ex=_LATEST_PUBLISH_CLAIM_SECONDS
+        ):
+            return
+    except Exception:
+        logger.warning("Could not claim the latest scan bootstrap publish for %s", market, exc_info=True)
+        redis = None
+    try:
+        with celery_app.connection_for_write(
+            transport_options=_BOOTSTRAP_ENQUEUE_TRANSPORT_OPTIONS
+        ) as connection:
+            publish_scan_latest_bootstrap.apply_async(
+                args=[market], retry=False, connection=connection
+            )
+    except Exception:
+        logger.warning(
+            "Could not queue the latest scan bootstrap publish for %s", market, exc_info=True
+        )
+        if redis is not None:
+            try:
+                redis.delete(claim_key)  # let the next request try again
+            except Exception:
+                logger.warning("Could not release %s", claim_key, exc_info=True)
 
 
 @celery_app.task(name='app.tasks.scan_tasks.test_celery')

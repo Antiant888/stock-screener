@@ -20,7 +20,6 @@ from ...models.user_watchlist import UserWatchlist, WatchlistItem
 from ...models.stock import StockPrice
 from ...models.stock_universe import StockUniverse
 from ...models.industry import IBDIndustryGroup
-from ...schemas.universe import MAX_CUSTOM_UNIVERSE_SYMBOLS
 from ...schemas.user_watchlist import (
     WatchlistCreate, WatchlistUpdate, WatchlistResponse,
     WatchlistItemCreate, WatchlistItemUpdate, WatchlistItemResponse,
@@ -34,6 +33,11 @@ from ...schemas.user_watchlist import (
 )
 from ...services.price_row_normalization import stock_price_frame
 from ...services.symbol_format import normalize_symbol
+from ...services.watchlist_capacity import (
+    WatchlistCapacityError,
+    check_watchlist_capacity,
+    lock_watchlist,
+)
 from ...services.watchlist_import_service import (
     parse_watchlist_import_tokens,
     split_import_results,
@@ -69,16 +73,10 @@ def _is_duplicate_watchlist_symbol_error(exc: IntegrityError) -> bool:
 
 def _ensure_watchlist_capacity(existing_count: int, adding_count: int) -> None:
     """Reject growing a watchlist past what a custom-universe scan accepts."""
-    total = existing_count + adding_count
-    if adding_count and total > MAX_CUSTOM_UNIVERSE_SYMBOLS:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"A watchlist holds at most {MAX_CUSTOM_UNIVERSE_SYMBOLS:,} symbols. "
-                f"This one has {existing_count:,}, and adding {adding_count:,} more "
-                f"would make {total:,}."
-            ),
-        )
+    try:
+        check_watchlist_capacity(existing_count, adding_count)
+    except WatchlistCapacityError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 def _watchlist_item_count(db: Session, watchlist_id: int) -> int:
@@ -452,7 +450,7 @@ def add_item(
     db: Session = Depends(get_db)
 ):
     """Add a stock to a watchlist."""
-    watchlist = db.query(UserWatchlist).filter(UserWatchlist.id == watchlist_id).first()
+    watchlist = lock_watchlist(db, watchlist_id)
     if not watchlist:
         raise HTTPException(status_code=404, detail="Watchlist not found")
 
@@ -505,7 +503,7 @@ def bulk_add_items(
     db: Session = Depends(get_db)
 ):
     """Add multiple stocks at once to a watchlist."""
-    watchlist = db.query(UserWatchlist).filter(UserWatchlist.id == watchlist_id).first()
+    watchlist = lock_watchlist(db, watchlist_id)
     if not watchlist:
         raise HTTPException(status_code=404, detail="Watchlist not found")
 
@@ -578,7 +576,7 @@ def import_items(
 ):
     """Import symbols from pasted text or CSV with partial-success feedback."""
 
-    watchlist = db.query(UserWatchlist).filter(UserWatchlist.id == watchlist_id).first()
+    watchlist = lock_watchlist(db, watchlist_id)
     if not watchlist:
         raise HTTPException(status_code=404, detail="Watchlist not found")
 
