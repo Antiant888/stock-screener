@@ -7,6 +7,7 @@ from app.domain.scanning.errors import SingleActiveScanViolation
 from app.domain.scanning.models import (
     FreshnessDecision,
     FreshnessOmissionWarning,
+    ResolvedUniverse,
 )
 from app.use_cases.scanning.create_scan import (
     ActiveScanConflictError,
@@ -91,6 +92,33 @@ class TestCreateScanUseCase:
         assert len(result.scan_id) == 36  # UUID format
         assert len(dispatcher.dispatched) == 1
         assert dispatcher.dispatched[0][1] == ["AAPL", "MSFT", "GOOGL"]
+
+    def test_uses_a_resolution_handed_in_for_the_same_universe(self):
+        uow = _make_uow(["AAPL", "MSFT"])
+        dispatcher = FakeTaskDispatcher()
+        handed = ResolvedUniverse(["NVDA"], universe_def="all")
+
+        CreateScanUseCase(dispatcher=dispatcher).execute(
+            uow, _make_command(resolved_universe=handed)
+        )
+
+        assert uow.universe.resolve_calls == []
+        assert dispatcher.dispatched[0][1] == ["NVDA"]
+
+    @pytest.mark.parametrize("resolved_from", ["market:HK", None])
+    def test_resolves_again_when_the_handed_resolution_is_for_another_universe(
+        self, resolved_from
+    ):
+        uow = _make_uow(["AAPL", "MSFT"])
+        dispatcher = FakeTaskDispatcher()
+        handed = ResolvedUniverse(["0700.HK"], universe_def=resolved_from)
+
+        CreateScanUseCase(dispatcher=dispatcher).execute(
+            uow, _make_command(resolved_universe=handed)
+        )
+
+        assert uow.universe.resolve_calls == ["all"]
+        assert dispatcher.dispatched[0][1] == ["AAPL", "MSFT"]
 
     def test_scan_record_persisted_before_dispatch(self):
         uow = _make_uow(["AAPL"])

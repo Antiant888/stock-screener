@@ -162,7 +162,8 @@ class CreateScanCommand:
     universe_index: str | None = None
     universe_symbols: list[str] | None = None
     # Membership a caller already resolved (the API's market-refresh guard),
-    # so the scan uses the same active set instead of resolving again.
+    # so the scan uses the same active set instead of resolving again. Used
+    # only when its ``universe_def`` equals this command's.
     resolved_universe: ResolvedUniverse | None = None
 
     # Screener configuration
@@ -520,8 +521,9 @@ class CreateScanUseCase:
                     self._raise_active_scan_conflict(active_scan)
 
             # ── Resolve universe symbols ─────────────────────────────
+            # A resolution handed in for another universe is never trusted.
             resolved = cmd.resolved_universe
-            if resolved is None:
+            if resolved is None or resolved.universe_def != cmd.universe_def:
                 resolved = uow.universe.resolve(cmd.universe_def)
             symbols = resolved.symbols
             if not symbols and cmd.universe_type == UniverseType.CUSTOM.value:

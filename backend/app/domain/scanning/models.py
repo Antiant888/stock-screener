@@ -98,6 +98,12 @@ class ScanWarningCode(str, Enum):
     SYMBOLS_NOT_IN_SNAPSHOT = "symbols_not_in_snapshot"
 
 
+# A scan warning names this many symbols in its message and stores this many;
+# its count field keeps the true total.
+WARNING_MESSAGE_SYMBOL_SAMPLE = 20
+WARNING_STORED_SYMBOL_SAMPLE = 200
+
+
 @dataclass(frozen=True)
 class ScanFreshnessPolicy:
     """Policy controlling whether scan freshness can degrade gracefully."""
@@ -105,7 +111,8 @@ class ScanFreshnessPolicy:
     allow_stale_tail: bool = False
     min_freshness_rate: float = 0.99
     max_omitted_symbols: int | None = 100
-    stale_symbol_sample_limit: int = 20
+    # A stale-data detail samples as many symbols as a warning message names.
+    stale_symbol_sample_limit: int = WARNING_MESSAGE_SYMBOL_SAMPLE
 
     @classmethod
     def strict(cls) -> "ScanFreshnessPolicy":
@@ -122,12 +129,6 @@ class ScanFreshnessPolicy:
             # name in a 10-symbol watchlist must not block the other nine.
             return cls(allow_stale_tail=True, min_freshness_rate=0.0, max_omitted_symbols=None)
         return cls(allow_stale_tail=universe_type in {"all", "market", "exchange", "index"})
-
-
-# A scan warning names this many symbols in its message and stores this many;
-# its count field keeps the true total.
-WARNING_MESSAGE_SYMBOL_SAMPLE = 20
-WARNING_STORED_SYMBOL_SAMPLE = 200
 
 
 def warning_symbol_sample(symbols: tuple[str, ...]) -> str:
@@ -257,6 +258,9 @@ class ResolvedUniverse:
 
     symbols: list[str]
     dropped_symbols: tuple[str, ...] = ()
+    # The definition this was resolved from, so a caller handed a resolution
+    # can check it belongs to the universe it is about to scan.
+    universe_def: Any = field(default=None, compare=False)
 
 
 @dataclass(frozen=True)
