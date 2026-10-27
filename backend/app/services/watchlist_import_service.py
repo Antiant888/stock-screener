@@ -51,8 +51,6 @@ _TRADINGVIEW_PREFIX_SUFFIXES = {
 _TRADINGVIEW_SYMBOL_RE = re.compile(r"^[A-Z][A-Z0-9_]*:[^\s/]+$")
 _TEXT_DELIMITERS = ",;\t"
 _TABLE_DELIMITERS = ",;"
-# A spreadsheet cell that is itself a comma or semicolon list: no whitespace.
-_LIST_CELL_RE = re.compile(r"^[^\s,;]+(?:[,;][^\s,;]+)+$")
 
 
 @dataclass(frozen=True)
@@ -91,7 +89,7 @@ def parse_watchlist_import_tokens(
 
     if normalized_hint == "text":
         rows = _tokenize_rows(stripped, _TEXT_DELIMITERS)
-        raw_tokens = [word for row in rows for cell in row for word in cell.split()]
+        raw_tokens = [word for row in rows for cell in row for word in _words(cell)]
     else:
         raw_tokens = _parse_tabular_symbols(stripped)
     tokens = [_import_token(token.strip().upper()) for token in raw_tokens]
@@ -134,9 +132,9 @@ def _tokenize_rows(content: str, delimiters: str | None) -> list[list[str]]:
 
     ``delimiters=None`` picks them per line: a line holding a tab is a
     spreadsheet row whose names may hold commas, so tabs alone split it;
-    other lines split on commas and semicolons, mixed freely. In a tab line,
-    an unquoted cell such as ``NVDA,MSFT`` (no spaces, every piece a symbol)
-    is still a symbol list and splits; a name such as ``Apple, Inc.`` does not.
+    other lines split on commas and semicolons, mixed freely. A tab line
+    that holds only symbols (``NVDA,MSFT\tAAPL``) is a list, not a row, and
+    splits on every delimiter.
     """
 
     # \r\n and a bare \r (classic Mac files) each end a row, like \n.
@@ -145,7 +143,6 @@ def _tokenize_rows(content: str, delimiters: str | None) -> list[list[str]]:
     row: list[str] = []
     cell: list[str] = []
     in_quotes = False
-    quoted = False
     index = 0
     row_delimiters = _line_delimiters(content, 0, delimiters)
     while index < len(content):
@@ -160,15 +157,15 @@ def _tokenize_rows(content: str, delimiters: str | None) -> list[list[str]]:
             else:
                 in_quotes = False
         elif char == '"' and not "".join(cell).strip():
-            in_quotes = quoted = True
+            in_quotes = True
             cell = []
         elif char in row_delimiters:
-            row.extend(_finish_cell(cell, quoted, row_delimiters))
-            cell, quoted = [], False
+            row.append(_finish_cell(cell))
+            cell = []
         elif char == "\n":
-            row.extend(_finish_cell(cell, quoted, row_delimiters))
+            row.append(_finish_cell(cell))
             rows.append(row)
-            row, cell, quoted = [], [], False
+            row, cell = [], []
             row_delimiters = _line_delimiters(content, index, delimiters)
         else:
             cell.append(char)
@@ -176,9 +173,14 @@ def _tokenize_rows(content: str, delimiters: str | None) -> list[list[str]]:
         # An unclosed quote would swallow the rest of the paste; read the
         # quote as a plain character instead.
         return _tokenize_rows(content.replace('"', ""), delimiters)
-    row.extend(_finish_cell(cell, quoted, row_delimiters))
+    row.append(_finish_cell(cell))
     rows.append(row)
     return [row for row in rows if any(row)]
+
+
+def _words(cell: str) -> list[str]:
+    # A quote that does not open a cell, as in `AMD "NVDA"`, wraps one word.
+    return [word for word in (w.strip('"') for w in cell.split()) if word]
 
 
 def _line_delimiters(content: str, start: int, delimiters: str | None) -> str:
@@ -186,45 +188,48 @@ def _line_delimiters(content: str, start: int, delimiters: str | None) -> str:
         return delimiters
     end = content.find("\n", start)
     line = content[start:] if end < 0 else content[start:end]
-    return "\t" if "\t" in line else _TABLE_DELIMITERS
+    if "\t" not in line:
+        return _TABLE_DELIMITERS
+    # A ###section cell ends at the next separator; its name is not data.
+    line = re.sub(r"###[^,;\t]*", "", line.replace('"', ""))
+    if all(_is_list_word(word) for word in re.split(r"[\s,;]+", line) if word):
+        return _TEXT_DELIMITERS
+    return "\t"
 
 
-def _finish_cell(chars: list[str], quoted: bool, row_delimiters: str) -> list[str]:
+def _finish_cell(chars: list[str]) -> str:
     cell = "".join(chars).strip()
-    if cell.startswith("###"):
-        return [""]
-    if not quoted and row_delimiters == "\t" and _LIST_CELL_RE.match(cell):
-        pieces = re.split(r"[,;]", cell)
-        if all(_is_symbol_cell([piece]) for piece in pieces):
-            return pieces
-    return [cell]
+    return "" if cell.startswith("###") else cell
 
 
 def _parse_tabular_symbols(content: str) -> list[str]:
     rows = _tokenize_rows(content, None)
     if not rows:
         return []
-    if len(rows) == 1:
-        # One line is a list, never a table, and a header word in it is
-        # dropped as a token.
-        return [word for cell in rows[0] for word in cell.split()]
+    if len(rows) == 1 or all(len(row) == 1 for row in rows):
+        # One line, or lines with no delimiter at all, is a word list, never
+        # a table; a header word in it is dropped as a token.
+        return [word for row in rows for cell in row for word in _words(cell)]
 
     symbol_column = next(
         (index for index, cell in enumerate(rows[0]) if cell.lower() in _HEADER_TOKENS),
         None,
     )
     if symbol_column is not None:
-        return [
-            row[symbol_column]
-            for row in rows[1:]
-            if symbol_column < len(row) and row[symbol_column]
-        ]
+        if len([cell for cell in rows[0] if cell]) > 1:
+            return [
+                row[symbol_column]
+                for row in rows[1:]
+                if symbol_column < len(row) and row[symbol_column]
+            ]
+        # A lone "Symbol" header names no columns; it only labels the list.
+        rows = rows[1:]
 
     # Header-less: every cell is a symbol unless some cell of a multi-cell row
     # is not (a name, a note or a link), which makes the paste a table read by
     # its first column. A line with no delimiter is a list of words either way.
     is_matrix = all(
-        _is_symbol_cell(cell.split())
+        _is_symbol_cell(_words(cell))
         for row in rows
         if len([cell for cell in row if cell]) > 1
         for cell in row
@@ -234,18 +239,26 @@ def _parse_tabular_symbols(content: str) -> list[str]:
     for row in rows:
         cells = [cell for cell in row if cell]
         if is_matrix or len(cells) == 1:
-            symbols.extend(word for cell in cells for word in cell.split())
+            symbols.extend(word for cell in cells for word in _words(cell))
         else:
             symbols.append(cells[0])
     return symbols
 
 
 def _is_symbol_cell(words: list[str]) -> bool:
-    # Several words make a symbol cell only when each is EXCHANGE:TICKER, so a
-    # name such as "NVIDIA Corp" keeps a header-less paste a table.
-    if all(_TRADINGVIEW_SYMBOL_RE.match(word.upper()) for word in words):
+    # A cell is symbols only when every word is; one name word such as
+    # "Corp" in "NVIDIA Corp" keeps a header-less paste a table.
+    return bool(words) and all(_is_list_word(word) for word in words)
+
+
+def _is_list_word(word: str) -> bool:
+    if _TRADINGVIEW_SYMBOL_RE.match(word.upper()):
         return True
-    return len(words) == 1 and _looks_like_symbol_token(words[0])
+    # A mixed-case word such as "Apple" or "Inc." is a name; tickers are
+    # pasted upper- or all lower-case.
+    if any(c.islower() for c in word) and any(c.isupper() for c in word):
+        return False
+    return _looks_like_symbol_token(word)
 
 
 def split_import_results(

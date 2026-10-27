@@ -357,6 +357,12 @@ def _outcome_by_cell(content):
         ("NVDA;AMD\tNASDAQ:ANET\nTSLA", {"NVDA": "added", "AMD": "added", "NASDAQ:ANET": "added", "TSLA": "added"}),
         # ...but a name with a comma, or a quoted list, stays one cell.
         ('AAPL\t"NVDA,MSFT"\nTSLA\tTesla, Inc.', {"AAPL": "added", "TSLA": "added"}),
+        # With no delimiter anywhere, every line is a word list, header or not.
+        ("symbol\nNVDA MSFT\nAAPL", {"NVDA": "added", "MSFT": "existing", "AAPL": "added"}),
+        ("Ticker\nNVDA\nAAPL TSLA", {"NVDA": "added", "AAPL": "added", "TSLA": "added"}),
+        # A lone header word labels a list; it names no column to read.
+        ("symbol\nMSFT,NVDA\nAAPL", {"MSFT": "existing", "NVDA": "added", "AAPL": "added"}),
+        ("Ticker\nNVDA,NVIDIA Corp\nAMD,Advanced Micro", {"NVDA": "added", "AMD": "added"}),
         # Classic Mac line endings: a bare carriage return ends a row too.
         ("NVDA\rMSFT\rAAPL", {"NVDA": "added", "MSFT": "existing", "AAPL": "added"}),
         ("symbol,notes\rNVDA,BUY\r\nAAPL,x", {"NVDA": "added", "AAPL": "added"}),
@@ -408,3 +414,29 @@ def test_text_format_unquotes_cells():
 
 def test_text_format_splits_on_bare_carriage_returns():
     assert _plain_import_symbols("NVDA\rMSFT\r\nAAPL", format_hint="text") == ["NVDA", "MSFT", "AAPL"]
+
+
+def test_a_paste_of_only_symbols_imports_every_symbol_whatever_the_separators():
+    """Property check over seeded random pastes: no separator mix loses a symbol."""
+    import random
+
+    symbols = ["NVDA", "MSFT", "AAPL", "TSLA", "AMD", "BRK.B", "NASDAQ:ANET", "HKEX:700", "0700.HK", "msft"]
+    separators = [",", ", ", ";", "\t", " ", "\n", "\r\n", "\r", " ,", "\t\t"]
+    prefixes = ["symbol\n", "Ticker\n", "###Top AI Picks,", "###Watch\n", "###Top AI Picks\t"]
+    rng = random.Random(681)
+    for _ in range(3000):
+        count = rng.randint(1, 8)
+        used, parts = set(), []
+        for index in range(count):
+            symbol = rng.choice(symbols)
+            used.add(symbol.upper())
+            parts.append(f'"{symbol}"' if rng.random() < 0.15 else symbol)
+            if index < count - 1:
+                parts.append(rng.choice(separators))
+        if rng.random() < 0.2:
+            parts.insert(0, rng.choice(prefixes))
+        content = "".join(parts)
+
+        imported = {token.text for token in parse_watchlist_import_tokens(content)}
+
+        assert used <= imported, (content, sorted(used - imported))
