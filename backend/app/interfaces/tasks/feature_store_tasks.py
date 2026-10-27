@@ -410,7 +410,7 @@ def _repair_current_us_group_metadata(
                         Scan.status.in_(completed_statuses),
                         Scan.represents_market_view(),
                     )
-                    .order_by(Scan.started_at.desc(), Scan.id.desc())
+                    .order_by(*Scan.newest_first())
                     .limit(1)
                     .all()
                 )
@@ -426,7 +426,7 @@ def _repair_current_us_group_metadata(
                     Scan.status.in_(completed_statuses),
                     Scan.represents_market_view(),
                 )
-                .order_by(Scan.started_at.desc(), Scan.id.desc())
+                .order_by(*Scan.newest_first())
                 .limit(1)
                 .all()
             )

@@ -257,7 +257,7 @@ def latest_completed_scan(db: Session, market: str) -> Scan | None:
             Scan.universe_market == market.upper(),
             Scan.represents_market_view(),
         )
-        .order_by(Scan.completed_at.desc().nullslast(), Scan.id.desc())
+        .order_by(*Scan.newest_first())
         .first()
     )
 

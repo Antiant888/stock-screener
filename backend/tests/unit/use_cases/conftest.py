@@ -87,6 +87,12 @@ class FakeScan:
     warnings: list[dict[str, object]] | None = None
     started_at: Any = None
 
+    def represents_market_view(self) -> bool:
+        """Mirror Scan.represents_market_view() on an instance."""
+        from app.models.scan_result import is_market_view
+
+        return is_market_view(self.universe_type, self.universe)
+
     def get_universe_definition(self):
         """Mirror Scan.get_universe_definition() for API list/status tests."""
         from app.schemas.universe import UniverseDefinition

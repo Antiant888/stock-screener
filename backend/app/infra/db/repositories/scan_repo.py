@@ -102,14 +102,14 @@ class SqlScanRepository(ScanRepository):
             return (
                 select(Scan.id)
                 .where(*criteria)
-                .order_by(Scan.started_at.desc(), Scan.id.desc())
+                .order_by(*Scan.newest_first())
                 .limit(limit)
             )
 
         return (
             self._session.query(Scan)
             .filter(or_(Scan.id.in_(newest(*market_view)), Scan.id.in_(newest(*symbol_lists))))
-            .order_by(Scan.started_at.desc(), Scan.id.desc())  # id: deterministic ties
+            .order_by(*Scan.newest_first())
             .all()
         )
 

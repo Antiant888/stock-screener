@@ -12,16 +12,28 @@ from sqlalchemy import (
     Index,
     Integer,
     String,
+    and_,
     false,
     or_,
     text,
 )
+from sqlalchemy.ext.hybrid import hybrid_method
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 
 from ..database import Base
 
 logger = logging.getLogger(__name__)
+
+# Universe types whose scans are user symbol lists, never a market's own scan.
+SYMBOL_LIST_UNIVERSE_TYPES = ("custom", "test")
+
+
+def is_market_view(universe_type: str | None, universe: str | None) -> bool:
+    """Python side of ``Scan.represents_market_view``; see its docstring."""
+    if universe_type is None:
+        return not (universe or "").strip().lower().startswith(SYMBOL_LIST_UNIVERSE_TYPES)
+    return universe_type not in SYMBOL_LIST_UNIVERSE_TYPES
 
 SCAN_TRIGGER_SOURCE_MANUAL = "manual"
 SCAN_TRIGGER_SOURCE_AUTO = "auto"
@@ -100,15 +112,36 @@ class Scan(Base):
         ),
     )
 
-    @classmethod
-    def represents_market_view(cls):
-        """Filter for scans that can stand for a market's own latest scan.
+    @hybrid_method
+    def represents_market_view(self) -> bool:
+        """Whether this scan can stand for a market's own latest scan.
 
         Custom (watchlist) and test scans are user symbol lists, whatever market
         they store, so they never feed pages that read a market's latest scan.
-        A NULL type is a pre-migration row and stays eligible.
+        A NULL type is a pre-migration row: it stays eligible unless its legacy
+        ``universe`` label names a symbol list.
         """
-        return or_(cls.universe_type.is_(None), cls.universe_type.notin_(("custom", "test")))
+        return is_market_view(self.universe_type, self.universe)
+
+    @represents_market_view.expression
+    def represents_market_view(cls):
+        legacy_label = func.lower(func.trim(func.coalesce(cls.universe, "")))
+        return or_(
+            and_(
+                cls.universe_type.is_(None),
+                *(~legacy_label.like(f"{kind}%") for kind in SYMBOL_LIST_UNIVERSE_TYPES),
+            ),
+            cls.universe_type.notin_(SYMBOL_LIST_UNIVERSE_TYPES),
+        )
+
+    @classmethod
+    def newest_first(cls):
+        """The one order every "latest scan" pick uses: the Scan page history's.
+
+        So the Daily Snapshot, theme metrics and the scan bootstrap name the
+        scan the Scan page auto-loads. ``id`` breaks ties deterministically.
+        """
+        return (cls.started_at.desc().nullslast(), cls.id.desc())
 
     def get_universe_definition(self):
         """Reconstruct a UniverseDefinition from the structured DB fields."""

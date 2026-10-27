@@ -180,6 +180,7 @@ def list_scans(
                     ),
                     published_source=published_source_of(scan),
                     watchlist=watchlist_source_of(scan),
+                    market_view=scan.represents_market_view(),
                 ))
 
         return ScanListResponse(scans=scan_items)

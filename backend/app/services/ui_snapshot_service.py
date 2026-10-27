@@ -626,7 +626,7 @@ class UISnapshotService:
             query = query.filter(Scan.universe_market == market)
         # Same order as list_recent, so "latest" is the first finished market scan
         # in the history list, which is also the scan the scan page auto-loads.
-        latest = query.order_by(Scan.started_at.desc(), Scan.id.desc()).first()
+        latest = query.order_by(*Scan.newest_first()).first()
         return latest[0] if latest else "none"
 
     def _resolve_breadth_source_revision(self, db: Session, market: str = "US") -> str:
@@ -728,6 +728,7 @@ class UISnapshotService:
                     ),
                     published_source=published_source_of(scan),
                     watchlist=watchlist_source_of(scan),
+                    market_view=scan.represents_market_view(),
                 )
                 for scan in scans
             ]
@@ -779,6 +780,7 @@ class UISnapshotService:
                     ),
                     published_source=published_source_of(selected_scan),
                     watchlist=watchlist_source_of(selected_scan),
+                    market_view=selected_scan.represents_market_view(),
                 ).model_dump(mode="json"),
             )
             completed_stocks = selected_scan.total_stocks or 0

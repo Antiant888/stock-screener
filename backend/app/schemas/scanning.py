@@ -571,6 +571,9 @@ class ScanListItem(BaseModel):
     warnings: List[ScanWarningResponse] = Field(default_factory=list)
     published_source: Optional[Dict[str, Any]] = None
     watchlist: Optional[ScanWatchlistSource] = None
+    # Scan.represents_market_view(): False for symbol-list (custom/test)
+    # scans, which never stand in for the market's own scan.
+    market_view: bool = True
 
 
 class ScanListResponse(BaseModel):
