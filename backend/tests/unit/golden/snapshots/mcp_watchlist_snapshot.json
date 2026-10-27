@@ -42,7 +42,7 @@
   },
   "items": [
     {
-      "action_state": "WATCH",
+      "action_state": "watch",
       "canslim_rating": "Buy",
       "company_name": "NVIDIA Corporation",
       "composite_score": 92.0,
@@ -52,21 +52,40 @@
       "gics_sector": "Information Technology",
       "ibd_industry_group": "Semiconductors",
       "is_scannable": true,
-      "market_cap": 3000000000000,
+      "market_cap": 3000000000000.0,
       "minervini_rating": "Strong Buy",
       "opportunity_state": {
+        "action_reasons": [],
+        "as_of_date": null,
+        "benchmark_as_of_date": null,
+        "benchmark_symbol": "SPY",
         "data_availability": {
           "required_evidence": "complete",
           "setup": "available"
         },
+        "failed_checks": [],
+        "market": "US",
         "metrics": {
           "hard_invalidation": false,
           "is_scannable": true
         },
-        "policy_version": "correction-survivors-v1"
+        "mic": null,
+        "passed_checks": [
+          "required_evidence_complete"
+        ],
+        "policy_version": "correction-survivors-v1",
+        "schema_version": 1,
+        "score_pillars": {
+          "benchmark_leadership": 50.0,
+          "liquidity_freshness": 50.0,
+          "multi_horizon_rs": 50.0,
+          "structure_tightness": 50.0,
+          "trend_integrity": 50.0
+        },
+        "warnings": []
       },
       "rating": "Strong Buy",
-      "rs_rating": 95,
+      "rs_rating": 95.0,
       "sales_growth_qq": 30.0,
       "se_atr14_pct": 3.5,
       "se_distance_to_pivot_pct": 4.0,
@@ -85,7 +104,7 @@
       "symbol": "NVDA",
       "vcp_detected": true,
       "vcp_num_bases": 3,
-      "volume": 26000000,
+      "volume": 26000000.0,
       "volume_breakthrough_rating": "Strong Buy",
       "volume_surge": 2.4
     }
@@ -105,7 +124,7 @@
   },
   "strongest": [
     {
-      "action_state": "WATCH",
+      "action_state": "watch",
       "canslim_rating": "Buy",
       "company_name": "NVIDIA Corporation",
       "composite_score": 92.0,
@@ -115,21 +134,40 @@
       "gics_sector": "Information Technology",
       "ibd_industry_group": "Semiconductors",
       "is_scannable": true,
-      "market_cap": 3000000000000,
+      "market_cap": 3000000000000.0,
       "minervini_rating": "Strong Buy",
       "opportunity_state": {
+        "action_reasons": [],
+        "as_of_date": null,
+        "benchmark_as_of_date": null,
+        "benchmark_symbol": "SPY",
         "data_availability": {
           "required_evidence": "complete",
           "setup": "available"
         },
+        "failed_checks": [],
+        "market": "US",
         "metrics": {
           "hard_invalidation": false,
           "is_scannable": true
         },
-        "policy_version": "correction-survivors-v1"
+        "mic": null,
+        "passed_checks": [
+          "required_evidence_complete"
+        ],
+        "policy_version": "correction-survivors-v1",
+        "schema_version": 1,
+        "score_pillars": {
+          "benchmark_leadership": 50.0,
+          "liquidity_freshness": 50.0,
+          "multi_horizon_rs": 50.0,
+          "structure_tightness": 50.0,
+          "trend_integrity": 50.0
+        },
+        "warnings": []
       },
       "rating": "Strong Buy",
-      "rs_rating": 95,
+      "rs_rating": 95.0,
       "sales_growth_qq": 30.0,
       "se_atr14_pct": 3.5,
       "se_distance_to_pivot_pct": 4.0,
@@ -148,7 +186,7 @@
       "symbol": "NVDA",
       "vcp_detected": true,
       "vcp_num_bases": 3,
-      "volume": 26000000,
+      "volume": 26000000.0,
       "volume_breakthrough_rating": "Strong Buy",
       "volume_surge": 2.4
     }

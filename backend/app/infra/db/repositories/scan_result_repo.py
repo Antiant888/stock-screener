@@ -15,9 +15,6 @@ from app.domain.relative_strength import BALANCED_RS_FORMULA_VERSION
 from app.domain.scanning.filter_expression_model import FilterExpression, QuerySpec
 from app.domain.scanning.models import FilterOptions, ResultPage, ScanResultItemDomain
 from app.domain.scanning.ports import ScanResultRepository, ScanResultRsAudit
-from app.infra.db.repositories.feature_store_repo import (
-    _vcp_num_bases_from_details,
-)
 from app.infra.db.repositories.market_rs_repo import MarketRsRunRepository
 from app.infra.query.scan_result_query import (
     apply_filter_expression,
@@ -28,6 +25,7 @@ from app.infra.serialization import (
     coerce_bool_or_false,
     convert_numpy_types,
     normalize_string_list,
+    vcp_num_bases_from_details,
 )
 from app.models.industry import IBDGroupRank, IBDIndustryGroup
 from app.models.scan_result import ScanResult
@@ -916,7 +914,7 @@ def _map_row_to_domain(
         "market_cap": result.market_cap,
         "ma_alignment": details.get("ma_alignment"),
         "vcp_detected": details.get("vcp_detected"),
-        "vcp_num_bases": _vcp_num_bases_from_details(details),
+        "vcp_num_bases": vcp_num_bases_from_details(details),
         "vcp_score": details.get("vcp_score"),
         "vcp_pivot": details.get("vcp_pivot"),
         "vcp_ready_for_breakout": details.get("vcp_ready_for_breakout"),

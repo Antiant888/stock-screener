@@ -1,13 +1,14 @@
-"""Regression tests: the MCP candidate record exposes the persisted facts.
+"""Regression tests: the MCP candidate record is a projection of the schema.
 
 The published feature run already carries the strategy ratings, the Setup
-Engine facts and the VCP detail block. ``_candidate_record`` projected only a
-small slice of them, so an external client could not see them at all.
+Engine facts and the VCP detail block. Instead of pinning those keys one by one
+- which is a second, hand-maintained field list - the candidate record is
+compared against the shared ``ScanResultItem`` projection. A fact that is in the
+schema therefore reaches the MCP without a second edit, and a fact that is
+missing from the schema is named as such here.
 
-Each test drives the tools through the public ``call_tool`` entry point where a
-tool is involved, so it fails on a projection regression rather than on a
-helper changing shape. Nothing here asserts a recomputed value: every expected
-number equals what the feature run was seeded with.
+Nothing in this file recomputes a value: every expectation is either the seeded
+row or the schema projection of it.
 """
 
 from __future__ import annotations
@@ -16,34 +17,14 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.infra.db.models.feature_store import FeatureRun, FeatureRunPointer
-from app.infra.db.repositories.feature_store_repo import _vcp_num_bases_from_details
-from app.interfaces.mcp.market_copilot import MarketCopilotService
+from app.infra.db.models.feature_store import FeatureRunPointer
+from app.infra.serialization import vcp_num_bases_from_details
+from app.interfaces.mcp.market_copilot import CANDIDATE_FIELDS, MarketCopilotService
+from app.schemas.scanning import ScanResultItem
 from tests.helpers.mcp_fixture import (
     create_mcp_test_session_factory,
     seed_market_copilot_data,
 )
-
-# The keys ``_candidate_record`` returned before this change. Their names and
-# values are the compatibility surface for existing clients, so they are
-# pinned as a whole dict instead of one assertion per key.
-PRE_EXISTING_KEYS = {
-    "symbol": "NVDA",
-    "company_name": "NVIDIA Corporation",
-    "composite_score": 92.0,
-    "rating": "Strong Buy",
-    "current_price": 145.0,
-    "rs_rating": 95,
-    "stage": 2,
-    "gics_sector": "Information Technology",
-    "ibd_industry_group": "Semiconductors",
-    "market_cap": 3_000_000_000_000,
-    "volume": 26_000_000,
-    "eps_growth_qq": 36.0,
-    "sales_growth_qq": 30.0,
-    "se_setup_score": 87.0,
-    "se_setup_ready": True,
-}
 
 
 @pytest.fixture()
@@ -78,8 +59,8 @@ def _explain_result(service, symbol: str, depth: str = "full") -> dict:
     return _payload(service, "explain_symbol", {"symbol": symbol, "depth": depth})["result"]
 
 
-def _candidate_record(service, run_id: int, symbol: str) -> dict:
-    """Return the projected record straight from the repository mapping."""
+def _candidate_item(service, run_id: int, symbol: str):
+    """Return one domain row as the repository maps it."""
     with service._uow_scope() as uow:
         item = uow.feature_store.get_by_symbol_for_run(
             run_id,
@@ -88,116 +69,78 @@ def _candidate_record(service, run_id: int, symbol: str) -> dict:
             include_setup_payload=False,
         )
     assert item is not None
-    return service._candidate_record(item)
+    return item
 
 
-def test_candidate_record_keeps_its_pre_existing_keys_and_values(service):
-    """Compatibility: every key that existed before still carries its value."""
-    record = _candidate_record(service, 2, "NVDA")
-
-    for key, expected in PRE_EXISTING_KEYS.items():
-        assert record[key] == expected, key
+def _candidate_record(service, run_id: int, symbol: str) -> dict:
+    """Return the projected record straight from the repository mapping."""
+    return service._candidate_record(_candidate_item(service, run_id, symbol))
 
 
-def test_candidate_record_projects_the_persisted_screener_ratings(session_factory, service):
-    """The three strategy ratings are persisted per row and must pass through."""
-    with session_factory() as db:
-        row = (
-            db.query(FeatureRun)
-            .filter(FeatureRun.id == 2)
-            .one()
-        )
-        assert row.status == "published"
+def test_candidate_record_is_the_schema_projection(service):
+    """One row, one expectation: the record equals the shared projection."""
+    item = _candidate_item(service, 2, "NVDA")
 
-    record = _candidate_record(service, 2, "NVDA")
+    record = service._candidate_record(item)
 
-    # Seeded values: rating "Strong Buy" -> minervini "Strong Buy",
-    # canslim "Buy" (downgraded for a strong buy), volume breakthrough
-    # "Strong Buy" above the 90 composite.
+    projection = ScanResultItem.from_domain(item, include_setup_payload=False).model_dump(mode="json")
+    expected = {key: projection[key] for key in CANDIDATE_FIELDS}
+    expected["composite_score"] = round(expected["composite_score"], 2)
+
+    assert set(record) == set(CANDIDATE_FIELDS)
+    assert record == expected, "the candidate record drifted from the schema projection"
+    # The facts this change was about are really inside the projection.
     assert record["minervini_rating"] == "Strong Buy"
     assert record["canslim_rating"] == "Buy"
     assert record["volume_breakthrough_rating"] == "Strong Buy"
-
-
-def test_candidate_record_projects_the_persisted_row_state(service):
-    """Coverage and opportunity facts are stored per row, not derived."""
-    record = _candidate_record(service, 2, "NVDA")
-
-    assert record["data_status"] == "ok"
-    assert record["is_scannable"] is True
-    assert record["action_state"] == "WATCH"
-    assert record["opportunity_state"]["policy_version"] == "correction-survivors-v1"
-    assert record["opportunity_state"]["metrics"]["hard_invalidation"] is False
-    assert record["opportunity_state"]["data_availability"]["required_evidence"] == "complete"
-
-
-def test_candidate_record_projects_the_persisted_canonical_setup_facts(service):
-    """The canonical Setup Engine fields, unchanged, including the pivot gap."""
-    record = _candidate_record(service, 2, "NVDA")
-
-    assert record["se_setup_score"] == 87.0
-    assert record["se_setup_ready"] is True
-    assert record["se_readiness_score"] == 89.0
-    assert record["se_quality_score"] == 82.0
-    assert record["se_pattern_primary"] == "VCP"
-    assert record["se_pivot_price"] == 150.8
-    assert record["se_pivot_type"] == "cup_with_handle"
-    assert record["se_pivot_date"] == "2026-03-27"
-    assert record["se_distance_to_pivot_pct"] == 4.0
-    assert record["se_in_early_zone"] is False
-    assert record["se_extended_from_pivot"] is False
-    assert record["se_atr14_pct"] == 3.5
-    assert record["se_volume_vs_50d"] == 1.4
-
-
-def test_candidate_record_projects_vcp_num_bases_when_persisted(service):
-    """A stored Minervini VCP block yields its base count."""
-    record = _candidate_record(service, 2, "NVDA")
-
     assert record["vcp_detected"] is True
     assert record["vcp_num_bases"] == 3
+    assert record["volume_surge"] == 2.4
+    assert record["action_state"] == "watch"
 
 
-def test_candidate_record_reports_none_when_no_base_count_was_persisted(service):
-    """No stored block, no count — and no derivation from ``vcp_detected``.
+def test_candidate_record_rounds_the_composite_score_to_two_places(service):
+    """Clients see the same 2-decimal score the MCP has always returned."""
+    record = service._candidate_record(_candidate_item(service, 2, "NVDA"))
 
-    ``MSFT`` in run 2 is seeded with ``vcp_detected=True`` but without a
-    ``full_analysis.vcp`` block. Deriving the count from the flag, or from the
-    length of the candidate list, would produce a number here.
+    assert record["composite_score"] == 92.0
+    assert isinstance(record["composite_score"], float)
+
+
+def test_a_malformed_stored_projection_skips_the_row_and_names_it(service):
+    """A row whose stored opportunity state no longer validates is dropped, named.
+
+    The call keeps working: one corrupt row must not make the overview unusable.
+    But it must not disappear silently either - the symbol is reported so the
+    operator can look at the data.
     """
-    record = _candidate_record(service, 2, "MSFT")
+    item = _candidate_item(service, 2, "NVDA")
+    item.extended_fields["opportunity_state"] = {"policy_version": "correction-survivors-v1"}
 
-    assert record["vcp_detected"] is True
-    assert record["vcp_num_bases"] is None
+    records, skipped = service._candidate_records([item])
 
-
-def test_candidate_record_projects_volume_surge(service):
-    """Volume surge is a persisted fact, not a threshold applied on read."""
-    high_volume = _candidate_record(service, 2, "NVDA")
-    low_volume = _candidate_record(service, 2, "SNOW")
-
-    assert high_volume["volume_surge"] == 2.4
-    assert low_volume["volume_surge"] == 1.2
+    assert records == []
+    assert skipped == ["NVDA"]
 
 
-def test_explain_symbol_full_surfaces_the_facts_on_the_result(service):
-    """``explain_symbol`` must expose them under ``result``.
+def test_a_row_without_a_projection_is_not_skipped(service):
+    """Rows that predate the projection are valid: all-null stays all-null."""
+    item = _candidate_item(service, 2, "MSFT")
+    for key in ("correction_survivor", "resilience_score", "action_state", "opportunity_state"):
+        item.extended_fields.pop(key, None)
 
-    The run is resolved symbol/market-wise, so the assertion holds without any
-    global ``latest_published`` pointer: the per-market pointer is what the
-    tool uses. The full depth is what carries the candidate record.
-    """
-    result = _explain_result(service, "NVDA")
+    records, skipped = service._candidate_records([item])
 
-    assert result["minervini_rating"] == "Strong Buy"
-    assert result["canslim_rating"] == "Buy"
-    assert result["volume_breakthrough_rating"] == "Strong Buy"
-    assert result["vcp_detected"] is True
-    assert result["vcp_num_bases"] == 3
-    assert result["se_distance_to_pivot_pct"] == 4.0
-    assert result["se_pivot_price"] == 150.8
-    assert result["se_readiness_score"] == 89.0
-    assert result["action_state"] == "WATCH"
+    assert skipped == []
+    assert records[0]["symbol"] == "MSFT"
+    assert records[0]["action_state"] is None
+    assert records[0]["opportunity_state"] is None
+
+
+def test_volume_surge_is_the_stored_ratio_not_a_flag(service):
+    """Kept from the fixture fix: the value is a ratio, and both rows differ."""
+    assert _candidate_record(service, 2, "NVDA")["volume_surge"] == 2.4
+    assert _candidate_record(service, 2, "SNOW")["volume_surge"] == 1.2
 
 
 def test_explain_symbol_full_works_without_the_global_pointer(service, session_factory):
@@ -205,6 +148,7 @@ def test_explain_symbol_full_works_without_the_global_pointer(service, session_f
 
     ``_point`` mirrors what the publish path writes; the global pointer is
     removed here, and the per-market pointer keeps ``explain_symbol`` working.
+    The facts ride along because the result is built from the candidate record.
     """
     with session_factory() as db:
         db.query(FeatureRunPointer).filter(FeatureRunPointer.key == "latest_published").delete()
@@ -214,6 +158,7 @@ def test_explain_symbol_full_works_without_the_global_pointer(service, session_f
     result = _explain_result(service, "NVDA")
 
     assert result["vcp_num_bases"] == 3
+    assert result["minervini_rating"] == "Strong Buy"
     assert result["se_setup_score"] == 87.0
 
 
@@ -273,7 +218,7 @@ def test_vcp_num_bases_is_none_when_the_stored_path_is_incomplete(details):
     The boolean case matters most: ``bool`` is an ``int`` subclass, so a plain
     ``isinstance(value, int)`` check would report ``True`` as a base count.
     """
-    assert _vcp_num_bases_from_details(details) is None
+    assert vcp_num_bases_from_details(details) is None
 
 
 def _vcp_details(num_bases):
@@ -297,12 +242,12 @@ def _vcp_details(num_bases):
 )
 def test_vcp_num_bases_reads_the_stored_integer(value, expected):
     """Stored counts pass through unchanged, including an integral float."""
-    assert _vcp_num_bases_from_details(_vcp_details(value)) == expected
+    assert vcp_num_bases_from_details(_vcp_details(value)) == expected
 
 
 def test_vcp_num_bases_rejects_a_fractional_count():
     """A fractional float is not a base count and must not be truncated."""
-    assert _vcp_num_bases_from_details(_vcp_details(2.5)) is None
+    assert vcp_num_bases_from_details(_vcp_details(2.5)) is None
 
 
 @pytest.mark.parametrize("value", [pytest.param(-1, id="int"), pytest.param(-1.0, id="float")])
@@ -312,4 +257,4 @@ def test_vcp_num_bases_rejects_a_negative_count(value):
     A negative stored value would otherwise reach ``extended_fields`` on both
     scan mappers and be handed to MCP clients as a base count.
     """
-    assert _vcp_num_bases_from_details(_vcp_details(value)) is None
+    assert vcp_num_bases_from_details(_vcp_details(value)) is None

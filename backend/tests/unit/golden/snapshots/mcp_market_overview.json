@@ -392,7 +392,7 @@
   ],
   "top_candidates": [
     {
-      "action_state": "WATCH",
+      "action_state": "watch",
       "canslim_rating": "Buy",
       "company_name": "NVIDIA Corporation",
       "composite_score": 92.0,
@@ -402,21 +402,40 @@
       "gics_sector": "Information Technology",
       "ibd_industry_group": "Semiconductors",
       "is_scannable": true,
-      "market_cap": 3000000000000,
+      "market_cap": 3000000000000.0,
       "minervini_rating": "Strong Buy",
       "opportunity_state": {
+        "action_reasons": [],
+        "as_of_date": null,
+        "benchmark_as_of_date": null,
+        "benchmark_symbol": "SPY",
         "data_availability": {
           "required_evidence": "complete",
           "setup": "available"
         },
+        "failed_checks": [],
+        "market": "US",
         "metrics": {
           "hard_invalidation": false,
           "is_scannable": true
         },
-        "policy_version": "correction-survivors-v1"
+        "mic": null,
+        "passed_checks": [
+          "required_evidence_complete"
+        ],
+        "policy_version": "correction-survivors-v1",
+        "schema_version": 1,
+        "score_pillars": {
+          "benchmark_leadership": 50.0,
+          "liquidity_freshness": 50.0,
+          "multi_horizon_rs": 50.0,
+          "structure_tightness": 50.0,
+          "trend_integrity": 50.0
+        },
+        "warnings": []
       },
       "rating": "Strong Buy",
-      "rs_rating": 95,
+      "rs_rating": 95.0,
       "sales_growth_qq": 30.0,
       "se_atr14_pct": 3.5,
       "se_distance_to_pivot_pct": 4.0,
@@ -435,12 +454,12 @@
       "symbol": "NVDA",
       "vcp_detected": true,
       "vcp_num_bases": 3,
-      "volume": 26000000,
+      "volume": 26000000.0,
       "volume_breakthrough_rating": "Strong Buy",
       "volume_surge": 2.4
     },
     {
-      "action_state": "WATCH",
+      "action_state": "watch",
       "canslim_rating": "Buy",
       "company_name": "Palo Alto Networks",
       "composite_score": 84.0,
@@ -450,21 +469,40 @@
       "gics_sector": "Information Technology",
       "ibd_industry_group": "Cybersecurity",
       "is_scannable": true,
-      "market_cap": 120000000000,
+      "market_cap": 120000000000.0,
       "minervini_rating": "Strong Buy",
       "opportunity_state": {
+        "action_reasons": [],
+        "as_of_date": null,
+        "benchmark_as_of_date": null,
+        "benchmark_symbol": "SPY",
         "data_availability": {
           "required_evidence": "complete",
           "setup": "available"
         },
+        "failed_checks": [],
+        "market": "US",
         "metrics": {
           "hard_invalidation": false,
           "is_scannable": true
         },
-        "policy_version": "correction-survivors-v1"
+        "mic": null,
+        "passed_checks": [
+          "required_evidence_complete"
+        ],
+        "policy_version": "correction-survivors-v1",
+        "schema_version": 1,
+        "score_pillars": {
+          "benchmark_leadership": 50.0,
+          "liquidity_freshness": 50.0,
+          "multi_horizon_rs": 50.0,
+          "structure_tightness": 50.0,
+          "trend_integrity": 50.0
+        },
+        "warnings": []
       },
       "rating": "Strong Buy",
-      "rs_rating": 91,
+      "rs_rating": 91.0,
       "sales_growth_qq": 20.0,
       "se_atr14_pct": 3.5,
       "se_distance_to_pivot_pct": 4.0,
@@ -483,12 +521,12 @@
       "symbol": "PANW",
       "vcp_detected": false,
       "vcp_num_bases": null,
-      "volume": 8500000,
+      "volume": 8500000.0,
       "volume_breakthrough_rating": "Pass",
       "volume_surge": 1.2
     },
     {
-      "action_state": "WATCH",
+      "action_state": "watch",
       "canslim_rating": "Buy",
       "company_name": "Broadcom Inc.",
       "composite_score": 83.0,
@@ -498,21 +536,40 @@
       "gics_sector": "Information Technology",
       "ibd_industry_group": "Semiconductors",
       "is_scannable": true,
-      "market_cap": 900000000000,
+      "market_cap": 900000000000.0,
       "minervini_rating": "Buy",
       "opportunity_state": {
+        "action_reasons": [],
+        "as_of_date": null,
+        "benchmark_as_of_date": null,
+        "benchmark_symbol": "SPY",
         "data_availability": {
           "required_evidence": "complete",
           "setup": "available"
         },
+        "failed_checks": [],
+        "market": "US",
         "metrics": {
           "hard_invalidation": false,
           "is_scannable": true
         },
-        "policy_version": "correction-survivors-v1"
+        "mic": null,
+        "passed_checks": [
+          "required_evidence_complete"
+        ],
+        "policy_version": "correction-survivors-v1",
+        "schema_version": 1,
+        "score_pillars": {
+          "benchmark_leadership": 50.0,
+          "liquidity_freshness": 50.0,
+          "multi_horizon_rs": 50.0,
+          "structure_tightness": 50.0,
+          "trend_integrity": 50.0
+        },
+        "warnings": []
       },
       "rating": "Buy",
-      "rs_rating": 90,
+      "rs_rating": 90.0,
       "sales_growth_qq": 18.0,
       "se_atr14_pct": 3.5,
       "se_distance_to_pivot_pct": 4.0,
@@ -531,12 +588,12 @@
       "symbol": "AVGO",
       "vcp_detected": false,
       "vcp_num_bases": null,
-      "volume": 13000000,
+      "volume": 13000000.0,
       "volume_breakthrough_rating": "Pass",
       "volume_surge": 1.2
     },
     {
-      "action_state": "WATCH",
+      "action_state": "watch",
       "canslim_rating": "Buy",
       "company_name": "Microsoft Corporation",
       "composite_score": 82.0,
@@ -546,21 +603,40 @@
       "gics_sector": "Information Technology",
       "ibd_industry_group": "Software",
       "is_scannable": true,
-      "market_cap": 3200000000000,
+      "market_cap": 3200000000000.0,
       "minervini_rating": "Buy",
       "opportunity_state": {
+        "action_reasons": [],
+        "as_of_date": null,
+        "benchmark_as_of_date": null,
+        "benchmark_symbol": "SPY",
         "data_availability": {
           "required_evidence": "complete",
           "setup": "available"
         },
+        "failed_checks": [],
+        "market": "US",
         "metrics": {
           "hard_invalidation": false,
           "is_scannable": true
         },
-        "policy_version": "correction-survivors-v1"
+        "mic": null,
+        "passed_checks": [
+          "required_evidence_complete"
+        ],
+        "policy_version": "correction-survivors-v1",
+        "schema_version": 1,
+        "score_pillars": {
+          "benchmark_leadership": 50.0,
+          "liquidity_freshness": 50.0,
+          "multi_horizon_rs": 50.0,
+          "structure_tightness": 50.0,
+          "trend_integrity": 50.0
+        },
+        "warnings": []
       },
       "rating": "Buy",
-      "rs_rating": 90,
+      "rs_rating": 90.0,
       "sales_growth_qq": 16.0,
       "se_atr14_pct": 3.5,
       "se_distance_to_pivot_pct": 4.0,
@@ -579,12 +655,12 @@
       "symbol": "MSFT",
       "vcp_detected": true,
       "vcp_num_bases": null,
-      "volume": 14000000,
+      "volume": 14000000.0,
       "volume_breakthrough_rating": "Pass",
       "volume_surge": 1.2
     },
     {
-      "action_state": "WATCH",
+      "action_state": "watch",
       "canslim_rating": "Watch",
       "company_name": "Snowflake Inc.",
       "composite_score": 55.0,
@@ -594,21 +670,40 @@
       "gics_sector": "Information Technology",
       "ibd_industry_group": "Cloud Software",
       "is_scannable": true,
-      "market_cap": 60000000000,
+      "market_cap": 60000000000.0,
       "minervini_rating": "Watch",
       "opportunity_state": {
+        "action_reasons": [],
+        "as_of_date": null,
+        "benchmark_as_of_date": null,
+        "benchmark_symbol": "SPY",
         "data_availability": {
           "required_evidence": "complete",
           "setup": "available"
         },
+        "failed_checks": [],
+        "market": "US",
         "metrics": {
           "hard_invalidation": false,
           "is_scannable": true
         },
-        "policy_version": "correction-survivors-v1"
+        "mic": null,
+        "passed_checks": [
+          "required_evidence_complete"
+        ],
+        "policy_version": "correction-survivors-v1",
+        "schema_version": 1,
+        "score_pillars": {
+          "benchmark_leadership": 50.0,
+          "liquidity_freshness": 50.0,
+          "multi_horizon_rs": 50.0,
+          "structure_tightness": 50.0,
+          "trend_integrity": 50.0
+        },
+        "warnings": []
       },
       "rating": "Watch",
-      "rs_rating": 67,
+      "rs_rating": 67.0,
       "sales_growth_qq": 9.0,
       "se_atr14_pct": 3.5,
       "se_distance_to_pivot_pct": 4.0,
@@ -627,7 +722,7 @@
       "symbol": "SNOW",
       "vcp_detected": false,
       "vcp_num_bases": null,
-      "volume": 5500000,
+      "volume": 5500000.0,
       "volume_breakthrough_rating": "Pass",
       "volume_surge": 1.2
     }

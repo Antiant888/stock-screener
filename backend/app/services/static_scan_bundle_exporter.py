@@ -184,7 +184,6 @@ class StaticScanBundleExporter:
                     "perf_3m",
                     "perf_6m",
                     "gap_percent",
-                    "volume_surge",
                     "ema_10_distance",
                     "ema_20_distance",
                     "ema_50_distance",

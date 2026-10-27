@@ -397,11 +397,32 @@ def _details(
         "volume_breakthrough_rating": "Strong Buy" if composite_score >= 90 else "Pass",
         "data_status": "ok",
         "is_scannable": True,
-        "action_state": "WATCH",
+        "action_state": "watch",
+        # The four projection keys are all-or-nothing, and the opportunity state
+        # is a validated model - a partial payload is corrupt data, not a row.
+        "correction_survivor": False,
+        "resilience_score": 250.0,
         "opportunity_state": {
+            "schema_version": 1,
             "policy_version": "correction-survivors-v1",
+            "as_of_date": None,
+            "market": "US",
+            "mic": None,
+            "benchmark_symbol": "SPY",
+            "benchmark_as_of_date": None,
+            "passed_checks": ["required_evidence_complete"],
+            "failed_checks": [],
+            "warnings": [],
+            "score_pillars": {
+                "benchmark_leadership": 50.0,
+                "multi_horizon_rs": 50.0,
+                "trend_integrity": 50.0,
+                "structure_tightness": 50.0,
+                "liquidity_freshness": 50.0,
+            },
             "metrics": {"hard_invalidation": False, "is_scannable": True},
             "data_availability": {"setup": "available", "required_evidence": "complete"},
+            "action_reasons": [],
         },
         "vcp_detected": (
             vcp_num_bases is not None and vcp_num_bases > 0

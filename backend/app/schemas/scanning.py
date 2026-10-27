@@ -232,6 +232,13 @@ class ScanResultItem(BaseModel):
     custom_score: Optional[float] = None
     volume_breakthrough_score: Optional[float] = None
 
+    # Persisted screener ratings as written by the screener. They are read,
+    # never derived from the scores above, and stay None when the stored row
+    # predates them.
+    minervini_rating: Optional[str] = None
+    canslim_rating: Optional[str] = None
+    volume_breakthrough_rating: Optional[str] = None
+
     # Setup Engine fields
     se_setup_score: Optional[float] = None
     se_pattern_primary: Optional[str] = None
@@ -270,9 +277,11 @@ class ScanResultItem(BaseModel):
     stage_name: Optional[str] = None
     current_price: Optional[float] = None
     volume: Optional[float] = None
+    volume_surge: Optional[float] = None
     market_cap: Optional[float] = None
     ma_alignment: Optional[bool] = None
     vcp_detected: Optional[bool] = None
+    vcp_num_bases: Optional[int] = None
     vcp_score: Optional[float] = None
     vcp_pivot: Optional[float] = None
     vcp_ready_for_breakout: Optional[bool] = None
@@ -397,6 +406,10 @@ class ScanResultItem(BaseModel):
             ipo_score=ef.get("ipo_score"),
             custom_score=ef.get("custom_score"),
             volume_breakthrough_score=ef.get("volume_breakthrough_score"),
+            # Persisted screener ratings, mapped verbatim.
+            minervini_rating=ef.get("minervini_rating"),
+            canslim_rating=ef.get("canslim_rating"),
+            volume_breakthrough_rating=ef.get("volume_breakthrough_rating"),
             # Setup Engine fields
             se_setup_score=ef.get("se_setup_score"),
             se_pattern_primary=ef.get("se_pattern_primary"),
@@ -434,9 +447,11 @@ class ScanResultItem(BaseModel):
             stage_name=ef.get("stage_name"),
             current_price=item.current_price,
             volume=ef.get("volume"),
+            volume_surge=ef.get("volume_surge"),
             market_cap=ef.get("market_cap"),
             ma_alignment=ef.get("ma_alignment"),
             vcp_detected=ef.get("vcp_detected"),
+            vcp_num_bases=ef.get("vcp_num_bases"),
             vcp_score=ef.get("vcp_score"),
             vcp_pivot=ef.get("vcp_pivot"),
             vcp_ready_for_breakout=ef.get("vcp_ready_for_breakout"),

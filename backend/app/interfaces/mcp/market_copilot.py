@@ -22,7 +22,7 @@ from app.models.market_breadth import MarketBreadth
 from app.models.stock_universe import StockUniverse
 from app.models.theme import ThemeAlert, ThemeCluster, ThemeConstituent, ThemeMetrics
 from app.models.user_watchlist import UserWatchlist, WatchlistItem
-from app.schemas.scanning import ExplainResponse
+from app.schemas.scanning import ExplainResponse, ScanResultItem
 from app.services.breadth.query import breadth_query, latest_breadth
 from app.services.economic_theme_read_service import EconomicThemeReader
 from app.services.task_registry_service import SCHEDULED_TASKS
@@ -54,6 +54,50 @@ from .models import (
     ToolFreshness,
     WatchlistAddArgs,
     WatchlistSnapshotArgs,
+)
+
+# Fields a candidate record projects from ``ScanResultItem``.
+# The record is a projection of the shared schema, not a second field list: a new
+# fact is added in ``ScanResultItem`` and appears here by being named once.
+CANDIDATE_FIELDS = frozenset(
+    {
+        "symbol",
+        "company_name",
+        "composite_score",
+        "rating",
+        "current_price",
+        "rs_rating",
+        "stage",
+        "gics_sector",
+        "ibd_industry_group",
+        "market_cap",
+        "volume",
+        "eps_growth_qq",
+        "sales_growth_qq",
+        "minervini_rating",
+        "canslim_rating",
+        "volume_breakthrough_rating",
+        "data_status",
+        "is_scannable",
+        "action_state",
+        "opportunity_state",
+        "vcp_detected",
+        "vcp_num_bases",
+        "volume_surge",
+        "se_setup_score",
+        "se_setup_ready",
+        "se_readiness_score",
+        "se_quality_score",
+        "se_pattern_primary",
+        "se_pivot_price",
+        "se_pivot_type",
+        "se_pivot_date",
+        "se_distance_to_pivot_pct",
+        "se_in_early_zone",
+        "se_extended_from_pivot",
+        "se_atr14_pct",
+        "se_volume_vs_50d",
+    }
 )
 
 logger = logging.getLogger(__name__)
@@ -246,6 +290,7 @@ class MarketCopilotService:
             comparison = self._compare_runs_payload(previous_run.id, selected_run.id, limit=5)
 
         top_candidates: list[dict[str, Any]] = []
+        skipped_candidates: list[str] = []
         if selected_run is not None:
             with self._uow_scope() as uow:
                 page = uow.feature_store.query_run_as_scan_results(
@@ -254,7 +299,7 @@ class MarketCopilotService:
                     include_sparklines=False,
                     include_setup_payload=False,
                 )
-                top_candidates = [self._candidate_record(item) for item in page.items]
+                top_candidates, skipped_candidates = self._candidate_records(page.items)
 
         failed_tasks = [
             task
@@ -279,6 +324,24 @@ class MarketCopilotService:
                     self._fact("latest_run_status", selected_run.status, "feature_runs", selected_run.as_of_date),
                 ]
             )
+            if skipped_candidates:
+                # Named, not hidden: the row exists but its stored projection is
+                # invalid, so it is left out of the candidate list on purpose.
+                summary_parts.append(
+                    f"{len(skipped_candidates)} candidate row(s) were skipped because their stored "
+                    "opportunity projection is invalid."
+                )
+                facts.append(
+                    self._fact(
+                        "skipped_candidate_count",
+                        len(skipped_candidates),
+                        "feature_runs",
+                        selected_run.as_of_date,
+                    )
+                )
+                next_actions.append(
+                    "Review the skipped symbols: " + ", ".join(skipped_candidates) + "."
+                )
             citations.append(
                 self._citation(
                     "feature_run",
@@ -530,11 +593,12 @@ class MarketCopilotService:
             if args.depth == "full":
                 group_name = scan_item.extended_fields.get("ibd_industry_group")
                 if group_name:
-                    peers = [
-                        self._candidate_record(peer)
+                    peer_records, _ = self._candidate_records(
+                        peer
                         for peer in uow.feature_store.get_peers_by_industry_for_run(latest_run.id, group_name)
                         if peer.symbol != args.symbol
-                    ][:5]
+                    )
+                    peers = peer_records[:5]
                 setup_payload = uow.feature_store.get_setup_payload_for_run(latest_run.id, args.symbol)
 
         composite_score = explanation.composite_score
@@ -1627,55 +1691,37 @@ class MarketCopilotService:
     def _candidate_record(self, item: Any) -> dict[str, Any]:
         """Project one scan result into the flat MCP candidate record.
 
-        Only persisted facts are projected: everything below comes from the
-        feature run's stored ``extended_fields`` (see
-        ``_map_feature_to_scan_result``), which in turn reads the published
-        ``details_json``. Nothing is recomputed here, and the existing keys
-        keep their names and values, so current clients stay compatible.
+        The record is a projection of ``ScanResultItem`` - the same model the
+        HTTP API, the UI and the static export use - so a new fact reaches every
+        surface from one field definition. Nothing is recomputed here: the
+        schema only reads the persisted ``extended_fields``.
         """
-        extended = getattr(item, "extended_fields", {}) or {}
-        return {
-            "symbol": item.symbol,
-            "company_name": extended.get("company_name"),
-            "composite_score": round(item.composite_score, 2) if item.composite_score is not None else None,
-            "rating": item.rating,
-            "current_price": item.current_price,
-            "rs_rating": extended.get("rs_rating"),
-            "stage": extended.get("stage"),
-            "gics_sector": extended.get("gics_sector"),
-            "ibd_industry_group": extended.get("ibd_industry_group"),
-            "market_cap": extended.get("market_cap"),
-            "volume": extended.get("volume"),
-            "eps_growth_qq": extended.get("eps_growth_qq"),
-            "sales_growth_qq": extended.get("sales_growth_qq"),
-            # Persisted per-screener ratings (screener output, not recomputed).
-            "minervini_rating": extended.get("minervini_rating"),
-            "canslim_rating": extended.get("canslim_rating"),
-            "volume_breakthrough_rating": extended.get("volume_breakthrough_rating"),
-            # Persisted coverage / evidence state of the feature row.
-            "data_status": extended.get("data_status"),
-            "is_scannable": extended.get("is_scannable"),
-            "action_state": extended.get("action_state"),
-            "opportunity_state": extended.get("opportunity_state"),
-            # Persisted VCP facts (num_bases comes from the stored Minervini block).
-            "vcp_detected": extended.get("vcp_detected"),
-            "vcp_num_bases": extended.get("vcp_num_bases"),
-            "volume_surge": extended.get("volume_surge"),
-            # Canonical Setup Engine facts, as persisted under setup_engine.
-            "se_setup_score": extended.get("se_setup_score"),
-            "se_setup_ready": extended.get("se_setup_ready"),
-            "se_readiness_score": extended.get("se_readiness_score"),
-            "se_quality_score": extended.get("se_quality_score"),
-            "se_pattern_primary": extended.get("se_pattern_primary"),
-            "se_pivot_price": extended.get("se_pivot_price"),
-            "se_pivot_type": extended.get("se_pivot_type"),
-            "se_pivot_date": extended.get("se_pivot_date"),
-            "se_distance_to_pivot_pct": extended.get("se_distance_to_pivot_pct"),
-            "se_in_early_zone": extended.get("se_in_early_zone"),
-            "se_extended_from_pivot": extended.get("se_extended_from_pivot"),
-            "se_atr14_pct": extended.get("se_atr14_pct"),
-            "se_volume_vs_50d": extended.get("se_volume_vs_50d"),
-        }
+        record = ScanResultItem.from_domain(
+            item,
+            include_setup_payload=False,
+        ).model_dump(mode="json", include=CANDIDATE_FIELDS)
+        if record["composite_score"] is not None:
+            record["composite_score"] = round(record["composite_score"], 2)
+        return record
+
+    def _candidate_records(self, items: Any) -> tuple[list[dict[str, Any]], list[str]]:
+        """Project several rows, skipping rows the shared schema rejects.
+
+        A stored ``opportunity_state`` that no longer validates is corrupt data,
+        not a tool failure: the row is left out and named, so one bad row cannot
+        make the whole overview unusable - and cannot disappear silently either.
+        """
+        records: list[dict[str, Any]] = []
+        skipped: list[str] = []
+        for item in items:
+            try:
+                records.append(self._candidate_record(item))
+            except ValidationError as exc:
+                skipped.append(item.symbol)
+                logger.warning(
+                    "candidate record skipped for %s: %s", item.symbol, exc.errors()[0].get("msg", "invalid")
+                )
+        return records, skipped
 
     def _theme_record(self, theme: ThemeCluster, metrics: ThemeMetrics | None) -> dict[str, Any]:
         return {

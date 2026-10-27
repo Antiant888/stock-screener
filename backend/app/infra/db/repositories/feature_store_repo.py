@@ -47,6 +47,7 @@ from app.infra.serialization import (
     coerce_bool_or_false,
     convert_numpy_types,
     normalize_string_list,
+    vcp_num_bases_from_details,
 )
 from app.models.stock import StockFundamental
 from app.models.stock_universe import StockUniverse
@@ -234,42 +235,6 @@ def _coerce_details_dict(value: Any) -> dict[str, Any]:
             return {}
         return parsed if isinstance(parsed, dict) else {}
     return {}
-
-
-def _vcp_num_bases_from_details(d: dict[str, Any]) -> int | None:
-    """Read the persisted Minervini VCP base count, or ``None`` when absent.
-
-    The scan result assembler stores the detector output under
-    ``details.screeners.minervini.details.full_analysis.vcp.num_bases``. This
-    helper only walks that stored path — it never infers a count from
-    ``vcp_detected`` nor from the length of any candidate list, and it never
-    recomputes the pattern. A missing intermediate object, a non-mapping node,
-    or a non-integral ``num_bases`` yields ``None``. A base count is a count, so
-    a negative value is rejected as well; zero stays valid.
-    """
-    node: Any = d
-    for key in (
-        "details",
-        "screeners",
-        "minervini",
-        "details",
-        "full_analysis",
-        "vcp",
-        "num_bases",
-    ):
-        if not isinstance(node, dict):
-            return None
-        node = node.get(key)
-
-    if isinstance(node, bool):
-        return None
-    if isinstance(node, int):
-        count = node
-    elif isinstance(node, float) and node.is_integer():
-        count = int(node)
-    else:
-        return None
-    return count if count >= 0 else None
 
 
 def _upsert_stmt(session: Session, values: list[dict[str, Any]]):
@@ -987,7 +952,7 @@ def _map_feature_to_scan_result(
         "market_cap": d.get("market_cap"),
         "ma_alignment": d.get("ma_alignment"),
         "vcp_detected": d.get("vcp_detected"),
-        "vcp_num_bases": _vcp_num_bases_from_details(d),
+        "vcp_num_bases": vcp_num_bases_from_details(d),
         "vcp_score": d.get("vcp_score"),
         "vcp_pivot": d.get("vcp_pivot"),
         "vcp_ready_for_breakout": d.get("vcp_ready_for_breakout"),
