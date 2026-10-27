@@ -360,6 +360,11 @@ def _outcome_by_cell(content):
         # With no delimiter anywhere, every line is a word list, header or not.
         ("symbol\nNVDA MSFT\nAAPL", {"NVDA": "added", "MSFT": "existing", "AAPL": "added"}),
         ("Ticker\nNVDA\nAAPL TSLA", {"NVDA": "added", "AAPL": "added", "TSLA": "added"}),
+        # A header's columns hold even when a tab row's cell is a list.
+        ("notes\tsymbol\nNVDA,MSFT\tAAPL", {"AAPL": "added"}),
+        ("Symbol\tNotes\nNVDA\tAMD,TSLA\nMSFT\tx", {"NVDA": "added", "MSFT": "existing"}),
+        # A malformed header mixing tabs and commas never raises.
+        ("symbol,name\tx\nNVDA,NVIDIA\ty\nMSFT,Microsoft\tz", {"NVDA": "added", "MSFT,MICROSOFT": "invalid"}),
         # A tab inside a quoted cell is not a column separator.
         ('symbol,notes\rNVDA,"Apple\tInc."\rMSFT,Microsoft', {"NVDA": "added", "MSFT": "existing"}),
         ('NVDA,"Buy zone\nnext\tWeek"\nAAPL,Hold', {"NVDA": "added", "AAPL": "added"}),

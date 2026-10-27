@@ -178,6 +178,14 @@ def _tokenize_rows(content: str, delimiters: str | None) -> list[list[str]]:
     return [row for row in rows if any(row)]
 
 
+def _header_delimiters(content: str) -> str:
+    # A header's cells are names, never lists: a tab outside quotes on the
+    # first line makes it a tab table.
+    first_line = content.split("\n", 1)[0]
+    unquoted = re.sub(r'"[^"]*"', "", first_line)
+    return "\t" if "\t" in unquoted else _TABLE_DELIMITERS
+
+
 def _words(cell: str) -> list[str]:
     # A quote that does not open a cell, as in `AMD "NVDA"`, wraps one word.
     return [word for word in (w.strip('"') for w in cell.split()) if word]
@@ -227,6 +235,16 @@ def _parse_tabular_symbols(content: str) -> list[str]:
     )
     if symbol_column is not None:
         if len([cell for cell in rows[0] if cell]) > 1:
+            # Columns follow the header, so every row splits on the header
+            # line's own separator: per-line choices would shift the column.
+            header_rows = _tokenize_rows(content, _header_delimiters(content))
+            header_column = next(
+                (index for index, cell in enumerate(header_rows[0]) if cell.lower() in _HEADER_TOKENS),
+                None,
+            )
+            # A header mixing tabs and commas keeps the first reading.
+            if header_column is not None:
+                rows, symbol_column = header_rows, header_column
             return [
                 row[symbol_column]
                 for row in rows[1:]
