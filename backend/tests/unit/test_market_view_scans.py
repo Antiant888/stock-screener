@@ -194,6 +194,9 @@ def test_market_view_rule_agrees_in_python_and_sql(session_factory, universe_typ
         assert row.represents_market_view() is expected
         in_sql = db.query(Scan.scan_id).filter(Scan.represents_market_view()).all()
         assert bool(in_sql) is expected
+        # The negation must hold for every other row: never SQL NULL.
+        negated = db.query(Scan.scan_id).filter(~Scan.represents_market_view()).all()
+        assert bool(negated) is not expected
 
 
 def test_a_legacy_custom_row_never_stands_in_for_the_market_scan(session_factory):
@@ -202,6 +205,10 @@ def test_a_legacy_custom_row_never_stands_in_for_the_market_scan(session_factory
 
     with session_factory() as db:
         assert latest_completed_scan(db, "US").scan_id == "us-1"
+        # Still listed in history, with the symbol lists.
+        assert [s.scan_id for s in SqlScanRepository(db).list_recent(market="US")] == [
+            "legacy-custom", "us-1",
+        ]
 
 
 def test_every_latest_scan_picker_agrees_when_scans_finish_out_of_order(session_factory):
@@ -223,6 +230,19 @@ def test_every_latest_scan_picker_agrees_when_scans_finish_out_of_order(session_
                     completed_at=completed,
                 )
             )
+        db.commit()
+
+        # Newest of all, but theme metrics only read US scans.
+        db.add(
+            Scan(
+                scan_id="hk-newest",
+                status="completed",
+                universe_type="market",
+                universe_market="HK",
+                started_at=datetime(2026, 9, 30, 11),
+                completed_at=datetime(2026, 9, 30, 11, 30),
+            )
+        )
         db.commit()
 
     snapshot = UISnapshotService(session_factory).publish_scan_bootstrap(market="US")

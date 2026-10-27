@@ -837,6 +837,51 @@ async def test_a_missing_latest_scan_bootstrap_queues_its_publish(client, params
     mock_enqueue.assert_called_once_with(args=[expected_market], retry=False, connection=ANY)
 
 
+class _FakeRedis:
+    def __init__(self):
+        self.keys = {}
+
+    def set(self, key, value, nx=False, ex=None):
+        if nx and key in self.keys:
+            return False
+        self.keys[key] = value
+        return True
+
+    def delete(self, key):
+        self.keys.pop(key, None)
+
+
+def test_concurrent_missing_latest_reads_queue_one_publish_per_market(monkeypatch):
+    import app.services.redis_pool as redis_pool
+    from app.tasks import scan_tasks
+
+    redis = _FakeRedis()
+    monkeypatch.setattr(redis_pool, "get_redis_client", lambda: redis)
+    with patch.object(scan_tasks.publish_scan_latest_bootstrap, "apply_async") as mock_enqueue:
+        scan_tasks.queue_scan_latest_bootstrap_publish("US")
+        scan_tasks.queue_scan_latest_bootstrap_publish("US")
+        scan_tasks.queue_scan_latest_bootstrap_publish("HK")
+
+    assert [c.kwargs["args"] for c in mock_enqueue.call_args_list] == [["US"], ["HK"]]
+
+
+def test_a_failed_latest_publish_enqueue_releases_its_claim(monkeypatch):
+    import app.services.redis_pool as redis_pool
+    from app.tasks import scan_tasks
+
+    redis = _FakeRedis()
+    monkeypatch.setattr(redis_pool, "get_redis_client", lambda: redis)
+    with patch.object(
+        scan_tasks.publish_scan_latest_bootstrap, "apply_async", side_effect=ConnectionError("down")
+    ):
+        scan_tasks.queue_scan_latest_bootstrap_publish("US")
+    assert redis.keys == {}
+
+    with patch.object(scan_tasks.publish_scan_latest_bootstrap, "apply_async") as mock_enqueue:
+        scan_tasks.queue_scan_latest_bootstrap_publish("US")
+    mock_enqueue.assert_called_once()
+
+
 @pytest.mark.asyncio
 async def test_a_missing_scan_variant_queues_nothing(client):
     from app.wiring.bootstrap import get_ui_snapshot_service

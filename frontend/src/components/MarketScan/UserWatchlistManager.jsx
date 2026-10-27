@@ -7,7 +7,7 @@
  * - Add/remove stocks from watchlists
  * - Reorder watchlists and stocks via drag-and-drop
  */
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   Dialog,
@@ -75,6 +75,9 @@ function UserWatchlistManager({ open, onClose, onUpdate }) {
   const [importDialogOpen, setImportDialogOpen] = useState(false);
   const [importContent, setImportContent] = useState('');
   const [importDraftWatchlistId, setImportDraftWatchlistId] = useState(null);
+  // Read when an import settles, which can be after the draft moved on.
+  const importDraftWatchlistIdRef = useRef(importDraftWatchlistId);
+  importDraftWatchlistIdRef.current = importDraftWatchlistId;
   const [importFileError, setImportFileError] = useState(null);
 
   // Fetch watchlists
@@ -181,8 +184,12 @@ function UserWatchlistManager({ open, onClose, onUpdate }) {
     mutationFn: ({ watchlistId, payload }) => importItems(watchlistId, payload),
     onSuccess: (result, variables) => {
       invalidateWatchlistItems(queryClient, variables.watchlistId);
-      setImportContent('');
-      setImportDialogOpen(false);
+      // A late import for another watchlist must not close or clear the
+      // draft the dialog now holds.
+      if (variables.watchlistId === importDraftWatchlistIdRef.current) {
+        setImportContent('');
+        setImportDialogOpen(false);
+      }
       // Naming the symbols lets a stray note or sector word read as a ticker
       // be spotted; a header-less paste cannot tell the two apart.
       const parts = [
@@ -250,9 +257,13 @@ function UserWatchlistManager({ open, onClose, onUpdate }) {
 
   const handleOpenImportDialog = () => {
     setImportFileError(null);
-    // Resetting a pending import would detach the dialog from it: its late
-    // error would skip the dialog and Import would re-enable mid-request.
-    if (!importItemsMutation.isPending) {
+    // Resetting a pending import for this watchlist would detach the dialog
+    // from it: its late error would skip the dialog and Import would re-enable
+    // mid-request. One for another watchlist is detached, so it never blocks
+    // this one; its outcome still reaches the manager's alert.
+    const pendingHere = importItemsMutation.isPending
+      && importItemsMutation.variables?.watchlistId === selectedWatchlistId;
+    if (!pendingHere) {
       importItemsMutation.reset();
     }
     if (importDraftWatchlistId !== selectedWatchlistId) {

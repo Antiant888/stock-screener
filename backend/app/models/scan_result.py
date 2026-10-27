@@ -131,7 +131,13 @@ class Scan(Base):
                 cls.universe_type.is_(None),
                 *(~legacy_label.like(f"{kind}%") for kind in SYMBOL_LIST_UNIVERSE_TYPES),
             ),
-            cls.universe_type.notin_(SYMBOL_LIST_UNIVERSE_TYPES),
+            # Guarded so a NULL type never makes the whole predicate NULL:
+            # list_recent splits history on it and its negation, and a NULL
+            # row would match neither.
+            and_(
+                cls.universe_type.isnot(None),
+                cls.universe_type.notin_(SYMBOL_LIST_UNIVERSE_TYPES),
+            ),
         )
 
     @classmethod

@@ -383,8 +383,30 @@ def queue_scan_bootstrap_publish(scan_id: str, *, prune_history: bool = False) -
         logger.warning("Could not queue scan bootstrap publish for %s", scan_id, exc_info=True)
 
 
+# One queued publish per missing latest variant at a time: every page load
+# that finds it missing asks, and the build is the same for all of them.
+_LATEST_PUBLISH_CLAIM_SECONDS = 60
+
+
 def queue_scan_latest_bootstrap_publish(market: str | None) -> None:
-    """Queue ``publish_scan_latest_bootstrap``; fails fast like the scan publish."""
+    """Queue ``publish_scan_latest_bootstrap``; fails fast like the scan publish.
+
+    A short Redis claim per variant coalesces concurrent requests. Without
+    Redis every request enqueues, which only repeats an idempotent build.
+    """
+    from ..services.redis_pool import get_redis_client
+
+    claim_key = f"scan_bootstrap:latest_publish_queued:{market or 'all'}"
+    redis = None
+    try:
+        redis = get_redis_client()
+        if redis is not None and not redis.set(
+            claim_key, "1", nx=True, ex=_LATEST_PUBLISH_CLAIM_SECONDS
+        ):
+            return
+    except Exception:
+        logger.warning("Could not claim the latest scan bootstrap publish for %s", market, exc_info=True)
+        redis = None
     try:
         with celery_app.connection_for_write(
             transport_options=_BOOTSTRAP_ENQUEUE_TRANSPORT_OPTIONS
@@ -396,6 +418,11 @@ def queue_scan_latest_bootstrap_publish(market: str | None) -> None:
         logger.warning(
             "Could not queue the latest scan bootstrap publish for %s", market, exc_info=True
         )
+        if redis is not None:
+            try:
+                redis.delete(claim_key)  # let the next request try again
+            except Exception:
+                logger.warning("Could not release %s", claim_key, exc_info=True)
 
 
 @celery_app.task(name='app.tasks.scan_tasks.test_celery')

@@ -1,4 +1,4 @@
-import { fireEvent, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import userEvent from '@testing-library/user-event';
 
@@ -306,6 +306,47 @@ describe('UserWatchlistManager import flow', () => {
     reject({ response: { status: 400, data: { detail: 'Too many symbols.' } } });
     expect(await within(reopened).findByRole('alert')).toHaveTextContent('Too many symbols.');
     expect(api.importItems).toHaveBeenCalledTimes(1);
+  }, 20000);
+
+  it('keeps a pending import for one watchlist from blocking or clearing another', async () => {
+    let resolveFirst;
+    api.getWatchlists.mockResolvedValue({
+      watchlists: [{ id: 1, name: 'Leaders' }, { id: 2, name: 'Laggards' }],
+      total: 2,
+    });
+    api.importItems
+      .mockReturnValueOnce(new Promise((resolve) => { resolveFirst = resolve; }))
+      .mockResolvedValue({
+        requested_count: 1, added: ['MSFT'], skipped_existing: [], invalid_symbols: [], added_items: [],
+      });
+    renderWithProviders(
+      <UserWatchlistManager open={true} onClose={vi.fn()} onUpdate={vi.fn()} />
+    );
+    const importDialog = await openImportDialog();
+    fireEvent.change(
+      within(importDialog).getByRole('textbox', { name: 'Symbols to import' }),
+      { target: { value: 'NVDA' } },
+    );
+    fireEvent.click(within(importDialog).getByRole('button', { name: 'Import' }));
+    await waitFor(() => expect(api.importItems).toHaveBeenCalledWith(1, expect.anything()));
+    fireEvent.click(within(importDialog).getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Import Symbols' })).toBeNull());
+
+    fireEvent.click(screen.getByText('Laggards'));
+    fireEvent.click(screen.getByRole('button', { name: 'Import' }));
+    const second = await screen.findByRole('dialog', { name: 'Import Symbols' });
+    const textbox = within(second).getByRole('textbox', { name: 'Symbols to import' });
+    fireEvent.change(textbox, { target: { value: 'MSFT' } });
+    expect(within(second).getByRole('button', { name: 'Import' })).toBeEnabled();
+
+    await act(async () => {
+      resolveFirst({
+        requested_count: 1, added: ['NVDA'], skipped_existing: [], invalid_symbols: [], added_items: [],
+      });
+    });
+
+    expect(screen.getByRole('dialog', { name: 'Import Symbols' })).toBeInTheDocument();
+    expect(textbox).toHaveValue('MSFT');
   }, 20000);
 
   it('blocks pasted text over the import limit before sending it', async () => {
