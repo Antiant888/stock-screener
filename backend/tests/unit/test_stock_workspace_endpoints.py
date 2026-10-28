@@ -137,7 +137,13 @@ class _FakeUow:
 
 
 class _FakeEventContextService:
-    def build(self, db, *, symbol, as_of_date=None, regime_label=None, profile=None, fundamentals=None):  # noqa: ANN001
+    def __init__(self):
+        self.markets: list[str | None] = []
+        self.fundamentals: list[dict | None] = []
+
+    def build(self, db, *, symbol, as_of_date=None, regime_label=None, profile=None, fundamentals=None, market=None):  # noqa: ANN001
+        self.markets.append(market)
+        self.fundamentals.append(fundamentals)
         return (
             {
                 "next_earnings_date": "2026-04-09",
@@ -718,6 +724,39 @@ async def test_decision_dashboard_flags_stale_cached_fundamentals(
     assert ("stale_fundamentals" in response.json()["degraded_reasons"]) is stale
 
 
+STORED_REPORT = {"report_ts": "2026-07-22T16:00:00-04:00", "eps_estimate": 1.73, "reported_eps": 1.54, "surprise_pct": -10.88}
+CACHED_REPORT = {"report_ts": "2026-10-21T16:00:00-04:00", "eps_estimate": 1.8, "reported_eps": 1.9, "surprise_pct": 5.56}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("cached", "history"),
+    [
+        # Cached before the column existed, or after a failed calendar lookup.
+        ({"symbol": "NVDA", "market_cap": 1}, [STORED_REPORT]),
+        ({"symbol": "NVDA", "market_cap": 1, "recent_earnings": [CACHED_REPORT]}, [CACHED_REPORT]),
+    ],
+    ids=["missing_key_reads_the_row", "present_key_is_kept"],
+)
+async def test_decision_dashboard_reads_earnings_history_the_cache_lacks(
+    client, session, monkeypatch, cached, history
+):
+    app.dependency_overrides[get_db] = _override_db(session)
+    app.dependency_overrides[get_uow] = lambda: _FakeUow(None)
+    event_context_service = _FakeEventContextService()
+    app.dependency_overrides[stocks_module._get_stock_event_context_service] = lambda: event_context_service
+    session.add(
+        StockFundamental(symbol="NVDA", updated_at=datetime.now(UTC), recent_earnings=[STORED_REPORT])
+    )
+    session.commit()
+    _stub_cached_reads(monkeypatch, info=None, fundamentals=dict(cached))
+
+    response = await client.get("/api/v1/stocks/NVDA/decision-dashboard")
+
+    assert response.status_code == 200
+    assert event_context_service.fundamentals[0]["recent_earnings"] == history
+
+
 @pytest.mark.asyncio
 async def test_decision_dashboard_endpoint_returns_normalized_payload(client, session, monkeypatch):
     app.dependency_overrides[get_db] = _override_db(session)
@@ -935,7 +974,8 @@ async def test_decision_dashboard_uses_market_specific_latest_run_pointer_for_no
         runs_by_pointer={"latest_published_market:HK": latest_run},
     )
     app.dependency_overrides[get_uow] = lambda: fake_uow
-    app.dependency_overrides[stocks_module._get_stock_event_context_service] = lambda: _FakeEventContextService()
+    event_context_service = _FakeEventContextService()
+    app.dependency_overrides[stocks_module._get_stock_event_context_service] = lambda: event_context_service
 
     _stub_cached_reads(
         monkeypatch,
@@ -956,6 +996,7 @@ async def test_decision_dashboard_uses_market_specific_latest_run_pointer_for_no
     assert response.status_code == 200
     assert response.json()["symbol"] == "0700.HK"
     assert "latest_published_market:HK" in fake_uow.feature_runs.calls
+    assert event_context_service.markets == ["HK"]
 
 
 @pytest.mark.asyncio

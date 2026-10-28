@@ -755,6 +755,14 @@ def get_stock_decision_dashboard(
     # the shared 1 req/s limiter.
     market = resolve_symbol_market(db, symbol)
     fundamentals = _get_stock_fundamentals_payload(symbol, cache_only=True, market=market)
+    if fundamentals is not None and "recent_earnings" not in fundamentals:
+        # Redis payloads cached before the column, or after a failed calendar
+        # lookup, lack the history the row keeps.
+        fundamentals["recent_earnings"] = (
+            db.query(StockFundamental.recent_earnings)
+            .filter(StockFundamental.symbol == symbol.upper())
+            .scalar()
+        )
     price_frame, prices_fresh = _cached_price_frame(symbol, market)
     info = _cached_stock_info(
         db, symbol, fundamentals=fundamentals, price_frame=price_frame
@@ -882,6 +890,7 @@ def get_stock_decision_dashboard(
         regime_label=regime.get("label"),
         profile=resolved_profile.profile,
         fundamentals=fundamentals,
+        market=market,
     )
 
     return {

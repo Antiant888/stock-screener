@@ -3,13 +3,13 @@
 Opening a stock used to make up to six sequential Yahoo calls behind the
 shared 1 req/s limiter (info twice, two histories for technicals, two earnings
 lookups). Everything the page shows is already stored: universe rows,
-fundamentals with the persisted event calendar, and the cached price history.
-Earnings history is not stored yet; the live lookup it replaces never parsed
-Yahoo's fiscal-quarter-keyed answer, so it stays reported as unavailable.
+fundamentals with the persisted event calendar and the reported quarters
+stored with it, and the cached price history.
 """
 
 from __future__ import annotations
 
+import json
 from datetime import date
 
 import pandas as pd
@@ -24,6 +24,8 @@ from app.models.institutional_ownership import InstitutionalOwnershipHistory
 from app.models.stock_universe import StockUniverse
 from app.services import stock_event_context_service as event_context_module
 from app.services.fundamentals_cache_service import FundamentalsCacheService
+from app.services.market_calendar_service import MarketCalendarService
+from app.services.price_cache_service import PriceCacheService
 from app.services.stock_event_context_service import StockEventContextService
 
 AS_OF = date(2026, 4, 2)
@@ -378,3 +380,252 @@ def test_earnings_history_is_reported_unavailable_without_asking_yahoo(db, event
     assert event_risk["beat_count_last_4"] is None
     assert event_risk["miss_count_last_4"] is None
     assert "Recent earnings history is unavailable." in event_risk["notes"]
+
+
+def _earnings_bars() -> pd.DataFrame:
+    """Flat 100 bars, moved only around each report's reaction session."""
+    frame = pd.DataFrame(
+        {"Open": 100.0, "High": 100.0, "Low": 100.0, "Close": 100.0},
+        index=pd.bdate_range("2026-03-02", "2026-04-02"),
+    )
+    frame.loc[pd.Timestamp("2026-03-17"), "Open"] = 110.0
+    frame.loc[pd.Timestamp("2026-03-23"), "Close"] = 132.0
+    frame.loc[pd.Timestamp("2026-03-24"), "Open"] = 125.4
+    frame.loc[pd.Timestamp("2026-03-30"), "Close"] = 112.86
+    # Today's bar, written mid-session.
+    frame.loc[pd.Timestamp("2026-04-02"), ["Open", "Close"]] = 150.0
+    return frame
+
+
+class _MetaRedis:
+    def __init__(self, values: dict[str, str]):
+        self.values = values
+
+    def get(self, key):
+        return self.values.get(key)
+
+
+class _EarningsPrices(PriceCacheService):
+    """Real fetch-metadata reads; only the database read is stubbed."""
+
+    def __init__(self, calendar, bars, fetch_meta):
+        super().__init__(
+            redis_client=_MetaRedis(fetch_meta),
+            session_factory=lambda: None,
+            market_calendar=calendar,
+        )
+        self._bars = bars
+
+    def get_cached_only(self, _symbol, period="2y"):
+        return self._bars.copy()
+
+
+class _Calendar(MarketCalendarService):
+    """Real sessions and timezones; the last completed session is pinned."""
+
+    def __init__(self, last_completed: date):
+        super().__init__()
+        self.last_completed = last_completed
+
+    def last_completed_trading_day(self, _market, now=None, **_kwargs):
+        return self.last_completed
+
+
+REPORTED = {
+    "event_calendar_as_of_date": "2026-04-01",
+    "next_earnings_date": None,
+    "recent_earnings": [
+        # After Wednesday's close: Thursday (today) reacts.
+        {"report_ts": "2026-04-01T16:05:00-04:00", "eps_estimate": 1.0, "reported_eps": 1.05, "surprise_pct": 5.0},
+        # 08:00 New York time, before the open: the same Tuesday reacts.
+        {"report_ts": "2026-03-24T12:00:00+00:00", "eps_estimate": 1.0, "reported_eps": 0.97, "surprise_pct": -3.0},
+        # After Monday's close: Tuesday reacts.
+        {"report_ts": "2026-03-16T16:00:00-04:00", "eps_estimate": 1.0, "reported_eps": 1.02, "surprise_pct": 2.0},
+        {"report_ts": "2026-03-03T16:00:00-05:00", "eps_estimate": None, "reported_eps": 0.9, "surprise_pct": None},
+    ],
+}
+
+
+def _earnings_service(
+    monkeypatch, *, last_completed: date, bars=None, fetch_meta=None
+) -> StockEventContextService:
+    monkeypatch.setattr(event_context_module, "to_eastern_date", lambda _now: TODAY)
+    calendar = _Calendar(last_completed)
+    return StockEventContextService(
+        price_cache=_EarningsPrices(
+            calendar,
+            _earnings_bars() if bars is None else bars,
+            fetch_meta or {},
+        ),
+        yfinance_service=_NoYahoo(),
+        market_calendar=calendar,
+    )
+
+
+def test_stored_reports_give_beat_miss_counts_and_drift_mid_session(db, monkeypatch):
+    service = _earnings_service(monkeypatch, last_completed=date(2026, 4, 1))
+
+    event_risk, _actions = service.build(
+        db, symbol="NVDA", as_of_date=TODAY, fundamentals=REPORTED, market="US"
+    )
+
+    assert {
+        key: event_risk[key]
+        for key in (
+            "recent_earnings_count",
+            "beat_count_last_4",
+            "miss_count_last_4",
+            "avg_post_earnings_gap_pct",
+            "avg_post_earnings_5s_return_pct",
+        )
+    } == {
+        "recent_earnings_count": 4,
+        "beat_count_last_4": 2,
+        "miss_count_last_4": 1,
+        # Gaps +10 (03-17), -5 (03-24, same session), 0 (03-04); today's
+        # partial bar is not a reaction session yet.
+        "avg_post_earnings_gap_pct": 1.6667,
+        # Returns +20, -10, 0 over five completed sessions.
+        "avg_post_earnings_5s_return_pct": 3.3333,
+    }
+    assert "Recent earnings history is unavailable." not in event_risk["notes"]
+
+
+def test_after_the_close_today_counts_as_the_reaction_session(db, monkeypatch):
+    service = _earnings_service(monkeypatch, last_completed=TODAY)
+
+    event_risk, _actions = service.build(
+        db, symbol="NVDA", as_of_date=TODAY, fundamentals=REPORTED, market="US"
+    )
+
+    # Today's +50 gap joins; its five-session return is not complete yet.
+    assert event_risk["avg_post_earnings_gap_pct"] == 13.75
+    assert event_risk["avg_post_earnings_5s_return_pct"] == 3.3333
+
+
+def test_reports_stay_shown_after_their_calendar_observation_goes_stale(db, monkeypatch):
+    """Reported quarters stay true when the next-date lookup ages out."""
+    service = _earnings_service(monkeypatch, last_completed=date(2026, 4, 1))
+    stale = {**REPORTED, "event_calendar_as_of_date": "2026-03-01"}
+
+    event_risk, _actions = service.build(
+        db, symbol="NVDA", as_of_date=TODAY, fundamentals=stale, market="US"
+    )
+
+    assert event_risk["next_earnings_date"] is None
+    assert event_risk["recent_earnings_count"] == 4
+    assert event_risk["beat_count_last_4"] == 2
+    assert event_risk["miss_count_last_4"] == 1
+    assert event_risk["avg_post_earnings_gap_pct"] == 1.6667
+    assert "Recent earnings history is unavailable." not in event_risk["notes"]
+
+
+def test_a_partial_bar_left_after_the_close_is_not_a_reaction_session(db, monkeypatch):
+    """Today's bar was fetched at 11:00 ET; the post-close refresh has not run."""
+    service = _earnings_service(
+        monkeypatch,
+        last_completed=TODAY,
+        fetch_meta={
+            "price:US:NVDA:fetch_meta": json.dumps(
+                {"fetch_timestamp": "2026-04-02T11:00:00-04:00", "needs_refresh_after_close": True}
+            )
+        },
+    )
+
+    event_risk, _actions = service.build(
+        db, symbol="NVDA", as_of_date=TODAY, fundamentals=REPORTED, market="US"
+    )
+
+    # As mid-session: the partial +50 open on 04-02 is left out.
+    assert event_risk["avg_post_earnings_gap_pct"] == 1.6667
+    assert event_risk["avg_post_earnings_5s_return_pct"] == 3.3333
+
+
+def _reaction_bars() -> pd.DataFrame:
+    """Flat 100 bars: a +10% gap if Tuesday 03-10 reacts, -10% if Wednesday does."""
+    frame = pd.DataFrame(
+        {"Open": 100.0, "High": 100.0, "Low": 100.0, "Close": 100.0},
+        index=pd.bdate_range("2026-03-02", "2026-03-20"),
+    )
+    frame.loc[pd.Timestamp("2026-03-10"), "Open"] = 110.0
+    frame.loc[pd.Timestamp("2026-03-11"), "Open"] = 90.0
+    return frame
+
+
+@pytest.mark.parametrize(
+    ("market", "report_ts", "gap_pct"),
+    [
+        # Yahoo stamps every market in New York time. 09:15 JST, after
+        # Tokyo's 09:00 open: Wednesday reacts.
+        ("JP", "2026-03-09T20:15:00-04:00", -10.0),
+        # 08:00 JST, before the open: Tuesday reacts.
+        ("JP", "2026-03-09T19:00:00-04:00", 10.0),
+        ("US", "2026-03-10T16:00:00-04:00", -10.0),
+        ("US", "2026-03-10T07:00:00-04:00", 10.0),
+    ],
+    ids=["jp_0915_after_open", "jp_0800_before_open", "us_1600_after_close", "us_0700_before_open"],
+)
+def test_the_exchange_open_decides_which_session_reacts(db, monkeypatch, market, report_ts, gap_pct):
+    service = _earnings_service(monkeypatch, last_completed=TODAY, bars=_reaction_bars())
+    fundamentals = {
+        "event_calendar_as_of_date": "2026-04-01",
+        "recent_earnings": [
+            {"report_ts": report_ts, "eps_estimate": 1.0, "reported_eps": 1.1, "surprise_pct": 10.0}
+        ],
+    }
+
+    event_risk, _actions = service.build(
+        db, symbol="7203.T", as_of_date=TODAY, fundamentals=fundamentals, market=market
+    )
+
+    assert event_risk["avg_post_earnings_gap_pct"] == gap_pct
+
+
+def _cn_bars() -> pd.DataFrame:
+    """Flat 100 bars, +10% gaps on Monday 2025-12-08 and Tuesday 2026-03-10, -10% on 03-11."""
+    frame = pd.DataFrame(
+        {"Open": 100.0, "High": 100.0, "Low": 100.0, "Close": 100.0},
+        index=pd.bdate_range("2025-12-01", "2026-03-20"),
+    )
+    frame.loc[pd.Timestamp("2025-12-08"), "Open"] = 110.0
+    frame.loc[pd.Timestamp("2026-03-10"), "Open"] = 110.0
+    frame.loc[pd.Timestamp("2026-03-11"), "Open"] = 90.0
+    return frame
+
+
+# Saturday 2025-12-06 10:00 Shanghai, inside the XSHG schedule: Monday reacts.
+CN_WEEKEND_REPORT = {
+    "report_ts": "2025-12-05T21:00:00-05:00", "eps_estimate": 1.0, "reported_eps": 1.1, "surprise_pct": 10.0,
+}
+# Tuesday 2026-03-10 08:00 Shanghai, a trading day past the XSHG schedule's end.
+CN_UNSCHEDULED_REPORT = {
+    "report_ts": "2026-03-09T20:00:00-04:00", "eps_estimate": 1.0, "reported_eps": 1.2, "surprise_pct": 20.0,
+}
+
+
+def _cn_event_risk(db, monkeypatch, reports) -> dict:
+    service = _earnings_service(monkeypatch, last_completed=TODAY, bars=_cn_bars())
+    event_risk, _actions = service.build(
+        db,
+        symbol="600519.SS",
+        as_of_date=TODAY,
+        fundamentals={"event_calendar_as_of_date": "2026-04-01", "recent_earnings": reports},
+        market="CN",
+    )
+    return event_risk
+
+
+def test_a_cn_weekend_report_reacts_on_the_next_session(db, monkeypatch):
+    event_risk = _cn_event_risk(db, monkeypatch, [CN_WEEKEND_REPORT])
+
+    assert event_risk["avg_post_earnings_gap_pct"] == 10.0
+    assert event_risk["avg_post_earnings_5s_return_pct"] == -9.0909
+
+
+def test_a_report_past_the_exchange_schedule_is_left_out_of_drift(db, monkeypatch):
+    event_risk = _cn_event_risk(db, monkeypatch, [CN_UNSCHEDULED_REPORT, CN_WEEKEND_REPORT])
+
+    assert event_risk["beat_count_last_4"] == 2
+    # Only the weekend report: guessing 03-11 for the 08:00 report would add -10.
+    assert event_risk["avg_post_earnings_gap_pct"] == 10.0
+    assert event_risk["avg_post_earnings_5s_return_pct"] == -9.0909
