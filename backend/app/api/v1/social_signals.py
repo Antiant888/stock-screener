@@ -131,7 +131,7 @@ def theme_pulse(market: MarketCode = Query(...), db: Session = Depends(get_db)):
         return {"supported": True, "available": False,
                 "reason_code": "no_published_run", "market": market, "items": []}
     run = db.get(SocialSignalRun, pointer.run_id)
-    prepared = run.application_progress_json.get("prepared", {})
+    prepared = run.prepared_json or {}
     frozen = prepared.get("theme_evidence", [])
     context = prepared.get("context") or {}
     projection = prepared.get("projection") or {}
@@ -340,9 +340,7 @@ def admin_validation(run_id: str, db: Session = Depends(get_db)):
     rows = db.scalars(select(SocialSignalSnapshot).where(
         SocialSignalSnapshot.run_id == run_id
     ).order_by(SocialSignalSnapshot.window_days, SocialSignalSnapshot.candidate_key)).all()
-    projection = run.application_progress_json.get("prepared", {}).get(
-        "projection", {}
-    )
+    projection = (run.prepared_json or {}).get("projection", {})
     proposals = projection.get("proposals", ())
     resolutions = projection.get("resolutions", ())
     associations = [

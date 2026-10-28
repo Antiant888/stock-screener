@@ -11,6 +11,8 @@ from app.domain.social_signals.records import (
 )
 import pytest
 
+from tests.unit.repositories.test_social_signal_writer import batch, store, writer
+
 
 NOW = datetime(2026, 9, 7, 12, tzinfo=timezone.utc)
 
@@ -483,3 +485,53 @@ async def test_generic_social_refresh_endpoint_requires_admin_key(monkeypatch):
 
     assert response.status_code == 401
     assert service.called is False
+
+
+def test_resume_scan_leaves_prepared_payload_unloaded_and_publish_still_reads_it(
+    store, monkeypatch
+):
+    from dataclasses import replace
+    from decimal import Decimal
+
+    from sqlalchemy import event, inspect
+
+    from app import database
+    from app.domain.social_signals.records import SocialSnapshotRecord
+    from app.infra.db.models.social_signals import SocialSignalRun
+    from app.interfaces.tasks import social_signal_tasks as tasks
+
+    def collected(w, run_id, hours):
+        w.create_run(run_id, NOW + timedelta(hours=hours))
+        for source in (1, 2):
+            observed = batch(source, age=hours)
+            w.persist_observations(replace(observed, posts=(), outcome=replace(
+                observed.outcome, received_count=0,
+                observed_oldest_at=None, observed_newest_at=None,
+            )), run_id=run_id)
+
+    w = writer(store)
+    collected(w, "staged", 0)
+    w.prepare_run("staged", (SocialSnapshotRecord(
+        "staged", "AAA", "AAA", "US", "watch", Decimal("80"), None, None, (),
+        ("post_cap",), NOW - timedelta(days=1), "AAA", "AAA",
+    ),), NOW)
+    collected(w, "collecting", -1)
+    monkeypatch.setattr(database, "SessionLocal", store)
+    loaded = []
+
+    def record(target, _context):
+        loaded.append(target)
+
+    event.listen(SocialSignalRun, "load", record)
+    try:
+        assert tasks._latest_resumable_run() == "collecting"
+    finally:
+        event.remove(SocialSignalRun, "load", record)
+
+    staged = next(run for run in loaded if run.id == "staged")
+    assert "prepared" not in staged.application_progress_json
+    assert "prepared_json" not in inspect(staged).dict
+    with store() as db:
+        version = db.get(SocialSignalRun, "staged").registry_version
+    assert w.publish("staged", version).published is True
+    assert w.read_run_inputs("staged").work_ids == ()

@@ -149,7 +149,7 @@ class SocialSignalQueries:
 
     @staticmethod
     def _candidate_explanation(run, candidate_key, window_days):
-        prepared = run.application_progress_json.get("prepared", {}) if run else {}
+        prepared = (run.prepared_json or {}) if run else {}
         context = prepared.get("context") or {}
         candidate = next((value for value in context.get("candidates", ())
                           if value.get("candidate_key") == candidate_key
@@ -508,8 +508,7 @@ class SocialSignalQueries:
         run = self._publication()
         pins = run.application_progress_json.get("sources", {})
         observations = run.application_progress_json.get("observations", {})
-        themes = [value for value in
-                  run.application_progress_json.get("prepared", {}).get("theme_evidence", [])
+        themes = [value for value in (run.prepared_json or {}).get("theme_evidence", [])
                   if value.get("market") == market]
         themes.sort(key=lambda value: (
             -int(value.get("accepted_company_count", 0)), value.get("theme_key", "")

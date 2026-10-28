@@ -50,11 +50,11 @@ def _publish_rows(
                 "2": {"list_id": "222", "name": "Two", "version": 1},
             },
             "observations": observations or {"1": {}, "2": {}},
-            "prepared": {
-                "context": context or {"formula_version": "social-signal-v1"},
-                "theme_evidence": theme_evidence or [],
-                "projection": projection or {},
-            },
+        },
+        prepared_json={
+            "context": context or {"formula_version": "social-signal-v1"},
+            "theme_evidence": theme_evidence or [],
+            "projection": projection or {},
         },
         feature_run_ids_json={}, exposure_dates_json={}, coverage_json={},
         created_at=generated_at or records[0].latest_mention,
@@ -1249,19 +1249,19 @@ async def test_validation_preview_includes_staged_association_proposals(
     db_session.add(SocialSignalRun(
         id="validation-associations", registry_id=1,
         registry_version=runtime.version, mode="validation", provider="official",
-        status="staged", source_outcomes_json={}, application_progress_json={
-            "sources": {}, "observations": {}, "prepared": {"projection": {
-                "proposals": [{
-                    "post_id": "post-1", "theme_key": "cooling",
-                    "raw_theme": "Cooling", "company_token": "$AAA",
-                    "relationship": "supplies", "support": "supported",
-                }],
-                "resolutions": [{
-                    "raw_token": "$AAA", "status": "resolved", "symbol": "AAA",
-                    "market": "US", "reason_codes": [],
-                }],
-            }},
-        }, feature_run_ids_json={}, exposure_dates_json={}, coverage_json={},
+        status="staged", source_outcomes_json={},
+        application_progress_json={"sources": {}, "observations": {}},
+        prepared_json={"projection": {
+            "proposals": [{
+                "post_id": "post-1", "theme_key": "cooling",
+                "raw_theme": "Cooling", "company_token": "$AAA",
+                "relationship": "supplies", "support": "supported",
+            }],
+            "resolutions": [{
+                "raw_token": "$AAA", "status": "resolved", "symbol": "AAA",
+                "market": "US", "reason_codes": [],
+            }],
+        }}, feature_run_ids_json={}, exposure_dates_json={}, coverage_json={},
         created_at=now, completed_at=now,
     ))
     db_session.commit()
