@@ -73,7 +73,7 @@ _PAYLOAD_COLUMNS = (
     "revenue_current", "revenue_growth", "sales_past_5y", "sales_growth_yy", "sales_growth_qq",
     "recent_quarter_date", "previous_quarter_date", "growth_reporting_cadence",
     "growth_metric_basis", "growth_comparable_period_date", "growth_reference_gap_days",
-    "next_earnings_date", "event_calendar_as_of_date",
+    "next_earnings_date", "event_calendar_as_of_date", "recent_earnings",
     "profit_margin", "operating_margin", "gross_margin", "roe", "roa", "roic",
     "current_ratio", "quick_ratio", "debt_to_equity", "lt_debt_to_equity",
     "insider_ownership", "insider_transactions", "institutional_ownership",
@@ -108,7 +108,7 @@ _TIMESTAMP_COLUMNS = frozenset({
 })
 # _store_in_database writes these itself; nothing writes institutional_change.
 _UNCOPIED_COLUMNS = frozenset({
-    "next_earnings_date", "event_calendar_as_of_date", "ipo_date", "data_source",
+    "next_earnings_date", "event_calendar_as_of_date", "recent_earnings", "ipo_date", "data_source",
     "field_completeness_score", "field_provenance", "institutional_change",
 })
 
@@ -825,6 +825,9 @@ class FundamentalsCacheService:
                     data.get("event_calendar_as_of_date")
                 )
                 record.next_earnings_date = self._coerce_date(data.get("next_earnings_date"))
+                # Reported quarters never un-happen; a response without any keeps them.
+                if data.get("recent_earnings"):
+                    record.recent_earnings = data["recent_earnings"]
             record.ipo_date = (
                 self._coerce_date(data.get("ipo_date"))
                 or self._parse_ipo_date(data.get("first_trade_date_ms"))

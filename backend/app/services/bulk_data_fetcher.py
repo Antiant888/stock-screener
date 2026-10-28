@@ -439,7 +439,7 @@ class BulkDataFetcher:
         if ticker is None:
             return {}
         try:
-            calendar_dates, calendar_available = normalize_yahoo_earnings_dates(
+            calendar_dates, recent_earnings, calendar_available = normalize_yahoo_earnings_dates(
                 ticker.earnings_dates,
                 symbol=symbol,
                 limit=4,
@@ -447,7 +447,9 @@ class BulkDataFetcher:
         except Exception as e:
             logger.debug("Error extracting earnings calendar: %s", e)
             return {}
-        return stamp_event_calendar_observation(calendar_dates, calendar_available)
+        return stamp_event_calendar_observation(
+            calendar_dates, recent_earnings, calendar_available
+        )
 
     def _extract_quarterly_growth(
         self,

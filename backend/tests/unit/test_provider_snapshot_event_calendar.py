@@ -26,6 +26,7 @@ import pandas as pd
 import pytest
 
 from app.services.provider_snapshot_service import ProviderSnapshotService
+from app.services.yahoo_earnings_calendar import stamp_event_calendar_observation
 from tests.unit.test_provider_snapshot_service import (
     _StubFundamentalsCache,
     _StubPriceCache,
@@ -35,6 +36,8 @@ from tests.unit.test_provider_snapshot_service import (
 )
 
 _TEST_SYMBOL = "AAPL"
+_OLD_REPORT = {"report_ts": "2026-04-22T16:00:00-04:00", "eps_estimate": 1.6, "reported_eps": 1.7, "surprise_pct": 6.25}
+_NEW_REPORT = {"report_ts": "2026-07-22T16:00:00-04:00", "eps_estimate": 1.73, "reported_eps": 1.54, "surprise_pct": -10.88}
 
 
 def _seed_published_run(db, *, payload: dict) -> None:
@@ -225,11 +228,13 @@ class TestHydrationReconcilesCalendarEvidence:
                 _TEST_SYMBOL: {
                     "event_calendar_as_of_date": stale_date,
                     "next_earnings_date": date(2026, 1, 5),
+                    "recent_earnings": [_OLD_REPORT],
                 },
             },
             yahoo_payload=_complete_yahoo_payload(
                 event_calendar_as_of_date=observation,
                 next_earnings_date=fresh_next,
+                recent_earnings=[_NEW_REPORT, _OLD_REPORT],
             ),
         )
 
@@ -238,6 +243,33 @@ class TestHydrationReconcilesCalendarEvidence:
         assert stats["missing_yahoo"] == 0
         assert stored["event_calendar_as_of_date"] == observation
         assert stored["next_earnings_date"] == fresh_next
+        assert stored["recent_earnings"] == [_NEW_REPORT, _OLD_REPORT]
+
+    def test_fresh_observation_without_reports_keeps_cached_history(self):
+        observation = _utc_today()
+        stale_date = observation - timedelta(days=30)
+        db = _make_session()()
+        _seed_published_run(
+            db,
+            payload={"symbol": _TEST_SYMBOL, "event_calendar_as_of_date": stale_date},
+        )
+
+        _stats, cache = _hydrate_once(
+            db,
+            cached={
+                _TEST_SYMBOL: {
+                    "event_calendar_as_of_date": stale_date,
+                    "recent_earnings": [_OLD_REPORT],
+                },
+            },
+            yahoo_payload=_complete_yahoo_payload(
+                **stamp_event_calendar_observation([], [], True)
+            ),
+        )
+
+        stored = cache.stored[_TEST_SYMBOL]
+        assert stored["event_calendar_as_of_date"] == observation
+        assert stored["recent_earnings"] == [_OLD_REPORT]
 
     def test_fresh_cached_evidence_survives_failed_yahoo_lookup(self):
         """A stale snapshot must not clobber fresher cached evidence.
@@ -267,6 +299,7 @@ class TestHydrationReconcilesCalendarEvidence:
                 _TEST_SYMBOL: {
                     "event_calendar_as_of_date": observation,
                     "next_earnings_date": fresh_next,
+                    "recent_earnings": [_NEW_REPORT],
                 },
             },
             # Yahoo calendar lookup failed this run: no observation stamp.
@@ -277,6 +310,7 @@ class TestHydrationReconcilesCalendarEvidence:
         # The stale snapshot evidence must not overwrite the fresh cache.
         assert stored["event_calendar_as_of_date"] == observation
         assert stored["next_earnings_date"] == fresh_next
+        assert stored["recent_earnings"] == [_NEW_REPORT]
         # Completeness accounting sees the reconciled fresh evidence.
         assert stats["missing_yahoo"] == 0
 

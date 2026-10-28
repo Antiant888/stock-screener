@@ -523,6 +523,21 @@ class MarketCalendarService:
             raise CalendarScheduleUnavailable("Session close is not an aware timestamp")
         return close.to_pydatetime().astimezone(timezone.utc)
 
+    def session_open(
+        self, market: str, day: date, *, mic: str | None = None,
+    ) -> datetime | None:
+        """Provider session open in UTC; None when ``day`` has no session.
+
+        Raises ``CalendarScheduleUnavailable`` for a day outside the provider's
+        schedule, where an empty row would not mean a non-session day.
+        """
+        calendar = self._get_calendar(self.normalize_market(market), mic=mic)
+        first, last = calendar.first_session_date(), calendar.last_session_date()
+        if (first is not None and day < first) or (last is not None and day > last):
+            raise CalendarScheduleUnavailable(f"{day.isoformat()} is outside the provider schedule")
+        ranges = calendar.session_open_ranges(day)
+        return ranges[0][0].to_pydatetime().astimezone(timezone.utc) if ranges else None
+
     def last_completed_trading_day(
         self,
         market: str,

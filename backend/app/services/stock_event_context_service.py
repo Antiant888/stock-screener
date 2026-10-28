@@ -10,6 +10,8 @@ from sqlalchemy.orm import Session
 
 from app.models.institutional_ownership import InstitutionalOwnershipHistory
 from app.schemas.strategy_profile import StrategyProfileDetail
+from app.services.market_calendar_adapters import CalendarScheduleUnavailable
+from app.services.market_calendar_service import MarketCalendarService
 from app.services.price_cache_service import PriceCacheService
 from app.services.strategy_profile_service import DEFAULT_PROFILE, StrategyProfileService
 from app.services.yahoo_earnings_calendar import persisted_next_earnings_date
@@ -46,12 +48,18 @@ class StockEventContextService:
         price_cache: PriceCacheService | None = None,
         profile_service: StrategyProfileService | None = None,
         yfinance_service: Any = None,
+        market_calendar: MarketCalendarService | None = None,
     ) -> None:
-        from app.wiring.bootstrap import get_price_cache, get_yfinance_service
+        from app.wiring.bootstrap import (
+            get_market_calendar_service,
+            get_price_cache,
+            get_yfinance_service,
+        )
 
         self._price_cache = price_cache or get_price_cache()
         self._yfinance_service = yfinance_service or get_yfinance_service()
         self._profile_service = profile_service or StrategyProfileService()
+        self._market_calendar = market_calendar or get_market_calendar_service()
 
     def build(
         self,
@@ -62,22 +70,19 @@ class StockEventContextService:
         regime_label: str | None = None,
         profile: str | None = None,
         fundamentals: dict[str, Any] | None = None,
+        market: str | None = None,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         today = to_eastern_date(datetime.now(UTC))
         effective_as_of_date = as_of_date or today
         profile_detail = self._profile_service.get_profile(profile or DEFAULT_PROFILE)
 
-        # No stored source yet. Yahoo's earnings_history is keyed by fiscal
-        # quarter, not report date, and never matched the report-date parsing
-        # this payload needs; reported earnings have to be persisted by the
-        # fundamentals refresh before beat/miss and drift can be computed.
-        recent_earnings: list[dict[str, Any]] = []
         # The fundamentals refresh stores the calendar; never ask Yahoo here.
         # Judged against today: the published run can be days older than the
         # latest observation, which would then look like it came from the future.
         next_earnings_date, _observed = persisted_next_earnings_date(
             fundamentals, as_of_date=today
         )
+        recent_earnings: list[dict[str, Any]] = (fundamentals or {}).get("recent_earnings") or []
         days_until_earnings = (
             (next_earnings_date - today).days if next_earnings_date is not None else None
         )
@@ -98,9 +103,18 @@ class StockEventContextService:
             price_history = _normalize_price_history(
                 self._price_cache.get_cached_only(symbol.upper(), period="2y")
             )
+            if price_history is not None:
+                # Mid-session the cache can end in a partial bar for today.
+                last_session = self._market_calendar.last_completed_trading_day(market)
+                price_history = price_history.loc[: pd.Timestamp(last_session)]
+                # A bar fetched mid-session stays partial after its close until
+                # the post-close refresh rewrites it.
+                if self._price_cache._is_intraday_data_stale(symbol.upper(), market=market):
+                    price_history = price_history.iloc[:-1]
             avg_gap_pct, avg_return_5s_pct = self._compute_post_earnings_price_effects(
                 recent_earnings,
                 price_history,
+                market,
             )
             if price_history is None:
                 notes.append("Cached price history is unavailable for post-earnings drift analysis.")
@@ -209,15 +223,27 @@ class StockEventContextService:
         self,
         earnings: list[dict[str, Any]],
         price_history: pd.DataFrame | None,
+        market: str | None,
     ) -> tuple[float | None, float | None]:
         if price_history is None or price_history.empty or not earnings:
             return None, None
 
+        exchange_tz = self._market_calendar.market_timezone(market)
         gap_values: list[float] = []
         return_values: list[float] = []
         for item in earnings:
-            earnings_day = pd.Timestamp(item["earnings_date"])
-            trading_days = price_history.index[price_history.index > earnings_day]
+            reported_at = pd.Timestamp(item["report_ts"]).tz_convert(exchange_tz)
+            report_day = pd.Timestamp(reported_at.date())
+            try:
+                session_open = self._market_calendar.session_open(market, reported_at.date())
+            except CalendarScheduleUnavailable:
+                continue
+            # A report before that day's open moves that session; one at or
+            # after the open (intraday or after the close) moves the next.
+            if session_open is not None and reported_at < session_open:
+                trading_days = price_history.index[price_history.index >= report_day]
+            else:
+                trading_days = price_history.index[price_history.index > report_day]
             if len(trading_days) == 0:
                 continue
             entry_day = trading_days[0]
@@ -247,12 +273,12 @@ class StockEventContextService:
         beat_count = 0
         miss_count = 0
         for item in earnings:
-            surprise_percent = item.get("surprise_percent")
-            if surprise_percent is None:
+            surprise_pct = item.get("surprise_pct")
+            if surprise_pct is None:
                 continue
-            if surprise_percent > 0:
+            if surprise_pct > 0:
                 beat_count += 1
-            elif surprise_percent < 0:
+            elif surprise_pct < 0:
                 miss_count += 1
         return beat_count, miss_count
 

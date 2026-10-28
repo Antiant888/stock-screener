@@ -34,19 +34,19 @@ class TestNormalizeYahooEarningsDates:
         second = datetime(2026, 12, 18, 20, 0)
         frame = _frame([second, first])
 
-        dates, available = normalize_yahoo_earnings_dates(frame, symbol="AAPL")
+        dates, _recent, available = normalize_yahoo_earnings_dates(frame, symbol="AAPL")
 
         assert dates == [date(2026, 9, 25), date(2026, 12, 18)]
         assert available is True
 
     def test_successful_empty_response_is_available_not_failure(self):
-        dates, available = normalize_yahoo_earnings_dates(pd.DataFrame())
+        dates, _recent, available = normalize_yahoo_earnings_dates(pd.DataFrame())
 
         assert dates == []
         assert available is True
 
     def test_none_frame_is_available_not_failure(self):
-        dates, available = normalize_yahoo_earnings_dates(None)
+        dates, _recent, available = normalize_yahoo_earnings_dates(None)
 
         assert dates == []
         assert available is True
@@ -57,15 +57,12 @@ class TestNormalizeYahooEarningsDates:
             def empty(self):
                 raise RuntimeError("provider outage")
 
-        dates, available = normalize_yahoo_earnings_dates(ExplodingFrame(), symbol="AAPL")
-
-        assert dates == []
-        assert available is False
+        assert normalize_yahoo_earnings_dates(ExplodingFrame(), symbol="AAPL") == ([], [], False)
 
     def test_unparsable_rows_are_skipped_not_failures(self):
         frame = _frame(["not-a-date", datetime(2026, 10, 2, 16, 0)])
 
-        dates, available = normalize_yahoo_earnings_dates(frame, symbol="AAPL")
+        dates, _recent, available = normalize_yahoo_earnings_dates(frame, symbol="AAPL")
 
         assert dates == [date(2026, 10, 2)]
         assert available is True
@@ -79,7 +76,7 @@ class TestNormalizeYahooEarningsDates:
             }
         )
 
-        dates, available = normalize_yahoo_earnings_dates(frame, symbol="AAPL")
+        dates, _recent, available = normalize_yahoo_earnings_dates(frame, symbol="AAPL")
 
         assert dates == [date(2026, 10, 2)]
         assert available is True
@@ -96,7 +93,7 @@ class TestNormalizeYahooEarningsDates:
             }
         )
 
-        dates, available = normalize_yahoo_earnings_dates(frame, symbol="AAPL")
+        dates, _recent, available = normalize_yahoo_earnings_dates(frame, symbol="AAPL")
 
         assert dates == [date(2026, 10, 2)]
         assert available is True
@@ -105,7 +102,7 @@ class TestNormalizeYahooEarningsDates:
         """Garbage input must not stamp a known no-upcoming-earnings observation."""
         frame = _frame(["not-a-date", {"unexpected": "shape"}])
 
-        dates, available = normalize_yahoo_earnings_dates(frame, symbol="AAPL")
+        dates, _recent, available = normalize_yahoo_earnings_dates(frame, symbol="AAPL")
 
         assert dates == []
         assert available is False
@@ -113,22 +110,101 @@ class TestNormalizeYahooEarningsDates:
     def test_nonempty_frame_with_wrong_field_names_is_unavailable(self):
         frame = pd.DataFrame({"Some Other Column": [datetime(2026, 10, 2)]})
 
-        dates, available = normalize_yahoo_earnings_dates(frame, symbol="AAPL")
+        dates, _recent, available = normalize_yahoo_earnings_dates(frame, symbol="AAPL")
 
         assert dates == []
         assert available is False
 
     def test_limit_caps_normalized_rows(self):
         values = [datetime(2026, 10, 1 + offset) for offset in range(6)]
-        dates, _available = normalize_yahoo_earnings_dates(_frame(values), limit=3)
+        dates, _recent, _available = normalize_yahoo_earnings_dates(_frame(values), limit=3)
 
         assert len(dates) == 3
 
+    def test_yahoo_frame_keeps_the_newest_reported_quarters(self):
+        nan = float("nan")
+        index = pd.DatetimeIndex(
+            [
+                pd.Timestamp("2026-11-19 16:00", tz="America/New_York"),
+                pd.Timestamp("2026-08-27 16:00", tz="America/New_York"),
+                pd.Timestamp("2026-05-28 16:00", tz="America/New_York"),
+                pd.Timestamp("2026-02-25 07:00", tz="America/New_York"),
+                pd.Timestamp("2025-11-19 16:00", tz="America/New_York"),
+                pd.Timestamp("2025-08-27 16:00", tz="America/New_York"),
+                pd.Timestamp("2025-05-28 16:00", tz="America/New_York"),
+            ],
+            name="Earnings Date",
+        )
+        frame = pd.DataFrame(
+            {
+                "EPS Estimate": [1.25, 1.01, 0.93, nan, 0.75, 0.64, 0.73],
+                "Reported EPS": [nan, 1.05, 0.83, 0.89, nan, 0.68, 0.76],
+                "Surprise(%)": [nan, 3.96, -10.88, nan, nan, 6.25, 4.11],
+            },
+            index=index,
+        )
+
+        dates, recent, available = normalize_yahoo_earnings_dates(frame, symbol="NVDA")
+
+        assert dates == [
+            date(2026, 2, 25),
+            date(2026, 5, 28),
+            date(2026, 8, 27),
+            date(2026, 11, 19),
+        ]
+        assert recent == [
+            {
+                "report_ts": "2026-08-27T16:00:00-04:00",
+                "eps_estimate": 1.01,
+                "reported_eps": 1.05,
+                "surprise_pct": 3.96,
+            },
+            {
+                "report_ts": "2026-05-28T16:00:00-04:00",
+                "eps_estimate": 0.93,
+                "reported_eps": 0.83,
+                "surprise_pct": -10.88,
+            },
+            {
+                "report_ts": "2026-02-25T07:00:00-05:00",
+                "eps_estimate": None,
+                "reported_eps": 0.89,
+                "surprise_pct": None,
+            },
+            {
+                "report_ts": "2025-08-27T16:00:00-04:00",
+                "eps_estimate": 0.64,
+                "reported_eps": 0.68,
+                "surprise_pct": 6.25,
+            },
+        ]
+        assert available is True
+
+    def test_report_without_a_timezone_is_not_kept(self):
+        frame = pd.DataFrame(
+            {"Earnings Date": [datetime(2026, 8, 27, 16, 0)], "Reported EPS": [1.05]}
+        ).set_index("Earnings Date")
+
+        assert normalize_yahoo_earnings_dates(frame, symbol="AAPL") == (
+            [date(2026, 8, 27)],
+            [],
+            True,
+        )
+
+
+REPORTED = {
+    "report_ts": "2026-07-22T16:00:00-04:00",
+    "eps_estimate": 1.73,
+    "reported_eps": 1.54,
+    "surprise_pct": -10.88,
+}
+
 
 class TestStampEventCalendarObservation:
-    def test_success_stamps_observation_and_next_date(self):
+    def test_success_stamps_observation_next_date_and_recent_earnings(self):
         stamped = stamp_event_calendar_observation(
             [date(2026, 9, 25), date(2026, 12, 18)],
+            [REPORTED],
             True,
             observed_at=date(2026, 9, 20),
         )
@@ -136,27 +212,33 @@ class TestStampEventCalendarObservation:
         assert stamped == {
             "event_calendar_as_of_date": date(2026, 9, 20),
             "next_earnings_date": date(2026, 9, 25),
+            "recent_earnings": [REPORTED],
         }
 
-    def test_success_with_no_future_date_stamps_observation_with_null_date(self):
+    def test_success_without_future_date_or_reports_leaves_history_unstamped(self):
+        """No reported rows is not "no history": a partial response must not
+        overwrite the stored quarters."""
         stamped = stamp_event_calendar_observation(
             [date(2026, 1, 5)],
+            [],
             True,
             observed_at=date(2026, 9, 20),
         )
 
-        assert stamped["event_calendar_as_of_date"] == date(2026, 9, 20)
-        assert stamped["next_earnings_date"] is None
+        assert stamped == {
+            "event_calendar_as_of_date": date(2026, 9, 20),
+            "next_earnings_date": None,
+        }
 
     def test_failure_stamps_nothing(self):
-        assert stamp_event_calendar_observation([], False) == {}
+        assert stamp_event_calendar_observation([], [], False) == {}
 
-    def test_failure_with_dates_still_stamps_nothing(self):
-        assert stamp_event_calendar_observation([date(2026, 9, 25)], False) == {}
+    def test_failure_with_dates_and_reports_still_stamps_nothing(self):
+        assert stamp_event_calendar_observation([date(2026, 9, 25)], [REPORTED], False) == {}
 
     def test_default_observation_is_today_utc(self):
         before = datetime.now(UTC).date()
-        stamped = stamp_event_calendar_observation([], True)
+        stamped = stamp_event_calendar_observation([], [], True)
         after = datetime.now(UTC).date()
 
         assert stamped["event_calendar_as_of_date"] in {before, after}

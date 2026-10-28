@@ -81,6 +81,9 @@ class StockFundamental(Base):
     # provider failure, where both columns remain NULL/unchanged.
     next_earnings_date = Column(Date)
     event_calendar_as_of_date = Column(Date)
+    # Newest reported quarters from the same observation:
+    # [{report_ts, eps_estimate, reported_eps, surprise_pct}], newest first.
+    recent_earnings = Column(JsonColumn)
 
     # Profitability metrics
     profit_margin = Column(Float)

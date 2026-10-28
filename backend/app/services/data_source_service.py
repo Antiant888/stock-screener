@@ -207,6 +207,7 @@ class DataSourceService:
             "eps_years_available",
             "event_calendar_as_of_date",
             "next_earnings_date",
+            "recent_earnings",
         )
         eps_data = {key: yf_data.get(key) for key in keys if yf_data.get(key) is not None}
         return eps_data or None
