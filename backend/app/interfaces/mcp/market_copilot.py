@@ -514,34 +514,21 @@ class MarketCopilotService:
                     )
 
         if watchlist_scope is not None:
-            symbols, skipped_candidates = self._find_candidates_for_watchlist(
-                latest_run.id, watchlist_scope.id, args
-            )
+            symbols = self._find_candidates_for_watchlist(latest_run.id, watchlist_scope.id, args)
         else:
-            symbols, skipped_candidates = self._find_candidates_for_run(latest_run.id, args)
+            symbols = self._find_candidates_for_run(latest_run.id, args)
 
         scope_label = watchlist_scope.name if watchlist_scope is not None else "latest published run"
-        summary = f"Found {len(symbols)} candidates in {scope_label}."
         next_actions: list[str] = []
         if not symbols:
             next_actions.append("Broaden the filter thresholds or use a wider universe scope.")
-        facts = [
-            self._fact("candidate_count", len(symbols), "feature_runs", latest_run.as_of_date),
-            self._fact("run_id", latest_run.id, "feature_runs", latest_run.as_of_date),
-        ]
-        if skipped_candidates:
-            summary += (
-                f" {len(skipped_candidates)} row(s) were skipped because their stored "
-                "opportunity projection is invalid."
-            )
-            facts.append(
-                self._fact("skipped_candidate_count", len(skipped_candidates), "feature_runs", latest_run.as_of_date)
-            )
-            next_actions.append("Review the skipped symbols: " + ", ".join(skipped_candidates) + ".")
 
         return self._envelope(
-            summary,
-            facts=facts,
+            f"Found {len(symbols)} candidates in {scope_label}.",
+            facts=[
+                self._fact("candidate_count", len(symbols), "feature_runs", latest_run.as_of_date),
+                self._fact("run_id", latest_run.id, "feature_runs", latest_run.as_of_date),
+            ],
             citations=[
                 self._citation("feature_run", f"Feature run {latest_run.id}", f"feature_runs:{latest_run.id}", latest_run.as_of_date),
             ],
@@ -550,7 +537,6 @@ class MarketCopilotService:
             run=self._run_record(latest_run),
             scope={"type": "watchlist" if watchlist_scope is not None else "published_run", "value": scope_label},
             symbols=symbols,
-            skipped_symbols=skipped_candidates,
         )
 
     def _explain_symbol(self, args: ExplainSymbolArgs) -> ToolEnvelope:
@@ -615,36 +601,6 @@ class MarketCopilotService:
                     peers = peer_records[:5]
                 setup_payload = uow.feature_store.get_setup_payload_for_run(latest_run.id, args.symbol)
 
-        result_record = self._try_candidate_record(scan_item)
-        if result_record is None:
-            # The arguments are valid; the stored row is not. Answer for this
-            # symbol instead of letting the projection error read as bad input.
-            return self._envelope(
-                f"{args.symbol} is present in run {latest_run.id}, but its stored opportunity "
-                "projection is invalid, so the candidate facts cannot be reported.",
-                facts=[
-                    self._fact("symbol", args.symbol, "feature_runs", latest_run.as_of_date),
-                    self._fact("skipped_candidate_count", 1, "feature_runs", latest_run.as_of_date),
-                ],
-                citations=[
-                    self._citation("feature_run", f"Feature run {latest_run.id}", f"feature_runs:{latest_run.id}", latest_run.as_of_date),
-                ],
-                next_actions=[
-                    f"Inspect the stored opportunity_state for {args.symbol} in feature run {latest_run.id}."
-                ],
-                freshness=self._freshness(
-                    as_of_date=latest_run.as_of_date,
-                    feature_run=latest_run.published_at.isoformat() if latest_run.published_at else None,
-                ),
-                symbol=args.symbol,
-                depth=args.depth,
-                run=self._run_record(latest_run),
-                result=None,
-                explanation=None,
-                peers=[],
-                setup_payload=None,
-            )
-
         composite_score = explanation.composite_score
         if composite_score is None:
             summary = (
@@ -679,7 +635,7 @@ class MarketCopilotService:
             symbol=args.symbol,
             depth=args.depth,
             run=self._run_record(latest_run),
-            result=result_record,
+            result=self._candidate_record(scan_item),
             explanation=explanation_payload,
             peers=peers,
             setup_payload=setup_payload if args.depth == "full" else None,
@@ -725,7 +681,6 @@ class MarketCopilotService:
         with self._uow_scope() as uow:
             present_items = []
             missing_symbols = []
-            skipped_symbols = []
             for item in watchlist_items:
                 candidate = uow.feature_store.get_by_symbol_for_run(
                     latest_run.id,
@@ -735,12 +690,8 @@ class MarketCopilotService:
                 )
                 if candidate is None:
                     missing_symbols.append(item.symbol)
-                    continue
-                record = self._try_candidate_record(candidate)
-                if record is None:
-                    skipped_symbols.append(item.symbol)
                 else:
-                    present_items.append(record)
+                    present_items.append(self._candidate_record(candidate))
 
         strongest = sorted(
             present_items,
@@ -750,28 +701,14 @@ class MarketCopilotService:
         next_actions: list[str] = []
         if missing_symbols:
             next_actions.append("Review symbols missing from the latest published feature run.")
-        summary = (
-            f"Watchlist {watchlist.name} has {len(watchlist_items)} symbols; {len(present_items)} are present "
-            f"in published run {latest_run.id} and {len(missing_symbols)} are missing."
-        )
-        facts = [
-            self._fact("watchlist_id", watchlist.id, "user_watchlists"),
-            self._fact("watchlist_size", len(watchlist_items), "user_watchlists"),
-            self._fact("present_in_latest_run", len(present_items), "feature_runs", latest_run.as_of_date),
-        ]
-        if skipped_symbols:
-            summary += (
-                f" {len(skipped_symbols)} row(s) were skipped because their stored opportunity "
-                "projection is invalid."
-            )
-            facts.append(
-                self._fact("skipped_candidate_count", len(skipped_symbols), "feature_runs", latest_run.as_of_date)
-            )
-            next_actions.append("Review the skipped symbols: " + ", ".join(skipped_symbols) + ".")
 
         return self._envelope(
-            summary,
-            facts=facts,
+            f"Watchlist {watchlist.name} has {len(watchlist_items)} symbols; {len(present_items)} are present in published run {latest_run.id} and {len(missing_symbols)} are missing.",
+            facts=[
+                self._fact("watchlist_id", watchlist.id, "user_watchlists"),
+                self._fact("watchlist_size", len(watchlist_items), "user_watchlists"),
+                self._fact("present_in_latest_run", len(present_items), "feature_runs", latest_run.as_of_date),
+            ],
             citations=[
                 self._citation("watchlist", watchlist.name, f"user_watchlists:{watchlist.id}"),
                 self._citation("feature_run", f"Feature run {latest_run.id}", f"feature_runs:{latest_run.id}", latest_run.as_of_date),
@@ -782,7 +719,6 @@ class MarketCopilotService:
             items=present_items,
             strongest=strongest,
             missing_symbols=missing_symbols,
-            skipped_symbols=skipped_symbols,
             run=self._run_record(latest_run),
         )
 
@@ -1303,7 +1239,6 @@ class MarketCopilotService:
             )
 
         technicals = None
-        technicals_skipped = False
         if run is not None:
             with self._uow_scope() as uow:
                 row = uow.feature_store.get_by_symbol_for_run(
@@ -1313,14 +1248,9 @@ class MarketCopilotService:
                     include_setup_payload=False,
                 )
             if row is not None:
-                technicals = self._try_candidate_record(row)
-                if technicals is None:
-                    # One symbol, one broken row: say so for this symbol instead of
-                    # failing the whole call as if the arguments were wrong.
-                    technicals_skipped = True
-                else:
-                    technicals["run_id"] = run.id
-                    technicals["as_of_date"] = run.as_of_date.isoformat()
+                technicals = self._candidate_record(row)
+                technicals["run_id"] = run.id
+                technicals["as_of_date"] = run.as_of_date.isoformat()
 
         breadth_record = self._breadth_record(breadth)
         watchlist_rows = [{"id": row.id, "name": row.name} for row in watchlists]
@@ -1334,8 +1264,6 @@ class MarketCopilotService:
         ]
         if technicals is not None:
             facts.append(self._fact("composite_score", technicals.get("composite_score"), "feature_runs", run_date))
-        if technicals_skipped:
-            facts.append(self._fact("skipped_candidate_count", 1, "feature_runs", run_date))
         citations = [self._citation("stock_universe", stock.symbol, f"stock_universe:{stock.symbol}")]
         citations.extend(
             self._citation(
@@ -1361,28 +1289,17 @@ class MarketCopilotService:
                 f" Latest published run {run.id} scored it {technicals.get('composite_score')} "
                 f"with RS {technicals.get('rs_rating')} and stage {technicals.get('stage')}."
             )
-        if technicals_skipped:
-            summary += (
-                f" Its row in published run {run.id} was skipped because the stored opportunity "
-                "projection is invalid, so no technicals are reported."
-            )
         if breadth is not None:
             summary += f" Latest breadth 5-day ratio is {breadth.ratio_5day} on {breadth.date.isoformat()}."
-
-        next_actions = [
-            "Use explain_symbol for setup detail and peers.",
-            "Use theme_state to inspect any linked themes in more detail." if themes else "Use find_candidates to compare against other leadership names.",
-        ]
-        if technicals_skipped:
-            next_actions.append(
-                f"Inspect the stored opportunity projection for {stock.symbol} in run {run.id}."
-            )
 
         return self._envelope(
             summary,
             facts=facts,
             citations=citations,
-            next_actions=next_actions,
+            next_actions=[
+                "Use explain_symbol for setup detail and peers.",
+                "Use theme_state to inspect any linked themes in more detail." if themes else "Use find_candidates to compare against other leadership names.",
+            ],
             freshness=self._freshness(
                 as_of_date=run_date,
                 stock_universe="current",
@@ -1484,9 +1401,7 @@ class MarketCopilotService:
             digest=digest.model_dump(mode="json"),
         )
 
-    def _find_candidates_for_run(
-        self, run_id: int, args: FindCandidatesArgs
-    ) -> tuple[list[dict[str, Any]], list[str]]:
+    def _find_candidates_for_run(self, run_id: int, args: FindCandidatesArgs) -> list[dict[str, Any]]:
         with self._uow_scope() as uow:
             page = uow.feature_store.query_run_as_scan_results(
                 run_id,
@@ -1498,11 +1413,9 @@ class MarketCopilotService:
                 include_sparklines=False,
                 include_setup_payload=False,
             )
-            return self._candidate_records(page.items)
+            return [self._candidate_record(item) for item in page.items]
 
-    def _find_candidates_for_watchlist(
-        self, run_id: int, watchlist_id: int, args: FindCandidatesArgs
-    ) -> tuple[list[dict[str, Any]], list[str]]:
+    def _find_candidates_for_watchlist(self, run_id: int, watchlist_id: int, args: FindCandidatesArgs) -> list[dict[str, Any]]:
         sort_spec = self._build_sort_spec(args.filters)
         with self._session_scope() as db:
             symbols = [
@@ -1513,7 +1426,6 @@ class MarketCopilotService:
                 .all()
             ]
 
-        skipped: list[str] = []
         with self._uow_scope() as uow:
             items = []
             for symbol in symbols:
@@ -1523,22 +1435,14 @@ class MarketCopilotService:
                     include_sparklines=False,
                     include_setup_payload=False,
                 )
-                if item is None:
-                    continue
-                matched = self._matches_candidate_filters(item, args.filters)
-                if matched is None:
-                    # The stored row cannot be projected: filtered out, but named.
-                    skipped.append(item.symbol)
-                elif matched:
+                if item is not None and self._matches_candidate_filters(item, args.filters):
                     items.append(item)
 
         items.sort(
             key=lambda row: self._candidate_sort_value(self._candidate_record(row), sort_spec.field),
             reverse=sort_spec.order == SortOrder.DESC,
         )
-        records, rejected_while_projecting = self._candidate_records(items[: args.limit])
-        skipped.extend(rejected_while_projecting)
-        return records, skipped
+        return [self._candidate_record(item) for item in items[: args.limit]]
 
     def _build_filter_spec(self, filters: CandidateFilters) -> FilterSpec:
         spec = FilterSpec()
@@ -1569,11 +1473,8 @@ class MarketCopilotService:
             )
         return SortSpec(field=filters.sort_field, order=SortOrder(filters.sort_order))
 
-    def _matches_candidate_filters(self, item: Any, filters: CandidateFilters) -> bool | None:
-        """Return ``None`` when the row cannot be projected, so callers can name it."""
-        record = self._try_candidate_record(item)
-        if record is None:
-            return None
+    def _matches_candidate_filters(self, item: Any, filters: CandidateFilters) -> bool:
+        record = self._candidate_record(item)
         return all(
             (
                 filters.min_score is None or (record.get("composite_score") or 0) >= filters.min_score,
@@ -1803,21 +1704,6 @@ class MarketCopilotService:
             record["composite_score"] = round(record["composite_score"], 2)
         return record
 
-    def _try_candidate_record(self, item: Any) -> dict[str, Any] | None:
-        """Project one row, or return ``None`` when the shared schema rejects it.
-
-        Every candidate path goes through here, so a stored ``opportunity_state``
-        that no longer validates never surfaces as ``invalid_arguments`` - the
-        tool arguments were fine, the stored row was not.
-        """
-        try:
-            return self._candidate_record(item)
-        except ValidationError as exc:
-            logger.warning(
-                "candidate record skipped for %s: %s", item.symbol, exc.errors()[0].get("msg", "invalid")
-            )
-            return None
-
     def _candidate_records(self, items: Any) -> tuple[list[dict[str, Any]], list[str]]:
         """Project several rows, skipping rows the shared schema rejects.
 
@@ -1828,11 +1714,13 @@ class MarketCopilotService:
         records: list[dict[str, Any]] = []
         skipped: list[str] = []
         for item in items:
-            record = self._try_candidate_record(item)
-            if record is None:
+            try:
+                records.append(self._candidate_record(item))
+            except ValidationError as exc:
                 skipped.append(item.symbol)
-            else:
-                records.append(record)
+                logger.warning(
+                    "candidate record skipped for %s: %s", item.symbol, exc.errors()[0].get("msg", "invalid")
+                )
         return records, skipped
 
     def _theme_record(self, theme: ThemeCluster, metrics: ThemeMetrics | None) -> dict[str, Any]:
