@@ -20,6 +20,7 @@ from app.domain.scanning.ports import (
     MarketRsResolution,
     SerialStockScanBatchRunner,
     StockScanOutcome,
+    run_stock_scan_call,
 )
 from app.use_cases.feature_store.build_daily_snapshot import (
     BootstrapCacheCoverageInsufficient,
@@ -1790,3 +1791,136 @@ class TestComputeRunnerRouting:
             "data_errors": {},
         }
 
+
+
+# ---------------------------------------------------------------------------
+# Chunk pipeline: the parent persists chunk N while the pool computes N+1
+# ---------------------------------------------------------------------------
+
+
+class _JournalingRunnerFactory:
+    """Compute pool stand-in whose submits and collects land in a shared journal."""
+
+    def __init__(self, journal: list):
+        self._journal = journal
+
+    def __call__(self, scanner, processes):
+        journal = self._journal
+
+        class _Pending:
+            def __init__(self, calls):
+                self._calls = calls
+
+            def result(self):
+                journal.append(("collect", [call.symbol for call in self._calls]))
+                return [run_stock_scan_call(scanner, call) for call in self._calls]
+
+        class _Runner:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return None
+
+            def submit_batch(self, calls):
+                journal.append(("submit", [call.symbol for call in calls]))
+                return _Pending(calls)
+
+        return _Runner()
+
+
+class _JournalingFeatureStoreRepository(FakeFeatureStoreRepository):
+    def __init__(self, journal: list):
+        super().__init__()
+        self._journal = journal
+
+    def upsert_snapshot_rows(self, run_id, rows):
+        self._journal.append(("persist", [row.symbol for row in rows]))
+        return super().upsert_snapshot_rows(run_id, rows)
+
+
+class _JournalingFeatureRunRepository(FakeFeatureRunRepository):
+    def __init__(self, journal: list):
+        super().__init__()
+        self._journal = journal
+
+    def mark_completed(self, run_id, stats, warnings=()):
+        self._journal.append(
+            (
+                "completed",
+                stats.processed_symbols,
+                stats.failed_symbols,
+                stats.passed_symbols,
+                tuple(warnings),
+            )
+        )
+        return super().mark_completed(run_id, stats, warnings=warnings)
+
+
+class TestChunkPipeline:
+    def _run(self, symbols, *, chunk_size, cancel_after=None):
+        journal: list = []
+        uow = FakeUnitOfWork(
+            universe=FakeUniverseRepository(symbols),
+            feature_runs=_JournalingFeatureRunRepository(journal),
+            feature_store=_JournalingFeatureStoreRepository(journal),
+        )
+        progress = FakeProgressSink()
+        result = BuildDailyFeatureSnapshotUseCase(
+            scanner=_BulkAwareScanner(results={"C": {"error": "No data available"}}),
+            data_provider=FakeStockDataProvider(),
+            scan_batch_runner_factory=_JournalingRunnerFactory(journal),
+        ).execute(
+            uow,
+            _make_cmd(chunk_size=chunk_size, parallel_workers=2),
+            progress,
+            FakeCancellationToken(cancel_after=cancel_after),
+        )
+        return result, journal, progress
+
+    @_PATCH_TRADING_DAY
+    def test_next_chunk_is_submitted_before_the_pending_chunk_is_persisted(self, _mock_td):
+        result, journal, progress = self._run(["A", "B", "C", "D", "E", "F"], chunk_size=2)
+
+        assert journal == [
+            ("submit", ["A", "B"]),
+            ("submit", ["C", "D"]),
+            ("collect", ["A", "B"]),
+            ("persist", ["A", "B"]),
+            ("submit", ["E", "F"]),
+            ("collect", ["C", "D"]),
+            ("persist", ["D"]),
+            ("collect", ["E", "F"]),
+            ("persist", ["E", "F"]),
+            ("completed", 5, 1, 5, ()),
+        ]
+        assert (result.processed_symbols, result.failed_symbols, result.row_count) == (6, 1, 5)
+        assert [(event.current, event.passed, event.failed) for event in progress.events] == [
+            (2, 2, 0),
+            (4, 3, 1),
+            (6, 5, 1),
+            (6, 5, 1),
+        ]
+
+    @_PATCH_TRADING_DAY
+    def test_cancellation_persists_the_pending_chunk_before_stopping(self, _mock_td):
+        result, journal, progress = self._run(
+            ["A", "B", "C", "D", "E", "F"], chunk_size=2, cancel_after=2
+        )
+
+        assert journal == [
+            ("submit", ["A", "B"]),
+            ("submit", ["C", "D"]),
+            ("collect", ["A", "B"]),
+            ("persist", ["A", "B"]),
+            ("collect", ["C", "D"]),
+            ("persist", ["D"]),
+            ("completed", 3, 1, 3, ("Cancelled by user",)),
+        ]
+        assert result.status == RunStatus.COMPLETED.value
+        assert (result.processed_symbols, result.failed_symbols, result.row_count) == (4, 1, 3)
+        assert result.warnings[-1] == "Cancelled by user"
+        assert [(event.current, event.passed, event.failed) for event in progress.events] == [
+            (2, 2, 0),
+            (4, 3, 1),
+        ]
