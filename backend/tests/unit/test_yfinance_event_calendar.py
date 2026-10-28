@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import pandas as pd
 
+from app.services.data_source_service import DataSourceService
 from app.services.stock_event_context_service import StockEventContextService
 from app.services.yfinance_service import YFinanceService
 
@@ -99,3 +100,51 @@ def test_fundamentals_snapshot_omits_calendar_marker_when_lookup_fails(monkeypat
     assert result is not None
     assert "event_calendar_as_of_date" not in result
     assert "next_earnings_date" not in result
+
+
+def test_fundamentals_snapshot_without_reports_leaves_history_unstamped(monkeypatch):
+    service = _service()
+    service._extract_eps_rating_data = lambda _ticker: {}
+    monkeypatch.setattr(
+        "app.services.yfinance_service.yf.Ticker",
+        lambda _symbol: SimpleNamespace(info={"symbol": "AAPL"}, earnings_dates=None),
+    )
+
+    observed_before = datetime.now(UTC).date()
+    result = service.get_fundamentals("AAPL")
+    observed_after = datetime.now(UTC).date()
+
+    assert result["event_calendar_as_of_date"] in {observed_before, observed_after}
+    assert "recent_earnings" not in result
+
+
+def test_finviz_supplement_carries_reported_quarters(monkeypatch):
+    service = _service()
+    service._extract_eps_rating_data = lambda _ticker: {}
+    ticker = SimpleNamespace(
+        info={"symbol": "AAPL"},
+        earnings_dates=pd.DataFrame(
+            {
+                "Earnings Date": [pd.Timestamp("2026-07-22 16:00", tz="America/New_York")],
+                "EPS Estimate": [1.73],
+                "Reported EPS": [1.54],
+                "Surprise(%)": [-10.88],
+            }
+        ).set_index("Earnings Date"),
+    )
+    monkeypatch.setattr(
+        "app.services.yfinance_service.yf.Ticker", lambda _symbol: ticker
+    )
+    data_source = DataSourceService.__new__(DataSourceService)
+    data_source.yfinance_service = service
+
+    eps_data = data_source.get_eps_rating_data("AAPL")
+
+    assert eps_data["recent_earnings"] == [
+        {
+            "report_ts": "2026-07-22T16:00:00-04:00",
+            "eps_estimate": 1.73,
+            "reported_eps": 1.54,
+            "surprise_pct": -10.88,
+        }
+    ]

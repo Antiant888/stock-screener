@@ -9,12 +9,18 @@ so ``prepare_data_bulk``'s persisted-only event gate can pass.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from types import SimpleNamespace
 
 import pandas as pd
+import pytest
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
 
+from app.database import Base
+from app.models.stock import StockFundamental
 from app.services.bulk_data_fetcher import BulkDataFetcher
+from app.services.fundamentals_cache_service import FundamentalsCacheService
 
 
 def _ticker_with_calendar(earnings_dates) -> SimpleNamespace:
@@ -41,6 +47,7 @@ class TestExtractFundamentalsCalendarEvidence:
 
         assert result["next_earnings_date"] == future.date()
         assert result["event_calendar_as_of_date"] in {before, after}
+        assert "recent_earnings" not in result
 
     def test_successful_empty_calendar_stays_observed_without_next_date(self):
         """Success with no upcoming earnings keeps availability via the stamp."""
@@ -84,3 +91,62 @@ class TestExtractFundamentalsCalendarEvidence:
         stamped = BulkDataFetcher()._extract_earnings_calendar(ticker, symbol="AAPL")
 
         assert stamped["next_earnings_date"] == future.date()
+
+
+STORED_HISTORY = [
+    {"report_ts": "2026-07-22T16:00:00-04:00", "eps_estimate": 1.73, "reported_eps": 1.54, "surprise_pct": -10.88},
+]
+
+
+class FailingCalendarTicker(SimpleNamespace):
+    @property
+    def earnings_dates(self):
+        raise RuntimeError("calendar unavailable")
+
+
+class TestStoredEarningsHistory:
+    def _store_with_history(self):
+        engine = create_engine("sqlite:///:memory:")
+        Base.metadata.create_all(engine)
+        factory = sessionmaker(bind=engine)
+        service = FundamentalsCacheService(redis_client=None, session_factory=factory)
+        seeded = {"event_calendar_as_of_date": date(2026, 10, 1), "recent_earnings": STORED_HISTORY}
+        assert service._store_in_database("AAPL", seeded, data_source="yfinance", market="US")
+        return service, factory
+
+    def _stored_history(self, factory):
+        db = factory()
+        try:
+            return db.query(StockFundamental).filter_by(symbol="AAPL").one().recent_earnings
+        finally:
+            db.close()
+
+    def test_failed_lookup_leaves_stored_history_untouched(self):
+        service, factory = self._store_with_history()
+        payload = BulkDataFetcher()._extract_fundamentals(FailingCalendarTicker(), {"marketCap": 42})
+
+        assert service._store_in_database("AAPL", payload, data_source="yfinance", market="US")
+
+        assert self._stored_history(factory) == STORED_HISTORY
+
+    @pytest.mark.parametrize(
+        "earnings_dates",
+        [
+            None,
+            pd.DataFrame(),
+            # Upcoming rows only: Yahoo left out the Reported EPS column.
+            pd.DataFrame(
+                {"Earnings Date": [datetime.now(UTC) + timedelta(days=9)], "EPS Estimate": [1.25]}
+            ).set_index("Earnings Date"),
+        ],
+        ids=["none", "empty", "no_reported_eps_column"],
+    )
+    def test_successful_lookup_without_reports_keeps_stored_history(self, earnings_dates):
+        service, factory = self._store_with_history()
+        payload = BulkDataFetcher()._extract_fundamentals(
+            _ticker_with_calendar(earnings_dates), {"marketCap": 42}
+        )
+
+        assert service._store_in_database("AAPL", payload, data_source="yfinance", market="US")
+
+        assert self._stored_history(factory) == STORED_HISTORY

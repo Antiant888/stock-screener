@@ -157,6 +157,7 @@ class ProviderSnapshotService:
     EVENT_CALENDAR_KEYS = (
         "event_calendar_as_of_date",
         "next_earnings_date",
+        "recent_earnings",
     )
     WEEKLY_REFERENCE_BUNDLE_SCHEMA_VERSION = WEEKLY_REFERENCE_BUNDLE_SCHEMA_VERSION
     WEEKLY_REFERENCE_MANIFEST_SCHEMA_VERSION = WEEKLY_REFERENCE_MANIFEST_SCHEMA_VERSION
@@ -1237,7 +1238,7 @@ class ProviderSnapshotService:
             logger.warning("Failed Yahoo profile hydration for %s: %s", symbol, exc)
 
         try:
-            calendar_dates, calendar_available = normalize_yahoo_earnings_dates(
+            calendar_dates, recent_earnings, calendar_available = normalize_yahoo_earnings_dates(
                 ticker.earnings_dates,
                 symbol=symbol,
                 limit=4,
@@ -1245,6 +1246,7 @@ class ProviderSnapshotService:
             yahoo_payload.update(
                 stamp_event_calendar_observation(
                     calendar_dates,
+                    recent_earnings,
                     calendar_available,
                 )
             )

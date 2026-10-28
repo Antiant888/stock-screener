@@ -11,6 +11,10 @@ from app.database import Base
 from app.models.stock import StockFundamental
 from app.services.fundamentals_cache_service import FundamentalsCacheService
 
+HISTORY = [
+    {"report_ts": "2026-07-22T16:00:00-04:00", "eps_estimate": 1.73, "reported_eps": 1.54, "surprise_pct": -10.88},
+]
+
 FULL_PAYLOAD = {
     "market_cap": 1_000_000_001,
     "shares_outstanding": 2_000_000_002,
@@ -47,6 +51,7 @@ FULL_PAYLOAD = {
     "growth_reference_gap_days": 91,
     "next_earnings_date": "2026-11-05",
     "event_calendar_as_of_date": "2026-10-19",
+    "recent_earnings": HISTORY,
     "profit_margin": 4.01,
     "operating_margin": 4.02,
     "gross_margin": 4.03,
@@ -136,6 +141,7 @@ PARTIAL_UPDATE = {
 
 CALENDAR_UPDATE = {
     "event_calendar_as_of_date": "2026-10-20",
+    "recent_earnings": [],
     "market_cap": 5,
     "field_completeness_score": 5,
     "field_provenance": {},
@@ -177,6 +183,7 @@ COLUMNS_AFTER_INSERT = {
     "growth_reference_gap_days": 91,
     "next_earnings_date": date(2026, 11, 5),
     "event_calendar_as_of_date": date(2026, 10, 19),
+    "recent_earnings": HISTORY,
     "profit_margin": 4.01,
     "operating_margin": 4.02,
     "gross_margin": 4.03,
@@ -279,6 +286,7 @@ READ_AFTER_INSERT = {
     "growth_reference_gap_days": 91,
     "next_earnings_date": date(2026, 11, 5),
     "event_calendar_as_of_date": date(2026, 10, 19),
+    "recent_earnings": HISTORY,
     "eps_growth_qq": 3.05,
     "profit_margin": 4.01,
     "operating_margin": 4.02,
@@ -444,6 +452,7 @@ def test_updates_keep_guarded_columns_and_clear_the_rest():
         "eps_growth_quarterly": 30.5,
         "next_earnings_date": date(2026, 11, 5),
         "event_calendar_as_of_date": date(2026, 10, 19),
+        "recent_earnings": HISTORY,
         "sector": "Healthcare",
         "ipo_date": date(2001, 2, 3),
         "recommendation": 2.5,
@@ -466,6 +475,7 @@ def test_updates_keep_guarded_columns_and_clear_the_rest():
         "eps_growth_qq": 30.5,
         "next_earnings_date": date(2026, 11, 5),
         "event_calendar_as_of_date": date(2026, 10, 19),
+        "recent_earnings": HISTORY,
         "sector": "Healthcare",
         "ipo_date": date(2001, 2, 3),
         "first_trade_date": int(datetime(2001, 2, 3).timestamp()),
@@ -489,6 +499,7 @@ def test_updates_keep_guarded_columns_and_clear_the_rest():
         "shares_outstanding": 2_000_000_002,
         "avg_volume": 0,
         "event_calendar_as_of_date": date(2026, 10, 20),
+        "recent_earnings": HISTORY,
         "data_source": "yfinance",
         "field_completeness_score": 5,
         "field_provenance": {},

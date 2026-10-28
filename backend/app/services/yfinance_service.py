@@ -223,8 +223,8 @@ class YFinanceService:
 
             ticker = yf.Ticker(symbol)
             info = ticker.info
-            calendar_dates, calendar_available = (
-                self._get_upcoming_earnings_dates_from_ticker(
+            calendar_dates, recent_earnings, calendar_available = (
+                self._get_earnings_calendar_from_ticker(
                     ticker,
                     symbol=symbol,
                     limit=4,
@@ -261,6 +261,7 @@ class YFinanceService:
                 result.update(
                     stamp_event_calendar_observation(
                         calendar_dates,
+                        recent_earnings,
                         True,
                         observed_at=calendar_as_of_date,
                     )
@@ -325,13 +326,13 @@ class YFinanceService:
 
         return result
 
-    def _get_upcoming_earnings_dates_from_ticker(
+    def _get_earnings_calendar_from_ticker(
         self,
         ticker: Any,
         *,
         symbol: str,
         limit: int,
-    ) -> tuple[List[date], bool]:
+    ) -> tuple[List[date], List[Dict[str, Any]], bool]:
         """Normalize one ticker calendar lookup without another rate-limit wait."""
         try:
             return normalize_yahoo_earnings_dates(
@@ -341,7 +342,7 @@ class YFinanceService:
             )
         except Exception as exc:
             logger.error("Error fetching earnings dates for %s: %s", symbol, exc)
-            return [], False
+            return [], [], False
 
     def get_upcoming_earnings_dates_with_status(
         self,
@@ -365,11 +366,12 @@ class YFinanceService:
         except Exception as e:
             logger.error(f"Error fetching earnings dates for {symbol}: {e}")
             return [], False
-        return self._get_upcoming_earnings_dates_from_ticker(
+        dates, _recent_earnings, available = self._get_earnings_calendar_from_ticker(
             ticker,
             symbol=symbol,
             limit=limit,
         )
+        return dates, available
 
     def get_upcoming_earnings_dates(self, symbol: str, limit: int = 4) -> List[date]:
         """Backward-compatible dates-only calendar lookup."""

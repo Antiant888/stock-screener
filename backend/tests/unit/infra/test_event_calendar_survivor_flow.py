@@ -202,8 +202,11 @@ class TestPersistedEvidenceToSurvivorClassification:
             }
         ).set_index("Earnings Date")
         stamped = {}
-        dates, available = normalize_yahoo_earnings_dates(frame, symbol="AAPL")
-        stamped.update(stamp_event_calendar_observation(dates, available))
+        stamped.update(
+            stamp_event_calendar_observation(
+                *normalize_yahoo_earnings_dates(frame, symbol="AAPL")
+            )
+        )
         assert stamped, "producer must stamp an observation on success"
 
         layer, _event_context = _make_layer(price_data, fundamentals=stamped)

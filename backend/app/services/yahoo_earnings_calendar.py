@@ -25,6 +25,8 @@ from typing import Any
 
 import pandas as pd
 
+from app.infra.serialization import finite_float_or_none
+
 logger = logging.getLogger(__name__)
 
 # How long a persisted calendar observation stays usable by the scan
@@ -40,6 +42,8 @@ EVENT_CALENDAR_FUTURE_TOLERANCE_DAYS = 3
 # weekly run always refreshes before the consumer TTL can reject it.
 # (With a 7-day cadence and 14-day TTL, max observation age stays ≤ 14.)
 EVENT_CALENDAR_PRODUCER_REFRESH_AFTER_DAYS = 7
+# The stock page reports beats and misses over the last four quarters.
+RECENT_EARNINGS_LIMIT = 4
 
 
 def normalize_yahoo_earnings_dates(
@@ -47,12 +51,13 @@ def normalize_yahoo_earnings_dates(
     *,
     symbol: str | None = None,
     limit: int = 4,
-) -> tuple[list[date], bool]:
+) -> tuple[list[date], list[dict[str, Any]], bool]:
     """Normalize one ``ticker.earnings_dates`` lookup.
 
-    Returns a sorted, de-duplicated date list and an availability flag.
-    A successful empty response is ``([], True)``; provider failure is
-    ``([], False)``.
+    Returns the sorted, de-duplicated dates of the first ``limit`` rows, the
+    newest reported quarters as ``{report_ts, eps_estimate, reported_eps,
+    surprise_pct}`` records, and an availability flag. A successful empty
+    response is ``([], [], True)``; provider failure is ``([], [], False)``.
     """
     try:
         # NOTE: ``DataFrame.empty`` is True whenever any axis is empty —
@@ -60,7 +65,7 @@ def normalize_yahoo_earnings_dates(
         # Test row count explicitly so such frames are still normalized.
         row_count = 0 if earnings_dates is None else len(earnings_dates)
         if earnings_dates is None or row_count == 0:
-            return [], True
+            return [], [], True
 
         normalized = earnings_dates.reset_index()
         # Only date-carrying columns are eligible. A missing/NA cell in a
@@ -79,7 +84,8 @@ def normalize_yahoo_earnings_dates(
             date_column = "index"
 
         result: list[date] = []
-        for row in normalized.head(limit).to_dict("records"):
+        reported: list[tuple[pd.Timestamp, dict[str, Any]]] = []
+        for position, row in enumerate(normalized.to_dict("records")):
             if date_column is None:
                 continue
             raw_value = row.get(date_column)
@@ -102,7 +108,23 @@ def normalize_yahoo_earnings_dates(
                 continue
             if pd.isna(timestamp):
                 continue
-            result.append(timestamp.date())
+            if position < limit:
+                result.append(timestamp.date())
+            reported_eps = finite_float_or_none(row.get("Reported EPS"))
+            # Drift places the report before or after the open, which a
+            # timestamp without a zone cannot do.
+            if reported_eps is not None and timestamp.tzinfo is not None:
+                reported.append(
+                    (
+                        timestamp,
+                        {
+                            "report_ts": timestamp.isoformat(),
+                            "eps_estimate": finite_float_or_none(row.get("EPS Estimate")),
+                            "reported_eps": reported_eps,
+                            "surprise_pct": finite_float_or_none(row.get("Surprise(%)")),
+                        },
+                    )
+                )
         if not result and row_count > 0:
             # A nonempty response that yields no parseable dates is malformed
             # provider data, not a known no-upcoming-earnings result. Stay
@@ -114,15 +136,18 @@ def normalize_yahoo_earnings_dates(
                 symbol,
                 row_count,
             )
-            return [], False
-        return sorted(set(result)), True
+            return [], [], False
+        reported.sort(key=lambda item: item[0], reverse=True)
+        recent_earnings = [record for _timestamp, record in reported[:RECENT_EARNINGS_LIMIT]]
+        return sorted(set(result)), recent_earnings, True
     except Exception as exc:
         logger.error("Error fetching earnings dates for %s: %s", symbol, exc)
-        return [], False
+        return [], [], False
 
 
 def stamp_event_calendar_observation(
     upcoming_dates: list[date],
+    recent_earnings: list[dict[str, Any]],
     available: bool,
     *,
     observed_at: date | None = None,
@@ -131,10 +156,12 @@ def stamp_event_calendar_observation(
 
     Returns ``{}`` when the provider lookup failed so failed producers
     never stamp a marker, keeping the row explicitly unavailable for the
-    fail-closed gate and eligible for retry. A successful observation
-    stamps ``event_calendar_as_of_date`` (the freshness owner) and the
-    first known-future ``next_earnings_date`` (or ``None`` when Yahoo
-    lists no upcoming earnings).
+    fail-closed gate and eligible for retry. A successful observation stamps
+    ``event_calendar_as_of_date`` (the freshness owner), the first
+    known-future ``next_earnings_date`` (or ``None`` when Yahoo lists no
+    upcoming earnings), and any reported quarters as ``recent_earnings``.
+    No reported quarters stamps no history: a ``None`` frame or one without
+    a ``Reported EPS`` column also yields none, and must not wipe it.
     """
     if not available:
         return {}
@@ -143,10 +170,13 @@ def stamp_event_calendar_observation(
         (value for value in upcoming_dates if value >= observation_date),
         None,
     )
-    return {
+    stamp: dict[str, Any] = {
         "event_calendar_as_of_date": observation_date,
         "next_earnings_date": next_earnings_date,
     }
+    if recent_earnings:
+        stamp["recent_earnings"] = recent_earnings
+    return stamp
 
 
 def is_event_calendar_observation_fresh(
