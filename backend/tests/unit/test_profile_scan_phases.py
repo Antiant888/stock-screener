@@ -4,26 +4,49 @@ import os
 
 import pytest
 
-from scripts.profile_scan_phases import PhaseClock, _Timed, block_provider_fetches, summarize
+from app.domain.scanning.ports import SerialStockScanBatchRunner, StockScanCall
+from scripts.profile_scan_phases import (
+    PhaseClock,
+    _Timed,
+    _TimedRunner,
+    block_provider_fetches,
+    summarize,
+)
 
 
-def test_summarize_reports_shares_and_the_prefetch_overlap_bound():
+def test_summarize_reports_phase_totals_and_shares():
     chunks = [
-        {"prefetch": 1.0, "compute": 4.0, "persist": 0.5, "commit": 0.5, "wall": 6.5},
-        {"prefetch": 2.0, "compute": 1.0, "persist": 0.5, "commit": 0.5, "wall": 4.5},
-        {"prefetch": 0.5, "compute": 3.0, "wall": 3.5},
+        {"prefetch": 1.0, "compute_submit": 0.2, "compute_wait": 3.8, "persist": 0.5,
+         "commit": 0.5, "wall": 6.5},
+        {"prefetch": 2.0, "compute_submit": 0.1, "compute_wait": 0.9, "persist": 0.5,
+         "commit": 0.5, "wall": 4.5},
+        {"prefetch": 0.5, "compute_wait": 3.0, "wall": 3.5},
     ]
 
     summary = summarize(chunks)
 
     assert summary["wall_seconds"] == pytest.approx(14.5)
-    assert summary["totals"]["compute"] == pytest.approx(8.0)
+    assert summary["totals"]["compute_submit"] == pytest.approx(0.3)
+    assert summary["totals"]["compute_wait"] == pytest.approx(7.7)
     assert summary["totals"]["other_parent"] == pytest.approx(1.0)
+    assert summary["shares"]["compute_wait"] == pytest.approx(7.7 / 14.5)
     assert summary["parent_io_share"] == pytest.approx(5.5 / 14.5)
-    # Chunk 2's prefetch (2.0s) fits inside chunk 1's compute (4.0s); chunk 3's
-    # prefetch (0.5s) fits inside chunk 2's compute (1.0s). Chunk 1's cannot overlap.
-    assert summary["prefetch_overlap_seconds"] == pytest.approx(2.5)
-    assert summary["max_speedup_from_prefetch_overlap"] == pytest.approx(14.5 / 12.0)
+    assert summary["median_per_chunk"]["compute_submit"] == pytest.approx(0.1)
+
+
+def test_timed_runner_splits_submission_from_the_wait_for_results():
+    class Scanner:
+        def scan_stock_multi(self, symbol, **kwargs):
+            return {"symbol": symbol}
+
+    clock = PhaseClock()
+    runner = _TimedRunner(SerialStockScanBatchRunner(Scanner()), clock)
+
+    pending = runner.submit_batch([StockScanCall(symbol="A", kwargs={})])
+    assert set(clock.current) == {"compute_submit"}
+
+    assert [outcome.result for outcome in pending.result()] == [{"symbol": "A"}]
+    assert set(clock.current) == {"compute_submit", "compute_wait"}
 
 
 def test_chunk_wall_time_excludes_time_between_chunks(monkeypatch):

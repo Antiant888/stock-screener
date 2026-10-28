@@ -16,6 +16,7 @@ from app.domain.common.errors import ValidationError
 from app.domain.feature_store.models import RunStatus
 from app.domain.relative_strength import BALANCED_RS_FORMULA_VERSION
 from app.domain.scanning.ports import (
+    CompletedScanBatch,
     MarketRsResolution,
     SerialStockScanBatchRunner,
     StockScanOutcome,
@@ -1705,11 +1706,11 @@ class _RecordingRunnerFactory:
             def __exit__(self, exc_type, exc, tb):
                 return None
 
-            def scan_batch(self, calls):
+            def submit_batch(self, calls):
                 factory.batches.append([call.symbol for call in calls])
                 if factory._outcome_override is not None:
-                    return [factory._outcome_override for _ in calls]
-                return serial.scan_batch(calls)
+                    return CompletedScanBatch([factory._outcome_override for _ in calls])
+                return serial.submit_batch(calls)
 
         return _Runner()
 

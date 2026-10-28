@@ -809,7 +809,9 @@ class BuildDailyFeatureSnapshotUseCase:
                 else in_process_runner
             )
             scan_outcomes = iter(
-                runner.scan_batch([call for call in calls if call is not None])
+                runner.submit_batch(
+                    [call for call in calls if call is not None]
+                ).result()
             )
             outcomes_by_symbol: dict[
                 str,

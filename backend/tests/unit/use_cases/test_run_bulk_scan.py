@@ -110,9 +110,9 @@ class _RecordingRunnerFactory:
             def __exit__(self, exc_type, exc, tb):
                 factory.closed += 1
 
-            def scan_batch(self, calls):
+            def submit_batch(self, calls):
                 factory.batches.append([call.symbol for call in calls])
-                return serial.scan_batch(calls)
+                return serial.submit_batch(calls)
 
         return _Runner()
 
@@ -506,7 +506,9 @@ class TestRunBulkScanHappyPath:
             )
 
         assert scan_repo.scans["s1"].status == ScanStatus.FAILED.value
-        assert uow.scan_results.count_by_scan_id("s1") == 2
+        # The first chunk was still pending when the second chunk's Market RS
+        # read failed; only committed chunks count towards the resume checkpoint.
+        assert uow.scan_results.count_by_scan_id("s1") == 0
 
     def test_cache_only_flag_propagates_to_bulk_data_fetch(self):
         """cache_only=True on the command must disable live-fetch fallback inside

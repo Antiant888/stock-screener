@@ -3,12 +3,20 @@
 Runs the real RunBulkScanUseCase against this deployment's database and cache,
 with every port the chunk loop calls wrapped in a timer:
 
-    prefetch      data_provider.prepare_data_bulk        (parent, I/O + frame building)
-    market_rs     market_rs_reader.get + apply           (parent, I/O)
-    compute       batch runner scan_batch                (forked compute pool)
-    persist       scan_results.persist_orchestrator_results (parent, I/O)
-    commit        uow.commit                             (parent, I/O)
-    cancel_check  cancel.is_cancelled                    (parent, I/O)
+    prefetch        data_provider.prepare_data_bulk        (parent, I/O + frame building)
+    market_rs       market_rs_reader.get + apply           (parent, I/O)
+    compute_submit  batch runner submit_batch              (parent, pickling calls to the pool)
+    compute_wait    pending batch result()                 (parent blocked on the compute pool)
+    persist         scan_results.persist_orchestrator_results (parent, I/O)
+    commit          uow.commit                             (parent, I/O)
+    cancel_check    cancel.is_cancelled                    (parent, I/O)
+
+The chunk loop is pipelined: the parent prefetches and submits chunk N+1
+before it collects and persists chunk N. A chunk record closes on the
+progress event for chunk N, so it holds the prefetch, market_rs and
+compute_submit of N+1 and the compute_wait, persist and commit of N. Totals
+are unaffected. compute_wait is the time the parent had nothing left to do
+but wait for the pool.
 
 The scan row is created with status "failed" and its status is never changed.
 That status is not active, so the run does not take the single-active-scan
@@ -46,7 +54,6 @@ import sys
 import time
 import uuid
 from contextlib import contextmanager
-from itertools import pairwise
 from pathlib import Path
 
 backend_dir = Path(__file__).parent.parent
@@ -253,11 +260,24 @@ def _session_state(market: str) -> dict:
         return {"error": str(exc)}
 
 
+class _TimedRunner:
+    """Times a batch's submission and the wait for its result as two phases."""
+
+    def __init__(self, runner, clock: PhaseClock) -> None:
+        self._runner = runner
+        self._clock = clock
+
+    def submit_batch(self, calls):
+        with self._clock.phase("compute_submit"):
+            pending = self._runner.submit_batch(calls)
+        return _Timed(pending, self._clock, {"result": "compute_wait"})
+
+
 def _timed_runner_factory(clock: PhaseClock):
     @contextmanager
     def factory(scanner, processes):
         with process_stock_scan_batch_runner(scanner, processes) as runner:
-            yield _Timed(runner, clock, {"scan_batch": "compute"})
+            yield _TimedRunner(runner, clock)
 
     return factory
 
@@ -308,16 +328,19 @@ def _delete_scan(scan_id: str) -> None:
 
 
 def summarize(chunks: list[dict[str, float]]) -> dict:
-    """Phase totals and shares, plus the most a one-chunk-ahead prefetch could save."""
+    """Phase totals and shares across every finished chunk."""
     wall = sum(chunk["wall"] for chunk in chunks)
-    phases = ("prefetch", "market_rs", "compute", "persist", "commit", "cancel_check")
+    phases = (
+        "prefetch",
+        "market_rs",
+        "compute_submit",
+        "compute_wait",
+        "persist",
+        "commit",
+        "cancel_check",
+    )
     totals = {name: sum(chunk.get(name, 0.0) for chunk in chunks) for name in phases}
     totals["other_parent"] = wall - sum(totals.values())
-    # Prefetching chunk i+1 can only hide behind the compute of chunk i.
-    overlap = sum(
-        min(later.get("prefetch", 0.0), earlier.get("compute", 0.0))
-        for earlier, later in pairwise(chunks)
-    )
     return {
         "chunks": len(chunks),
         "wall_seconds": wall,
@@ -329,8 +352,6 @@ def summarize(chunks: list[dict[str, float]]) -> dict:
         "parent_io_share": (
             sum(totals[name] for name in PARENT_IO_PHASES) / wall if wall else 0.0
         ),
-        "prefetch_overlap_seconds": overlap,
-        "max_speedup_from_prefetch_overlap": wall / (wall - overlap) if wall > overlap else 1.0,
     }
 
 
@@ -347,11 +368,6 @@ def _print_report(summary: dict, *, symbols: int, processes: int, chunk_size: in
         median_text = f"{median * 1e3:16.0f}" if median is not None else f"{'':>16s}"
         print(f"{name:14s} {total:9.2f} {summary['shares'][name]:7.1%} {median_text}")
     print(f"\nparent I/O share of wall time: {summary['parent_io_share']:.1%}")
-    print(
-        "most a one-chunk-ahead prefetch could save: "
-        f"{summary['prefetch_overlap_seconds']:.2f}s "
-        f"(at best {summary['max_speedup_from_prefetch_overlap']:.2f}x)"
-    )
     print(f"price cache tiers: {cache}")
     print("JSON " + json.dumps({**summary, "symbols": symbols, "processes": processes, "cache": cache}))
 
