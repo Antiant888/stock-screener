@@ -253,6 +253,21 @@ class MarketCopilotService:
 
         try:
             payload = spec.handler(parsed_args).model_dump(mode="json")
+        except ValidationError as exc:
+            # ValidationError subclasses ValueError, so without this clause a
+            # stored row the schema rejects reads as invalid_arguments - the
+            # caller's request was fine, the persisted data is not.
+            logger.warning("Stored data rejected by the schema in %s: %s", name, exc)
+            return self._tool_error(
+                f"{name} could not read the stored row",
+                code="invalid_stored_data",
+                details={
+                    "errors": [
+                        {"loc": list(error.get("loc", ())), "msg": error.get("msg"), "type": error.get("type")}
+                        for error in exc.errors()
+                    ]
+                },
+            )
         except ValueError as exc:
             return self._tool_error(
                 f"Invalid arguments for {name}",
@@ -290,7 +305,6 @@ class MarketCopilotService:
             comparison = self._compare_runs_payload(previous_run.id, selected_run.id, limit=5)
 
         top_candidates: list[dict[str, Any]] = []
-        skipped_candidates: list[str] = []
         if selected_run is not None:
             with self._uow_scope() as uow:
                 page = uow.feature_store.query_run_as_scan_results(
@@ -299,7 +313,7 @@ class MarketCopilotService:
                     include_sparklines=False,
                     include_setup_payload=False,
                 )
-                top_candidates, skipped_candidates = self._candidate_records(page.items)
+                top_candidates = [self._candidate_record(item) for item in page.items]
 
         failed_tasks = [
             task
@@ -324,24 +338,6 @@ class MarketCopilotService:
                     self._fact("latest_run_status", selected_run.status, "feature_runs", selected_run.as_of_date),
                 ]
             )
-            if skipped_candidates:
-                # Named, not hidden: the row exists but its stored projection is
-                # invalid, so it is left out of the candidate list on purpose.
-                summary_parts.append(
-                    f"{len(skipped_candidates)} candidate row(s) were skipped because their stored "
-                    "opportunity projection is invalid."
-                )
-                facts.append(
-                    self._fact(
-                        "skipped_candidate_count",
-                        len(skipped_candidates),
-                        "feature_runs",
-                        selected_run.as_of_date,
-                    )
-                )
-                next_actions.append(
-                    "Review the skipped symbols: " + ", ".join(skipped_candidates) + "."
-                )
             citations.append(
                 self._citation(
                     "feature_run",
@@ -593,12 +589,11 @@ class MarketCopilotService:
             if args.depth == "full":
                 group_name = scan_item.extended_fields.get("ibd_industry_group")
                 if group_name:
-                    peer_records, _ = self._candidate_records(
-                        peer
+                    peers = [
+                        self._candidate_record(peer)
                         for peer in uow.feature_store.get_peers_by_industry_for_run(latest_run.id, group_name)
                         if peer.symbol != args.symbol
-                    )
-                    peers = peer_records[:5]
+                    ][:5]
                 setup_payload = uow.feature_store.get_setup_payload_for_run(latest_run.id, args.symbol)
 
         composite_score = explanation.composite_score
@@ -1703,25 +1698,6 @@ class MarketCopilotService:
         if record["composite_score"] is not None:
             record["composite_score"] = round(record["composite_score"], 2)
         return record
-
-    def _candidate_records(self, items: Any) -> tuple[list[dict[str, Any]], list[str]]:
-        """Project several rows, skipping rows the shared schema rejects.
-
-        A stored ``opportunity_state`` that no longer validates is corrupt data,
-        not a tool failure: the row is left out and named, so one bad row cannot
-        make the whole overview unusable - and cannot disappear silently either.
-        """
-        records: list[dict[str, Any]] = []
-        skipped: list[str] = []
-        for item in items:
-            try:
-                records.append(self._candidate_record(item))
-            except ValidationError as exc:
-                skipped.append(item.symbol)
-                logger.warning(
-                    "candidate record skipped for %s: %s", item.symbol, exc.errors()[0].get("msg", "invalid")
-                )
-        return records, skipped
 
     def _theme_record(self, theme: ThemeCluster, metrics: ThemeMetrics | None) -> dict[str, Any]:
         return {

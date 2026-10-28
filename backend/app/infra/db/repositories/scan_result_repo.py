@@ -15,7 +15,6 @@ from app.domain.relative_strength import BALANCED_RS_FORMULA_VERSION
 from app.domain.scanning.filter_expression_model import FilterExpression, QuerySpec
 from app.domain.scanning.models import FilterOptions, ResultPage, ScanResultItemDomain
 from app.domain.scanning.ports import ScanResultRepository, ScanResultRsAudit
-from app.infra.db.repositories.market_rs_repo import MarketRsRunRepository
 from app.infra.query.scan_result_query import (
     apply_filter_expression,
     apply_sort_all,

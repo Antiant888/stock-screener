@@ -17,7 +17,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.infra.db.models.feature_store import FeatureRunPointer
+from app.infra.db.models.feature_store import FeatureRunPointer, StockFeatureDaily
 from app.infra.serialization import vcp_num_bases_from_details
 from app.interfaces.mcp.market_copilot import CANDIDATE_FIELDS, MarketCopilotService
 from app.schemas.scanning import ScanResultItem
@@ -107,34 +107,43 @@ def test_candidate_record_rounds_the_composite_score_to_two_places(service):
     assert isinstance(record["composite_score"], float)
 
 
-def test_a_malformed_stored_projection_skips_the_row_and_names_it(service):
-    """A row whose stored opportunity state no longer validates is dropped, named.
+def test_a_bad_stored_row_returns_invalid_stored_data(service, session_factory):
+    """A stored row the schema rejects is reported as stored data, not as bad input.
 
-    The call keeps working: one corrupt row must not make the overview unusable.
-    But it must not disappear silently either - the symbol is reported so the
-    operator can look at the data.
+    Pydantic's ValidationError subclasses ValueError, so the tool call answered
+    ``invalid_arguments`` - blaming the caller for a corrupt row. The separate
+    code says what is broken and leaves the request alone.
     """
-    item = _candidate_item(service, 2, "NVDA")
-    item.extended_fields["opportunity_state"] = {"policy_version": "correction-survivors-v1"}
+    with session_factory() as db:
+        row = (
+            db.query(StockFeatureDaily)
+            .filter(StockFeatureDaily.run_id == 2, StockFeatureDaily.symbol == "NVDA")
+            .one()
+        )
+        details = dict(row.details_json)
+        details["opportunity_state"] = {"policy_version": "correction-survivors-v1"}
+        row.details_json = details
+        db.commit()
 
-    records, skipped = service._candidate_records([item])
+    result = service.call_tool("market_overview", {})
 
-    assert records == []
-    assert skipped == ["NVDA"]
+    assert result["isError"] is True
+    error = result["structuredContent"]["error"]
+    assert error["code"] == "invalid_stored_data"
+    assert error["details"]["errors"]
 
 
-def test_a_row_without_a_projection_is_not_skipped(service):
+def test_a_row_without_a_projection_still_projects(service):
     """Rows that predate the projection are valid: all-null stays all-null."""
     item = _candidate_item(service, 2, "MSFT")
     for key in ("correction_survivor", "resilience_score", "action_state", "opportunity_state"):
         item.extended_fields.pop(key, None)
 
-    records, skipped = service._candidate_records([item])
+    record = service._candidate_record(item)
 
-    assert skipped == []
-    assert records[0]["symbol"] == "MSFT"
-    assert records[0]["action_state"] is None
-    assert records[0]["opportunity_state"] is None
+    assert record["symbol"] == "MSFT"
+    assert record["action_state"] is None
+    assert record["opportunity_state"] is None
 
 
 def test_volume_surge_is_the_stored_ratio_not_a_flag(service):
