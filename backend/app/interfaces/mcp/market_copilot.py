@@ -22,7 +22,7 @@ from app.models.market_breadth import MarketBreadth
 from app.models.stock_universe import StockUniverse
 from app.models.theme import ThemeAlert, ThemeCluster, ThemeConstituent, ThemeMetrics
 from app.models.user_watchlist import UserWatchlist, WatchlistItem
-from app.schemas.scanning import ExplainResponse
+from app.schemas.scanning import ExplainResponse, ScanResultItem
 from app.services.breadth.query import breadth_query, latest_breadth
 from app.services.economic_theme_read_service import EconomicThemeReader
 from app.services.task_registry_service import SCHEDULED_TASKS
@@ -54,6 +54,50 @@ from .models import (
     ToolFreshness,
     WatchlistAddArgs,
     WatchlistSnapshotArgs,
+)
+
+# Fields a candidate record projects from ``ScanResultItem``.
+# The record is a projection of the shared schema, not a second field list: a new
+# fact is added in ``ScanResultItem`` and appears here by being named once.
+CANDIDATE_FIELDS = frozenset(
+    {
+        "symbol",
+        "company_name",
+        "composite_score",
+        "rating",
+        "current_price",
+        "rs_rating",
+        "stage",
+        "gics_sector",
+        "ibd_industry_group",
+        "market_cap",
+        "volume",
+        "eps_growth_qq",
+        "sales_growth_qq",
+        "minervini_rating",
+        "canslim_rating",
+        "volume_breakthrough_rating",
+        "data_status",
+        "is_scannable",
+        "action_state",
+        "opportunity_state",
+        "vcp_detected",
+        "vcp_num_bases",
+        "volume_surge",
+        "se_setup_score",
+        "se_setup_ready",
+        "se_readiness_score",
+        "se_quality_score",
+        "se_pattern_primary",
+        "se_pivot_price",
+        "se_pivot_type",
+        "se_pivot_date",
+        "se_distance_to_pivot_pct",
+        "se_in_early_zone",
+        "se_extended_from_pivot",
+        "se_atr14_pct",
+        "se_volume_vs_50d",
+    }
 )
 
 logger = logging.getLogger(__name__)
@@ -209,6 +253,21 @@ class MarketCopilotService:
 
         try:
             payload = spec.handler(parsed_args).model_dump(mode="json")
+        except ValidationError as exc:
+            # ValidationError subclasses ValueError, so without this clause a
+            # stored row the schema rejects reads as invalid_arguments - the
+            # caller's request was fine, the persisted data is not.
+            logger.warning("Stored data rejected by the schema in %s: %s", name, exc)
+            return self._tool_error(
+                f"{name} could not read the stored row",
+                code="invalid_stored_data",
+                details={
+                    "errors": [
+                        {"loc": list(error.get("loc", ())), "msg": error.get("msg"), "type": error.get("type")}
+                        for error in exc.errors()
+                    ]
+                },
+            )
         except ValueError as exc:
             return self._tool_error(
                 f"Invalid arguments for {name}",
@@ -1625,24 +1684,20 @@ class MarketCopilotService:
         return task.get("last_run") or {}
 
     def _candidate_record(self, item: Any) -> dict[str, Any]:
-        extended = getattr(item, "extended_fields", {}) or {}
-        return {
-            "symbol": item.symbol,
-            "company_name": extended.get("company_name"),
-            "composite_score": round(item.composite_score, 2) if item.composite_score is not None else None,
-            "rating": item.rating,
-            "current_price": item.current_price,
-            "rs_rating": extended.get("rs_rating"),
-            "stage": extended.get("stage"),
-            "gics_sector": extended.get("gics_sector"),
-            "ibd_industry_group": extended.get("ibd_industry_group"),
-            "market_cap": extended.get("market_cap"),
-            "volume": extended.get("volume"),
-            "eps_growth_qq": extended.get("eps_growth_qq"),
-            "sales_growth_qq": extended.get("sales_growth_qq"),
-            "se_setup_score": extended.get("se_setup_score"),
-            "se_setup_ready": extended.get("se_setup_ready"),
-        }
+        """Project one scan result into the flat MCP candidate record.
+
+        The record is a projection of ``ScanResultItem`` - the same model the
+        HTTP API, the UI and the static export use - so a new fact reaches every
+        surface from one field definition. Nothing is recomputed here: the
+        schema only reads the persisted ``extended_fields``.
+        """
+        record = ScanResultItem.from_domain(
+            item,
+            include_setup_payload=False,
+        ).model_dump(mode="json", include=CANDIDATE_FIELDS)
+        if record["composite_score"] is not None:
+            record["composite_score"] = round(record["composite_score"], 2)
+        return record
 
     def _theme_record(self, theme: ThemeCluster, metrics: ThemeMetrics | None) -> dict[str, Any]:
         return {

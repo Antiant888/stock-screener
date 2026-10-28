@@ -24,6 +24,7 @@ from app.infra.serialization import (
     coerce_bool_or_false,
     convert_numpy_types,
     normalize_string_list,
+    vcp_num_bases_from_details,
 )
 from app.models.industry import IBDGroupRank, IBDIndustryGroup
 from app.models.scan_result import ScanResult
@@ -895,10 +896,13 @@ def _map_row_to_domain(
         "action_state": details.get("action_state"),
         "opportunity_state": details.get("opportunity_state"),
         "minervini_score": result.minervini_score,
+        "minervini_rating": details.get("minervini_rating"),
         "canslim_score": result.canslim_score,
+        "canslim_rating": details.get("canslim_rating"),
         "ipo_score": result.ipo_score,
         "custom_score": result.custom_score,
         "volume_breakthrough_score": result.volume_breakthrough_score,
+        "volume_breakthrough_rating": details.get("volume_breakthrough_rating"),
         "rs_rating": result.rs_rating,
         "rs_rating_1m": result.rs_rating_1m,
         "rs_rating_3m": result.rs_rating_3m,
@@ -909,6 +913,7 @@ def _map_row_to_domain(
         "market_cap": result.market_cap,
         "ma_alignment": details.get("ma_alignment"),
         "vcp_detected": details.get("vcp_detected"),
+        "vcp_num_bases": vcp_num_bases_from_details(details),
         "vcp_score": details.get("vcp_score"),
         "vcp_pivot": details.get("vcp_pivot"),
         "vcp_ready_for_breakout": details.get("vcp_ready_for_breakout"),

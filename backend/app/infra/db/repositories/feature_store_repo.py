@@ -47,6 +47,7 @@ from app.infra.serialization import (
     coerce_bool_or_false,
     convert_numpy_types,
     normalize_string_list,
+    vcp_num_bases_from_details,
 )
 from app.models.stock import StockFundamental
 from app.models.stock_universe import StockUniverse
@@ -934,10 +935,13 @@ def _map_feature_to_scan_result(
         "action_state": d.get("action_state"),
         "opportunity_state": d.get("opportunity_state"),
         "minervini_score": d.get("minervini_score"),
+        "minervini_rating": d.get("minervini_rating"),
         "canslim_score": d.get("canslim_score"),
+        "canslim_rating": d.get("canslim_rating"),
         "ipo_score": d.get("ipo_score"),
         "custom_score": d.get("custom_score"),
         "volume_breakthrough_score": d.get("volume_breakthrough_score"),
+        "volume_breakthrough_rating": d.get("volume_breakthrough_rating"),
         "rs_rating": d.get("rs_rating"),
         "rs_rating_1m": d.get("rs_rating_1m"),
         "rs_rating_3m": d.get("rs_rating_3m"),
@@ -948,6 +952,7 @@ def _map_feature_to_scan_result(
         "market_cap": d.get("market_cap"),
         "ma_alignment": d.get("ma_alignment"),
         "vcp_detected": d.get("vcp_detected"),
+        "vcp_num_bases": vcp_num_bases_from_details(d),
         "vcp_score": d.get("vcp_score"),
         "vcp_pivot": d.get("vcp_pivot"),
         "vcp_ready_for_breakout": d.get("vcp_ready_for_breakout"),

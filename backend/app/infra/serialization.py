@@ -151,3 +151,39 @@ def convert_numpy_types(obj: object) -> object:
     installed — falls through to the identity return.
     """
     return json_safe(obj, stringify_keys=False)
+
+
+def vcp_num_bases_from_details(d: dict[str, Any]) -> int | None:
+    """Read the persisted Minervini VCP base count, or ``None`` when absent.
+
+    The scan result assembler stores the detector output under
+    ``details.screeners.minervini.details.full_analysis.vcp.num_bases``. This
+    helper only walks that stored path — it never infers a count from
+    ``vcp_detected`` nor from the length of any candidate list, and it never
+    recomputes the pattern. A missing intermediate object, a non-mapping node,
+    or a non-integral ``num_bases`` yields ``None``. A base count is a count, so
+    a negative value is rejected as well; zero stays valid.
+    """
+    node: Any = d
+    for key in (
+        "details",
+        "screeners",
+        "minervini",
+        "details",
+        "full_analysis",
+        "vcp",
+        "num_bases",
+    ):
+        if not isinstance(node, dict):
+            return None
+        node = node.get(key)
+
+    if isinstance(node, bool):
+        return None
+    if isinstance(node, int):
+        count = node
+    elif isinstance(node, float) and node.is_integer():
+        count = int(node)
+    else:
+        return None
+    return count if count >= 0 else None
