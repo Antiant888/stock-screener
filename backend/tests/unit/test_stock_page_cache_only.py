@@ -582,6 +582,26 @@ def test_the_exchange_open_decides_which_session_reacts(db, monkeypatch, market,
     assert event_risk["avg_post_earnings_gap_pct"] == gap_pct
 
 
+def test_tz_aware_exchange_bars_keep_their_exchange_date(db, monkeypatch):
+    """A Tokyo-stamped index must not slide back a day when the zone is dropped."""
+    bars = _reaction_bars()
+    bars.index = bars.index.tz_localize("Asia/Tokyo")
+    service = _earnings_service(monkeypatch, last_completed=TODAY, bars=bars)
+    fundamentals = {
+        "event_calendar_as_of_date": "2026-04-01",
+        "recent_earnings": [
+            # 08:00 JST Tuesday 03-10, before the open: Tuesday's +10 open reacts.
+            {"report_ts": "2026-03-09T19:00:00-04:00", "eps_estimate": 1.0, "reported_eps": 1.1, "surprise_pct": 10.0}
+        ],
+    }
+
+    event_risk, _actions = service.build(
+        db, symbol="7203.T", as_of_date=TODAY, fundamentals=fundamentals, market="JP"
+    )
+
+    assert event_risk["avg_post_earnings_gap_pct"] == 10.0
+
+
 def _cn_bars() -> pd.DataFrame:
     """Flat 100 bars: +10% gap on Monday 2025-12-08, +20% on Tuesday 2026-03-10, -10% on 03-11."""
     frame = pd.DataFrame(
