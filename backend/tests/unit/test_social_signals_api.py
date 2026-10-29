@@ -1175,8 +1175,12 @@ async def test_admin_analysis_retry_finds_the_generation_that_marked_the_work_un
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(("generation_status", "progress"), [
+    ("running", {}),
+    ("failed", {"failure": {"reason_code": "generation_superseded"}}),
+])
 async def test_admin_analysis_retry_rejects_a_generation_that_resume_would_skip(
-    db_session, social_runtime, monkeypatch
+    db_session, social_runtime, monkeypatch, generation_status, progress
 ):
     from datetime import datetime, timedelta, timezone
 
@@ -1203,14 +1207,14 @@ async def test_admin_analysis_retry_rejects_a_generation_that_resume_would_skip(
     )
     db_session.add(work)
     db_session.flush()
-    for run_id, status, created_at, audit in (
-        ("deferred-generation", "running", now, [work.id]),
-        ("newer-generation", "published", now + timedelta(hours=6), []),
+    for run_id, status, created_at, audit, extra in (
+        ("deferred-generation", generation_status, now, [work.id], progress),
+        ("newer-generation", "published", now + timedelta(hours=6), [], {}),
     ):
         db_session.add(SocialSignalRun(
             id=run_id, registry_id=1, registry_version=runtime.version, mode="live",
             provider="official", status=status, source_outcomes_json={},
-            application_progress_json={"sources": {}, "observations": {}, "current_manifest": {
+            application_progress_json={**extra, "sources": {}, "observations": {}, "current_manifest": {
                 "required_inputs": [], "carry_in_work_ids": [], "audit_work_ids": audit,
             }}, feature_run_ids_json={}, exposure_dates_json={}, coverage_json={},
             created_at=created_at,

@@ -591,9 +591,12 @@ class SocialThemeProjectionService:
                     evidence_channels=("narrative",),
                 ),
             )
+            # hold_review and superseded are the economic layer's own verdicts on
+            # this post; only an effective packet left off live means the work
+            # was ineligible for the publication that carries it.
             if (
                 not admission.live
-                and admission.precedence_state != "equivalent"
+                and admission.precedence_state == "effective"
             ):
                 raise ValueError("social_evidence_live_admission_required")
             authority = self.db.get(TaxonomyAuthority, 1)

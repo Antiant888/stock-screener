@@ -202,16 +202,21 @@ def test_budget_resume_skips_generations_older_than_the_latest_publication(
     state = {"sources": {"1": {}, "2": {}}, "observations": {"1": {}, "2": {}}}
     outcomes = {"1": {"read_status": "success"}, "2": {"read_status": "failed"}}
 
-    def run(run_id, status, hours):
+    def run(run_id, status, hours, **progress):
         return SocialSignalRun(
             id=run_id, registry_id=1, registry_version=registry.version,
             mode="live", provider="official", status=status,
-            source_outcomes_json=outcomes, application_progress_json=state,
+            source_outcomes_json=outcomes, application_progress_json={**state, **progress},
             feature_run_ids_json={}, exposure_dates_json={}, coverage_json={},
             created_at=NOW + timedelta(hours=hours),
         )
 
-    db_session.add_all([run("stale", "running", 0), run("published", "published", 1)])
+    db_session.add_all([
+        run("stale", "running", 0),
+        run("closed", "failed", -1, failure={"reason_code": "generation_superseded"}),
+        run("analysis-failed", "failed", -2, failure={"reason_code": "analysis_failed", "work_ids": []}),
+        run("published", "published", 1),
+    ])
     db_session.commit()
     monkeypatch.setattr(
         database,
@@ -227,9 +232,16 @@ def test_budget_resume_skips_generations_older_than_the_latest_publication(
     assert tasks.resume_social_analysis.run("stale") == {
         "status": "skipped", "reason_codes": ["generation_superseded"],
     }
+    # A generation a later publication closed in state is skipped the same way.
+    assert tasks.resume_social_analysis.run("closed") == {
+        "status": "skipped", "reason_codes": ["generation_superseded"],
+    }
     # An admin retry of the published generation itself still replays.
     with pytest.raises(AssertionError, match="replayed"):
         tasks.resume_social_analysis.run("published")
+    # So does a deliberate retry of a generation whose own analysis failed.
+    with pytest.raises(AssertionError, match="replayed"):
+        tasks.resume_social_analysis.run("analysis-failed")
 
 
 def test_source_task_returns_redacted_typed_outcome_without_outer_provider_retry(monkeypatch):
