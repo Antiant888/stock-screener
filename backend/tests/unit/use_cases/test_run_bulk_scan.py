@@ -25,6 +25,7 @@ from app.use_cases.scanning.run_bulk_scan import (
 )
 
 from tests.unit.use_cases.conftest import (
+    CancelAfterProgressToken,
     FakeCancellationToken,
     FakeProgressSink,
     FakeScan,
@@ -1395,6 +1396,7 @@ class TestChunkPipeline:
         *,
         chunk_size,
         cancel_after=None,
+        cancel_on_progress=False,
         already_done=(),
         passed_before=0,
         in_process=False,
@@ -1415,6 +1417,11 @@ class TestChunkPipeline:
         else:
             scanner = _BulkAwareFakeScanner(results=scanner_results)
             runner_factory = JournalingRunnerFactory(journal)
+        cancel = (
+            CancelAfterProgressToken(progress)
+            if cancel_on_progress
+            else FakeCancellationToken(cancel_after=cancel_after)
+        )
 
         result = RunBulkScanUseCase(
             scanner=scanner,
@@ -1430,7 +1437,7 @@ class TestChunkPipeline:
                 parallel_workers=2,
             ),
             progress,
-            FakeCancellationToken(cancel_after=cancel_after),
+            cancel,
         )
         return result, journal, result_repo, scan_repo, progress
 
@@ -1491,7 +1498,7 @@ class TestChunkPipeline:
             (6, 5, 1),
         ]
 
-    def test_cancellation_persists_the_pending_chunk_before_stopping(self):
+    def test_cancellation_persists_the_pending_chunk_and_drops_the_submitted_one(self):
         result, journal, result_repo, scan_repo, progress = self._run(
             ["A", "B", "C", "D", "E", "F"], chunk_size=2, cancel_after=2
         )
@@ -1502,6 +1509,7 @@ class TestChunkPipeline:
             ("submit", ["C", "D"]),
             ("collect", ["A", "B"]),
             ("persist", ["A", "B"]),
+            ("submit", ["E", "F"]),
             ("collect", ["C", "D"]),
             ("persist", ["D"]),
             ("status", ScanStatus.CANCELLED.value),
@@ -1513,6 +1521,27 @@ class TestChunkPipeline:
         assert [(event.current, event.passed, event.failed) for event in progress.events] == [
             (2, 2, 0),
             (4, 3, 1),
+        ]
+
+    def test_cancel_raised_by_the_first_progress_event_stops_after_that_chunk(self):
+        result, journal, result_repo, scan_repo, progress = self._run(
+            ["A", "B", "C", "D"], chunk_size=2, cancel_on_progress=True
+        )
+
+        assert journal == [
+            ("status", ScanStatus.RUNNING.value),
+            ("submit", ["A", "B"]),
+            ("submit", ["C", "D"]),
+            ("collect", ["A", "B"]),
+            ("persist", ["A", "B"]),
+            ("status", ScanStatus.CANCELLED.value),
+        ]
+        assert result.status == ScanStatus.CANCELLED.value
+        assert (result.total_scanned, result.passed, result.failed) == (2, 2, 0)
+        assert scan_repo.scans["s1"].passed_stocks == 2
+        assert [symbol for _, symbol, _ in result_repo._persisted_results] == ["A", "B"]
+        assert [(event.current, event.passed, event.failed) for event in progress.events] == [
+            (2, 2, 0),
         ]
 
     def test_resume_pipelines_only_the_remaining_chunks(self):

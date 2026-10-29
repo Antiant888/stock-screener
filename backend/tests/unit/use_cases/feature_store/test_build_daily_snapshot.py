@@ -28,6 +28,7 @@ from app.use_cases.feature_store.build_daily_snapshot import (
     _map_orchestrator_to_feature_row,
 )
 from tests.unit.use_cases.conftest import (
+    CancelAfterProgressToken,
     FakeCancellationToken,
     FakeFeatureRunRepository,
     FakeFeatureStoreRepository,
@@ -1837,7 +1838,15 @@ class _JournalingScanner(_BulkAwareScanner):
 
 
 class TestChunkPipeline:
-    def _run(self, symbols, *, chunk_size, cancel_after=None, in_process=False):
+    def _run(
+        self,
+        symbols,
+        *,
+        chunk_size,
+        cancel_after=None,
+        cancel_on_progress=False,
+        in_process=False,
+    ):
         journal: list = []
         uow = FakeUnitOfWork(
             universe=FakeUniverseRepository(symbols),
@@ -1852,6 +1861,11 @@ class TestChunkPipeline:
         else:
             scanner = _BulkAwareScanner(results=scanner_results)
             runner_factory = JournalingRunnerFactory(journal)
+        cancel = (
+            CancelAfterProgressToken(progress)
+            if cancel_on_progress
+            else FakeCancellationToken(cancel_after=cancel_after)
+        )
         result = BuildDailyFeatureSnapshotUseCase(
             scanner=scanner,
             data_provider=FakeStockDataProvider(),
@@ -1860,9 +1874,29 @@ class TestChunkPipeline:
             uow,
             _make_cmd(chunk_size=chunk_size, parallel_workers=2),
             progress,
-            FakeCancellationToken(cancel_after=cancel_after),
+            cancel,
         )
         return result, journal, progress
+
+    @_PATCH_TRADING_DAY
+    def test_cancel_raised_by_the_first_progress_event_stops_after_that_chunk(self, _mock_td):
+        result, journal, progress = self._run(
+            ["A", "B", "C", "D"], chunk_size=2, cancel_on_progress=True
+        )
+
+        assert journal == [
+            ("submit", ["A", "B"]),
+            ("submit", ["C", "D"]),
+            ("collect", ["A", "B"]),
+            ("persist", ["A", "B"]),
+            ("completed", 2, 0, 2, ("Cancelled by user",)),
+        ]
+        assert result.status == RunStatus.COMPLETED.value
+        assert (result.processed_symbols, result.failed_symbols, result.row_count) == (2, 0, 2)
+        assert result.warnings[-1] == "Cancelled by user"
+        assert [(event.current, event.passed, event.failed) for event in progress.events] == [
+            (2, 2, 0),
+        ]
 
     @_PATCH_TRADING_DAY
     def test_in_process_chunks_compute_only_when_collected(self, _mock_td):
@@ -1915,7 +1949,9 @@ class TestChunkPipeline:
         ]
 
     @_PATCH_TRADING_DAY
-    def test_cancellation_persists_the_pending_chunk_before_stopping(self, _mock_td):
+    def test_cancellation_persists_the_pending_chunk_and_drops_the_submitted_one(
+        self, _mock_td
+    ):
         result, journal, progress = self._run(
             ["A", "B", "C", "D", "E", "F"], chunk_size=2, cancel_after=2
         )
@@ -1925,6 +1961,7 @@ class TestChunkPipeline:
             ("submit", ["C", "D"]),
             ("collect", ["A", "B"]),
             ("persist", ["A", "B"]),
+            ("submit", ["E", "F"]),
             ("collect", ["C", "D"]),
             ("persist", ["D"]),
             ("completed", 3, 1, 3, ("Cancelled by user",)),

@@ -566,6 +566,16 @@ class FakeCancellationToken(CancellationToken):
         return False
 
 
+class CancelAfterProgressToken(CancellationToken):
+    """Cancels once the sink has reported any progress."""
+
+    def __init__(self, progress: FakeProgressSink) -> None:
+        self._progress = progress
+
+    def is_cancelled(self) -> bool:
+        return bool(self._progress.events)
+
+
 class JournalingRunnerFactory:
     """Compute pool stand-in whose submits and collects land in a shared journal."""
 

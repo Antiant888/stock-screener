@@ -6,8 +6,8 @@ This use case contains the business rules for executing a bulk scan:
   3. Submit each chunk of symbols to the batch runner; while it computes,
      collect the previous chunk, persist it (acts as checkpoint) and report
      progress via ProgressSink
-  4. Check CancellationToken between chunks; the pending chunk is still
-     persisted before the scan is marked cancelled
+  4. Check CancellationToken before the first chunk and after each persisted
+     chunk; a chunk already submitted when the scan is cancelled is dropped
   5. Handle completion / failure status transitions
 
 The use case depends ONLY on domain ports — never on SQLAlchemy, Celery,
@@ -390,30 +390,33 @@ class RunBulkScanUseCase:
                 )
             )
 
+        def _cancelled() -> RunBulkScanResult:
+            uow.scans.update_status(
+                cmd.scan_id,
+                ScanStatus.CANCELLED.value,
+                passed_stocks=passed,
+            )
+            uow.commit()
+            logger.info(
+                "Scan %s cancelled at %d/%d", cmd.scan_id, processed, total
+            )
+            return RunBulkScanResult(
+                scan_id=cmd.scan_id,
+                status=ScanStatus.CANCELLED.value,
+                total_scanned=processed,
+                passed=passed,
+                failed=failed,
+            )
+
+        if cancel.is_cancelled():
+            return _cancelled()
+
         # The chunk submitted last computes while the parent finishes the one
         # before it. Commits stay in chunk order, so the resume checkpoint holds.
+        # A cancel drops the batch submitted just before it; the runner's exit
+        # shuts the pool down.
         pending: tuple[list[StockScanCall | None], PendingScanBatch] | None = None
         for chunk in _chunked(remaining_symbols, cmd.chunk_size):
-            if cancel.is_cancelled():
-                if pending is not None:
-                    _finish(*pending)
-                uow.scans.update_status(
-                    cmd.scan_id,
-                    ScanStatus.CANCELLED.value,
-                    passed_stocks=passed,
-                )
-                uow.commit()
-                logger.info(
-                    "Scan %s cancelled at %d/%d", cmd.scan_id, processed, total
-                )
-                return RunBulkScanResult(
-                    scan_id=cmd.scan_id,
-                    status=ScanStatus.CANCELLED.value,
-                    total_scanned=processed,
-                    passed=passed,
-                    failed=failed,
-                )
-
             pre_fetched_data = {}
             if self._data_provider is not None and merged_requirements is not None:
                 try:
@@ -549,6 +552,8 @@ class RunBulkScanUseCase:
             )
             if pending is not None:
                 _finish(*pending)
+                if cancel.is_cancelled():
+                    return _cancelled()
             pending = submitted
 
         if pending is not None:

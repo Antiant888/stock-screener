@@ -6,8 +6,9 @@ snapshot:
   2. Start a feature run (status=RUNNING)
   3. Resolve universe of active symbols and save snapshot
   4. Submit each chunk to the batch runner; while it computes, collect the
-     previous chunk and upsert its feature rows (checkpoint), with progress
-     and cancellation between chunks
+     previous chunk and upsert its feature rows (checkpoint) and report
+     progress; cancellation is checked before the first chunk and after each
+     upserted chunk, dropping a chunk already submitted
   5. Mark run COMPLETED with stats
   6. Delegate DQ evaluation and publish/quarantine to PublishFeatureRunUseCase
   7. Emit completion ProgressEvent
@@ -772,49 +773,51 @@ class BuildDailyFeatureSnapshotUseCase:
                 )
             )
 
+        def _cancelled() -> BuildDailySnapshotResult:
+            duration = time.monotonic() - start_time
+            stats = RunStats(
+                total_symbols=total,
+                processed_symbols=(
+                    progress_state.attempted_symbols
+                    - progress_state.failed_symbols
+                ),
+                failed_symbols=progress_state.failed_symbols,
+                duration_seconds=round(duration, 2),
+                passed_symbols=progress_state.passed_symbols,
+            )
+            uow.feature_runs.mark_completed(
+                run_id, stats, warnings=("Cancelled by user",)
+            )
+            uow.commit()
+            logger.info(
+                "Run %d cancelled at %d/%d",
+                run_id,
+                progress_state.attempted_symbols,
+                total,
+            )
+            return BuildDailySnapshotResult(
+                run_id=run_id,
+                status=RunStatus.COMPLETED.value,
+                total_symbols=total,
+                processed_symbols=progress_state.attempted_symbols,
+                failed_symbols=progress_state.failed_symbols,
+                skipped_symbols=skipped_symbols,
+                dq_passed=False,
+                warnings=(*run_warnings, "Cancelled by user"),
+                row_count=uow.feature_store.count_by_run_id(run_id),
+                duration_seconds=round(duration, 2),
+                failure_diagnostics=failure_diagnostics.to_dict(),
+            )
+
+        # 3a — Cancellation gate
+        if cancel.is_cancelled():
+            return _cancelled()
+
         # The chunk submitted last computes while the parent finishes the one
-        # before it. Upserts stay in chunk order.
+        # before it. Upserts stay in chunk order. A cancel drops the batch
+        # submitted just before it; the runner's exit shuts the pool down.
         pending: tuple[list[str], list[StockScanCall | None], PendingScanBatch] | None = None
         for chunk in _chunked(symbols, effective_chunk_size):
-            # 3a — Cancellation gate
-            if cancel.is_cancelled():
-                if pending is not None:
-                    _finish(*pending)
-                duration = time.monotonic() - start_time
-                stats = RunStats(
-                    total_symbols=total,
-                    processed_symbols=(
-                        progress_state.attempted_symbols
-                        - progress_state.failed_symbols
-                    ),
-                    failed_symbols=progress_state.failed_symbols,
-                    duration_seconds=round(duration, 2),
-                    passed_symbols=progress_state.passed_symbols,
-                )
-                uow.feature_runs.mark_completed(
-                    run_id, stats, warnings=("Cancelled by user",)
-                )
-                uow.commit()
-                logger.info(
-                    "Run %d cancelled at %d/%d",
-                    run_id,
-                    progress_state.attempted_symbols,
-                    total,
-                )
-                return BuildDailySnapshotResult(
-                    run_id=run_id,
-                    status=RunStatus.COMPLETED.value,
-                    total_symbols=total,
-                    processed_symbols=progress_state.attempted_symbols,
-                    failed_symbols=progress_state.failed_symbols,
-                    skipped_symbols=skipped_symbols,
-                    dq_passed=False,
-                    warnings=(*run_warnings, "Cancelled by user"),
-                    row_count=uow.feature_store.count_by_run_id(run_id),
-                    duration_seconds=round(duration, 2),
-                    failure_diagnostics=failure_diagnostics.to_dict(),
-                )
-
             # 3b — Prefetch the chunk and submit it
             pre_fetched_data: dict[str, object] = {}
             cache_only_symbol_data = (
@@ -888,6 +891,8 @@ class BuildDailyFeatureSnapshotUseCase:
             )
             if pending is not None:
                 _finish(*pending)
+                if cancel.is_cancelled():
+                    return _cancelled()
             pending = submitted
 
         if pending is not None:

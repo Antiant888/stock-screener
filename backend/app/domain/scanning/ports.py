@@ -592,9 +592,7 @@ StockScanBatchRunnerFactory = Callable[
 
 
 class SerialStockScanBatchRunner:
-    """Runs every call in the current process, one after another, when the
-    batch is collected, so a chunk never computes before the one ahead of it
-    is persisted."""
+    """Runs every call in the current process when the batch is collected."""
 
     def __init__(self, scanner: StockScanner) -> None:
         self._scanner = scanner
