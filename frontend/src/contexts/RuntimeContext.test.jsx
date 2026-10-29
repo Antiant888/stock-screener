@@ -1,6 +1,6 @@
 import { QueryClient, QueryClientProvider, dehydrate } from '@tanstack/react-query';
 import { PersistQueryClientProvider } from '@tanstack/react-query-persist-client';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
@@ -128,11 +128,9 @@ function renderRuntime(queryClient = createTestQueryClient()) {
 // Mirrors a page refresh: the previous page load persisted its cache under the
 // app's persistence policy, and this one restores it while the live
 // capabilities request is still in flight.
-function renderRestoredRuntime(cachedCapabilities) {
+function renderRestoredRuntime(cachedCapabilities, { updatedAt = Date.now() - 60_000 } = {}) {
   const previousPageClient = createTestQueryClient();
-  previousPageClient.setQueryData(['appCapabilities'], cachedCapabilities, {
-    updatedAt: Date.now() - 60_000,
-  });
+  previousPageClient.setQueryData(['appCapabilities'], cachedCapabilities, { updatedAt });
   const persistedClient = {
     timestamp: Date.now(),
     buster: '',
@@ -313,6 +311,47 @@ describe('RuntimeProvider', () => {
       expect(screen.getByTestId('runtime-ready')).toHaveTextContent('true');
     });
     expect(screen.getByTestId('auth-authenticated')).toHaveTextContent('true');
+
+    resolveLive(capabilitiesWith({ auth: { required: true, authenticated: false } }));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('auth-authenticated')).toHaveTextContent('false');
+    });
+    expect(screen.getByTestId('runtime-ready')).toHaveTextContent('true');
+  });
+
+  it('waits for the live check when a restored logged-out entry is dated ahead of this clock', async () => {
+    const resolveLive = deferLiveCapabilities();
+
+    renderRestoredRuntime(
+      capabilitiesWith({ auth: { required: true, authenticated: false } }),
+      { updatedAt: Date.now() + 60_000 },
+    );
+
+    await waitFor(() => expect(getAppCapabilities).toHaveBeenCalledTimes(1));
+    expect(screen.getByTestId('auth-required')).toHaveTextContent('true');
+    expect(screen.getByTestId('runtime-ready')).toHaveTextContent('false');
+
+    resolveLive(capabilitiesWith({ auth: { required: true, authenticated: false } }));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('runtime-ready')).toHaveTextContent('true');
+    });
+  });
+
+  it('joins the live check in flight when page requests come back unauthorized', async () => {
+    const resolveLive = deferLiveCapabilities();
+
+    renderRestoredRuntime(capabilitiesWith({ auth: { required: true, authenticated: true } }));
+
+    await waitFor(() => expect(getAppCapabilities).toHaveBeenCalledTimes(1));
+    const handleUnauthorized = setUnauthorizedResponseHandler.mock.calls.at(-1)[0];
+    await act(async () => {
+      handleUnauthorized();
+      handleUnauthorized();
+      handleUnauthorized();
+    });
+    expect(getAppCapabilities).toHaveBeenCalledTimes(1);
 
     resolveLive(capabilitiesWith({ auth: { required: true, authenticated: false } }));
 

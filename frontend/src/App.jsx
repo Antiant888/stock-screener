@@ -79,13 +79,20 @@ function LiveOptionsRoute({ detail = false }) {
     selectedMarket,
     primaryMarket,
   });
-  if (!available) return <Navigate to="/" replace />;
+  if (!available) return <RedirectHomeOnceConfirmed />;
   return detail ? <OptionsSymbolPage /> : <OptionsPage />;
 }
 
 // In-app fallback for lazy page transitions (Layout chrome is already mounted,
 // so a page-shaped skeleton in the content area is the right scope).
 const PageLoadingFallback = () => <PageSkeleton />;
+
+// Cached capabilities can hide a route the live ones enable, so a redirect
+// that drops the URL waits for the live answer.
+function RedirectHomeOnceConfirmed() {
+  const { capabilitiesConfirmed } = useRuntime();
+  return capabilitiesConfirmed ? <Navigate to="/" replace /> : <PageLoadingFallback />;
+}
 
 // Shown until we know whether to render the app, the login screen, or the
 // bootstrap setup. Renders only static header chrome — no nav links, no
@@ -276,7 +283,7 @@ function AppShell() {
               <Route path="/options/:symbol" element={<LiveOptionsRoute detail />} />
               <Route path="/stocks/:ticker" element={<StockDetails />} />
               <Route path="/operations" element={<OperationsPage />} />
-              <Route path="*" element={<Navigate to="/" replace />} />
+              <Route path="*" element={<RedirectHomeOnceConfirmed />} />
             </Routes>
           </Suspense>
         </Layout>

@@ -47,6 +47,7 @@ const baseRuntimeState = () => ({
   primaryMarket: 'US',
   loginError: null,
   runtimeReady: true,
+  capabilitiesConfirmed: true,
   startBootstrap: vi.fn(),
   supportedMarkets: ['US'],
   bootstrapError: null,
@@ -101,5 +102,19 @@ describe('App live mode shell', () => {
     render(<App />);
     expect(await screen.findByText('Live Market Scan Page')).toBeInTheDocument();
     expect(screen.queryByText('Live Options Page')).not.toBeInTheDocument();
+  });
+
+  it('keeps an Options deep link while cached capabilities await the live check', async () => {
+    runtimeMock.state = {
+      ...baseRuntimeState(),
+      capabilitiesConfirmed: false,
+      features: { ...baseRuntimeState().features, options_analytics: false },
+    };
+    window.history.pushState({}, '', '/options');
+    render(<App />);
+
+    expect(await screen.findByText('Loading page')).toBeInTheDocument();
+    expect(window.location.pathname).toBe('/options');
+    expect(screen.queryByText('Live Market Scan Page')).not.toBeInTheDocument();
   });
 });

@@ -1,8 +1,7 @@
 import { QueryClient, dehydrate } from '@tanstack/react-query';
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import App from './App';
 import {
   PERSISTED_QUERY_CACHE_BUSTER,
   shouldDehydratePersistedQuery,
@@ -28,6 +27,7 @@ vi.mock('./contexts/StrategyProfileContext', () => ({
 vi.mock('./pageLoaders', async (importOriginal) => ({
   ...(await importOriginal()),
   loadMarketScanPage: async () => ({ default: () => <div>Market Scan Page</div> }),
+  loadThemesPage: async () => ({ default: () => <div>Themes Page</div> }),
 }));
 
 const successfulQuery = (queryKey) => ({
@@ -71,27 +71,52 @@ describe('app query persistence', () => {
   });
 });
 
+// App.jsx holds its QueryClient at module scope, so each refresh imports a
+// fresh copy, as a real page load starts with an empty in-memory cache.
+async function importAppAt(path) {
+  window.history.replaceState(null, '', path);
+  vi.resetModules();
+  return (await import('./App')).default;
+}
+
+function persistCapabilities(capabilities) {
+  const previousPageClient = new QueryClient();
+  previousPageClient.setQueryData(['appCapabilities'], capabilities, { updatedAt: Date.now() - 60_000 });
+  window.localStorage.setItem('stockscanner-query-cache', JSON.stringify({
+    timestamp: Date.now(),
+    buster: PERSISTED_QUERY_CACHE_BUSTER,
+    clientState: dehydrate(previousPageClient, {
+      shouldDehydrateQuery: shouldDehydratePersistedQuery,
+    }),
+  }));
+}
+
+function deferLiveCapabilities() {
+  let resolveLive;
+  getAppCapabilities.mockReturnValue(new Promise((resolve) => { resolveLive = resolve; }));
+  return (capabilities) => resolveLive(capabilities);
+}
+
+const withThemes = (themes) => ({
+  ...DEFAULT_CAPABILITIES,
+  features: { ...DEFAULT_CAPABILITIES.features, themes },
+});
+
 describe('App refresh with a persisted cache', () => {
   afterEach(() => {
     cleanup();
     window.localStorage.clear();
+    window.history.replaceState(null, '', '/');
+    getAppCapabilities.mockReset();
   });
 
   it('paints the app from an authenticated cache, then shows login once the live check says the session expired', async () => {
-    const previousPageClient = new QueryClient();
-    previousPageClient.setQueryData(['appCapabilities'], {
+    persistCapabilities({
       ...DEFAULT_CAPABILITIES,
       auth: { ...DEFAULT_CAPABILITIES.auth, required: true, authenticated: true },
-    }, { updatedAt: Date.now() - 60_000 });
-    window.localStorage.setItem('stockscanner-query-cache', JSON.stringify({
-      timestamp: Date.now(),
-      buster: PERSISTED_QUERY_CACHE_BUSTER,
-      clientState: dehydrate(previousPageClient, {
-        shouldDehydrateQuery: shouldDehydratePersistedQuery,
-      }),
-    }));
-    let resolveLive;
-    getAppCapabilities.mockReturnValue(new Promise((resolve) => { resolveLive = resolve; }));
+    });
+    const resolveLive = deferLiveCapabilities();
+    const App = await importAppAt('/');
 
     render(<App />);
 
@@ -105,5 +130,37 @@ describe('App refresh with a persisted cache', () => {
 
     expect(await screen.findByText('Server Login')).toBeInTheDocument();
     expect(screen.queryByText('Market Scan Page')).not.toBeInTheDocument();
+  });
+
+  it('keeps a deep link the cached features hide until the live check enables it', async () => {
+    persistCapabilities(withThemes(false));
+    const resolveLive = deferLiveCapabilities();
+    const App = await importAppAt('/themes');
+
+    render(<App />);
+
+    expect(await screen.findByText('Loading page')).toBeInTheDocument();
+    expect(getAppCapabilities).toHaveBeenCalledTimes(1);
+    expect(window.location.pathname).toBe('/themes');
+    expect(screen.queryByText('Market Scan Page')).not.toBeInTheDocument();
+
+    resolveLive(withThemes(true));
+
+    expect(await screen.findByText('Themes Page')).toBeInTheDocument();
+    expect(window.location.pathname).toBe('/themes');
+  });
+
+  it('redirects a deep link home once the live check confirms the feature is off', async () => {
+    persistCapabilities(withThemes(false));
+    const resolveLive = deferLiveCapabilities();
+    const App = await importAppAt('/themes');
+
+    render(<App />);
+
+    expect(await screen.findByText('Loading page')).toBeInTheDocument();
+    resolveLive(withThemes(false));
+
+    expect(await screen.findByText('Market Scan Page')).toBeInTheDocument();
+    await waitFor(() => expect(window.location.pathname).toBe('/'));
   });
 });
