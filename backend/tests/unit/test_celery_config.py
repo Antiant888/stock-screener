@@ -270,6 +270,7 @@ class TestDefaultAppOnEveryThread:
         assert isinstance(AsyncResult("probe", app=app).backend, RetryableRedisBackend)
 
     def test_thread_with_its_own_current_app_keeps_it(self):
+        """The process default is only a fallback; it must not override a thread's own app."""
         own = Celery("thread-local-app", set_as_current=False)
 
         assert _async_result_app_on_new_thread(prepare=own.set_current) is own

@@ -104,6 +104,10 @@ celery_app = Celery(
         'app.interfaces.tasks.social_signal_tasks',  # Social collection/analysis
     ]
 )
+# Celery(...) only makes this app current on the thread that built it. FastAPI runs
+# `def` handlers in a threadpool, so a bare AsyncResult there would otherwise fall
+# back to a throwaway Celery('default') with no result backend.
+celery_app.set_default()
 celery_app.loader.override_backends = {
     **celery_app.loader.override_backends,
     "redis": "app.celery_redis_backend:RetryableRedisBackend",

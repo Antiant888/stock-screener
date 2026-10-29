@@ -190,8 +190,7 @@ def test_docs_gate_requires_explicit_exposure(monkeypatch):
     assert main_app._docs_enabled() is False
 
 
-@pytest.mark.asyncio
-async def test_root_omits_docs_when_docs_disabled(monkeypatch):
+def test_root_omits_docs_when_docs_disabled(monkeypatch):
     monkeypatch.setattr(main_app, "_docs_url", None)
 
     payload = main_app.root()

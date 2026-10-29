@@ -244,10 +244,11 @@ def _awaits_in_own_body(handler: ast.AsyncFunctionDef) -> bool:
     return False
 
 
-# Handlers that must stay on the event loop even though they never await.
+# Handlers that stay `async def` even though they never await. A probe must answer
+# without waiting for a threadpool token, so it cannot run in the threadpool, and
+# its body does no I/O, so it cannot stall the loop either. A trivial constant
+# handler such as `root` has no such need and belongs in the threadpool with the rest.
 _LOOP_ONLY_ENDPOINTS = {
-    # A liveness probe has to answer while the threadpool is saturated by slow
-    # handlers, and its body does no I/O, so it cannot stall the loop.
     "app.main:liveness",
 }
 
