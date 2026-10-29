@@ -5,11 +5,13 @@ snapshot:
   1. Validate as_of_date is a trading day for the requested market
   2. Start a feature run (status=RUNNING)
   3. Resolve universe of active symbols and save snapshot
-  4. Scan each symbol via StockScanner in chunks (with progress + cancellation)
-  5. Upsert feature rows after each chunk (checkpoint)
-  6. Mark run COMPLETED with stats
-  7. Delegate DQ evaluation and publish/quarantine to PublishFeatureRunUseCase
-  8. Emit completion ProgressEvent
+  4. Submit each chunk to the batch runner; while it computes, collect the
+     previous chunk and upsert its feature rows (checkpoint) and report
+     progress; cancellation is checked before the first chunk and after each
+     upserted chunk except the last, dropping a chunk already submitted
+  5. Mark run COMPLETED with stats
+  6. Delegate DQ evaluation and publish/quarantine to PublishFeatureRunUseCase
+  7. Emit completion ProgressEvent
 
 The use case depends ONLY on domain ports — never on SQLAlchemy, Celery,
 Redis, or any other infrastructure.
@@ -47,6 +49,7 @@ from app.domain.scanning.ports import (
     CancellationToken,
     MarketRsReader,
     MarketRsResolution,
+    PendingScanBatch,
     ProgressSink,
     SerialStockScanBatchRunner,
     StockDataProvider,
@@ -651,166 +654,65 @@ class BuildDailyFeatureSnapshotUseCase:
                     )
                 bulk_prefetch_enabled = False
 
-        for chunk in _chunked(symbols, effective_chunk_size):
-            # 3a — Cancellation gate
-            if cancel.is_cancelled():
-                duration = time.monotonic() - start_time
-                stats = RunStats(
-                    total_symbols=total,
-                    processed_symbols=(
-                        progress_state.attempted_symbols
-                        - progress_state.failed_symbols
-                    ),
-                    failed_symbols=progress_state.failed_symbols,
-                    duration_seconds=round(duration, 2),
-                    passed_symbols=progress_state.passed_symbols,
-                )
-                uow.feature_runs.mark_completed(
-                    run_id, stats, warnings=("Cancelled by user",)
-                )
-                uow.commit()
-                logger.info(
-                    "Run %d cancelled at %d/%d",
-                    run_id,
-                    progress_state.attempted_symbols,
-                    total,
-                )
-                return BuildDailySnapshotResult(
-                    run_id=run_id,
-                    status=RunStatus.COMPLETED.value,
-                    total_symbols=total,
-                    processed_symbols=progress_state.attempted_symbols,
-                    failed_symbols=progress_state.failed_symbols,
-                    skipped_symbols=skipped_symbols,
-                    dq_passed=False,
-                    warnings=(*run_warnings, "Cancelled by user"),
-                    row_count=uow.feature_store.count_by_run_id(run_id),
-                    duration_seconds=round(duration, 2),
-                    failure_diagnostics=failure_diagnostics.to_dict(),
-                )
-
-            # 3b — Scan each symbol in the chunk
-            pre_fetched_data: dict[str, object] = {}
-            cache_only_symbol_data = (
-                cmd.batch_only_prices
-                or cmd.batch_only_fundamentals
-                or cmd.require_bulk_prefetch
+        def _scan_exception(
+            sym: str,
+            exc: BaseException,
+        ) -> tuple[None, bool, dict[str, object]]:
+            logger.debug(
+                "Error scanning %s in run %d",
+                sym,
+                run_id,
+                exc_info=exc,
             )
-            if bulk_prefetch_enabled and merged_requirements is not None:
-                try:
-                    pre_fetched_data = self._data_provider.prepare_data_bulk(
-                        [symbol.upper() for symbol in chunk],
-                        merged_requirements,
-                        allow_partial=True,
-                        batch_only_prices=cmd.batch_only_prices,
-                        batch_only_fundamentals=cmd.batch_only_fundamentals,
-                    )
-                except Exception as exc:
-                    if cmd.require_bulk_prefetch:
-                        raise RuntimeError(
-                            "Cache-only snapshot bulk prefetch failed; refusing per-symbol fallback"
-                        ) from exc
-                    logger.warning(
-                        "Run %d: bulk data fetch failed for chunk; "
-                        "falling back to per-symbol fetch",
-                        run_id,
-                        exc_info=True,
-                    )
-                    bulk_prefetch_enabled = False
-                    pre_fetched_data = {}
+            return (
+                None,
+                False,
+                {
+                    "symbol": sym,
+                    "reason": "scan_exception",
+                    "error": _format_exception(exc),
+                    "data_errors": {},
+                },
+            )
 
-            if rs_resolution is not None:
-                self._data_provider.apply_market_rs_resolution(
-                    pre_fetched_data,
-                    rs_resolution,
-                )
+        def _interpret(
+            sym: str,
+            outcome: StockScanOutcome,
+        ) -> tuple[FeatureRowWrite | None, bool, dict[str, object] | None]:
+            if outcome.error is not None:
+                return _scan_exception(sym, outcome.error)
+            result = outcome.result
+            try:
+                result_status = _resolve_result_status(result)
+                if isinstance(result, dict) and result and result_status != "error":
+                    row = _map_orchestrator_to_feature_row(
+                        sym, cmd.as_of_date, result
+                    )
+                    return row, bool(result.get("passes_template")), None
+            except Exception as exc:
+                return _scan_exception(sym, exc)
+            error = None
+            if isinstance(result, dict) and result.get("error") is not None:
+                error = str(result.get("error"))
+            return (
+                None,
+                False,
+                {
+                    "symbol": sym,
+                    "reason": "scanner_error_result",
+                    "error": error,
+                    "data_errors": _extract_data_errors(result),
+                },
+            )
 
+        def _finish(
+            chunk: list[str],
+            calls: list[StockScanCall | None],
+            batch: PendingScanBatch,
+        ) -> None:
+            """Collect a submitted chunk, upsert it (the checkpoint), report progress."""
             chunk_rows: list[FeatureRowWrite] = []
-
-            def _call_for(symbol: str) -> StockScanCall | None:
-                sym = symbol.upper()
-                if cache_only_symbol_data and sym not in pre_fetched_data:
-                    return None
-                scan_kwargs: dict[str, object] = {
-                    "screener_names": cmd.screener_names,
-                    "criteria": cmd.criteria,
-                    "composite_method": cmd.composite_method,
-                }
-                if merged_requirements is not None:
-                    scan_kwargs["pre_merged_requirements"] = merged_requirements
-                # Prefetched data already carries the resolution; don't pickle
-                # the universe-wide mapping into every worker batch.
-                if rs_resolution is not None and sym not in pre_fetched_data:
-                    scan_kwargs["market_rs_resolution"] = rs_resolution
-                if sym in pre_fetched_data:
-                    scan_kwargs["pre_fetched_data"] = pre_fetched_data[sym]
-                return StockScanCall(symbol=sym, kwargs=scan_kwargs)
-
-            def _scan_exception(
-                sym: str,
-                exc: BaseException,
-            ) -> tuple[None, bool, dict[str, object]]:
-                logger.debug(
-                    "Error scanning %s in run %d",
-                    sym,
-                    run_id,
-                    exc_info=exc,
-                )
-                return (
-                    None,
-                    False,
-                    {
-                        "symbol": sym,
-                        "reason": "scan_exception",
-                        "error": _format_exception(exc),
-                        "data_errors": {},
-                    },
-                )
-
-            def _interpret(
-                sym: str,
-                outcome: StockScanOutcome,
-            ) -> tuple[FeatureRowWrite | None, bool, dict[str, object] | None]:
-                if outcome.error is not None:
-                    return _scan_exception(sym, outcome.error)
-                result = outcome.result
-                try:
-                    result_status = _resolve_result_status(result)
-                    if isinstance(result, dict) and result and result_status != "error":
-                        row = _map_orchestrator_to_feature_row(
-                            sym, cmd.as_of_date, result
-                        )
-                        return row, bool(result.get("passes_template")), None
-                except Exception as exc:
-                    return _scan_exception(sym, exc)
-                error = None
-                if isinstance(result, dict) and result.get("error") is not None:
-                    error = str(result.get("error"))
-                return (
-                    None,
-                    False,
-                    {
-                        "symbol": sym,
-                        "reason": "scanner_error_result",
-                        "error": error,
-                        "data_errors": _extract_data_errors(result),
-                    },
-                )
-
-            calls = [_call_for(symbol) for symbol in chunk]
-            prefetch_covers_chunk = bool(pre_fetched_data) and all(
-                symbol.upper() in pre_fetched_data for symbol in chunk
-            )
-            # Symbols outside the prefetch fetch their own data (live
-            # providers); keep those serial so they respect rate limits.
-            runner = (
-                compute_runner
-                if cache_only_symbol_data or prefetch_covers_chunk
-                else in_process_runner
-            )
-            scan_outcomes = iter(
-                runner.scan_batch([call for call in calls if call is not None])
-            )
+            scan_outcomes = iter(batch())
             outcomes_by_symbol: dict[
                 str,
                 tuple[FeatureRowWrite | None, bool, dict[str, object] | None],
@@ -846,13 +748,11 @@ class BuildDailyFeatureSnapshotUseCase:
                     progress_state.failed_symbols += 1
                 progress_state.attempted_symbols += 1
 
-            # 3c — Persist chunk (checkpoint)
             if chunk_rows:
                 _assert_chunk_opportunity_projections(chunk_rows)
                 uow.feature_store.upsert_snapshot_rows(run_id, chunk_rows)
             uow.commit()
 
-            # 3d — Progress reporting
             elapsed = time.monotonic() - start_time
             throughput = (
                 progress_state.attempted_symbols / elapsed if elapsed > 0 else 0.0
@@ -872,9 +772,132 @@ class BuildDailyFeatureSnapshotUseCase:
                     eta_seconds=round(eta) if eta is not None else None,
                 )
             )
-            chunk_rows.clear()
-            outcomes_by_symbol.clear()
-            pre_fetched_data.clear()
+
+        def _cancelled() -> BuildDailySnapshotResult:
+            duration = time.monotonic() - start_time
+            stats = RunStats(
+                total_symbols=total,
+                processed_symbols=(
+                    progress_state.attempted_symbols
+                    - progress_state.failed_symbols
+                ),
+                failed_symbols=progress_state.failed_symbols,
+                duration_seconds=round(duration, 2),
+                passed_symbols=progress_state.passed_symbols,
+            )
+            uow.feature_runs.mark_completed(
+                run_id, stats, warnings=("Cancelled by user",)
+            )
+            uow.commit()
+            logger.info(
+                "Run %d cancelled at %d/%d",
+                run_id,
+                progress_state.attempted_symbols,
+                total,
+            )
+            return BuildDailySnapshotResult(
+                run_id=run_id,
+                status=RunStatus.COMPLETED.value,
+                total_symbols=total,
+                processed_symbols=progress_state.attempted_symbols,
+                failed_symbols=progress_state.failed_symbols,
+                skipped_symbols=skipped_symbols,
+                dq_passed=False,
+                warnings=(*run_warnings, "Cancelled by user"),
+                row_count=uow.feature_store.count_by_run_id(run_id),
+                duration_seconds=round(duration, 2),
+                failure_diagnostics=failure_diagnostics.to_dict(),
+            )
+
+        # 3a — Cancellation gate
+        if cancel.is_cancelled():
+            return _cancelled()
+
+        # The chunk submitted last computes while the parent finishes the one
+        # before it. Upserts stay in chunk order. A cancel drops the batch
+        # submitted just before it: the runner's exit cancels its queued work
+        # and waits for the part already dispatched to the workers.
+        pending: tuple[list[str], list[StockScanCall | None], PendingScanBatch] | None = None
+        for chunk in _chunked(symbols, effective_chunk_size):
+            # 3b — Prefetch the chunk and submit it
+            pre_fetched_data: dict[str, object] = {}
+            cache_only_symbol_data = (
+                cmd.batch_only_prices
+                or cmd.batch_only_fundamentals
+                or cmd.require_bulk_prefetch
+            )
+            if bulk_prefetch_enabled and merged_requirements is not None:
+                try:
+                    pre_fetched_data = self._data_provider.prepare_data_bulk(
+                        [symbol.upper() for symbol in chunk],
+                        merged_requirements,
+                        allow_partial=True,
+                        batch_only_prices=cmd.batch_only_prices,
+                        batch_only_fundamentals=cmd.batch_only_fundamentals,
+                    )
+                except Exception as exc:
+                    if cmd.require_bulk_prefetch:
+                        raise RuntimeError(
+                            "Cache-only snapshot bulk prefetch failed; refusing per-symbol fallback"
+                        ) from exc
+                    logger.warning(
+                        "Run %d: bulk data fetch failed for chunk; "
+                        "falling back to per-symbol fetch",
+                        run_id,
+                        exc_info=True,
+                    )
+                    bulk_prefetch_enabled = False
+                    pre_fetched_data = {}
+
+            if rs_resolution is not None:
+                self._data_provider.apply_market_rs_resolution(
+                    pre_fetched_data,
+                    rs_resolution,
+                )
+
+            def _call_for(symbol: str) -> StockScanCall | None:
+                sym = symbol.upper()
+                if cache_only_symbol_data and sym not in pre_fetched_data:
+                    return None
+                scan_kwargs: dict[str, object] = {
+                    "screener_names": cmd.screener_names,
+                    "criteria": cmd.criteria,
+                    "composite_method": cmd.composite_method,
+                }
+                if merged_requirements is not None:
+                    scan_kwargs["pre_merged_requirements"] = merged_requirements
+                # Prefetched data already carries the resolution; don't pickle
+                # the universe-wide mapping into every worker batch.
+                if rs_resolution is not None and sym not in pre_fetched_data:
+                    scan_kwargs["market_rs_resolution"] = rs_resolution
+                if sym in pre_fetched_data:
+                    scan_kwargs["pre_fetched_data"] = pre_fetched_data[sym]
+                return StockScanCall(symbol=sym, kwargs=scan_kwargs)
+
+            calls = [_call_for(symbol) for symbol in chunk]
+            prefetch_covers_chunk = bool(pre_fetched_data) and all(
+                symbol.upper() in pre_fetched_data for symbol in chunk
+            )
+            # Symbols outside the prefetch fetch their own data (live
+            # providers); keep those serial so they respect rate limits.
+            runner = (
+                compute_runner
+                if cache_only_symbol_data or prefetch_covers_chunk
+                else in_process_runner
+            )
+            submitted = (
+                chunk,
+                calls,
+                runner.submit_batch([call for call in calls if call is not None]),
+            )
+            if pending is not None:
+                _finish(*pending)
+                if cancel.is_cancelled():
+                    return _cancelled()
+            pending = submitted
+
+        if pending is not None:
+            _finish(*pending)
 
         # ── 4. Mark completed ───────────────────────────────────
         duration = time.monotonic() - start_time

@@ -11,6 +11,7 @@ not through method parameters.
 from __future__ import annotations
 
 import abc
+import functools
 from dataclasses import dataclass, field
 from datetime import date
 from typing import Callable, ContextManager, Mapping, Protocol, Sequence
@@ -568,10 +569,18 @@ class StockScanOutcome:
     error: BaseException | None = None
 
 
-class StockScanBatchRunner(Protocol):
-    """Runs a batch of scan calls and returns outcomes in input order."""
+PendingScanBatch = Callable[[], list[StockScanOutcome]]
+"""Handle on a submitted batch; calling it blocks until the outcomes are available."""
 
-    def scan_batch(self, calls: Sequence[StockScanCall]) -> list[StockScanOutcome]:
+
+class StockScanBatchRunner(Protocol):
+    """Submits a batch of scan calls; the outcomes come back in input order.
+
+    Submission returns at once when the runner computes elsewhere, so the
+    caller can finish one batch while the next one computes.
+    """
+
+    def submit_batch(self, calls: Sequence[StockScanCall]) -> PendingScanBatch:
         ...
 
 
@@ -583,7 +592,7 @@ StockScanBatchRunnerFactory = Callable[
 
 
 class SerialStockScanBatchRunner:
-    """Runs every call in the current process, one after another."""
+    """Runs every call in the current process when the batch is collected."""
 
     def __init__(self, scanner: StockScanner) -> None:
         self._scanner = scanner
@@ -594,7 +603,10 @@ class SerialStockScanBatchRunner:
     def __exit__(self, exc_type, exc, tb) -> None:
         return None
 
-    def scan_batch(self, calls: Sequence[StockScanCall]) -> list[StockScanOutcome]:
+    def submit_batch(self, calls: Sequence[StockScanCall]) -> PendingScanBatch:
+        return functools.partial(self.run_calls, calls)
+
+    def run_calls(self, calls: Sequence[StockScanCall]) -> list[StockScanOutcome]:
         return [run_stock_scan_call(self._scanner, call) for call in calls]
 
 

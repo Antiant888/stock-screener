@@ -47,6 +47,7 @@ from app.domain.scanning.ports import (
     StockDataProvider,
     TaskDispatcher,
     UniverseRepository,
+    run_stock_scan_call,
 )
 from app.scanners.base_screener import StockData
 
@@ -563,6 +564,44 @@ class FakeCancellationToken(CancellationToken):
         if self._cancel_after is not None and self._checks > self._cancel_after:
             return True
         return False
+
+
+class CancelAfterProgressToken(CancellationToken):
+    """Cancels once the sink has reported any progress."""
+
+    def __init__(self, progress: FakeProgressSink) -> None:
+        self._progress = progress
+
+    def is_cancelled(self) -> bool:
+        return bool(self._progress.events)
+
+
+class JournalingRunnerFactory:
+    """Compute pool stand-in whose submits and collects land in a shared journal."""
+
+    def __init__(self, journal: list):
+        self._journal = journal
+
+    def __call__(self, scanner, processes):
+        journal = self._journal
+
+        class _Runner:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return None
+
+            def submit_batch(self, calls):
+                journal.append(("submit", [call.symbol for call in calls]))
+
+                def collect():
+                    journal.append(("collect", [call.symbol for call in calls]))
+                    return [run_stock_scan_call(scanner, call) for call in calls]
+
+                return collect
+
+        return _Runner()
 
 
 # ---------------------------------------------------------------------------

@@ -16,6 +16,7 @@ fully wired scanner without rebuilding runtime services.
 
 from __future__ import annotations
 
+import functools
 import itertools
 import logging
 import math
@@ -27,6 +28,7 @@ from concurrent.futures.process import BrokenProcessPool
 from typing import Sequence
 
 from app.domain.scanning.ports import (
+    PendingScanBatch,
     SerialStockScanBatchRunner,
     StockScanBatchRunner,
     StockScanCall,
@@ -37,7 +39,7 @@ from app.domain.scanning.ports import (
 
 logger = logging.getLogger(__name__)
 
-# Batches submitted per worker for each scan_batch() call. Several small
+# Batches submitted per worker for each submit_batch() call. Several small
 # batches per worker let fast workers pick up slack when some symbols (long
 # histories, many pattern candidates) take much longer than others.
 _BATCHES_PER_PROCESS = 4
@@ -116,6 +118,10 @@ def _split(calls: Sequence[StockScanCall], parts: int) -> list[Sequence[StockSca
 class ProcessStockScanBatchRunner:
     """Computes scan calls on ``processes`` forked workers, in input order.
 
+    A batch is handed to the workers at submission and collected when the
+    returned handle is called, so the parent can persist one chunk while they
+    compute the next.
+
     Any pool failure degrades to in-process computation instead of failing
     the scan: a worker that dies breaks the pool, and every batch not yet
     collected is recomputed in the parent. Scan calls are pure, so
@@ -174,12 +180,20 @@ class ProcessStockScanBatchRunner:
             _scanners_by_token.pop(self._token, None)
             self._token = None
 
-    def scan_batch(self, calls: Sequence[StockScanCall]) -> list[StockScanOutcome]:
+    def submit_batch(self, calls: Sequence[StockScanCall]) -> PendingScanBatch:
         if self._executor is None or len(calls) < 2:
-            return self._serial.scan_batch(calls)
+            return self._serial.submit_batch(calls)
 
         batches = _split(calls, self._processes * _BATCHES_PER_PROCESS)
-        futures = [self._submit(batch) for batch in batches]
+        return functools.partial(
+            self._collect, batches, [self._submit(batch) for batch in batches]
+        )
+
+    def _collect(
+        self,
+        batches: Sequence[Sequence[StockScanCall]],
+        futures: Sequence[Future],
+    ) -> list[StockScanOutcome]:
         outcomes: list[StockScanOutcome] = []
         for batch, future in zip(batches, futures):
             try:
@@ -191,7 +205,7 @@ class ProcessStockScanBatchRunner:
                         exc_info=True,
                     )
                     self._shutdown()
-                outcomes.extend(self._serial.scan_batch(batch))
+                outcomes.extend(self._serial.run_calls(batch))
             except Exception as exc:
                 # Raised in the parent while waiting (e.g. Celery's soft time
                 # limit), not by the worker: propagate it.
@@ -203,7 +217,7 @@ class ProcessStockScanBatchRunner:
                     "Scan compute batch failed in a worker; recomputing it in-process",
                     exc_info=True,
                 )
-                outcomes.extend(self._serial.scan_batch(batch))
+                outcomes.extend(self._serial.run_calls(batch))
         return outcomes
 
     def _submit(self, batch: Sequence[StockScanCall]) -> Future:

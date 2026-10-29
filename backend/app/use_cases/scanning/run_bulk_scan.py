@@ -3,11 +3,13 @@
 This use case contains the business rules for executing a bulk scan:
   1. Load scan record and determine checkpoint (resume support)
   2. Mark scan as running
-  3. Process symbols in chunks via the StockScanner port
-  4. Persist results after each chunk (acts as checkpoint)
-  5. Report progress via ProgressSink
-  6. Check CancellationToken between chunks
-  7. Handle completion / failure status transitions
+  3. Submit each chunk of symbols to the batch runner; while it computes,
+     collect the previous chunk, persist it (acts as checkpoint) and report
+     progress via ProgressSink
+  4. Check CancellationToken before the first chunk and after each persisted
+     chunk except the last; a chunk already submitted when the scan is
+     cancelled is dropped
+  5. Handle completion / failure status transitions
 
 The use case depends ONLY on domain ports — never on SQLAlchemy, Celery,
 Redis, or any other infrastructure.
@@ -32,6 +34,7 @@ from app.domain.scanning.ports import (
     CancellationToken,
     MarketRsReader,
     MarketRsResolution,
+    PendingScanBatch,
     ProgressSink,
     SerialStockScanBatchRunner,
     StockDataProvider,
@@ -318,26 +321,103 @@ class RunBulkScanUseCase:
         passed = getattr(scan, "passed_stocks", 0) or 0
         failed = 0
         start_time = time.monotonic()
-        for chunk in _chunked(remaining_symbols, cmd.chunk_size):
-            # 5a — Cancellation gate
-            if cancel.is_cancelled():
-                uow.scans.update_status(
+
+        def _interpret(
+            sym: str,
+            outcome: StockScanOutcome,
+        ) -> tuple[dict | None, bool, bool]:
+            if outcome.error is not None:
+                logger.debug(
+                    "Error scanning %s in scan %s",
+                    sym,
                     cmd.scan_id,
-                    ScanStatus.CANCELLED.value,
-                    passed_stocks=passed,
+                    exc_info=outcome.error,
                 )
-                uow.commit()
-                logger.info(
-                    "Scan %s cancelled at %d/%d", cmd.scan_id, processed, total
+                return (None, False, False)
+            result = outcome.result
+            passed_flag = (
+                bool(result.get("passes_template"))
+                if isinstance(result, dict)
+                else False
+            )
+            return (result, passed_flag, _should_persist_result(result))
+
+        def _finish(
+            calls: list[StockScanCall | None],
+            batch: PendingScanBatch,
+        ) -> None:
+            """Collect a submitted chunk, persist it (the checkpoint), report progress."""
+            nonlocal processed, passed, failed
+            chunk_results: list[tuple[str, dict]] = []
+            scan_outcomes = iter(batch())
+            for call in calls:
+                if call is None:
+                    failed += 1
+                    processed += 1
+                    continue
+                result, passed_flag, persistable = _interpret(
+                    call.symbol,
+                    next(scan_outcomes),
                 )
-                return RunBulkScanResult(
-                    scan_id=cmd.scan_id,
-                    status=ScanStatus.CANCELLED.value,
-                    total_scanned=processed,
+                if persistable and result is not None:
+                    chunk_results.append((call.symbol, result))
+                    if passed_flag:
+                        passed += 1
+                else:
+                    failed += 1
+                processed += 1
+
+            if chunk_results:
+                uow.scan_results.persist_orchestrator_results(
+                    cmd.scan_id, chunk_results
+                )
+            uow.commit()
+
+            elapsed = time.monotonic() - start_time
+            throughput = (
+                (processed - already_done) / elapsed if elapsed > 0 else 0.0
+            )
+            remaining = total - processed
+            eta = remaining / throughput if throughput > 0 else None
+
+            progress.emit(
+                ProgressEvent(
+                    current=processed,
+                    total=total,
                     passed=passed,
                     failed=failed,
+                    throughput=round(throughput, 2) if throughput > 0 else None,
+                    eta_seconds=round(eta) if eta is not None else None,
                 )
+            )
 
+        def _cancelled() -> RunBulkScanResult:
+            uow.scans.update_status(
+                cmd.scan_id,
+                ScanStatus.CANCELLED.value,
+                passed_stocks=passed,
+            )
+            uow.commit()
+            logger.info(
+                "Scan %s cancelled at %d/%d", cmd.scan_id, processed, total
+            )
+            return RunBulkScanResult(
+                scan_id=cmd.scan_id,
+                status=ScanStatus.CANCELLED.value,
+                total_scanned=processed,
+                passed=passed,
+                failed=failed,
+            )
+
+        if cancel.is_cancelled():
+            return _cancelled()
+
+        # The chunk submitted last computes while the parent finishes the one
+        # before it. Commits stay in chunk order, so the resume checkpoint holds.
+        # A cancel drops the batch submitted just before it: the runner's exit
+        # cancels its queued work and waits for the part already dispatched.
+        pending: tuple[list[StockScanCall | None], PendingScanBatch] | None = None
+        for chunk in _chunked(remaining_symbols, cmd.chunk_size):
             pre_fetched_data = {}
             if self._data_provider is not None and merged_requirements is not None:
                 try:
@@ -429,9 +509,6 @@ class RunBulkScanUseCase:
                     for symbol in market_symbols:
                         chunk_rs_resolution_by_symbol[symbol] = resolution
 
-            # 5b — Scan each symbol in the chunk
-            chunk_results: list[tuple[str, dict]] = []
-
             def _call_for(symbol: str) -> StockScanCall | None:
                 sym = symbol.upper()
                 # cache_only invariant: the bulk prefetch is the only sanctioned
@@ -459,26 +536,6 @@ class RunBulkScanUseCase:
                     scan_kwargs["pre_fetched_data"] = pre_fetched_data[sym]
                 return StockScanCall(symbol=sym, kwargs=scan_kwargs)
 
-            def _interpret(
-                sym: str,
-                outcome: StockScanOutcome,
-            ) -> tuple[dict | None, bool, bool]:
-                if outcome.error is not None:
-                    logger.debug(
-                        "Error scanning %s in scan %s",
-                        sym,
-                        cmd.scan_id,
-                        exc_info=outcome.error,
-                    )
-                    return (None, False, False)
-                result = outcome.result
-                passed_flag = (
-                    bool(result.get("passes_template"))
-                    if isinstance(result, dict)
-                    else False
-                )
-                return (result, passed_flag, _should_persist_result(result))
-
             calls = [_call_for(symbol) for symbol in chunk]
             prefetch_covers_chunk = bool(pre_fetched_data) and all(
                 symbol.upper() in pre_fetched_data for symbol in chunk
@@ -490,52 +547,18 @@ class RunBulkScanUseCase:
                 if cmd.cache_only or prefetch_covers_chunk
                 else in_process_runner
             )
-            scan_outcomes = iter(
-                runner.scan_batch([call for call in calls if call is not None])
+            submitted = (
+                calls,
+                runner.submit_batch([call for call in calls if call is not None]),
             )
+            if pending is not None:
+                _finish(*pending)
+                if cancel.is_cancelled():
+                    return _cancelled()
+            pending = submitted
 
-            for call in calls:
-                if call is None:
-                    failed += 1
-                    processed += 1
-                    continue
-                result, passed_flag, persistable = _interpret(
-                    call.symbol,
-                    next(scan_outcomes),
-                )
-                if persistable and result is not None:
-                    chunk_results.append((call.symbol, result))
-                    if passed_flag:
-                        passed += 1
-                else:
-                    failed += 1
-                processed += 1
-
-            # 5c — Persist chunk (doubles as checkpoint)
-            if chunk_results:
-                uow.scan_results.persist_orchestrator_results(
-                    cmd.scan_id, chunk_results
-                )
-            uow.commit()
-
-            # 5d — Progress reporting
-            elapsed = time.monotonic() - start_time
-            throughput = (
-                (processed - already_done) / elapsed if elapsed > 0 else 0.0
-            )
-            remaining = total - processed
-            eta = remaining / throughput if throughput > 0 else None
-
-            progress.emit(
-                ProgressEvent(
-                    current=processed,
-                    total=total,
-                    passed=passed,
-                    failed=failed,
-                    throughput=round(throughput, 2) if throughput > 0 else None,
-                    eta_seconds=round(eta) if eta is not None else None,
-                )
-            )
+        if pending is not None:
+            _finish(*pending)
 
         # ── Completed ─────────────────────────────────────────────
         uow.scans.update_status(

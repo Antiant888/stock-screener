@@ -14,13 +14,18 @@ import pytest
 from app.domain.common.errors import EntityNotFoundError
 from app.domain.relative_strength import BALANCED_RS_FORMULA_VERSION
 from app.domain.scanning.models import ScanStatus
-from app.domain.scanning.ports import MarketRsResolution, SerialStockScanBatchRunner
+from app.domain.scanning.ports import (
+    MarketRsResolution,
+    SerialStockScanBatchRunner,
+    serial_stock_scan_batch_runner,
+)
 from app.use_cases.scanning.run_bulk_scan import (
     RunBulkScanCommand,
     RunBulkScanUseCase,
 )
 
 from tests.unit.use_cases.conftest import (
+    CancelAfterProgressToken,
     FakeCancellationToken,
     FakeProgressSink,
     FakeScan,
@@ -29,6 +34,7 @@ from tests.unit.use_cases.conftest import (
     FakeScanner,
     FakeStockDataProvider,
     FakeUnitOfWork,
+    JournalingRunnerFactory,
 )
 
 
@@ -106,9 +112,9 @@ class _RecordingRunnerFactory:
             def __exit__(self, exc_type, exc, tb):
                 factory.closed += 1
 
-            def scan_batch(self, calls):
+            def submit_batch(self, calls):
                 factory.batches.append([call.symbol for call in calls])
-                return serial.scan_batch(calls)
+                return serial.submit_batch(calls)
 
         return _Runner()
 
@@ -502,7 +508,9 @@ class TestRunBulkScanHappyPath:
             )
 
         assert scan_repo.scans["s1"].status == ScanStatus.FAILED.value
-        assert uow.scan_results.count_by_scan_id("s1") == 2
+        # The first chunk was still pending when the second chunk's Market RS
+        # read failed; only committed chunks count towards the resume checkpoint.
+        assert uow.scan_results.count_by_scan_id("s1") == 0
 
     def test_cache_only_flag_propagates_to_bulk_data_fetch(self):
         """cache_only=True on the command must disable live-fetch fallback inside
@@ -1344,3 +1352,216 @@ class TestInputValidation:
     def test_parallel_workers_zero_raises(self):
         with pytest.raises(ValueError, match="parallel_workers must be >= 1"):
             RunBulkScanCommand(scan_id="s1", symbols=["A"], parallel_workers=0)
+
+
+# ---------------------------------------------------------------------------
+# Chunk pipeline: the parent persists chunk N while the pool computes N+1
+# ---------------------------------------------------------------------------
+
+
+class _JournalingScanResultRepository(FakeScanResultRepository):
+    def __init__(self, journal: list):
+        super().__init__()
+        self._journal = journal
+
+    def persist_orchestrator_results(self, scan_id, results):
+        self._journal.append(("persist", [symbol for symbol, _ in results]))
+        return super().persist_orchestrator_results(scan_id, results)
+
+
+class _JournalingScanRepository(FakeScanRepository):
+    def __init__(self, journal: list):
+        super().__init__()
+        self._journal = journal
+
+    def update_status(self, scan_id, status, **fields):
+        self._journal.append(("status", status))
+        super().update_status(scan_id, status, **fields)
+
+
+class _JournalingScanner(_BulkAwareFakeScanner):
+    def __init__(self, journal: list, results=None):
+        super().__init__(results=results)
+        self._journal = journal
+
+    def scan_stock_multi(self, symbol, **kwargs):
+        self._journal.append(("compute", symbol))
+        return super().scan_stock_multi(symbol, **kwargs)
+
+
+class TestChunkPipeline:
+    def _run(
+        self,
+        symbols,
+        *,
+        chunk_size,
+        cancel_after=None,
+        cancel_on_progress=False,
+        already_done=(),
+        passed_before=0,
+        in_process=False,
+    ):
+        journal: list = []
+        scan_repo = _JournalingScanRepository(journal)
+        scan = _make_scan("s1")
+        scan.passed_stocks = passed_before
+        scan_repo.scans["s1"] = scan
+        result_repo = _JournalingScanResultRepository(journal)
+        result_repo._persisted_results = [("s1", symbol, {}) for symbol in already_done]
+        uow = FakeUnitOfWork(scans=scan_repo, scan_results=result_repo)
+        progress = FakeProgressSink()
+        scanner_results = {"C": {"error": "No data available"}}
+        if in_process:
+            scanner = _JournalingScanner(journal, results=scanner_results)
+            runner_factory = serial_stock_scan_batch_runner
+        else:
+            scanner = _BulkAwareFakeScanner(results=scanner_results)
+            runner_factory = JournalingRunnerFactory(journal)
+        cancel = (
+            CancelAfterProgressToken(progress)
+            if cancel_on_progress
+            else FakeCancellationToken(cancel_after=cancel_after)
+        )
+
+        result = RunBulkScanUseCase(
+            scanner=scanner,
+            data_provider=FakeStockDataProvider(),
+            scan_batch_runner_factory=runner_factory,
+        ).execute(
+            uow,
+            RunBulkScanCommand(
+                scan_id="s1",
+                symbols=symbols,
+                chunk_size=chunk_size,
+                cache_only=True,
+                parallel_workers=2,
+            ),
+            progress,
+            cancel,
+        )
+        return result, journal, result_repo, scan_repo, progress
+
+    def test_in_process_chunks_compute_only_when_collected(self):
+        result, journal, result_repo, _, progress = self._run(
+            ["A", "B", "C", "D", "E", "F"], chunk_size=2, in_process=True
+        )
+
+        assert journal == [
+            ("status", ScanStatus.RUNNING.value),
+            ("compute", "A"),
+            ("compute", "B"),
+            ("persist", ["A", "B"]),
+            ("compute", "C"),
+            ("compute", "D"),
+            ("persist", ["D"]),
+            ("compute", "E"),
+            ("compute", "F"),
+            ("persist", ["E", "F"]),
+            ("status", ScanStatus.COMPLETED.value),
+        ]
+        assert (result.total_scanned, result.passed, result.failed) == (6, 5, 1)
+        assert [symbol for _, symbol, _ in result_repo._persisted_results] == [
+            "A", "B", "D", "E", "F",
+        ]
+        assert [(event.current, event.passed, event.failed) for event in progress.events] == [
+            (2, 2, 0),
+            (4, 3, 1),
+            (6, 5, 1),
+        ]
+
+    def test_next_chunk_is_submitted_before_the_pending_chunk_is_persisted(self):
+        result, journal, result_repo, _, progress = self._run(
+            ["A", "B", "C", "D", "E", "F"], chunk_size=2
+        )
+
+        assert journal == [
+            ("status", ScanStatus.RUNNING.value),
+            ("submit", ["A", "B"]),
+            ("submit", ["C", "D"]),
+            ("collect", ["A", "B"]),
+            ("persist", ["A", "B"]),
+            ("submit", ["E", "F"]),
+            ("collect", ["C", "D"]),
+            ("persist", ["D"]),
+            ("collect", ["E", "F"]),
+            ("persist", ["E", "F"]),
+            ("status", ScanStatus.COMPLETED.value),
+        ]
+        assert result.status == ScanStatus.COMPLETED.value
+        assert (result.total_scanned, result.passed, result.failed) == (6, 5, 1)
+        assert [symbol for _, symbol, _ in result_repo._persisted_results] == [
+            "A", "B", "D", "E", "F",
+        ]
+        assert [(event.current, event.passed, event.failed) for event in progress.events] == [
+            (2, 2, 0),
+            (4, 3, 1),
+            (6, 5, 1),
+        ]
+
+    def test_cancellation_persists_the_pending_chunk_and_drops_the_submitted_one(self):
+        result, journal, result_repo, scan_repo, progress = self._run(
+            ["A", "B", "C", "D", "E", "F"], chunk_size=2, cancel_after=2
+        )
+
+        assert journal == [
+            ("status", ScanStatus.RUNNING.value),
+            ("submit", ["A", "B"]),
+            ("submit", ["C", "D"]),
+            ("collect", ["A", "B"]),
+            ("persist", ["A", "B"]),
+            ("submit", ["E", "F"]),
+            ("collect", ["C", "D"]),
+            ("persist", ["D"]),
+            ("status", ScanStatus.CANCELLED.value),
+        ]
+        assert result.status == ScanStatus.CANCELLED.value
+        assert (result.total_scanned, result.passed, result.failed) == (4, 3, 1)
+        assert scan_repo.scans["s1"].passed_stocks == 3
+        assert [symbol for _, symbol, _ in result_repo._persisted_results] == ["A", "B", "D"]
+        assert [(event.current, event.passed, event.failed) for event in progress.events] == [
+            (2, 2, 0),
+            (4, 3, 1),
+        ]
+
+    def test_cancel_raised_by_the_first_progress_event_stops_after_that_chunk(self):
+        result, journal, result_repo, scan_repo, progress = self._run(
+            ["A", "B", "C", "D"], chunk_size=2, cancel_on_progress=True
+        )
+
+        assert journal == [
+            ("status", ScanStatus.RUNNING.value),
+            ("submit", ["A", "B"]),
+            ("submit", ["C", "D"]),
+            ("collect", ["A", "B"]),
+            ("persist", ["A", "B"]),
+            ("status", ScanStatus.CANCELLED.value),
+        ]
+        assert result.status == ScanStatus.CANCELLED.value
+        assert (result.total_scanned, result.passed, result.failed) == (2, 2, 0)
+        assert scan_repo.scans["s1"].passed_stocks == 2
+        assert [symbol for _, symbol, _ in result_repo._persisted_results] == ["A", "B"]
+        assert [(event.current, event.passed, event.failed) for event in progress.events] == [
+            (2, 2, 0),
+        ]
+
+    def test_resume_pipelines_only_the_remaining_chunks(self):
+        result, journal, result_repo, scan_repo, progress = self._run(
+            ["A", "B", "C", "D", "E", "F"],
+            chunk_size=2,
+            already_done=("A", "B"),
+            passed_before=2,
+        )
+
+        assert [entry for entry in journal if entry[0] == "submit"] == [
+            ("submit", ["C", "D"]),
+            ("submit", ["E", "F"]),
+        ]
+        assert [symbol for _, symbol, _ in result_repo._persisted_results] == [
+            "A", "B", "D", "E", "F",
+        ]
+        assert (result.total_scanned, result.passed, result.failed) == (6, 5, 1)
+        assert scan_repo.scans["s1"].passed_stocks == 5
+        assert [(event.current, event.passed, event.failed) for event in progress.events] == [
+            (4, 3, 1),
+            (6, 5, 1),
+        ]
