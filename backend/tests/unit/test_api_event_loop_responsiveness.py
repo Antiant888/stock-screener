@@ -9,20 +9,25 @@ fails instead of hanging.
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import inspect
+import textwrap
 import threading
+from datetime import datetime, timezone
 
 import httpx
 import pandas as pd
 import pytest
 import pytest_asyncio
+from fastapi.routing import APIRoute
 
 from app.api.v1 import cache as cache_module
 from app.api.v1 import scans as scans_module
 from app.api.v1 import stocks as stocks_module
 from app.main import app
 from app.services import server_auth
+from app.services.ui_snapshot_service import SnapshotResult
 from app.wiring.runtime_context import current_runtime_services
 
 pytestmark = pytest.mark.integration
@@ -95,6 +100,16 @@ class _SnapshotService:
     def get_scan_bootstrap(self, scan_id, market=None):
         self.gate.block()
 
+    def get_breadth_bootstrap(self, market=None):
+        self.gate.block()
+        return SnapshotResult(
+            snapshot_revision="breadth-r1",
+            source_revision="breadth-s1",
+            published_at=datetime(2026, 10, 28, tzinfo=timezone.utc),
+            is_stale=False,
+            payload={"market": market},
+        )
+
 
 def _patch_price_cache(monkeypatch, gate):
     monkeypatch.setattr(stocks_module, "get_price_cache", lambda: _PriceCache(gate))
@@ -141,6 +156,7 @@ _CASES = [
         200,
     ),
     ("scan-bootstrap", _patch_snapshot, "GET", "/api/v1/scans/bootstrap", None, 404),
+    ("breadth-bootstrap", _patch_snapshot, "GET", "/api/v1/breadth/bootstrap?market=US", None, 200),
     (
         "scan-refresh-cache",
         _patch_refresh,
@@ -211,3 +227,45 @@ def test_route_modules_have_no_async_endpoints():
             if inspect.iscoroutinefunction(getattr(route, "endpoint", None))
         ]
         assert offenders == [], f"{module.__name__} async endpoints: {offenders}"
+
+
+def _awaits_in_own_body(handler: ast.AsyncFunctionDef) -> bool:
+    """Nested defs, lambdas and classes are separate scopes, so their awaits do not count."""
+    pending = list(handler.body)
+    while pending:
+        node = pending.pop()
+        if isinstance(node, (ast.Await, ast.AsyncFor, ast.AsyncWith)):
+            return True
+        if isinstance(node, ast.comprehension) and node.is_async:
+            return True
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)):
+            continue
+        pending.extend(ast.iter_child_nodes(node))
+    return False
+
+
+# Handlers that must stay on the event loop even though they never await.
+_LOOP_ONLY_ENDPOINTS = {
+    # A liveness probe has to answer while the threadpool is saturated by slow
+    # handlers, and its body does no I/O, so it cannot stall the loop.
+    "app.main:liveness",
+}
+
+
+def test_async_endpoints_await_in_their_own_body():
+    """An `async def` handler that never awaits runs its whole body on the event loop."""
+    offenders = set()
+    for route in app.routes:
+        if not isinstance(route, APIRoute) or not inspect.iscoroutinefunction(route.endpoint):
+            continue
+        handler = ast.parse(textwrap.dedent(inspect.getsource(route.endpoint))).body[0]
+        if not _awaits_in_own_body(handler):
+            offenders.add(f"{route.endpoint.__module__}:{route.endpoint.__name__}")
+    stale_exemptions = _LOOP_ONLY_ENDPOINTS - offenders
+    assert not stale_exemptions, f"drop exemptions for handlers that no longer need them: {stale_exemptions}"
+    offenders -= _LOOP_ONLY_ENDPOINTS
+    assert not offenders, (
+        "These `async def` endpoints never await, so FastAPI runs their blocking body on the "
+        "event loop and every other request on the worker waits. Declare them with plain "
+        "`def` so FastAPI runs them in the threadpool:\n  " + "\n  ".join(sorted(offenders))
+    )
