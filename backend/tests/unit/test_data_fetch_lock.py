@@ -13,7 +13,7 @@ from celery import Celery
 from celery.exceptions import Retry, SoftTimeLimitExceeded
 from sqlalchemy.exc import OperationalError
 
-from app.tasks.workload_coordination import holds_external_fetch_lease
+from app.tasks.lease_renewal import holds_external_fetch_lease
 from app.tasks.data_fetch_lock import (
     DataFetchLock,
     LOCK_KEY,

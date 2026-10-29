@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from app.services.rate_budget_policy import RateBudgetPolicy
-from app.tasks.workload_coordination import holding_external_fetch_lease
+from app.tasks.lease_renewal import holding_external_fetch_lease
 
 
 class TestProviderKey:
@@ -165,6 +165,17 @@ class TestExternalFetchLeaseHolder:
     def test_per_market_override_still_wins_for_the_holder(self):
         with holding_external_fetch_lease(threading.Event()):
             assert self._interval(hk=0.1) == pytest.approx(10.0)
+
+    def test_holder_gets_the_whole_finviz_interval_too(self):
+        with patch("app.services.rate_budget_policy.RateBudgetPolicy._compute_weights_from_db") as m, \
+             patch("app.services.rate_budget_policy.settings") as mock_settings:
+            m.return_value = self.WEIGHTS
+            mock_settings.finviz_rate_limit_interval = 0.5
+            mock_settings.finviz_rate_limit_us = None
+            policy = RateBudgetPolicy()
+            assert policy.get_rate_interval("finviz", "US") == pytest.approx(1.0)
+            with holding_external_fetch_lease(threading.Event()):
+                assert policy.get_rate_interval("finviz", "US") == pytest.approx(0.5)
 
     def test_the_lease_ends_with_the_block(self):
         with holding_external_fetch_lease(threading.Event()):
