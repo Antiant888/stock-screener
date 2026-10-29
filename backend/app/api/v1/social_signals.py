@@ -403,10 +403,11 @@ def retry_admin_analysis(work_id: int, db: Session = Depends(get_db)):
             status_code=422, detail={"code": "work_generation_not_found"}
         )
     selected = db.get(SocialSignalRun, run_id)
-    # resume_social_analysis skips a running generation a later publication superseded.
-    if selected.status == "running" and db.scalar(select(SocialSignalRun.id).where(
+    # resume_social_analysis skips a generation a later publication superseded.
+    closed = selected.application_progress_json.get("failure", {}).get("reason_code") == "generation_superseded"
+    if closed or (selected.status == "running" and db.scalar(select(SocialSignalRun.id).where(
         SocialSignalRun.status == "published", SocialSignalRun.created_at >= selected.created_at,
-    ).limit(1)) is not None:
+    ).limit(1)) is not None):
         raise HTTPException(status_code=409, detail={"code": "work_generation_superseded"})
     prior = (row.state, row.error_code, row.requested_by_admin)
     row.requested_by_admin = True

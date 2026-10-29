@@ -61,10 +61,14 @@ def _resume_superseded(run_id):
     from app.infra.db.models.social_signals import SocialSignalRun
     with SessionLocal() as db:
         run = db.get(SocialSignalRun, run_id)
-        # Only deferred (running) generations resume automatically; admin retries
-        # of published or failed generations are deliberate.
-        return (run is not None and run.status == "running"
-                and _superseded(run, db.scalars(select(SocialSignalRun)).all()))
+        if run is None:
+            return False
+        if run.status == "failed":
+            return run.application_progress_json.get("failure", {}).get("reason_code") == "generation_superseded"
+        # A publication closes the older generations it can see; one created
+        # later with an older timestamp is caught here. Admin retries of
+        # published or analysis-failed generations are deliberate.
+        return run.status == "running" and _superseded(run, db.scalars(select(SocialSignalRun)).all())
 
 
 def _latest_resumable_run():

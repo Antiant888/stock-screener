@@ -8,7 +8,8 @@ import json
 from types import UnionType
 from typing import get_args, get_origin, get_type_hints
 
-from sqlalchemy import select
+from sqlalchemy import JSON, cast, func, literal, select, update
+from sqlalchemy.dialects.postgresql import JSONB
 
 from app.domain.social_signals.records import (PreparedSocialPublication, SavedSocialRunInputs, SocialPostRecord,
     SocialReplayManifest, ReplayInput, SocialPublicationContext, SocialCurrentInputManifest,
@@ -137,14 +138,13 @@ class SocialSignalWriter:
             old_payload = old.application_progress_json
             provenance = old_payload.get("historical", {"sources": old_payload["sources"],
                 "provider": old.provider, "registry_version": old.registry_version})
-            if old.status == "running":
+            failure = old_payload.get("failure", {})
+            if old.status == "running" or failure.get("reason_code") == "generation_superseded":
                 historical_ids = tuple(db.scalars(select(SocialRunWork.work_id).where(SocialRunWork.run_id == old.id).order_by(SocialRunWork.work_id)))
             else:
                 historical_ids = (old.prepared_json or {}).get("work_ids")
-                if historical_ids is None and old.status == "failed":
-                    failure = old_payload.get("failure", {})
-                    if failure.get("reason_code") == "analysis_failed":
-                        historical_ids = failure.get("work_ids")
+                if historical_ids is None and failure.get("reason_code") == "analysis_failed":
+                    historical_ids = failure.get("work_ids")
                 if historical_ids is None:
                     raise ValueError("terminal_run_manifest_missing")
                 historical_ids = tuple(historical_ids)
@@ -241,6 +241,24 @@ class SocialSignalWriter:
             }
             run.coverage_json = deepcopy(run.source_outcomes_json)
             run.status, run.completed_at = "failed", completed_at
+
+    @staticmethod
+    def _close_superseded(db, published, now):
+        """Older generations still open would only republish stale reads."""
+        failure = json.dumps({"reason_code": "generation_superseded"})
+        runs = SocialSignalRun.__table__
+        # PostgreSQL stores this column as json, which only concatenates as jsonb.
+        if db.get_bind().dialect.name == "sqlite":
+            progress = func.json_set(runs.c.application_progress_json, "$.failure", func.json(failure))
+        else:
+            progress = cast(cast(runs.c.application_progress_json, JSONB).op("||")(
+                cast(literal('{"failure": %s}' % failure), JSONB)), JSON)
+        # A Core statement loads no row. The ORM guards it bypasses protect
+        # publications; neither admits a staged generation moving to failed.
+        db.execute(update(runs).where(
+            runs.c.id != published.id, runs.c.mode == "live",
+            runs.c.status.in_(("running", "staged")), runs.c.created_at <= published.created_at,
+        ).values(status="failed", completed_at=now, application_progress_json=progress))
 
     @staticmethod
     def _post(value):
@@ -560,14 +578,13 @@ class SocialSignalWriter:
                 outcome["coverage_reason_codes"] = tuple(outcome["coverage_reason_codes"])
                 outcome["known_gap_intervals"] = tuple(tuple(datetime.fromisoformat(v) for v in gap) for gap in outcome["known_gap_intervals"])
                 batches.append(SocialSourceBatch(SocialReadRequest(**request), tuple(posts), SocialSourceOutcome(**outcome)))
-            if run.status == "running":
+            failure = run.application_progress_json.get("failure", {})
+            if run.status == "running" or failure.get("reason_code") == "generation_superseded":
                 work_ids = tuple(db.scalars(select(SocialRunWork.work_id).where(SocialRunWork.run_id == run_id).order_by(SocialRunWork.work_id)))
             else:
                 manifest = (run.prepared_json or {}).get("work_ids")
-                if manifest is None and run.status == "failed":
-                    failure = run.application_progress_json.get("failure", {})
-                    if failure.get("reason_code") == "analysis_failed":
-                        manifest = failure.get("work_ids")
+                if manifest is None and failure.get("reason_code") == "analysis_failed":
+                    manifest = failure.get("work_ids")
                 if manifest is None:
                     raise ValueError("terminal_run_manifest_missing")
                 work_ids = tuple(manifest)
@@ -811,6 +828,8 @@ class SocialSignalWriter:
     def publish(self, run_id, expected_mode_version):
         with self.session_factory() as db:
             run = db.get(SocialSignalRun, run_id)
+            if run is not None and run.application_progress_json.get("failure", {}).get("reason_code") == "generation_superseded":
+                raise ValueError("publication_generation_superseded")
             if run is None or run.status not in {"staged", "published"}:
                 raise ValueError("run_not_prepared")
             summary = tuple((key, run.source_outcomes_json[key]["history_status"])
@@ -866,6 +885,7 @@ class SocialSignalWriter:
             else:
                 pointer.run_id, pointer.updated_at = run_id, now
             run.status, run.published_at = "published", now
+            self._close_superseded(db, run, now)
             projection_service.admit_economic_evidence(
                 projection, prepared=application
             )
