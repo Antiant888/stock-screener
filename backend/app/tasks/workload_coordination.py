@@ -8,7 +8,6 @@ from datetime import datetime, timezone
 from functools import wraps
 import json
 import logging
-import threading
 import time
 from typing import Any, Dict, Iterator, Optional, Sequence, Tuple
 
@@ -141,28 +140,6 @@ def disable_serialized_market_workload() -> Iterator[None]:
         yield
     finally:
         _SERIALIZED_MARKET_WORKLOAD_DISABLED.reset(token)
-
-# The running task's lease-lost event while it holds external_fetch_global.
-_EXTERNAL_FETCH_LEASE_LOST: ContextVar[Optional[threading.Event]] = ContextVar(
-    "external_fetch_lease_lost",
-    default=None,
-)
-
-
-@contextmanager
-def holding_external_fetch_lease(lease_lost: threading.Event) -> Iterator[None]:
-    """Mark the block as holding external_fetch_global until it exits or
-    ``lease_lost`` is set."""
-    token = _EXTERNAL_FETCH_LEASE_LOST.set(lease_lost)
-    try:
-        yield
-    finally:
-        _EXTERNAL_FETCH_LEASE_LOST.reset(token)
-
-
-def holds_external_fetch_lease() -> bool:
-    lease_lost = _EXTERNAL_FETCH_LEASE_LOST.get()
-    return lease_lost is not None and not lease_lost.is_set()
 
 
 class WorkloadCoordination:

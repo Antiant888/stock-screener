@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
+from contextvars import ContextVar
 import logging
 import threading
 
@@ -127,3 +128,27 @@ def keep_leases_alive(
     finally:
         stop.set()
         thread.join(timeout=5)
+
+
+# The running task's lease-lost event while it holds external_fetch_global.
+# Worker threads do not inherit it, so they pace on their market's share.
+_EXTERNAL_FETCH_LEASE_LOST: ContextVar[threading.Event | None] = ContextVar(
+    "external_fetch_lease_lost",
+    default=None,
+)
+
+
+@contextmanager
+def holding_external_fetch_lease(lease_lost: threading.Event) -> Iterator[None]:
+    """Mark the block as holding external_fetch_global until it exits or
+    ``lease_lost`` is set."""
+    token = _EXTERNAL_FETCH_LEASE_LOST.set(lease_lost)
+    try:
+        yield
+    finally:
+        _EXTERNAL_FETCH_LEASE_LOST.reset(token)
+
+
+def holds_external_fetch_lease() -> bool:
+    lease_lost = _EXTERNAL_FETCH_LEASE_LOST.get()
+    return lease_lost is not None and not lease_lost.is_set()

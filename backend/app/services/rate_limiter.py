@@ -232,9 +232,11 @@ class RedisRateLimiter:
     ) -> float:
         """Per-market convenience wrapper.
 
-        Resolves the provider×market interval via RateBudgetPolicy, calls
-        the underlying ``wait()``, and records throttle telemetry when the
-        call actually slept. This is the preferred API for new code; raw
+        Paces on the provider×market key at the interval RateBudgetPolicy
+        resolves, then on the provider's unsuffixed key at its global
+        interval, so every caller of the provider shares one global budget
+        whatever share each market gets. Records throttle telemetry when
+        the call actually slept. This is the preferred API for new code; raw
         ``wait()`` remains for shared/legacy keys.
         """
         from .rate_budget_policy import get_rate_budget_policy
@@ -243,6 +245,11 @@ class RedisRateLimiter:
         key = policy.provider_key(provider, market)
         interval = policy.get_rate_interval(provider, market)
         waited = self.wait(key, min_interval_s=interval, timeout_s=timeout_s)
+        waited += self.wait(
+            provider,
+            min_interval_s=policy.get_rate_interval(provider, None),
+            timeout_s=timeout_s,
+        )
         if waited > 0:
             policy.record_throttle_wait(provider, market, waited)
         return waited

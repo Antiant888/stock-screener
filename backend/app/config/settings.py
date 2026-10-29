@@ -282,7 +282,8 @@ class Settings(BaseSettings):
 
     # Per-market rate budget overrides. Each value is in requests-per-second
     # for that market specifically. None means "use universe-weighted division
-    # of the global aggregate" (sensible default). Set explicit values when
+    # of the global aggregate" (sensible default), or the whole global interval
+    # while the task holds the external_fetch_global lease. Set explicit values when
     # empirical measurements show the auto-computed split is wrong for a
     # particular market.
     yfinance_rate_limit_us: float | None = None
@@ -324,7 +325,8 @@ class Settings(BaseSettings):
     # RateBudgetPolicy converts them to ``1.0/rps`` second intervals between
     # yfinance bulk-download batch calls. e.g. ``YFINANCE_BATCH_RATE_LIMIT_IN=0.1``
     # -> 10s between IN batches. ``None`` falls back to the universe-weighted
-    # division of ``yfinance_batch_rate_limit_interval``.
+    # division of ``yfinance_batch_rate_limit_interval``, or the whole interval
+    # while the task holds the external_fetch_global lease.
     yfinance_batch_rate_limit_us: float | None = None
     yfinance_batch_rate_limit_hk: float | None = None
     yfinance_batch_rate_limit_in: float | None = None
