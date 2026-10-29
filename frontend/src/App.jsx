@@ -87,13 +87,11 @@ function LiveOptionsRoute({ detail = false }) {
 // so a page-shaped skeleton in the content area is the right scope).
 const PageLoadingFallback = () => <PageSkeleton />;
 
-// Cold-start fallback shown while appCapabilities is first loading and we don't
-// yet know whether to render the app, the login screen, or the bootstrap setup.
-// Renders only static header chrome — no nav links, no providers, no data
-// queries — so it's safe to show before auth state is known, while still giving
-// the user immediate visual structure instead of a bare spinner. On refresh,
-// persisted page data can still paint quickly once live capabilities confirm
-// whether the app shell, login screen, or bootstrap setup should render.
+// Shown until we know whether to render the app, the login screen, or the
+// bootstrap setup. Renders only static header chrome — no nav links, no
+// providers, no data queries — so it's safe to show before auth state is known,
+// while still giving the user immediate visual structure instead of a bare
+// spinner.
 const AppLoadingScreen = ({ label = 'Stock Scanner' }) => (
   <Box sx={{ display: 'flex', flexDirection: 'column', minHeight: '100vh' }}>
     <AppBar position="static">
@@ -134,10 +132,10 @@ const queryClient = new QueryClient({
 });
 
 // Persist the query cache to localStorage so a page refresh paints last-known
-// data immediately instead of an empty shell. Restored entries are real data
-// (not placeholderData), which also satisfies the runtimeReady gate on
-// refresh — first-time visitors still wait for live capabilities before the
-// app renders. Stale restored data refetches in the background per staleTime.
+// data immediately instead of an empty shell. Restored capabilities open the
+// runtimeReady gate only when they describe the plain app (authenticated or no
+// auth, no bootstrap); a restored logged-out or bootstrap state waits for the
+// live check. Stale restored data refetches in the background per staleTime.
 const queryCachePersister = createSyncStoragePersister({
   storage: typeof window !== 'undefined' ? window.localStorage : undefined,
   key: 'stockscanner-query-cache',

@@ -1,4 +1,5 @@
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { QueryClient, QueryClientProvider, dehydrate } from '@tanstack/react-query';
+import { PersistQueryClientProvider } from '@tanstack/react-query-persist-client';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -8,6 +9,7 @@ import {
   mergeBootstrapCapabilities,
   useRuntime,
 } from './RuntimeContext';
+import { shouldDehydratePersistedQuery } from '../appQueryPersistence';
 import { getBreadthBootstrap } from '../api/breadth';
 import BreadthPage from '../pages/BreadthPage';
 
@@ -77,6 +79,7 @@ function RuntimeProbe() {
     <>
       <div data-testid="runtime-ready">{String(runtimeReady)}</div>
       <div data-testid="auth-required">{String(auth.required)}</div>
+      <div data-testid="auth-authenticated">{String(auth.authenticated)}</div>
       <div data-testid="bootstrap-required">{String(bootstrapRequired)}</div>
       <div data-testid="bootstrap-state">{bootstrapState}</div>
       <div data-testid="primary-market">{primaryMarket}</div>
@@ -121,6 +124,51 @@ function renderRuntime(queryClient = createTestQueryClient()) {
     ...rendered,
   };
 }
+
+// Mirrors a page refresh: the previous page load persisted its cache under the
+// app's persistence policy, and this one restores it while the live
+// capabilities request is still in flight.
+function renderRestoredRuntime(cachedCapabilities) {
+  const previousPageClient = createTestQueryClient();
+  previousPageClient.setQueryData(['appCapabilities'], cachedCapabilities, {
+    updatedAt: Date.now() - 60_000,
+  });
+  const persistedClient = {
+    timestamp: Date.now(),
+    buster: '',
+    clientState: dehydrate(previousPageClient, {
+      shouldDehydrateQuery: shouldDehydratePersistedQuery,
+    }),
+  };
+  const persister = {
+    persistClient: async () => {},
+    restoreClient: async () => persistedClient,
+    removeClient: async () => {},
+  };
+  const queryClient = createTestQueryClient();
+
+  render(
+    <PersistQueryClientProvider client={queryClient} persistOptions={{ persister }}>
+      <RuntimeProvider>
+        <RuntimeProbe />
+      </RuntimeProvider>
+    </PersistQueryClientProvider>
+  );
+
+  return queryClient;
+}
+
+function deferLiveCapabilities() {
+  let resolve;
+  getAppCapabilities.mockReturnValue(new Promise((res) => { resolve = res; }));
+  return (capabilities) => resolve(capabilities);
+}
+
+const capabilitiesWith = (overrides) => ({
+  ...DEFAULT_CAPABILITIES,
+  ...overrides,
+  auth: { ...DEFAULT_CAPABILITIES.auth, ...overrides.auth },
+});
 
 describe('RuntimeProvider', () => {
   beforeEach(() => {
@@ -192,6 +240,86 @@ describe('RuntimeProvider', () => {
       expect(queryClient.getQueryData(['appCapabilities'])?.auth.authenticated).toBe(true);
     });
     expect(getAppCapabilities).toHaveBeenCalledTimes(1);
+  });
+
+  it('renders from restored capabilities of an authenticated session before the live check returns', async () => {
+    deferLiveCapabilities();
+
+    renderRestoredRuntime(capabilitiesWith({ auth: { required: true, authenticated: true } }));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('runtime-ready')).toHaveTextContent('true');
+    });
+    expect(screen.getByTestId('auth-required')).toHaveTextContent('true');
+    expect(screen.getByTestId('auth-authenticated')).toHaveTextContent('true');
+    expect(getAppCapabilities).toHaveBeenCalledTimes(1);
+  });
+
+  it('renders from restored capabilities of a server without auth before the live check returns', async () => {
+    deferLiveCapabilities();
+
+    renderRestoredRuntime(capabilitiesWith({
+      auth: { required: false, authenticated: false },
+      primary_market: 'HK',
+    }));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('runtime-ready')).toHaveTextContent('true');
+    });
+    expect(screen.getByTestId('primary-market')).toHaveTextContent('HK');
+    expect(getAppCapabilities).toHaveBeenCalledTimes(1);
+  });
+
+  it('waits for the live check when restored capabilities say the session was logged out', async () => {
+    const resolveLive = deferLiveCapabilities();
+
+    renderRestoredRuntime(capabilitiesWith({ auth: { required: true, authenticated: false } }));
+
+    await waitFor(() => expect(getAppCapabilities).toHaveBeenCalledTimes(1));
+    expect(screen.getByTestId('auth-required')).toHaveTextContent('true');
+    expect(screen.getByTestId('runtime-ready')).toHaveTextContent('false');
+
+    resolveLive(capabilitiesWith({ auth: { required: true, authenticated: false } }));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('runtime-ready')).toHaveTextContent('true');
+    });
+    expect(screen.getByTestId('auth-authenticated')).toHaveTextContent('false');
+  });
+
+  it('waits for the live check when restored capabilities still require bootstrap', async () => {
+    const resolveLive = deferLiveCapabilities();
+
+    renderRestoredRuntime(capabilitiesWith({ bootstrap_required: true }));
+
+    await waitFor(() => expect(getAppCapabilities).toHaveBeenCalledTimes(1));
+    expect(screen.getByTestId('bootstrap-required')).toHaveTextContent('true');
+    expect(screen.getByTestId('runtime-ready')).toHaveTextContent('false');
+
+    resolveLive(capabilitiesWith({ bootstrap_required: false }));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('runtime-ready')).toHaveTextContent('true');
+    });
+    expect(screen.getByTestId('bootstrap-required')).toHaveTextContent('false');
+  });
+
+  it('switches to the live logged-out state when the restored session has expired', async () => {
+    const resolveLive = deferLiveCapabilities();
+
+    renderRestoredRuntime(capabilitiesWith({ auth: { required: true, authenticated: true } }));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('runtime-ready')).toHaveTextContent('true');
+    });
+    expect(screen.getByTestId('auth-authenticated')).toHaveTextContent('true');
+
+    resolveLive(capabilitiesWith({ auth: { required: true, authenticated: false } }));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('auth-authenticated')).toHaveTextContent('false');
+    });
+    expect(screen.getByTestId('runtime-ready')).toHaveTextContent('true');
   });
 
   it('exposes bootstrap metadata from app capabilities', async () => {

@@ -1,6 +1,6 @@
 /* eslint-disable react-refresh/only-export-components */
 
-import { createContext, useContext, useEffect, useMemo } from 'react';
+import { createContext, useContext, useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { setUnauthorizedResponseHandler } from '../api/client';
 import {
@@ -252,8 +252,14 @@ export function mergeBootstrapCapabilities(previous, data) {
   };
 }
 
+export function canRenderFromCachedCapabilities(capabilities) {
+  return !capabilities.bootstrap_required
+    && (!capabilities.auth?.required || Boolean(capabilities.auth?.authenticated));
+}
+
 export function RuntimeProvider({ children }) {
   const queryClient = useQueryClient();
+  const [mountedAt] = useState(() => Date.now());
 
   useEffect(() => {
     const handleUnauthorized = () => {
@@ -354,10 +360,13 @@ export function RuntimeProvider({ children }) {
   });
 
   const capabilities = capabilitiesQuery.data ?? DEFAULT_CAPABILITIES;
+  // Not isFetchedAfterMount: this observer exists before the persisted cache
+  // restores, and hydration brings the previous page's update count with it.
+  const fetchedLive = capabilitiesQuery.dataUpdatedAt >= mountedAt;
   const runtimeReady = (
-    !capabilitiesQuery.isPlaceholderData
-    || capabilitiesQuery.isFetchedAfterMount
+    fetchedLive
     || capabilitiesQuery.isError
+    || (!capabilitiesQuery.isPlaceholderData && canRenderFromCachedCapabilities(capabilities))
   );
 
   // useMutation returns a fresh result object every render, so depend on the
