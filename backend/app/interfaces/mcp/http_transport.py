@@ -84,7 +84,7 @@ async def mcp_post(request: Request) -> Response:
 
 
 @mcp_router.get("/")
-async def mcp_sse() -> Response:
+def mcp_sse() -> Response:
     """SSE keepalive endpoint (placeholder).
 
     The Streamable HTTP spec allows GET for server-initiated events.
@@ -94,6 +94,6 @@ async def mcp_sse() -> Response:
 
 
 @mcp_router.delete("/")
-async def mcp_session_teardown() -> Response:
+def mcp_session_teardown() -> Response:
     """Session teardown (no-op for stateless server)."""
     return Response(status_code=200)

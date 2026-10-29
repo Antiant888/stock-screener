@@ -194,6 +194,6 @@ def test_docs_gate_requires_explicit_exposure(monkeypatch):
 async def test_root_omits_docs_when_docs_disabled(monkeypatch):
     monkeypatch.setattr(main_app, "_docs_url", None)
 
-    payload = await main_app.root()
+    payload = main_app.root()
 
     assert "docs" not in payload

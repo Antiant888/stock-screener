@@ -287,7 +287,7 @@ _READINESS_TABLES = ("scans", "scan_results", "stock_universe")
 
 
 @app.get("/")
-async def root():
+def root():
     """Return API information."""
     payload = {
         "name": "Stock Scanner API",

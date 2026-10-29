@@ -76,7 +76,7 @@ def post_opportunity_evidence_open(body: OpportunityEvidenceOpenRequest) -> Resp
 
 
 @router.get("/markets")
-async def list_market_summaries() -> Dict[str, Any]:
+def list_market_summaries() -> Dict[str, Any]:
     """Return latest gauges + today's counters for every supported market."""
     telemetry = get_telemetry()
     summaries = [telemetry.market_summary(m) for m in telemetry.list_markets()]
@@ -84,7 +84,7 @@ async def list_market_summaries() -> Dict[str, Any]:
 
 
 @router.get("/markets/{market}")
-async def market_detail(market: str) -> Dict[str, Any]:
+def market_detail(market: str) -> Dict[str, Any]:
     """Return the full telemetry summary for a single market."""
     try:
         normalized = normalize_market(market)

@@ -519,7 +519,7 @@ def get_group_detail(
 
 
 @router.post("/rankings/calculate", response_model=TaskResponse)
-async def trigger_calculation(request: CalculationRequest):
+def trigger_calculation(request: CalculationRequest):
     """
     Manually trigger a group ranking calculation.
 
@@ -561,7 +561,7 @@ async def trigger_calculation(request: CalculationRequest):
 
 
 @router.get("/rankings/calculate/status/{task_id}", response_model=CalculationStatusResponse)
-async def get_calculation_status(task_id: str):
+def get_calculation_status(task_id: str):
     """
     Get the status of a group ranking calculation task.
 
@@ -630,7 +630,7 @@ async def get_calculation_status(task_id: str):
 
 
 @router.post("/rankings/backfill")
-async def trigger_backfill(
+def trigger_backfill(
     request: BackfillRequest,
 ):
     """
@@ -772,7 +772,7 @@ def get_ranking_gaps(
 
 
 @router.post("/rankings/gapfill")
-async def trigger_gapfill(
+def trigger_gapfill(
     max_days: int = Query(365, ge=30, le=365, description="Days to look back for gaps"),
 ):
     """

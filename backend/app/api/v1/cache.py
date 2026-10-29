@@ -94,7 +94,7 @@ def _queue_manual_smart_refresh(mode: str, market: str | None = None) -> SmartRe
 
 
 @router.post("/warm/spy")
-async def warm_spy_benchmark_cache(background_tasks: BackgroundTasks):
+def warm_spy_benchmark_cache(background_tasks: BackgroundTasks):
     """
     Warm benchmark cache for active markets.
 
@@ -121,7 +121,7 @@ async def warm_spy_benchmark_cache(background_tasks: BackgroundTasks):
 
 
 @router.post("/warm/all")
-async def warm_all_caches(background_tasks: BackgroundTasks):
+def warm_all_caches(background_tasks: BackgroundTasks):
     """
     Compatibility alias for the full smart refresh.
 
@@ -147,7 +147,7 @@ async def warm_all_caches(background_tasks: BackgroundTasks):
 
 
 @router.get("/staleness-status", response_model=StalenessStatusResponse)
-async def get_staleness_status():
+def get_staleness_status():
     """
     Get intraday data staleness status.
 
@@ -171,7 +171,7 @@ async def get_staleness_status():
 
 
 @router.post("/force-refresh")
-async def force_refresh_stale_data(
+def force_refresh_stale_data(
     request: ForceRefreshRequest,
     background_tasks: BackgroundTasks
 ):
@@ -239,7 +239,7 @@ async def force_refresh_stale_data(
 
 
 @router.get("/health", response_model=CacheHealthResponse)
-async def get_cache_health():
+def get_cache_health():
     """
     Get cache health status with unified state indicator.
 
@@ -285,7 +285,7 @@ async def get_cache_health():
 
 
 @router.post("/refresh", response_model=SmartRefreshResponse)
-async def smart_refresh(request: SmartRefreshRequest):
+def smart_refresh(request: SmartRefreshRequest):
     """
     Trigger smart cache refresh with prioritized fetching.
 
@@ -317,7 +317,7 @@ async def smart_refresh(request: SmartRefreshRequest):
 
 
 @router.post("/force-cancel")
-async def force_cancel_refresh():
+def force_cancel_refresh():
     """
     Force-cancel a stuck refresh task.
 
@@ -381,7 +381,7 @@ async def force_cancel_refresh():
 
 
 @router.get("/dashboard-stats", response_model=DashboardStatsResponse)
-async def get_dashboard_cache_statistics():
+def get_dashboard_cache_statistics():
     """
     Get comprehensive cache statistics for UI dashboard.
 

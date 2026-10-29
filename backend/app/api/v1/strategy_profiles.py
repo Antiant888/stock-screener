@@ -16,7 +16,7 @@ def _get_strategy_profile_service() -> StrategyProfileService:
 
 @router.get("", response_model=StrategyProfileListResponse, include_in_schema=False)
 @router.get("/", response_model=StrategyProfileListResponse)
-async def list_strategy_profiles(
+def list_strategy_profiles(
     service: StrategyProfileService = Depends(_get_strategy_profile_service),
 ) -> StrategyProfileListResponse:
     """Return all available strategy profiles."""
@@ -25,7 +25,7 @@ async def list_strategy_profiles(
 
 
 @router.get("/{profile}", response_model=StrategyProfileDetail)
-async def get_strategy_profile(
+def get_strategy_profile(
     profile: str,
     service: StrategyProfileService = Depends(_get_strategy_profile_service),
 ) -> StrategyProfileDetail:

@@ -13,7 +13,7 @@ router = APIRouter(prefix="/data-fetch", tags=["data-fetch"])
 
 
 @router.get("/status", response_model=DataFetchStatusResponse)
-async def get_data_fetch_status():
+def get_data_fetch_status():
     """
     Get current data-fetch job status.
 
@@ -37,7 +37,7 @@ async def get_data_fetch_status():
 
 
 @router.post("/force-release-lock", response_model=ForceReleaseLockResponse)
-async def force_release_lock():
+def force_release_lock():
     """
     Force release a stuck data-fetch lock.
 

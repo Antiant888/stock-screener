@@ -68,7 +68,7 @@ def get_conversation(
 
 
 @router.post("/conversations/{conversation_id}/messages")
-async def send_message(
+def send_message(
     conversation_id: str,
     request: AssistantMessageCreate,
     db: Session = Depends(get_db),

@@ -126,7 +126,7 @@ def get_current_breadth(
 
 
 @router.get("/bootstrap", response_model=UISnapshotEnvelope)
-async def get_breadth_bootstrap(
+def get_breadth_bootstrap(
     market: str = Query("US", description=MARKET_QUERY_DESCRIPTION),
     snapshot_service=Depends(get_ui_snapshot_service),
 ):

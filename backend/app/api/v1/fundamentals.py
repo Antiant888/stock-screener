@@ -16,7 +16,7 @@ router = APIRouter(prefix="/fundamentals", tags=["fundamentals"])
 
 # Endpoints
 @router.post("/refresh/all")
-async def trigger_full_fundamentals_refresh():
+def trigger_full_fundamentals_refresh():
     """
     Trigger full refresh of fundamental data for all active stocks.
 
@@ -46,7 +46,7 @@ async def trigger_full_fundamentals_refresh():
 
 
 @router.get("/stats", response_model=FundamentalsCacheStats)
-async def get_fundamentals_cache_statistics():
+def get_fundamentals_cache_statistics():
     """
     Get fundamental data cache statistics.
 
