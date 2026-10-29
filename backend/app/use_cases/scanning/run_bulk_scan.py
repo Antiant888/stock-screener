@@ -7,7 +7,8 @@ This use case contains the business rules for executing a bulk scan:
      collect the previous chunk, persist it (acts as checkpoint) and report
      progress via ProgressSink
   4. Check CancellationToken before the first chunk and after each persisted
-     chunk; a chunk already submitted when the scan is cancelled is dropped
+     chunk except the last; a chunk already submitted when the scan is
+     cancelled is dropped
   5. Handle completion / failure status transitions
 
 The use case depends ONLY on domain ports — never on SQLAlchemy, Celery,
@@ -413,8 +414,8 @@ class RunBulkScanUseCase:
 
         # The chunk submitted last computes while the parent finishes the one
         # before it. Commits stay in chunk order, so the resume checkpoint holds.
-        # A cancel drops the batch submitted just before it; the runner's exit
-        # shuts the pool down.
+        # A cancel drops the batch submitted just before it: the runner's exit
+        # cancels its queued work and waits for the part already dispatched.
         pending: tuple[list[StockScanCall | None], PendingScanBatch] | None = None
         for chunk in _chunked(remaining_symbols, cmd.chunk_size):
             pre_fetched_data = {}

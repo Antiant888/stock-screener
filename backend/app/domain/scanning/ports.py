@@ -604,9 +604,9 @@ class SerialStockScanBatchRunner:
         return None
 
     def submit_batch(self, calls: Sequence[StockScanCall]) -> PendingScanBatch:
-        return functools.partial(self._run_calls, calls)
+        return functools.partial(self.run_calls, calls)
 
-    def _run_calls(self, calls: Sequence[StockScanCall]) -> list[StockScanOutcome]:
+    def run_calls(self, calls: Sequence[StockScanCall]) -> list[StockScanOutcome]:
         return [run_stock_scan_call(self._scanner, call) for call in calls]
 
 

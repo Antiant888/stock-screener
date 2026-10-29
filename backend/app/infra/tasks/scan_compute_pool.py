@@ -205,7 +205,7 @@ class ProcessStockScanBatchRunner:
                         exc_info=True,
                     )
                     self._shutdown()
-                outcomes.extend(self._serial.submit_batch(batch)())
+                outcomes.extend(self._serial.run_calls(batch))
             except Exception as exc:
                 # Raised in the parent while waiting (e.g. Celery's soft time
                 # limit), not by the worker: propagate it.
@@ -217,7 +217,7 @@ class ProcessStockScanBatchRunner:
                     "Scan compute batch failed in a worker; recomputing it in-process",
                     exc_info=True,
                 )
-                outcomes.extend(self._serial.submit_batch(batch)())
+                outcomes.extend(self._serial.run_calls(batch))
         return outcomes
 
     def _submit(self, batch: Sequence[StockScanCall]) -> Future:

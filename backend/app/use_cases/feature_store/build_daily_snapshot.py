@@ -8,7 +8,7 @@ snapshot:
   4. Submit each chunk to the batch runner; while it computes, collect the
      previous chunk and upsert its feature rows (checkpoint) and report
      progress; cancellation is checked before the first chunk and after each
-     upserted chunk, dropping a chunk already submitted
+     upserted chunk except the last, dropping a chunk already submitted
   5. Mark run COMPLETED with stats
   6. Delegate DQ evaluation and publish/quarantine to PublishFeatureRunUseCase
   7. Emit completion ProgressEvent
@@ -815,7 +815,8 @@ class BuildDailyFeatureSnapshotUseCase:
 
         # The chunk submitted last computes while the parent finishes the one
         # before it. Upserts stay in chunk order. A cancel drops the batch
-        # submitted just before it; the runner's exit shuts the pool down.
+        # submitted just before it: the runner's exit cancels its queued work
+        # and waits for the part already dispatched to the workers.
         pending: tuple[list[str], list[StockScanCall | None], PendingScanBatch] | None = None
         for chunk in _chunked(symbols, effective_chunk_size):
             # 3b — Prefetch the chunk and submit it
