@@ -19,6 +19,7 @@ from ..domain.markets.calendar_coverage import (
 from ..domain.markets.calendar_policy import (
     DEFAULT_CALENDAR_SESSION_OVERRIDES,
     REGULAR_MARKET_CLOSE_TIMES,
+    REGULAR_MARKET_OPEN_TIMES,
     CalendarProvider,
     CalendarSessionOverride,
 )
@@ -465,26 +466,33 @@ class MarketCalendarService:
         official = self._official_manifest_for_day(
             coverage, current_day, mic=mic
         )
+        zone = self.market_timezone(normalized, mic=mic)
         if official is not None:
             close_time = official.close_exceptions.get(
                 current_day,
                 REGULAR_MARKET_CLOSE_TIMES[normalized],
             )
-            official_close = datetime.combine(
-                current_day,
-                close_time,
-                tzinfo=self.market_timezone(normalized, mic=mic),
-            )
-            if market_now >= official_close:
+            if market_now >= datetime.combine(current_day, close_time, tzinfo=zone):
                 return False
 
         calendar = self._get_calendar(normalized, mic=mic)
-        current_session = pd.Timestamp(current_day)
         minute_utc = pd.Timestamp(market_now).tz_convert("UTC").floor("min")
-        open_on_minute = calendar.is_open_on_minute(minute_utc)
-        if open_on_minute is not None:
-            return open_on_minute
-        session_ranges = calendar.session_open_ranges(current_session.date())
+        try:
+            open_on_minute = calendar.is_open_on_minute(minute_utc)
+            if open_on_minute is not None:
+                return open_on_minute
+            session_ranges = calendar.session_open_ranges(current_day)
+        except Exception as exc:
+            if official is None or not (
+                self._is_calendar_bounds_error(exc)
+                or isinstance(exc, CalendarScheduleUnavailable)
+            ):
+                raise
+            # The manifest carries no lunch break, so a midday pause reads as open.
+            regular_open = datetime.combine(
+                current_day, REGULAR_MARKET_OPEN_TIMES[normalized], tzinfo=zone
+            )
+            return market_now >= regular_open
         if session_ranges is None:
             return False
         return any(
@@ -526,15 +534,24 @@ class MarketCalendarService:
     def session_open(
         self, market: str, day: date, *, mic: str | None = None,
     ) -> datetime | None:
-        """Provider session open in UTC; None when ``day`` has no session.
+        """Session open in UTC; None when ``day`` has no session.
 
-        Raises ``CalendarScheduleUnavailable`` for a day outside the provider's
-        schedule, where an empty row would not mean a non-session day.
+        Past the provider's schedule an official manifest answers with the
+        regular open. Without one, raises ``CalendarScheduleUnavailable``,
+        where an empty row would not mean a non-session day.
         """
-        calendar = self._get_calendar(self.normalize_market(market), mic=mic)
+        normalized = self.normalize_market(market)
+        calendar = self._get_calendar(normalized, mic=mic)
         first, last = calendar.first_session_date(), calendar.last_session_date()
         if (first is not None and day < first) or (last is not None and day > last):
-            raise CalendarScheduleUnavailable(f"{day.isoformat()} is outside the provider schedule")
+            coverage = self._calendar_coverage_registry.coverage_for(normalized)
+            official = self._official_manifest_for_day(coverage, day, mic=mic)
+            if official is None:
+                raise CalendarScheduleUnavailable(f"{day.isoformat()} is outside the provider schedule")
+            if not self._is_effective_trading_day(normalized, day, coverage, mic=mic):
+                return None
+            zone = self.market_timezone(normalized, mic=mic)
+            return datetime.combine(day, REGULAR_MARKET_OPEN_TIMES[normalized], tzinfo=zone).astimezone(timezone.utc)
         ranges = calendar.session_open_ranges(day)
         return ranges[0][0].to_pydatetime().astimezone(timezone.utc) if ranges else None
 

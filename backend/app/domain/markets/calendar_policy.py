@@ -44,6 +44,21 @@ DEFAULT_CALENDAR_SESSION_OVERRIDES: tuple[CalendarSessionOverride, ...] = (
 
 # Used only when an official session is verified but the pinned provider cannot
 # return its schedule (for example, because its bundled data ends earlier).
+REGULAR_MARKET_OPEN_TIMES: dict[str, time] = {
+    "US": time(9, 30),
+    "HK": time(9, 30),
+    "IN": time(9, 15),
+    "JP": time(9, 0),
+    "KR": time(9, 0),
+    "TW": time(9, 0),
+    "CN": time(9, 30),
+    "CA": time(9, 30),
+    "DE": time(9, 0),
+    "SG": time(9, 0),
+    "AU": time(10, 0),
+    "MY": time(9, 0),
+}
+
 REGULAR_MARKET_CLOSE_TIMES: dict[str, time] = {
     "US": time(16, 0),
     "HK": time(16, 0),
