@@ -34,6 +34,7 @@ from .workload_coordination import (
     EXTERNAL_FETCH_GLOBAL_KEY,
     _coordination_retry,
     _market_workload_key,
+    holding_external_fetch_lease,
 )
 
 logger = logging.getLogger(__name__)
@@ -556,7 +557,7 @@ def _serialized_data_fetch(task_name: str):
                 ]
                 with keep_leases_alive(renewals) as lease_lost, workload_fence(
                     _market_workload_key(market_value), lease_lost
-                ):
+                ), holding_external_fetch_lease(lease_lost):
                     result = func(*args, **kwargs)
 
                 duration = (datetime.now() - start_time).total_seconds()

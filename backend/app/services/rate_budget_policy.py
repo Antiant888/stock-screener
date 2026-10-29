@@ -22,6 +22,7 @@ from typing import Dict, Optional
 
 from ..config import settings
 from ..tasks.market_queues import SHARED_SENTINEL, SUPPORTED_MARKETS, market_suffix, normalize_market
+from ..tasks.workload_coordination import holds_external_fetch_lease
 
 logger = logging.getLogger(__name__)
 
@@ -247,8 +248,9 @@ class RateBudgetPolicy:
 
         Resolution order:
         1. Per-market env override (``settings.yfinance_rate_limit_hk``)
-        2. Universe-weighted division of the global setting
-        3. Built-in default for the provider
+        2. The whole global interval while this task holds external_fetch_global
+        3. Universe-weighted division of the global setting
+        4. Built-in default for the provider
 
         For ``market=None`` (shared scope), returns the global interval.
         """
@@ -260,6 +262,11 @@ class RateBudgetPolicy:
         override = self._per_market_override(provider, normalized)
         if override is not None and override > 0:
             return 1.0 / override  # override is given as req/sec
+
+        # The external_fetch_global lease lets one market fetch at a time, so
+        # its holder is the only spender of the provider's budget.
+        if holds_external_fetch_lease():
+            return global_interval
 
         # Universe-weighted: bigger universe → bigger share → smaller interval
         weights = self._universe_weights()
