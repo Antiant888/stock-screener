@@ -1,8 +1,9 @@
-from datetime import date, datetime, time
-from types import MappingProxyType
+from datetime import date, datetime, time, timezone
+from types import MappingProxyType, SimpleNamespace
 
 import pandas as pd
 import pytest
+from exchange_calendars.errors import MinuteOutOfBounds
 
 from app.domain.markets.calendar_coverage import (
     AnnualCalendarManifest,
@@ -16,6 +17,7 @@ from app.domain.markets.calendar_policy import (
 )
 from app.domain.markets.catalog import get_market_catalog
 from app.services import market_calendar_service as calendar_module
+from app.services.market_calendar_adapters import CalendarScheduleUnavailable
 from app.services.market_calendar_service import (
     CalendarCoverageExpired,
     MarketCalendarService,
@@ -128,6 +130,21 @@ class _RangeScheduleCalendar:
 class _BoundsCalendar:
     def is_session(self, session: pd.Timestamp) -> bool:
         raise ValueError("Requested date is later than the last session available")
+
+
+class _MinuteBoundsCalendar:
+    """A session the provider knows, at a minute past its last trading minute."""
+
+    def is_session(self, session: pd.Timestamp) -> bool:
+        return True
+
+    def is_open_on_minute(self, ts: pd.Timestamp, ignore_breaks: bool = False) -> bool:
+        bounds = SimpleNamespace(
+            name="XSHG",
+            first_minute=pd.Timestamp("2006-10-30 01:30:00+00:00"),
+            last_minute=pd.Timestamp("2025-12-31 07:00:00+00:00"),
+        )
+        raise MinuteOutOfBounds(bounds, ts, "minute")
 
 
 class _EarliestLatestBoundsCalendar:
@@ -414,6 +431,94 @@ def test_is_market_open_uses_official_close_when_schedule_is_unavailable(
     )
 
     assert service.is_market_open("CN", now=now) is False
+
+
+@pytest.mark.parametrize(
+    ("now", "expected"),
+    [
+        ("2026-04-10T09:29:00+08:00", False),
+        ("2026-04-10T09:30:00+08:00", True),
+        ("2026-04-10T11:29:00+08:00", True),
+        ("2026-04-10T11:30:00+08:00", False),
+        ("2026-04-10T12:59:00+08:00", False),
+        ("2026-04-10T13:00:00+08:00", True),
+        ("2026-04-10T14:59:00+08:00", True),
+        ("2026-04-10T15:00:00+08:00", False),
+    ],
+)
+def test_is_market_open_uses_official_regular_hours_past_provider_minute_bounds(now, expected):
+    registry = _coverage_registry(
+        market="CN",
+        verified_through=date(2026, 12, 31),
+        official_sessions=(date(2026, 4, 10),),
+    )
+    service = _service_with_provider(
+        lambda _: _MinuteBoundsCalendar(),
+        calendar_coverage_registry=registry,
+    )
+
+    assert service.is_market_open("CN", now=datetime.fromisoformat(now)) is expected
+
+
+@pytest.mark.parametrize(
+    ("market", "now", "expected"),
+    [
+        ("SG", "2026-04-10T11:59:00+08:00", True),
+        ("SG", "2026-04-10T12:00:00+08:00", False),
+        ("SG", "2026-04-10T12:59:00+08:00", False),
+        ("SG", "2026-04-10T13:00:00+08:00", True),
+        ("MY", "2026-04-10T12:29:00+08:00", True),
+        ("MY", "2026-04-10T12:30:00+08:00", False),
+        ("MY", "2026-04-10T14:29:00+08:00", False),
+        ("MY", "2026-04-10T14:30:00+08:00", True),
+    ],
+)
+def test_is_market_open_closes_the_midday_break_the_provider_skips(market, now, expected):
+    registry = _coverage_registry(
+        market=market,
+        verified_through=date(2026, 12, 31),
+        official_sessions=(date(2026, 4, 10),),
+    )
+    service = _service_with_provider(
+        lambda _: _MinuteBoundsCalendar(),
+        calendar_coverage_registry=registry,
+    )
+
+    assert service.is_market_open(market, now=datetime.fromisoformat(now)) is expected
+
+
+def test_is_market_open_without_an_official_manifest_keeps_the_provider_bounds_error():
+    service = _service_with_provider(lambda _: _MinuteBoundsCalendar())
+
+    with pytest.raises(MinuteOutOfBounds):
+        service.is_market_open("CN", now=datetime.fromisoformat("2026-04-10T10:00:00+08:00"))
+
+
+def test_session_open_uses_official_regular_open_past_provider_bounds():
+    registry = _coverage_registry(
+        market="CN",
+        verified_through=date(2026, 12, 31),
+        official_sessions=(date(2026, 3, 10),),
+    )
+    service = _service_with_provider(
+        lambda _: _BoundedSessionCalendar(["2025-12-31"], last_session="2025-12-31"),
+        calendar_coverage_registry=registry,
+    )
+
+    assert service.session_open("CN", date(2026, 3, 10)) == datetime(
+        2026, 3, 10, 1, 30, tzinfo=timezone.utc
+    )
+    assert service.session_open("CN", date(2026, 3, 11)) is None
+
+
+def test_session_open_without_an_official_manifest_keeps_raising_past_provider_bounds():
+    service = _service_with_provider(
+        lambda _: _BoundedSessionCalendar(["2025-12-31"], last_session="2025-12-31"),
+        calendar_coverage_registry=_coverage_registry(market="CN"),
+    )
+
+    with pytest.raises(CalendarScheduleUnavailable):
+        service.session_open("CN", date(2026, 3, 10))
 
 
 def test_india_pmc_lookup_uses_provider_specific_calendar_id():

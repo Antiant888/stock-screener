@@ -30,7 +30,7 @@ def _normalize_price_history(df: pd.DataFrame | None) -> pd.DataFrame | None:
     normalized = df.copy()
     normalized.index = pd.to_datetime(normalized.index)
     if getattr(normalized.index, "tz", None) is not None:
-        normalized.index = normalized.index.tz_convert(None)
+        normalized.index = normalized.index.tz_localize(None)
     normalized.index = normalized.index.normalize()
     normalized = normalized.sort_index()
     required = {"Open", "High", "Low", "Close"}

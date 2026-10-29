@@ -24,6 +24,7 @@ from app.models.institutional_ownership import InstitutionalOwnershipHistory
 from app.models.stock_universe import StockUniverse
 from app.services import stock_event_context_service as event_context_module
 from app.services.fundamentals_cache_service import FundamentalsCacheService
+from app.services.market_calendar_adapters import CalendarScheduleUnavailable
 from app.services.market_calendar_service import MarketCalendarService
 from app.services.price_cache_service import PriceCacheService
 from app.services.stock_event_context_service import StockEventContextService
@@ -581,14 +582,34 @@ def test_the_exchange_open_decides_which_session_reacts(db, monkeypatch, market,
     assert event_risk["avg_post_earnings_gap_pct"] == gap_pct
 
 
+def test_tz_aware_exchange_bars_keep_their_exchange_date(db, monkeypatch):
+    """A Tokyo-stamped index must not slide back a day when the zone is dropped."""
+    bars = _reaction_bars()
+    bars.index = bars.index.tz_localize("Asia/Tokyo")
+    service = _earnings_service(monkeypatch, last_completed=TODAY, bars=bars)
+    fundamentals = {
+        "event_calendar_as_of_date": "2026-04-01",
+        "recent_earnings": [
+            # 08:00 JST Tuesday 03-10, before the open: Tuesday's +10 open reacts.
+            {"report_ts": "2026-03-09T19:00:00-04:00", "eps_estimate": 1.0, "reported_eps": 1.1, "surprise_pct": 10.0}
+        ],
+    }
+
+    event_risk, _actions = service.build(
+        db, symbol="7203.T", as_of_date=TODAY, fundamentals=fundamentals, market="JP"
+    )
+
+    assert event_risk["avg_post_earnings_gap_pct"] == 10.0
+
+
 def _cn_bars() -> pd.DataFrame:
-    """Flat 100 bars, +10% gaps on Monday 2025-12-08 and Tuesday 2026-03-10, -10% on 03-11."""
+    """Flat 100 bars: +10% gap on Monday 2025-12-08, +20% on Tuesday 2026-03-10, -10% on 03-11."""
     frame = pd.DataFrame(
         {"Open": 100.0, "High": 100.0, "Low": 100.0, "Close": 100.0},
         index=pd.bdate_range("2025-12-01", "2026-03-20"),
     )
     frame.loc[pd.Timestamp("2025-12-08"), "Open"] = 110.0
-    frame.loc[pd.Timestamp("2026-03-10"), "Open"] = 110.0
+    frame.loc[pd.Timestamp("2026-03-10"), "Open"] = 120.0
     frame.loc[pd.Timestamp("2026-03-11"), "Open"] = 90.0
     return frame
 
@@ -597,7 +618,8 @@ def _cn_bars() -> pd.DataFrame:
 CN_WEEKEND_REPORT = {
     "report_ts": "2025-12-05T21:00:00-05:00", "eps_estimate": 1.0, "reported_eps": 1.1, "surprise_pct": 10.0,
 }
-# Tuesday 2026-03-10 08:00 Shanghai, a trading day past the XSHG schedule's end.
+# Tuesday 2026-03-10 08:00 Shanghai, before the 09:30 open on an official
+# session past the pinned XSHG schedule's end.
 CN_UNSCHEDULED_REPORT = {
     "report_ts": "2026-03-09T20:00:00-04:00", "eps_estimate": 1.0, "reported_eps": 1.2, "surprise_pct": 20.0,
 }
@@ -622,7 +644,25 @@ def test_a_cn_weekend_report_reacts_on_the_next_session(db, monkeypatch):
     assert event_risk["avg_post_earnings_5s_return_pct"] == -9.0909
 
 
-def test_a_report_past_the_exchange_schedule_is_left_out_of_drift(db, monkeypatch):
+def test_a_report_past_the_provider_schedule_uses_the_official_regular_open(db, monkeypatch):
+    event_risk = _cn_event_risk(db, monkeypatch, [CN_UNSCHEDULED_REPORT, CN_WEEKEND_REPORT])
+
+    assert event_risk["beat_count_last_4"] == 2
+    # 08:00 is before the 09:30 open, so Tuesday 03-10 reacts: +20 joins the weekend +10.
+    assert event_risk["avg_post_earnings_gap_pct"] == 15.0
+    assert event_risk["avg_post_earnings_5s_return_pct"] == -12.8788
+
+
+def test_a_report_the_calendar_cannot_place_is_left_out_of_drift(db, monkeypatch):
+    real_session_open = _Calendar.session_open
+
+    def session_open(self, market, day, **kwargs):
+        if day == date(2026, 3, 10):
+            raise CalendarScheduleUnavailable("no schedule")
+        return real_session_open(self, market, day, **kwargs)
+
+    monkeypatch.setattr(_Calendar, "session_open", session_open)
+
     event_risk = _cn_event_risk(db, monkeypatch, [CN_UNSCHEDULED_REPORT, CN_WEEKEND_REPORT])
 
     assert event_risk["beat_count_last_4"] == 2

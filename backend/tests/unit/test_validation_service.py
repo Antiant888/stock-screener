@@ -521,3 +521,15 @@ def test_failure_cluster_builder_uses_source_specific_bucket_fields():
     assert "alert_type:breakout" in cluster_keys
     assert "severity:warning" in cluster_keys
     assert len(clusters) == 5
+
+
+def test_normalize_price_history_keeps_the_exchange_date_of_tz_aware_bars():
+    index = pd.DatetimeIndex(["2026-03-09", "2026-03-10"]).tz_localize("Asia/Tokyo")
+    frame = pd.DataFrame(
+        {"Open": [1.0, 2.0], "High": [1.0, 2.0], "Low": [1.0, 2.0], "Close": [1.0, 2.0]},
+        index=index,
+    )
+
+    normalized = validation_service_module._normalize_price_history(frame)
+
+    assert [d.date().isoformat() for d in normalized.index] == ["2026-03-09", "2026-03-10"]
