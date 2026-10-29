@@ -47,6 +47,64 @@ def writer(factory):
     return SocialSignalWriter(factory, clock=lambda: NOW)
 
 
+def saved_work(db, content_id, post, claims=None, *, model="model"):
+    """A succeeded row whose saved result revalidates against ``post``.
+
+    ``claims`` are claim dicts as the parser emits them. A claim quoting text the
+    post does not contain is what a stricter parser leaves behind in old rows.
+    """
+    from dataclasses import asdict
+    from app.domain.social_signals.records import ExtractionClaim, ExtractionPostJudgment, ExtractionResult
+    from app.infra.db.models.social_analysis import SocialExtractionWork
+    from app.infra.db.repositories.social_signal_writer import serialized
+    from app.services.social_extraction_service import SocialExtractionService
+
+    if claims is None:
+        claims = [flagged_claim("$AAA")]
+    input_hash = SocialExtractionService.input_hash((post,))
+    result = ExtractionResult(input_hash, "synthetic", "actual", "v1", "v1", tuple(
+        ExtractionClaim(**{**claim, "post_id": post.provider_post_id,
+                           "duplicate_of_post_ids": tuple(claim["duplicate_of_post_ids"])})
+        for claim in claims
+    ), None, None, (ExtractionPostJudgment(post.provider_post_id, True, "aaa-cooling"),))
+    work = SocialExtractionWork(
+        content_item_id=content_id, input_hash=input_hash, prompt_version="v1", schema_version="v1",
+        selected_model=model, actual_provider="synthetic", actual_model="actual",
+        input_snapshot_json=serialized(post), result_json=asdict(result), state="succeeded",
+        created_at=NOW, updated_at=NOW,
+    )
+    db.add(work)
+    db.flush()
+    return work
+
+
+def link(db, run_id, work, at=NOW):
+    from app.infra.db.models.social_analysis import SocialRunWork
+    db.add(SocialRunWork(run_id=run_id, work_id=work.id, input_hash=work.input_hash, included_at=at))
+
+
+def unquoted_excerpt(store, work_id):
+    """Rewrite the saved claims to quote text the post never contained."""
+    from app.infra.db.models.social_analysis import SocialExtractionWork
+    with store.begin() as db:
+        work = db.get(SocialExtractionWork, work_id)
+        work.result_json = {**work.result_json, "claims": [
+            {**claim, "excerpt": "not in the post"} for claim in work.result_json["claims"]]}
+
+
+def work_state(store, work_id):
+    from app.infra.db.models.social_analysis import SocialExtractionWork
+    with store() as db:
+        work = db.get(SocialExtractionWork, work_id)
+        return work.state, work.error_code
+
+
+def empty_batch(source):
+    observed = batch(source)
+    return replace(observed, posts=(), outcome=replace(
+        observed.outcome, received_count=0, observed_oldest_at=None, observed_newest_at=None))
+
+
 def repeated_post_batch():
     single = batch()
     post = single.posts[0]
@@ -332,7 +390,7 @@ def test_scoring_reader_ignores_a_stale_unresolved_mapping(store):
 
 
 def test_a_failed_work_does_not_hide_a_succeeded_one_for_the_same_input(store):
-    from app.infra.db.models.social_analysis import SocialExtractionWork, SocialRunWork
+    from app.infra.db.models.social_analysis import SocialExtractionWork
     from app.services.social_extraction_service import SocialExtractionService
 
     w = writer(store)
@@ -342,15 +400,15 @@ def test_a_failed_work_does_not_hide_a_succeeded_one_for_the_same_input(store):
     content_id = dict(w.read_run_inputs("run").content_ids)["100"]
     input_hash = SocialExtractionService.input_hash(saved.posts)
     with store.begin() as db:
-        for model, state in (("model-a", "succeeded"), ("model-b", "failed_terminal")):
-            work = SocialExtractionWork(
-                content_item_id=content_id, input_hash=input_hash, prompt_version="v1",
-                schema_version="v1", selected_model=model, input_snapshot_json={},
-                state=state, created_at=NOW, updated_at=NOW,
-            )
-            db.add(work)
-            db.flush()
-            db.add(SocialRunWork(run_id="run", work_id=work.id, input_hash=input_hash, included_at=NOW))
+        link(db, "run", saved_work(db, content_id, saved.posts[0], model="model-a"))
+        failed = SocialExtractionWork(
+            content_item_id=content_id, input_hash=input_hash, prompt_version="v1",
+            schema_version="v1", selected_model="model-b", input_snapshot_json={},
+            state="failed_terminal", created_at=NOW, updated_at=NOW,
+        )
+        db.add(failed)
+        db.flush()
+        link(db, "run", failed)
 
     manifest = w.select_current_inputs("run").current_manifest
 
@@ -400,27 +458,19 @@ def flagged_claim(token, duplicate_of=()):
     ([], ()),
 ])
 def test_scoring_evidence_marks_a_post_whose_claims_about_a_ticker_are_all_flagged(store, claims, expected):
-    from app.infra.db.models.social_analysis import SocialExtractionWork, SocialRunWork
     from app.infra.db.repositories.social_refresh_support import SocialScoringEvidenceReader
     from app.models.stock_universe import StockUniverse
-    from app.services.social_extraction_service import SocialExtractionService
 
     w = writer(store)
     w.create_run("run", NOW)
-    saved = w.persist_observations(batch(), run_id="run")
+    observed = batch()
+    observed = replace(observed, posts=(replace(observed.posts[0], text="$AAA supplies cooling to $BBB"),))
+    saved = w.persist_observations(observed, run_id="run")
     content_id = dict(w.read_run_inputs("run").content_ids)["100"]
     with store.begin() as db:
         for symbol in ("AAA", "BBB"):
             db.add(StockUniverse(symbol=symbol, name=f"{symbol} Corp", market="US", exchange="NASDAQ", is_active=True))
-        input_hash = SocialExtractionService.input_hash(saved.posts)
-        work = SocialExtractionWork(
-            content_item_id=content_id, input_hash=input_hash, prompt_version="v1",
-            schema_version="v1", selected_model="model", input_snapshot_json={}, state="succeeded",
-            result_json={"claims": claims, "judgments": []}, created_at=NOW, updated_at=NOW,
-        )
-        db.add(work)
-        db.flush()
-        db.add(SocialRunWork(run_id="run", work_id=work.id, input_hash=input_hash, included_at=NOW))
+        link(db, "run", saved_work(db, content_id, saved.posts[0], claims))
     w.select_current_inputs("run")
 
     evidence = {item.candidate_key: item for item in SocialScoringEvidenceReader(store).read("run", NOW)}
@@ -429,10 +479,8 @@ def test_scoring_evidence_marks_a_post_whose_claims_about_a_ticker_are_all_flagg
 
 
 def test_a_flag_on_an_earlier_revision_does_not_exclude_the_edited_post(store):
-    from app.infra.db.models.social_analysis import SocialExtractionWork, SocialRunWork
     from app.infra.db.repositories.social_refresh_support import SocialScoringEvidenceReader
     from app.models.stock_universe import StockUniverse
-    from app.services.social_extraction_service import SocialExtractionService
 
     w = writer(store)
     w.create_run("old", NOW)
@@ -447,16 +495,7 @@ def test_a_flag_on_an_earlier_revision_does_not_exclude_the_edited_post(store):
     with store.begin() as db:
         db.add(StockUniverse(symbol="AAA", name="AAA Corp", market="US", exchange="NASDAQ", is_active=True))
         for saved, claims in ((original, [flagged_claim("$AAA", ["99"])]), (edited, [])):
-            input_hash = SocialExtractionService.input_hash(saved.posts)
-            work = SocialExtractionWork(
-                content_item_id=content_id, input_hash=input_hash, prompt_version="v1",
-                schema_version="v1", selected_model="model", state="succeeded",
-                input_snapshot_json={"created_at": saved.posts[0].created_at.isoformat()},
-                result_json={"claims": claims, "judgments": []}, created_at=NOW, updated_at=NOW,
-            )
-            db.add(work)
-            db.flush()
-            db.add(SocialRunWork(run_id="new", work_id=work.id, input_hash=input_hash, included_at=later))
+            link(db, "new", saved_work(db, content_id, saved.posts[0], claims), at=later)
     w.select_current_inputs("new")
 
     evidence = {item.candidate_key: item for item in SocialScoringEvidenceReader(store).read("new", later)}
@@ -466,10 +505,8 @@ def test_a_flag_on_an_earlier_revision_does_not_exclude_the_edited_post(store):
 
 
 def test_each_list_revision_of_a_post_carries_its_own_flag(store):
-    from app.infra.db.models.social_analysis import SocialExtractionWork, SocialRunWork
     from app.infra.db.repositories.social_refresh_support import SocialScoringEvidenceReader
     from app.models.stock_universe import StockUniverse
-    from app.services.social_extraction_service import SocialExtractionService
 
     w = writer(store)
     w.create_run("run", NOW)
@@ -481,15 +518,7 @@ def test_each_list_revision_of_a_post_carries_its_own_flag(store):
     with store.begin() as db:
         db.add(StockUniverse(symbol="AAA", name="AAA Corp", market="US", exchange="NASDAQ", is_active=True))
         for saved, claims in ((first, [flagged_claim("$AAA", ["99"])]), (second, [])):
-            input_hash = SocialExtractionService.input_hash(saved.posts)
-            work = SocialExtractionWork(
-                content_item_id=content_id, input_hash=input_hash, prompt_version="v1",
-                schema_version="v1", selected_model="model", input_snapshot_json={}, state="succeeded",
-                result_json={"claims": claims, "judgments": []}, created_at=NOW, updated_at=NOW,
-            )
-            db.add(work)
-            db.flush()
-            db.add(SocialRunWork(run_id="run", work_id=work.id, input_hash=input_hash, included_at=NOW))
+            link(db, "run", saved_work(db, content_id, saved.posts[0], claims))
     w.select_current_inputs("run")
 
     evidence = {item.candidate_key: item for item in SocialScoringEvidenceReader(store).read("run", NOW)}
@@ -498,7 +527,7 @@ def test_each_list_revision_of_a_post_carries_its_own_flag(store):
 
 
 def test_unavailable_revision_does_not_hide_another_revision_of_the_same_post(store):
-    from app.infra.db.models.social_analysis import SocialExtractionWork, SocialRunWork
+    from app.infra.db.models.social_analysis import SocialExtractionWork
     from app.infra.db.repositories.social_refresh_support import SocialScoringEvidenceReader
     from app.models.stock_universe import StockUniverse
     from app.services.social_extraction_service import SocialExtractionService
@@ -512,19 +541,133 @@ def test_unavailable_revision_does_not_hide_another_revision_of_the_same_post(st
     content_id = dict(w.read_run_inputs("run").content_ids)["100"]
     with store.begin() as db:
         db.add(StockUniverse(symbol="AAA", name="AAA Corp", market="US", exchange="NASDAQ", is_active=True))
-        for saved, state in ((first, "failed_terminal"), (second, "succeeded")):
-            input_hash = SocialExtractionService.input_hash(saved.posts)
-            work = SocialExtractionWork(
-                content_item_id=content_id, input_hash=input_hash, prompt_version="v1",
-                schema_version="v1", selected_model="model", input_snapshot_json={},
-                state=state, result_json={"claims": [], "judgments": []} if state == "succeeded" else None,
-                created_at=NOW, updated_at=NOW,
-            )
-            db.add(work)
-            db.flush()
-            db.add(SocialRunWork(run_id="run", work_id=work.id, input_hash=input_hash, included_at=NOW))
+        failed = SocialExtractionWork(
+            content_item_id=content_id, input_hash=SocialExtractionService.input_hash(first.posts),
+            prompt_version="v1", schema_version="v1", selected_model="model", input_snapshot_json={},
+            state="failed_terminal", created_at=NOW, updated_at=NOW,
+        )
+        db.add(failed)
+        db.flush()
+        link(db, "run", failed)
+        link(db, "run", saved_work(db, content_id, second.posts[0], []))
     w.select_current_inputs("run")
 
     evidence = SocialScoringEvidenceReader(store).read("run", NOW)
 
     assert [post.text for item in evidence for post in item.posts] == ["$AAA supplies cooling, edited"]
+
+
+def test_a_carry_in_result_that_no_longer_revalidates_is_closed_not_carried(store):
+    w = writer(store)
+    w.create_run("run", NOW)
+    aged = batch()
+    created = NOW - timedelta(days=20)
+    aged = replace(aged, posts=(replace(aged.posts[0], created_at=created),),
+                   outcome=replace(aged.outcome, observed_oldest_at=created, observed_newest_at=created))
+    saved = w.persist_observations(aged, run_id="run")
+    w.persist_observations(batch(2, post_id="200"), run_id="run")
+    content_id = dict(w.read_run_inputs("run").content_ids)["100"]
+    with store.begin() as db:
+        work_id = saved_work(db, content_id, saved.posts[0], [flagged_claim("$AAA")]).id
+    unquoted_excerpt(store, work_id)
+    with store.begin() as db:
+        from app.infra.db.models.social_analysis import SocialExtractionWork
+        link(db, "run", db.get(SocialExtractionWork, work_id))
+
+    manifest = w.select_current_inputs("run").current_manifest
+
+    assert (manifest.carry_in_work_ids, manifest.coverage_reasons) == ((), ("outside_window_judgments_missing",))
+    assert work_id in manifest.audit_work_ids
+    assert work_state(store, work_id) == ("failed_terminal", "invalid_saved_result")
+
+
+def test_a_current_result_that_no_longer_revalidates_is_a_coverage_gap_not_a_crash(store):
+    from app.domain.social_signals.records import ReplayInput
+
+    w = writer(store)
+    w.create_run("run", NOW)
+    first = w.persist_observations(batch(), run_id="run")
+    second = w.persist_observations(batch(2, post_id="200"), run_id="run")
+    content_ids = dict(w.read_run_inputs("run").content_ids)
+    with store.begin() as db:
+        bad = saved_work(db, content_ids["100"], first.posts[0])
+        good = saved_work(db, content_ids["200"], second.posts[0])
+        link(db, "run", bad)
+        link(db, "run", good)
+        bad_id, bad_hash, good_hash = bad.id, bad.input_hash, good.input_hash
+    unquoted_excerpt(store, bad_id)
+
+    manifest = w.select_current_inputs("run").current_manifest
+
+    assert w.current_inputs_ready("run") is True
+    assert manifest.required_inputs == (ReplayInput(content_ids["200"], good_hash, "current"),)
+    assert manifest.unavailable_inputs == (ReplayInput(content_ids["100"], bad_hash, "unavailable"),)
+    assert manifest.coverage_reasons == ("analysis_unavailable",)
+    assert work_state(store, bad_id) == ("failed_terminal", "invalid_saved_result")
+
+
+def test_readiness_is_false_for_a_selected_result_that_stopped_revalidating_until_reselected(store):
+    w = writer(store)
+    w.create_run("run", NOW)
+    first = w.persist_observations(batch(), run_id="run")
+    second = w.persist_observations(batch(2, post_id="200"), run_id="run")
+    content_ids = dict(w.read_run_inputs("run").content_ids)
+    with store.begin() as db:
+        bad = saved_work(db, content_ids["100"], first.posts[0])
+        link(db, "run", bad)
+        link(db, "run", saved_work(db, content_ids["200"], second.posts[0]))
+        bad_id = bad.id
+    w.select_current_inputs("run")
+    assert w.current_inputs_ready("run") is True
+    unquoted_excerpt(store, bad_id)
+
+    assert w.current_inputs_ready("run") is False
+
+    manifest = w.select_current_inputs("run").current_manifest
+    assert (w.current_inputs_ready("run"), manifest.coverage_reasons) == (True, ("analysis_unavailable",))
+
+
+def test_a_replay_closes_a_saved_result_that_no_longer_revalidates_instead_of_carrying_it(store):
+    w = writer(store)
+    w.create_run("old", NOW)
+    first = w.persist_observations(batch(), run_id="old")
+    second = w.persist_observations(batch(2, post_id="200"), run_id="old")
+    content_ids = dict(w.read_run_inputs("old").content_ids)
+    with store.begin() as db:
+        bad = saved_work(db, content_ids["100"], first.posts[0])
+        good = saved_work(db, content_ids["200"], second.posts[0])
+        link(db, "old", bad)
+        link(db, "old", good)
+        bad_id, good_id = bad.id, good.id
+    unquoted_excerpt(store, bad_id)
+
+    w.create_replay_run("new", "old", NOW + timedelta(hours=1))
+
+    replayed = w.read_run_inputs("new")
+    assert replayed.work_ids == (good_id,)
+    assert sorted(v.content_item_id for v in replayed.replay_manifest.required_inputs) == sorted(content_ids.values())
+    assert work_state(store, bad_id) == ("failed_terminal", "invalid_saved_result")
+
+
+def test_publish_refuses_a_pinned_result_that_stopped_revalidating_with_a_stable_reason(store):
+    from app.infra.db.models.social_signals import SocialSignalRun, SocialSourceRegistry
+
+    w = writer(store)
+    w.create_run("run", NOW)
+    saved = w.persist_observations(batch(), run_id="run")
+    w.persist_observations(empty_batch(2), run_id="run")
+    content_id = dict(w.read_run_inputs("run").content_ids)["100"]
+    with store.begin() as db:
+        work = saved_work(db, content_id, saved.posts[0])
+        link(db, "run", work)
+        work_id = work.id
+    w.prepare_run("run", (), NOW)
+    unquoted_excerpt(store, work_id)
+    with store() as db:
+        version = db.get(SocialSourceRegistry, 1).version
+
+    with pytest.raises(ValueError, match="^pinned_input_invalid$"):
+        w.publish("run", version)
+
+    with store() as db:
+        assert db.get(SocialSignalRun, "run").status == "staged"

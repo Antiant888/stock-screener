@@ -21,7 +21,9 @@ from app.infra.db.models.social_signals import (
 )
 from app.models.theme import ContentItem, ContentSource
 from app.services.social_theme_projection_service import _lock_registry
-from app.services.social_theme_projection_service import SocialThemeProjectionService, _decode
+from app.services.social_theme_projection_service import (
+    SocialThemeProjectionService, _decode, close_unless_revalidates,
+)
 from app.infra.db.models.social_analysis import SocialRunWork, SocialExtractionWork
 from app.services.social_extraction_service import SocialExtractionService
 from app.services.twitter_content_identity import twitter_external_id
@@ -171,9 +173,8 @@ class SocialSignalWriter:
                 if work is None or work.state != "succeeded":
                     continue
                 identity = (work.content_item_id, work.input_hash)
-                if identity not in current | older or identity in linked:
+                if identity not in current | older or identity in linked or not close_unless_revalidates(work):
                     continue
-                _decode(work)
                 db.add(SocialRunWork(run_id=run_id, work_id=work.id, input_hash=work.input_hash, included_at=as_of))
                 linked.add(identity)
                 if identity in older:
@@ -306,6 +307,7 @@ class SocialSignalWriter:
                 work = db.get(SocialExtractionWork, link.work_id)
                 if work is None or work.input_hash != link.input_hash:
                     raise ValueError("pinned_input_mismatch")
+                close_unless_revalidates(work)
                 linked.append((link, work, (work.content_item_id, work.input_hash)))
             analyzable = {identity for _, work, identity in linked if work.state != "failed_terminal"}
             unavailable -= analyzable
@@ -336,7 +338,6 @@ class SocialSignalWriter:
                     continue
                 kept.add(work.id)
                 if identity in older:
-                    _decode(work)
                     carry.append(work.id)
                     succeeded.add(identity)
             reasons = (("outside_window_judgments_missing",) if older - succeeded else ()) + (
@@ -367,7 +368,10 @@ class SocialSignalWriter:
                 work = db.get(SocialExtractionWork, link.work_id)
                 if (work is not None and work.state == "succeeded"
                         and link.input_hash == work.input_hash):
-                    _decode(work)
+                    try:
+                        _decode(work)
+                    except ValueError:
+                        continue
                     complete.add((work.content_item_id, work.input_hash))
                     expected_work_ids.discard(work.id)
             return expected <= complete and not expected_work_ids
@@ -624,7 +628,12 @@ class SocialSignalWriter:
             work = db.get(SocialExtractionWork, link.work_id)
             if work is None or link.input_hash != work.input_hash:
                 raise ValueError("pinned_input_mismatch")
-            _decode(work)
+            try:
+                _decode(work)
+            except ValueError as exc:
+                if work.state != "succeeded":
+                    raise
+                raise ValueError("pinned_input_invalid") from exc
             if not selection or work.id not in set(selection["carry_in_work_ids"]) | scoring_ids:
                 actual.add((work.content_item_id, work.input_hash))
             ids.append(work.id)

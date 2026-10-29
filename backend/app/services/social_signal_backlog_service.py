@@ -428,13 +428,8 @@ class ProcessSocialBacklog:
                 row.result_json = asdict(result)
                 row.actual_provider, row.actual_model = result.provider, result.model
             if row.state == "succeeded":
-                from app.services.social_theme_projection_service import _decode
-                try:
-                    # Every later stage revalidates this row and stops the run if it fails.
-                    _decode(row)
-                except ValueError as exc:
-                    logger.error("Saved social result is invalid work_id=%s reason=%s", work_id, exc)
-                    row.state, row.error_code = "failed_terminal", "invalid_saved_result"
+                from app.services.social_theme_projection_service import close_unless_revalidates
+                close_unless_revalidates(row)
             return row.state
 
     def _finish_many(self, claims, state, error=None):
