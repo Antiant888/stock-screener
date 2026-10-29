@@ -18,6 +18,7 @@ from ..domain.markets.calendar_coverage import (
 )
 from ..domain.markets.calendar_policy import (
     DEFAULT_CALENDAR_SESSION_OVERRIDES,
+    REGULAR_MARKET_BREAKS,
     REGULAR_MARKET_CLOSE_TIMES,
     REGULAR_MARKET_OPEN_TIMES,
     CalendarProvider,
@@ -488,11 +489,11 @@ class MarketCalendarService:
                 or isinstance(exc, CalendarScheduleUnavailable)
             ):
                 raise
-            # The manifest carries no lunch break, so a midday pause reads as open.
-            regular_open = datetime.combine(
-                current_day, REGULAR_MARKET_OPEN_TIMES[normalized], tzinfo=zone
-            )
-            return market_now >= regular_open
+            local_time = market_now.time()
+            if local_time < REGULAR_MARKET_OPEN_TIMES[normalized]:
+                return False
+            lunch = REGULAR_MARKET_BREAKS.get(normalized)
+            return lunch is None or not (lunch[0] <= local_time < lunch[1])
         if session_ranges is None:
             return False
         return any(

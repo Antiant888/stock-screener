@@ -59,6 +59,12 @@ REGULAR_MARKET_OPEN_TIMES: dict[str, time] = {
     "MY": time(9, 0),
 }
 
+REGULAR_MARKET_BREAKS: dict[str, tuple[time, time]] = {
+    "CN": (time(11, 30), time(13, 0)),
+    "HK": (time(12, 0), time(13, 0)),
+    "JP": (time(11, 30), time(12, 30)),
+}
+
 REGULAR_MARKET_CLOSE_TIMES: dict[str, time] = {
     "US": time(16, 0),
     "HK": time(16, 0),
