@@ -6,6 +6,7 @@ calls, commits, Social pointer changes, or legacy attention writes occur here.
 """
 
 import json
+import logging
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256
@@ -59,6 +60,7 @@ from app.services.theme_lifecycle_service import (
 from app.utils.file_hashing import canonical_json_sha256 as _semantic_hash
 
 POLICY = "social-theme-v1"
+logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class PreparedThemeApplication:
@@ -126,6 +128,24 @@ def _decode(work):
         return post, result
     except (KeyError, TypeError, AttributeError):
         raise ValueError("invalid_saved_social_result") from None
+
+
+def close_unless_revalidates(work):
+    """Whether a succeeded row's saved result still parses.
+
+    A row that no longer does is closed as failed_terminal/invalid_saved_result,
+    the state a result that never parsed gets when saved, so selection, replay
+    and readiness treat it as a coverage gap instead of ending the run.
+    """
+    if work.state != "succeeded":
+        return False
+    try:
+        _decode(work)
+    except ValueError as exc:
+        logger.error("Saved social result is invalid work_id=%s reason=%s", work.id, exc)
+        work.state, work.error_code = "failed_terminal", "invalid_saved_result"
+        return False
+    return True
 
 
 def qualifying_social_evidence(decoded, now, resolver, claim_matches):
@@ -358,7 +378,14 @@ class SocialThemeProjectionService:
             work_ids = set(projection.work_ids)
             work_ids.update(self.db.scalars(select(ThemeMention.social_work_id).where(
                 ThemeMention.theme_cluster_id.in_(ids), ThemeMention.social_work_id.is_not(None))))
-            decoded = tuple((wid, *_decode(self.db.get(SocialExtractionWork, wid))) for wid in sorted(work_ids))
+            decoded = []
+            for wid in sorted(work_ids):
+                try:
+                    decoded.append((wid, *_decode(self.db.get(SocialExtractionWork, wid))))
+                except ValueError:
+                    # Pinned rows passed prepare; a mentioned row that no longer parses is not evidence.
+                    continue
+            decoded = tuple(decoded)
             self._prepared_decoded = {wid: (post, result) for wid, post, result in decoded}
             baskets = []
             for key, theme in sorted(themes.items()):
@@ -428,7 +455,12 @@ class SocialThemeProjectionService:
                 work = self.db.get(SocialExtractionWork, link.work_id, populate_existing=True)
                 if work is None or work.input_hash != link.input_hash:
                     raise ValueError("social_pinned_input_mismatch")
-                post, result = _decode(work)
+                try:
+                    post, result = _decode(work)
+                except ValueError as exc:
+                    if work.state != "succeeded":
+                        raise
+                    raise ValueError("social_pinned_input_invalid") from exc
                 work_ids.append(work.id)
                 if now - timedelta(days=14) <= post.created_at <= now:
                     supported_claims = tuple(
@@ -841,10 +873,15 @@ class SocialThemeProjectionService:
         return self._qualifying_inputs(work_ids, self.db.get(ThemeCluster, theme_id).canonical_key, now, resolver)
 
     def _qualifying_inputs(self, work_ids, theme_key, now, resolver):
-        works = (self.db.get(SocialExtractionWork, work_id) for work_id in set(work_ids))
+        decoded = []
+        for work_id in set(work_ids):
+            work = self.db.get(SocialExtractionWork, work_id)
+            try:
+                decoded.append((work, *self._decode_work(work)))
+            except ValueError:
+                continue
         return qualifying_social_evidence(
-            ((work, *self._decode_work(work)) for work in works), now, resolver,
-            lambda claim: self._legacy_theme_key(claim.raw_theme) == theme_key,
+            decoded, now, resolver, lambda claim: self._legacy_theme_key(claim.raw_theme) == theme_key,
         )
 
     def _assess(self, theme_id, projection, resolver):
