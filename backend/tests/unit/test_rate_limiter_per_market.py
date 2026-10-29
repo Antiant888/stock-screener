@@ -112,13 +112,17 @@ class TestProviderBudget:
         limiter = RedisRateLimiter(jitter_ms=0)
         limiter._get_redis_client = lambda: None
 
-        def others(count=0, market=None):
+        def others(count=0, market=None, timeout_s=120.0):
             parallel[0] = True
-            for _ in range(count):
-                limiter.wait("yfinance:batch", min_interval_s=2.0)
-            if market is not None:
-                contextvars.Context().run(limiter.wait_for_market, "yfinance:batch", market)
-            parallel[0] = False
+            try:
+                for _ in range(count):
+                    limiter.wait("yfinance:batch", min_interval_s=2.0)
+                if market is not None:
+                    contextvars.Context().run(
+                        limiter.wait_for_market, "yfinance:batch", market, timeout_s
+                    )
+            finally:
+                parallel[0] = False
 
         with patch("app.services.rate_budget_policy.get_rate_budget_policy", return_value=policy), \
              patch("app.services.rate_budget_policy.settings") as mock_settings:
@@ -164,5 +168,19 @@ class TestProviderBudget:
             first = env.clock[0]
             env.others(market="HK")
             env.limiter.wait_for_market("yfinance:batch", "HK")
+
+        assert env.clock[0] - first == pytest.approx(4.0)
+
+    def test_a_market_still_inside_its_share_does_not_hold_provider_slots(self, env):
+        from app.services.rate_limiter import RateLimitTimeoutError
+        from app.tasks.lease_renewal import holding_external_fetch_lease
+
+        with holding_external_fetch_lease(threading.Event()):
+            env.limiter.wait_for_market("yfinance:batch", "US")
+            first = env.clock[0]
+            env.others(market="HK")
+            with pytest.raises(RateLimitTimeoutError):
+                env.others(market="HK", timeout_s=1.0)
+            env.limiter.wait_for_market("yfinance:batch", "US")
 
         assert env.clock[0] - first == pytest.approx(4.0)

@@ -39,11 +39,11 @@ class TestRedisRateLimiterWithRedis:
 
             if now >= next_allowed:
                 state[key] = now + interval
-                return b'0'
+                return [b'1', b'0']
             else:
                 wait_time = next_allowed - now
                 state[key] = next_allowed + interval
-                return str(wait_time).encode()
+                return [b'1', str(wait_time).encode()]
 
         mock_client.eval = mock_eval
 
@@ -138,7 +138,7 @@ class TestRedisRateLimiterFallback:
         # Now make Redis available
         mock_client = MagicMock()
         mock_client.ping.return_value = True
-        mock_client.eval.return_value = b'0'
+        mock_client.eval.return_value = [b'1', b'0']
         limiter._get_redis_client = lambda: mock_client
 
         # Next call should recover
