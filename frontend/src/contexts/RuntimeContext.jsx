@@ -1,7 +1,15 @@
 /* eslint-disable react-refresh/only-export-components */
 
-import { createContext, useContext, useEffect, useMemo } from 'react';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useState,
+  useSyncExternalStore,
+} from 'react';
+import { useIsRestoring, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { setUnauthorizedResponseHandler } from '../api/client';
 import {
   getAppCapabilities,
@@ -252,12 +260,21 @@ export function mergeBootstrapCapabilities(previous, data) {
   };
 }
 
+function canRenderFromCachedCapabilities(capabilities) {
+  return !capabilities.bootstrap_required
+    && (!capabilities.auth?.required || Boolean(capabilities.auth?.authenticated));
+}
+
 export function RuntimeProvider({ children }) {
   const queryClient = useQueryClient();
+  const isRestoring = useIsRestoring();
 
   useEffect(() => {
+    // Join a live check already in flight: with a restored session every page
+    // request can come back 401 at once, and each cancel-and-refetch would
+    // send another capabilities request.
     const handleUnauthorized = () => {
-      queryClient.invalidateQueries({ queryKey: ['appCapabilities'] });
+      queryClient.invalidateQueries({ queryKey: ['appCapabilities'] }, { cancelRefetch: false });
     };
 
     setUnauthorizedResponseHandler(handleUnauthorized);
@@ -353,11 +370,27 @@ export function RuntimeProvider({ children }) {
     },
   });
 
+  // The useQuery result does not carry dataUpdateCount, so it is read from the
+  // query cache, which notifies on every fetch even when the data is unchanged.
+  const dataUpdateCount = useSyncExternalStore(
+    useCallback((onChange) => queryClient.getQueryCache().subscribe(onChange), [queryClient]),
+    () => queryClient.getQueryState(['appCapabilities'])?.dataUpdateCount ?? 0,
+  );
+  // Counted, not timed: a restored entry can be dated ahead of this clock.
+  // Not isFetchedAfterMount either: this observer exists before the persisted
+  // cache restores, and hydration brings the previous page's count with it.
+  const [restoredUpdateCount, setRestoredUpdateCount] = useState(null);
+  if (!isRestoring && restoredUpdateCount === null) {
+    setRestoredUpdateCount(dataUpdateCount);
+  }
   const capabilities = capabilitiesQuery.data ?? DEFAULT_CAPABILITIES;
-  const runtimeReady = (
-    !capabilitiesQuery.isPlaceholderData
-    || capabilitiesQuery.isFetchedAfterMount
+  const capabilitiesConfirmed = (
+    (restoredUpdateCount !== null && dataUpdateCount > restoredUpdateCount)
     || capabilitiesQuery.isError
+  );
+  const runtimeReady = (
+    capabilitiesConfirmed
+    || (!capabilitiesQuery.isPlaceholderData && canRenderFromCachedCapabilities(capabilities))
   );
 
   // useMutation returns a fresh result object every render, so depend on the
@@ -394,6 +427,7 @@ export function RuntimeProvider({ children }) {
       marketCatalog,
       universeOptions,
       runtimeReady,
+      capabilitiesConfirmed,
       scanDefaults: capabilities.scan_defaults ?? DEFAULT_SCAN_DEFAULTS,
       bootstrapRequired: Boolean(capabilities.bootstrap_required),
       primaryMarket: capabilities.primary_market ?? 'US',
@@ -420,6 +454,7 @@ export function RuntimeProvider({ children }) {
     bootstrapAsync,
     bootstrapError,
     capabilities,
+    capabilitiesConfirmed,
     isLoggingIn,
     isLoggingOut,
     isStartingBootstrap,
