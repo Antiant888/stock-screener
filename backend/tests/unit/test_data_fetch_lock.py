@@ -13,6 +13,7 @@ from celery import Celery
 from celery.exceptions import Retry, SoftTimeLimitExceeded
 from sqlalchemy.exc import OperationalError
 
+from app.tasks.workload_coordination import holds_external_fetch_lease
 from app.tasks.data_fetch_lock import (
     DataFetchLock,
     LOCK_KEY,
@@ -330,6 +331,32 @@ class TestSerializedDataFetchDecorator:
         assert result == "ok"
         mock_lock.acquire.assert_called_once()
         mock_lock.release.assert_called_once()
+
+    @patch("app.wiring.bootstrap.get_data_fetch_lock")
+    @patch("app.tasks.data_fetch_lock.settings")
+    def test_task_body_holds_the_external_fetch_lease(self, mock_settings, mock_get_instance):
+        mock_lock = MagicMock()
+        mock_lock.acquire.return_value = (True, False)
+        mock_get_instance.return_value = mock_lock
+
+        @_serialized_data_fetch("test_task")
+        def my_func():
+            return holds_external_fetch_lease()
+
+        with patch(
+            "app.wiring.bootstrap.get_workload_coordination",
+            return_value=_make_coordination(),
+        ):
+            assert my_func() is True
+        assert holds_external_fetch_lease() is False
+
+    def test_bypassed_lock_does_not_hold_the_external_fetch_lease(self):
+        @_serialized_data_fetch("test_task")
+        def my_func():
+            return holds_external_fetch_lease()
+
+        with disable_serialized_data_fetch_lock():
+            assert my_func() is False
 
     @patch("app.wiring.bootstrap.get_data_fetch_lock")
     @patch("app.tasks.data_fetch_lock.settings")

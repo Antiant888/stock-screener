@@ -1,11 +1,13 @@
 """Unit tests for the per-market rate-budget policy (bead asia.9.2)."""
 from __future__ import annotations
 
+import threading
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from app.services.rate_budget_policy import RateBudgetPolicy
+from app.tasks.workload_coordination import holding_external_fetch_lease
 
 
 class TestProviderKey:
@@ -130,6 +132,44 @@ class TestRateInterval:
             in_interval = policy.get_rate_interval("yfinance:batch", "IN")
         assert in_interval == pytest.approx(10.0)
         assert us_interval == pytest.approx(2.0 / 0.5)  # 4.0s, not 10s
+
+
+class TestExternalFetchLeaseHolder:
+    """Only one market fetches while a task holds ``external_fetch_global``,
+    so that task may use the provider's whole interval instead of its
+    market's universe-weighted share."""
+
+    WEIGHTS = {"US": 0.5, "HK": 0.1, "IN": 0.1, "JP": 0.1, "KR": 0.1, "TW": 0.05, "CN": 0.05}
+
+    def _interval(self, market="HK", **overrides):
+        with patch("app.services.rate_budget_policy.RateBudgetPolicy._compute_weights_from_db") as m, \
+             patch("app.services.rate_budget_policy.settings") as mock_settings:
+            m.return_value = self.WEIGHTS
+            mock_settings.yfinance_batch_rate_limit_interval = 2.0
+            mock_settings.yfinance_batch_rate_limit_hk = overrides.get("hk")
+            return RateBudgetPolicy().get_rate_interval("yfinance:batch", market)
+
+    def test_holder_gets_the_global_interval(self):
+        with holding_external_fetch_lease(threading.Event()):
+            assert self._interval() == pytest.approx(2.0)
+
+    def test_without_the_lease_the_market_gets_its_share(self):
+        assert self._interval() == pytest.approx(20.0)
+
+    def test_a_lost_lease_falls_back_to_the_share(self):
+        lost = threading.Event()
+        with holding_external_fetch_lease(lost):
+            lost.set()
+            assert self._interval() == pytest.approx(20.0)
+
+    def test_per_market_override_still_wins_for_the_holder(self):
+        with holding_external_fetch_lease(threading.Event()):
+            assert self._interval(hk=0.1) == pytest.approx(10.0)
+
+    def test_the_lease_ends_with_the_block(self):
+        with holding_external_fetch_lease(threading.Event()):
+            pass
+        assert self._interval() == pytest.approx(20.0)
 
 
 class TestBatchSize:
