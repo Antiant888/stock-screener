@@ -24,27 +24,29 @@ class RateLimitTimeoutError(Exception):
 
 
 # Lua script for atomic rate limiting using Redis server time.
-# KEYS[1] = rate limit key (e.g., "ratelimit:yfinance")
-# ARGV[1] = min_interval_s (float, seconds between calls)
+# Reserves one slot that satisfies every key: the latest of now and each
+# key's next-allowed time. Each key then advances by its own interval.
+# KEYS[i] = rate limit key (e.g., "ratelimit:yfinance")
+# ARGV[i] = min_interval_s for KEYS[i] (float, seconds between calls)
 # Returns: seconds to wait as a string (0 = proceed immediately)
 _LUA_RATE_LIMIT = """
 local t = redis.call('TIME')
 local now = tonumber(t[1]) + tonumber(t[2]) / 1000000
 
-local next_allowed = tonumber(redis.call('GET', KEYS[1]) or 0)
-local interval = tonumber(ARGV[1])
-
-if now >= next_allowed then
-    local new_next = now + interval
-    local ttl = math.ceil(interval * 2 + 10)
-    redis.call('SET', KEYS[1], tostring(new_next), 'EX', ttl)
-    return '0'
-else
-    local new_next = next_allowed + interval
-    local ttl = math.ceil(math.max(new_next - now, interval) + interval * 2)
-    redis.call('SET', KEYS[1], tostring(new_next), 'EX', ttl)
-    return tostring(next_allowed - now)
+local slot = now
+for i, key in ipairs(KEYS) do
+    local next_allowed = tonumber(redis.call('GET', key) or 0)
+    if next_allowed > slot then
+        slot = next_allowed
+    end
 end
+
+for i, key in ipairs(KEYS) do
+    local interval = tonumber(ARGV[i])
+    local ttl = math.ceil(slot - now + interval * 3 + 10)
+    redis.call('SET', key, tostring(slot + interval), 'EX', ttl)
+end
+return tostring(slot - now)
 """
 
 
@@ -75,7 +77,7 @@ class RedisRateLimiter:
 
         # Fallback state
         self._fallback_lock = threading.Lock()
-        self._last_call_times: Dict[str, float] = {}
+        self._next_allowed: Dict[str, float] = {}
         self._using_fallback = False
         self._last_redis_retry = 0.0
         self._fallback_warned = False
@@ -94,7 +96,7 @@ class RedisRateLimiter:
             pass
         return None
 
-    def _try_redis(self, key: str, min_interval_s: float) -> Optional[float]:
+    def _try_redis(self, intervals: Dict[str, float]) -> Optional[float]:
         """
         Try to execute rate limiting via Redis.
 
@@ -116,8 +118,13 @@ class RedisRateLimiter:
             return None
 
         try:
-            redis_key = f"ratelimit:{key}"
-            result = client.eval(_LUA_RATE_LIMIT, 1, redis_key, str(min_interval_s))
+            redis_keys = [f"ratelimit:{key}" for key in intervals]
+            result = client.eval(
+                _LUA_RATE_LIMIT,
+                len(redis_keys),
+                *redis_keys,
+                *(str(interval) for interval in intervals.values()),
+            )
 
             # If we were in fallback, we've recovered
             if self._using_fallback:
@@ -136,33 +143,27 @@ class RedisRateLimiter:
             self._last_redis_retry = time.monotonic()
             return None
 
-    def _fallback_wait(self, key: str, min_interval_s: float) -> float:
+    def _fallback_wait(self, intervals: Dict[str, float]) -> float:
         """
-        In-process fallback rate limiter using threading.Lock.
+        In-process fallback rate limiter using threading.Lock, with the same
+        slot rule as the Lua script.
 
         Returns:
             Wait time in seconds.
         """
         if not self._fallback_warned:
             logger.warning(
-                f"Rate limiter: using in-process fallback for '{key}' "
+                f"Rate limiter: using in-process fallback for {list(intervals)} "
                 f"(Redis unavailable, not distributed)"
             )
             self._fallback_warned = True
 
         with self._fallback_lock:
             now = time.monotonic()
-            last = self._last_call_times.get(key, 0.0)
-            elapsed = now - last
-
-            if elapsed >= min_interval_s:
-                self._last_call_times[key] = now
-                return 0.0
-            else:
-                wait_time = min_interval_s - elapsed
-                # Reserve the slot by advancing the timestamp
-                self._last_call_times[key] = last + min_interval_s
-                return wait_time
+            slot = max([now, *(self._next_allowed.get(key, 0.0) for key in intervals)])
+            for key, interval in intervals.items():
+                self._next_allowed[key] = slot + interval
+            return slot - now
 
     def wait(
         self,
@@ -191,15 +192,27 @@ class RedisRateLimiter:
                 distributed budget with every other caller of the same key
                 rather than pace themselves with a process-local limiter.
         """
-        # Try Redis first
-        wait_time = self._try_redis(key, min_interval_s)
+        return self.wait_all({key: min_interval_s}, timeout_s=timeout_s, strict=strict)
+
+    def wait_all(
+        self,
+        intervals: Dict[str, float],
+        timeout_s: float = 120.0,
+        *,
+        strict: bool = False,
+    ) -> float:
+        """Block until one call slot satisfies every ``key: min_interval_s``
+        in ``intervals``. Same returns and raises as ``wait``."""
+        wait_time = self._try_redis(intervals)
 
         if wait_time is None and strict:
-            raise RateLimiterUnavailable(f"distributed rate limiter unavailable for '{key}'")
+            raise RateLimiterUnavailable(
+                f"distributed rate limiter unavailable for {list(intervals)}"
+            )
 
         if wait_time is None:
             # Redis unavailable — use fallback
-            wait_time = self._fallback_wait(key, min_interval_s)
+            wait_time = self._fallback_wait(intervals)
             backend = "local"
         else:
             backend = "redis"
@@ -207,7 +220,7 @@ class RedisRateLimiter:
         # Check timeout before sleeping
         if wait_time > timeout_s:
             raise RateLimitTimeoutError(
-                f"Rate limit wait for '{key}' would be {wait_time:.1f}s, "
+                f"Rate limit wait for {list(intervals)} would be {wait_time:.1f}s, "
                 f"exceeding timeout of {timeout_s:.1f}s"
             )
 
@@ -216,12 +229,12 @@ class RedisRateLimiter:
             jitter = random.uniform(0, self._jitter_ms / 1000.0)
             total_wait = wait_time + jitter
             logger.debug(
-                f"Rate limit: key={key} waited={total_wait:.3f}s backend={backend}"
+                f"Rate limit: keys={list(intervals)} waited={total_wait:.3f}s backend={backend}"
             )
             time.sleep(total_wait)
             return total_wait
 
-        logger.debug(f"Rate limit: key={key} waited=0.000s backend={backend}")
+        logger.debug(f"Rate limit: keys={list(intervals)} waited=0.000s backend={backend}")
         return 0.0
 
     def wait_for_market(
@@ -232,24 +245,23 @@ class RedisRateLimiter:
     ) -> float:
         """Per-market convenience wrapper.
 
-        Paces on the provider×market key at the interval RateBudgetPolicy
-        resolves, then on the provider's unsuffixed key at its global
-        interval, so every caller of the provider shares one global budget
-        whatever share each market gets. Records throttle telemetry when
+        Takes one slot on the provider's unsuffixed key at its global
+        interval, so every caller of the provider shares one global budget.
+        When RateBudgetPolicy resolves a slower interval for the market (its
+        universe-weighted share or an override), the same slot must also
+        satisfy the provider×market key at that interval. Records throttle telemetry when
         the call actually slept. This is the preferred API for new code; raw
         ``wait()`` remains for shared/legacy keys.
         """
         from .rate_budget_policy import get_rate_budget_policy
 
         policy = get_rate_budget_policy()
-        key = policy.provider_key(provider, market)
-        interval = policy.get_rate_interval(provider, market)
-        waited = self.wait(key, min_interval_s=interval, timeout_s=timeout_s)
-        waited += self.wait(
-            provider,
-            min_interval_s=policy.get_rate_interval(provider, None),
-            timeout_s=timeout_s,
-        )
+        global_interval = policy.get_rate_interval(provider, None)
+        intervals = {provider: global_interval}
+        market_interval = policy.get_rate_interval(provider, market)
+        if market_interval > global_interval:
+            intervals[policy.provider_key(provider, market)] = market_interval
+        waited = self.wait_all(intervals, timeout_s=timeout_s)
         if waited > 0:
             policy.record_throttle_wait(provider, market, waited)
         return waited

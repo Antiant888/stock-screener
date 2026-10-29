@@ -11,8 +11,10 @@ Defaults: per-market intervals are derived by **universe-weighted split** of
 the global per-provider budget, except that a task holding the
 ``external_fetch_global`` lease gets the whole global interval, since no other
 market fetches meanwhile. ``RedisRateLimiter.wait_for_market`` also paces every
-call on one provider-wide key at the global interval, so the total never
-exceeds the global budget. Operators override per market via env
+call on one provider-wide key at the global interval, so the total stays
+within the global budget as long as raw ``wait()`` callers of that key reserve
+at least the global interval. An override can slow a market below the global
+rate but not speed it past it. Operators override per market via env
 settings (``yfinance_rate_limit_hk`` etc.) when 9.3 measurements show the
 auto-computed split is wrong. Universe weights are refreshed weekly by the
 ``refresh_universe_weights`` Celery beat task.
