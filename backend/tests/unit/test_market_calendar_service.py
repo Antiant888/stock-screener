@@ -460,6 +460,33 @@ def test_is_market_open_uses_official_regular_hours_past_provider_minute_bounds(
     assert service.is_market_open("CN", now=datetime.fromisoformat(now)) is expected
 
 
+@pytest.mark.parametrize(
+    ("market", "now", "expected"),
+    [
+        ("SG", "2026-04-10T11:59:00+08:00", True),
+        ("SG", "2026-04-10T12:00:00+08:00", False),
+        ("SG", "2026-04-10T12:59:00+08:00", False),
+        ("SG", "2026-04-10T13:00:00+08:00", True),
+        ("MY", "2026-04-10T12:29:00+08:00", True),
+        ("MY", "2026-04-10T12:30:00+08:00", False),
+        ("MY", "2026-04-10T14:29:00+08:00", False),
+        ("MY", "2026-04-10T14:30:00+08:00", True),
+    ],
+)
+def test_is_market_open_closes_the_midday_break_the_provider_skips(market, now, expected):
+    registry = _coverage_registry(
+        market=market,
+        verified_through=date(2026, 12, 31),
+        official_sessions=(date(2026, 4, 10),),
+    )
+    service = _service_with_provider(
+        lambda _: _MinuteBoundsCalendar(),
+        calendar_coverage_registry=registry,
+    )
+
+    assert service.is_market_open(market, now=datetime.fromisoformat(now)) is expected
+
+
 def test_is_market_open_without_an_official_manifest_keeps_the_provider_bounds_error():
     service = _service_with_provider(lambda _: _MinuteBoundsCalendar())
 
