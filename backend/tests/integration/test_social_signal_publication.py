@@ -192,13 +192,15 @@ def test_admin_rejection_invalidates_prepared_generation(social_fixture):
         f.service.apply_live(projection, projection.registry_version, prepared=prepared)
 
 
-def save_success(store, w, run, *, selected_model="synthetic/model"):
+def save_success(store, w, run, *, selected_model="synthetic/model", text=None):
     from dataclasses import asdict
     from app.domain.social_signals.records import ExtractionClaim, ExtractionPostJudgment, ExtractionResult
     from app.infra.db.models.social_analysis import SocialExtractionWork
     from app.models.theme import ContentItem
     from app.services.social_signal_backlog_service import ProcessSocialBacklog
     b = batch()
+    if text is not None:
+        b = replace(b, posts=(replace(b.posts[0], text=text),))
     w.persist_observations(b, run_id=run)
     w.persist_observations(empty_batch(2), run_id=run)
     with store() as db:
@@ -393,6 +395,70 @@ def test_equivalent_social_recapture_can_publish_without_recounting(store):
             "equivalent",
         ]
         assert packets[1].equivalent_evidence_packet_id == packets[0].id
+
+
+def test_held_social_recapture_publishes_and_the_accepted_packet_stays_effective(store):
+    from app.models.economic_taxonomy_runtime import EvidencePacket, SourceLineage
+    from app.services.economic_source_admission import EconomicSourceAdmissionService
+
+    w = writer(store)
+    w.create_run("original", NOW)
+    save_success(store, w, "original")
+    original = w.prepare_run("original", (row("original"),), NOW)
+    assert w.publish("original", original.registry_version).published
+
+    recaptured_at = NOW + timedelta(hours=1)
+    w.create_run("recapture", recaptured_at)
+    # Edited text with no provider revision order is the economic layer's own
+    # review case for this post, not a Social publication failure.
+    save_success(store, w, "recapture", text="$AAA supplies cooling, edited")
+    recapture = w.prepare_run("recapture", (row("recapture"),), recaptured_at)
+
+    assert w.publish("recapture", recapture.registry_version).published
+
+    with store() as db:
+        assert db.get(SocialSignalRun, "recapture").status == "published"
+        packets = db.query(EvidencePacket).order_by(EvidencePacket.evidence_revision_ordinal).all()
+        assert [packet.precedence_state for packet in packets] == ["effective", "hold_review"]
+        lineage = db.query(SourceLineage).one()
+        assert EconomicSourceAdmissionService(db).effective_packet(lineage.id).id == packets[0].id
+
+
+def test_replayed_social_evidence_a_review_displaced_publishes_without_reclaiming_it(store):
+    from app.models.economic_taxonomy_runtime import EvidencePacket, SourceLineage
+    from app.models.economic_taxonomy_runtime_evidence import EvidencePrecedenceRevision
+    from app.services.economic_source_admission import EconomicSourceAdmissionService, EvidenceAdmission
+
+    w = writer(store)
+    w.create_run("original", NOW)
+    save_success(store, w, "original")
+    original = w.prepare_run("original", (row("original"),), NOW)
+    assert w.publish("original", original.registry_version).published
+
+    with store.begin() as db:
+        correction = EconomicSourceAdmissionService(db).admit_social_work(EvidenceAdmission(
+            provider="x", canonical_item_id="100", canonical_source_family="x:post:100",
+            capture_route="social", original_text="$AAA supplies cooling, corrected",
+            preparation_version="social-saved-work-v1", captured_at=NOW + timedelta(minutes=5),
+            available_at=NOW + timedelta(minutes=5), evidence_channels=("narrative",),
+            source_metadata={"social_memberships": []},
+        ))
+        db.add(EvidencePrecedenceRevision(
+            source_lineage_id=correction.source_lineage_id, evidence_packet_id=correction.packet_id,
+            revision_number=99, disposition="effective", reason="review promoted the correction",
+        ))
+
+    replayed_at = NOW + timedelta(hours=1)
+    w.create_replay_run("replay", "original", replayed_at)
+    replay = w.prepare_run("replay", (row("replay"),), replayed_at)
+
+    assert w.publish("replay", replay.registry_version).published
+
+    with store() as db:
+        assert db.get(SocialSignalRun, "replay").status == "published"
+        assert db.query(EvidencePacket).count() == 2
+        lineage = db.query(SourceLineage).one()
+        assert EconomicSourceAdmissionService(db).effective_packet(lineage.id).id == correction.packet_id
 
 
 def test_exploratory_social_work_does_not_enter_live_economic_processing(store):
