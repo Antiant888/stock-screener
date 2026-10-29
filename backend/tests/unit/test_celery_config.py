@@ -1,8 +1,11 @@
 """
 Tests for Celery schedule helpers and related settings validators.
 """
+import threading
+
 import pytest
 from celery import Celery
+from celery.result import AsyncResult
 from pydantic import ValidationError
 from redis.exceptions import BusyLoadingError
 
@@ -236,3 +239,37 @@ class TestSettingsValidators:
     def test_india_bse_gate_numeric_settings_must_be_positive(self, field_name, value):
         with pytest.raises(ValidationError, match="India BSE gate numeric settings must be > 0"):
             self._make_settings(**{field_name: value})
+
+
+# ---------------------------------------------------------------------------
+# Process-wide default app
+# ---------------------------------------------------------------------------
+
+def _async_result_app_on_new_thread(prepare=None):
+    """Resolve a bare AsyncResult's app on a thread that never built celery_app."""
+    seen = {}
+
+    def probe():
+        if prepare is not None:
+            prepare()
+        seen["app"] = AsyncResult("probe").app
+
+    thread = threading.Thread(target=probe)
+    thread.start()
+    thread.join()
+    return seen["app"]
+
+
+class TestDefaultAppOnEveryThread:
+    """FastAPI runs `def` handlers in a threadpool, where no thread-local app exists."""
+
+    def test_bare_async_result_resolves_configured_app_off_the_main_thread(self):
+        app = _async_result_app_on_new_thread()
+
+        assert app is celery_app
+        assert isinstance(AsyncResult("probe", app=app).backend, RetryableRedisBackend)
+
+    def test_thread_with_its_own_current_app_keeps_it(self):
+        own = Celery("thread-local-app", set_as_current=False)
+
+        assert _async_result_app_on_new_thread(prepare=own.set_current) is own
