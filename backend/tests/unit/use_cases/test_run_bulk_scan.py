@@ -14,7 +14,11 @@ import pytest
 from app.domain.common.errors import EntityNotFoundError
 from app.domain.relative_strength import BALANCED_RS_FORMULA_VERSION
 from app.domain.scanning.models import ScanStatus
-from app.domain.scanning.ports import MarketRsResolution, SerialStockScanBatchRunner
+from app.domain.scanning.ports import (
+    MarketRsResolution,
+    SerialStockScanBatchRunner,
+    serial_stock_scan_batch_runner,
+)
 from app.use_cases.scanning.run_bulk_scan import (
     RunBulkScanCommand,
     RunBulkScanUseCase,
@@ -1374,6 +1378,16 @@ class _JournalingScanRepository(FakeScanRepository):
         super().update_status(scan_id, status, **fields)
 
 
+class _JournalingScanner(_BulkAwareFakeScanner):
+    def __init__(self, journal: list, results=None):
+        super().__init__(results=results)
+        self._journal = journal
+
+    def scan_stock_multi(self, symbol, **kwargs):
+        self._journal.append(("compute", symbol))
+        return super().scan_stock_multi(symbol, **kwargs)
+
+
 class TestChunkPipeline:
     def _run(
         self,
@@ -1383,6 +1397,7 @@ class TestChunkPipeline:
         cancel_after=None,
         already_done=(),
         passed_before=0,
+        in_process=False,
     ):
         journal: list = []
         scan_repo = _JournalingScanRepository(journal)
@@ -1393,12 +1408,18 @@ class TestChunkPipeline:
         result_repo._persisted_results = [("s1", symbol, {}) for symbol in already_done]
         uow = FakeUnitOfWork(scans=scan_repo, scan_results=result_repo)
         progress = FakeProgressSink()
-        scanner = _BulkAwareFakeScanner(results={"C": {"error": "No data available"}})
+        scanner_results = {"C": {"error": "No data available"}}
+        if in_process:
+            scanner = _JournalingScanner(journal, results=scanner_results)
+            runner_factory = serial_stock_scan_batch_runner
+        else:
+            scanner = _BulkAwareFakeScanner(results=scanner_results)
+            runner_factory = JournalingRunnerFactory(journal)
 
         result = RunBulkScanUseCase(
             scanner=scanner,
             data_provider=FakeStockDataProvider(),
-            scan_batch_runner_factory=JournalingRunnerFactory(journal),
+            scan_batch_runner_factory=runner_factory,
         ).execute(
             uow,
             RunBulkScanCommand(
@@ -1412,6 +1433,34 @@ class TestChunkPipeline:
             FakeCancellationToken(cancel_after=cancel_after),
         )
         return result, journal, result_repo, scan_repo, progress
+
+    def test_in_process_chunks_compute_only_when_collected(self):
+        result, journal, result_repo, _, progress = self._run(
+            ["A", "B", "C", "D", "E", "F"], chunk_size=2, in_process=True
+        )
+
+        assert journal == [
+            ("status", ScanStatus.RUNNING.value),
+            ("compute", "A"),
+            ("compute", "B"),
+            ("persist", ["A", "B"]),
+            ("compute", "C"),
+            ("compute", "D"),
+            ("persist", ["D"]),
+            ("compute", "E"),
+            ("compute", "F"),
+            ("persist", ["E", "F"]),
+            ("status", ScanStatus.COMPLETED.value),
+        ]
+        assert (result.total_scanned, result.passed, result.failed) == (6, 5, 1)
+        assert [symbol for _, symbol, _ in result_repo._persisted_results] == [
+            "A", "B", "D", "E", "F",
+        ]
+        assert [(event.current, event.passed, event.failed) for event in progress.events] == [
+            (2, 2, 0),
+            (4, 3, 1),
+            (6, 5, 1),
+        ]
 
     def test_next_chunk_is_submitted_before_the_pending_chunk_is_persisted(self):
         result, journal, result_repo, _, progress = self._run(

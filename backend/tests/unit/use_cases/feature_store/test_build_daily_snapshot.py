@@ -19,6 +19,7 @@ from app.domain.scanning.ports import (
     MarketRsResolution,
     SerialStockScanBatchRunner,
     StockScanOutcome,
+    serial_stock_scan_batch_runner,
 )
 from app.use_cases.feature_store.build_daily_snapshot import (
     BootstrapCacheCoverageInsufficient,
@@ -1825,8 +1826,18 @@ class _JournalingFeatureRunRepository(FakeFeatureRunRepository):
         return super().mark_completed(run_id, stats, warnings=warnings)
 
 
+class _JournalingScanner(_BulkAwareScanner):
+    def __init__(self, journal: list, results=None):
+        super().__init__(results=results)
+        self._journal = journal
+
+    def scan_stock_multi(self, symbol, **kwargs):
+        self._journal.append(("compute", symbol))
+        return super().scan_stock_multi(symbol, **kwargs)
+
+
 class TestChunkPipeline:
-    def _run(self, symbols, *, chunk_size, cancel_after=None):
+    def _run(self, symbols, *, chunk_size, cancel_after=None, in_process=False):
         journal: list = []
         uow = FakeUnitOfWork(
             universe=FakeUniverseRepository(symbols),
@@ -1834,10 +1845,17 @@ class TestChunkPipeline:
             feature_store=_JournalingFeatureStoreRepository(journal),
         )
         progress = FakeProgressSink()
+        scanner_results = {"C": {"error": "No data available"}}
+        if in_process:
+            scanner = _JournalingScanner(journal, results=scanner_results)
+            runner_factory = serial_stock_scan_batch_runner
+        else:
+            scanner = _BulkAwareScanner(results=scanner_results)
+            runner_factory = JournalingRunnerFactory(journal)
         result = BuildDailyFeatureSnapshotUseCase(
-            scanner=_BulkAwareScanner(results={"C": {"error": "No data available"}}),
+            scanner=scanner,
             data_provider=FakeStockDataProvider(),
-            scan_batch_runner_factory=JournalingRunnerFactory(journal),
+            scan_batch_runner_factory=runner_factory,
         ).execute(
             uow,
             _make_cmd(chunk_size=chunk_size, parallel_workers=2),
@@ -1845,6 +1863,32 @@ class TestChunkPipeline:
             FakeCancellationToken(cancel_after=cancel_after),
         )
         return result, journal, progress
+
+    @_PATCH_TRADING_DAY
+    def test_in_process_chunks_compute_only_when_collected(self, _mock_td):
+        result, journal, progress = self._run(
+            ["A", "B", "C", "D", "E", "F"], chunk_size=2, in_process=True
+        )
+
+        assert journal == [
+            ("compute", "A"),
+            ("compute", "B"),
+            ("persist", ["A", "B"]),
+            ("compute", "C"),
+            ("compute", "D"),
+            ("persist", ["D"]),
+            ("compute", "E"),
+            ("compute", "F"),
+            ("persist", ["E", "F"]),
+            ("completed", 5, 1, 5, ()),
+        ]
+        assert (result.processed_symbols, result.failed_symbols, result.row_count) == (6, 1, 5)
+        assert [(event.current, event.passed, event.failed) for event in progress.events] == [
+            (2, 2, 0),
+            (4, 3, 1),
+            (6, 5, 1),
+            (6, 5, 1),
+        ]
 
     @_PATCH_TRADING_DAY
     def test_next_chunk_is_submitted_before_the_pending_chunk_is_persisted(self, _mock_td):

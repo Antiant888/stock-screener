@@ -11,6 +11,7 @@ not through method parameters.
 from __future__ import annotations
 
 import abc
+import functools
 from dataclasses import dataclass, field
 from datetime import date
 from typing import Callable, ContextManager, Mapping, Protocol, Sequence
@@ -591,7 +592,9 @@ StockScanBatchRunnerFactory = Callable[
 
 
 class SerialStockScanBatchRunner:
-    """Runs every call in the current process, one after another."""
+    """Runs every call in the current process, one after another, when the
+    batch is collected, so a chunk never computes before the one ahead of it
+    is persisted."""
 
     def __init__(self, scanner: StockScanner) -> None:
         self._scanner = scanner
@@ -603,8 +606,7 @@ class SerialStockScanBatchRunner:
         return None
 
     def submit_batch(self, calls: Sequence[StockScanCall]) -> PendingScanBatch:
-        outcomes = self._run_calls(calls)
-        return lambda: outcomes
+        return functools.partial(self._run_calls, calls)
 
     def _run_calls(self, calls: Sequence[StockScanCall]) -> list[StockScanOutcome]:
         return [run_stock_scan_call(self._scanner, call) for call in calls]
