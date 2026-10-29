@@ -5,18 +5,21 @@ with every port the chunk loop calls wrapped in a timer:
 
     prefetch        data_provider.prepare_data_bulk        (parent, I/O + frame building)
     market_rs       market_rs_reader.get + apply           (parent, I/O)
-    compute_submit  batch runner submit_batch              (parent, pickling calls to the pool)
-    compute_wait    pending batch result()                 (parent blocked on the compute pool)
+    compute_submit  batch runner submit_batch              (parent; enqueue only, pickling
+                                                            happens on the pool's feeder thread)
+    compute_wait    collecting the pending batch           (parent blocked on the compute pool)
     persist         scan_results.persist_orchestrator_results (parent, I/O)
     commit          uow.commit                             (parent, I/O)
     cancel_check    cancel.is_cancelled                    (parent, I/O)
 
 The chunk loop is pipelined: the parent prefetches and submits chunk N+1
 before it collects and persists chunk N. A chunk record closes on the
-progress event for chunk N, so it holds the prefetch, market_rs and
-compute_submit of N+1 and the compute_wait, persist and commit of N. Totals
-are unaffected. compute_wait is the time the parent had nothing left to do
-but wait for the pool.
+progress event for chunk N, so it holds the compute_wait, persist and commit
+of N and the prefetch, market_rs and compute_submit of N+1; the first record
+holds chunk 1's prefetch, market_rs and compute_submit as well. Totals are
+unaffected. compute_wait is the time the parent had nothing left to do but
+wait for the pool; when a chunk computes in-process, that compute lands here
+too.
 
 The scan row is created with status "failed" and its status is never changed.
 That status is not active, so the run does not take the single-active-scan
@@ -270,7 +273,12 @@ class _TimedRunner:
     def submit_batch(self, calls):
         with self._clock.phase("compute_submit"):
             pending = self._runner.submit_batch(calls)
-        return _Timed(pending, self._clock, {"result": "compute_wait"})
+
+        def collect():
+            with self._clock.phase("compute_wait"):
+                return pending()
+
+        return collect
 
 
 def _timed_runner_factory(clock: PhaseClock):

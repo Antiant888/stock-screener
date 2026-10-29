@@ -14,11 +14,7 @@ import pytest
 from app.domain.common.errors import EntityNotFoundError
 from app.domain.relative_strength import BALANCED_RS_FORMULA_VERSION
 from app.domain.scanning.models import ScanStatus
-from app.domain.scanning.ports import (
-    MarketRsResolution,
-    SerialStockScanBatchRunner,
-    run_stock_scan_call,
-)
+from app.domain.scanning.ports import MarketRsResolution, SerialStockScanBatchRunner
 from app.use_cases.scanning.run_bulk_scan import (
     RunBulkScanCommand,
     RunBulkScanUseCase,
@@ -33,6 +29,7 @@ from tests.unit.use_cases.conftest import (
     FakeScanner,
     FakeStockDataProvider,
     FakeUnitOfWork,
+    JournalingRunnerFactory,
 )
 
 
@@ -1357,37 +1354,6 @@ class TestInputValidation:
 # ---------------------------------------------------------------------------
 
 
-class _JournalingRunnerFactory:
-    """Compute pool stand-in whose submits and collects land in a shared journal."""
-
-    def __init__(self, journal: list):
-        self._journal = journal
-
-    def __call__(self, scanner, processes):
-        journal = self._journal
-
-        class _Pending:
-            def __init__(self, calls):
-                self._calls = calls
-
-            def result(self):
-                journal.append(("collect", [call.symbol for call in self._calls]))
-                return [run_stock_scan_call(scanner, call) for call in self._calls]
-
-        class _Runner:
-            def __enter__(self):
-                return self
-
-            def __exit__(self, exc_type, exc, tb):
-                return None
-
-            def submit_batch(self, calls):
-                journal.append(("submit", [call.symbol for call in calls]))
-                return _Pending(calls)
-
-        return _Runner()
-
-
 class _JournalingScanResultRepository(FakeScanResultRepository):
     def __init__(self, journal: list):
         super().__init__()
@@ -1432,7 +1398,7 @@ class TestChunkPipeline:
         result = RunBulkScanUseCase(
             scanner=scanner,
             data_provider=FakeStockDataProvider(),
-            scan_batch_runner_factory=_JournalingRunnerFactory(journal),
+            scan_batch_runner_factory=JournalingRunnerFactory(journal),
         ).execute(
             uow,
             RunBulkScanCommand(

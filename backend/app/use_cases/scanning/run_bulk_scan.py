@@ -348,7 +348,7 @@ class RunBulkScanUseCase:
             """Collect a submitted chunk, persist it (the checkpoint), report progress."""
             nonlocal processed, passed, failed
             chunk_results: list[tuple[str, dict]] = []
-            scan_outcomes = iter(batch.result())
+            scan_outcomes = iter(batch())
             for call in calls:
                 if call is None:
                     failed += 1

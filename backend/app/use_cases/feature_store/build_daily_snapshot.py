@@ -711,7 +711,7 @@ class BuildDailyFeatureSnapshotUseCase:
         ) -> None:
             """Collect a submitted chunk, upsert it (the checkpoint), report progress."""
             chunk_rows: list[FeatureRowWrite] = []
-            scan_outcomes = iter(batch.result())
+            scan_outcomes = iter(batch())
             outcomes_by_symbol: dict[
                 str,
                 tuple[FeatureRowWrite | None, bool, dict[str, object] | None],

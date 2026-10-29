@@ -16,11 +16,9 @@ from app.domain.common.errors import ValidationError
 from app.domain.feature_store.models import RunStatus
 from app.domain.relative_strength import BALANCED_RS_FORMULA_VERSION
 from app.domain.scanning.ports import (
-    CompletedScanBatch,
     MarketRsResolution,
     SerialStockScanBatchRunner,
     StockScanOutcome,
-    run_stock_scan_call,
 )
 from app.use_cases.feature_store.build_daily_snapshot import (
     BootstrapCacheCoverageInsufficient,
@@ -37,6 +35,7 @@ from tests.unit.use_cases.conftest import (
     FakeStockDataProvider,
     FakeUnitOfWork,
     FakeUniverseRepository,
+    JournalingRunnerFactory,
     with_test_opportunity_projection,
 )
 
@@ -1710,7 +1709,7 @@ class _RecordingRunnerFactory:
             def submit_batch(self, calls):
                 factory.batches.append([call.symbol for call in calls])
                 if factory._outcome_override is not None:
-                    return CompletedScanBatch([factory._outcome_override for _ in calls])
+                    return lambda: [factory._outcome_override for _ in calls]
                 return serial.submit_batch(calls)
 
         return _Runner()
@@ -1798,37 +1797,6 @@ class TestComputeRunnerRouting:
 # ---------------------------------------------------------------------------
 
 
-class _JournalingRunnerFactory:
-    """Compute pool stand-in whose submits and collects land in a shared journal."""
-
-    def __init__(self, journal: list):
-        self._journal = journal
-
-    def __call__(self, scanner, processes):
-        journal = self._journal
-
-        class _Pending:
-            def __init__(self, calls):
-                self._calls = calls
-
-            def result(self):
-                journal.append(("collect", [call.symbol for call in self._calls]))
-                return [run_stock_scan_call(scanner, call) for call in self._calls]
-
-        class _Runner:
-            def __enter__(self):
-                return self
-
-            def __exit__(self, exc_type, exc, tb):
-                return None
-
-            def submit_batch(self, calls):
-                journal.append(("submit", [call.symbol for call in calls]))
-                return _Pending(calls)
-
-        return _Runner()
-
-
 class _JournalingFeatureStoreRepository(FakeFeatureStoreRepository):
     def __init__(self, journal: list):
         super().__init__()
@@ -1869,7 +1837,7 @@ class TestChunkPipeline:
         result = BuildDailyFeatureSnapshotUseCase(
             scanner=_BulkAwareScanner(results={"C": {"error": "No data available"}}),
             data_provider=FakeStockDataProvider(),
-            scan_batch_runner_factory=_JournalingRunnerFactory(journal),
+            scan_batch_runner_factory=JournalingRunnerFactory(journal),
         ).execute(
             uow,
             _make_cmd(chunk_size=chunk_size, parallel_workers=2),

@@ -568,11 +568,8 @@ class StockScanOutcome:
     error: BaseException | None = None
 
 
-class PendingScanBatch(Protocol):
-    """A submitted batch; ``result()`` blocks until its outcomes are available."""
-
-    def result(self) -> list[StockScanOutcome]:
-        ...
+PendingScanBatch = Callable[[], list[StockScanOutcome]]
+"""Handle on a submitted batch; calling it blocks until the outcomes are available."""
 
 
 class StockScanBatchRunner(Protocol):
@@ -584,16 +581,6 @@ class StockScanBatchRunner(Protocol):
 
     def submit_batch(self, calls: Sequence[StockScanCall]) -> PendingScanBatch:
         ...
-
-
-@dataclass(frozen=True)
-class CompletedScanBatch:
-    """Outcomes already computed at submission."""
-
-    outcomes: list[StockScanOutcome]
-
-    def result(self) -> list[StockScanOutcome]:
-        return self.outcomes
 
 
 StockScanBatchRunnerFactory = Callable[
@@ -615,10 +602,12 @@ class SerialStockScanBatchRunner:
     def __exit__(self, exc_type, exc, tb) -> None:
         return None
 
-    def submit_batch(self, calls: Sequence[StockScanCall]) -> CompletedScanBatch:
-        return CompletedScanBatch(
-            [run_stock_scan_call(self._scanner, call) for call in calls]
-        )
+    def submit_batch(self, calls: Sequence[StockScanCall]) -> PendingScanBatch:
+        outcomes = self._run_calls(calls)
+        return lambda: outcomes
+
+    def _run_calls(self, calls: Sequence[StockScanCall]) -> list[StockScanOutcome]:
+        return [run_stock_scan_call(self._scanner, call) for call in calls]
 
 
 def run_stock_scan_call(scanner: StockScanner, call: StockScanCall) -> StockScanOutcome:

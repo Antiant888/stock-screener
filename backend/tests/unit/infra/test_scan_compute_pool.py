@@ -69,7 +69,7 @@ def test_outcomes_are_computed_in_worker_processes_in_input_order():
     symbols = [f"S{i}" for i in range(40)]
 
     with ProcessStockScanBatchRunner(_PidScanner(), 2) as runner:
-        outcomes = runner.submit_batch(_calls(*symbols)).result()
+        outcomes = runner.submit_batch(_calls(*symbols))()
 
     assert [outcome.result["symbol"] for outcome in outcomes] == symbols
     pids = {outcome.result["pid"] for outcome in outcomes}
@@ -80,7 +80,7 @@ def test_outcomes_are_computed_in_worker_processes_in_input_order():
 
 def test_worker_exceptions_come_back_as_outcomes():
     with ProcessStockScanBatchRunner(_PidScanner(), 2) as runner:
-        outcomes = runner.submit_batch(_calls("A", "RAISE", "UNPICKLABLE", "B")).result()
+        outcomes = runner.submit_batch(_calls("A", "RAISE", "UNPICKLABLE", "B"))()
 
     assert outcomes[0].result["symbol"] == "A"
     assert isinstance(outcomes[1].error, ValueError)
@@ -94,8 +94,8 @@ def test_a_dead_worker_degrades_to_in_process_without_losing_results():
     symbols = [f"S{i}" for i in range(12)] + ["DIE"] + [f"T{i}" for i in range(12)]
 
     with ProcessStockScanBatchRunner(_PidScanner(), 2) as runner:
-        outcomes = runner.submit_batch(_calls(*symbols)).result()
-        after = runner.submit_batch(_calls("X", "Y")).result()
+        outcomes = runner.submit_batch(_calls(*symbols))()
+        after = runner.submit_batch(_calls("X", "Y"))()
 
     assert [outcome.result["symbol"] for outcome in outcomes] == symbols
     assert all(outcome.error is None for outcome in outcomes)
@@ -108,8 +108,8 @@ def test_batches_submitted_back_to_back_collect_in_submission_order():
     with ProcessStockScanBatchRunner(_PidScanner(), 2) as runner:
         first = runner.submit_batch(_calls("A", "B", "C", "D"))
         second = runner.submit_batch(_calls("E", "F", "G", "H"))
-        first_outcomes = first.result()
-        second_outcomes = second.result()
+        first_outcomes = first()
+        second_outcomes = second()
 
     assert [outcome.result["symbol"] for outcome in first_outcomes] == ["A", "B", "C", "D"]
     assert [outcome.result["symbol"] for outcome in second_outcomes] == ["E", "F", "G", "H"]
@@ -125,8 +125,8 @@ def test_a_dead_worker_degrades_every_pending_batch_to_in_process():
     with ProcessStockScanBatchRunner(_PidScanner(), 2) as runner:
         first = runner.submit_batch(_calls(*first_symbols))
         second = runner.submit_batch(_calls(*second_symbols))
-        first_outcomes = first.result()
-        second_outcomes = second.result()
+        first_outcomes = first()
+        second_outcomes = second()
 
     assert [outcome.result["symbol"] for outcome in first_outcomes] == first_symbols
     assert [outcome.result["symbol"] for outcome in second_outcomes] == second_symbols
@@ -145,7 +145,7 @@ def test_pool_start_failure_computes_in_process(monkeypatch, failure):
     monkeypatch.setattr(scan_compute_pool, "_default_mp_context", broken_context)
 
     with ProcessStockScanBatchRunner(_PidScanner(), 2) as runner:
-        outcomes = runner.submit_batch(_calls("A", "B")).result()
+        outcomes = runner.submit_batch(_calls("A", "B"))()
 
     assert [outcome.result["pid"] for outcome in outcomes] == [_PARENT_PID, _PARENT_PID]
 
@@ -182,7 +182,7 @@ def test_soft_limit_while_waiting_propagates_without_waiting_for_workers(soft_li
     with pytest.raises(_SoftLimit):
         with ProcessStockScanBatchRunner(_SlowScanner(), 2) as runner:
             soft_limit_in(0.2)
-            runner.submit_batch(_calls("A", "B")).result()
+            runner.submit_batch(_calls("A", "B"))()
 
     assert time.monotonic() - started < 10  # workers terminated, not awaited
 
@@ -222,7 +222,7 @@ def test_soft_limit_during_warm_up_propagates(monkeypatch, soft_limit_in):
 
 def test_worker_dying_between_batches_degrades_to_in_process():
     with ProcessStockScanBatchRunner(_PidScanner(), 2) as runner:
-        runner.submit_batch(_calls("A", "B")).result()
+        runner.submit_batch(_calls("A", "B"))()
         executor = runner._executor
         os.kill(next(iter(executor._processes)), signal.SIGKILL)
         deadline = time.monotonic() + 10
@@ -230,14 +230,14 @@ def test_worker_dying_between_batches_degrades_to_in_process():
             time.sleep(0.05)
         assert executor._broken  # submit() itself now raises BrokenProcessPool
 
-        outcomes = runner.submit_batch(_calls("X", "Y")).result()
+        outcomes = runner.submit_batch(_calls("X", "Y"))()
 
     assert [outcome.result["pid"] for outcome in outcomes] == [_PARENT_PID, _PARENT_PID]
 
 
 def _start_pool_in_daemon(queue):
     with ProcessStockScanBatchRunner(_PidScanner(), 2) as runner:
-        outcomes = runner.submit_batch(_calls("A", "B")).result()
+        outcomes = runner.submit_batch(_calls("A", "B"))()
     queue.put([outcome.result["pid"] for outcome in outcomes])
 
 
@@ -257,7 +257,7 @@ def test_pool_starts_inside_a_daemonic_celery_style_process():
 
 def test_runner_releases_its_scanner_registration():
     with ProcessStockScanBatchRunner(_PidScanner(), 2) as runner:
-        runner.submit_batch(_calls("A", "B")).result()
+        runner.submit_batch(_calls("A", "B"))()
         assert len(scan_compute_pool._scanners_by_token) == 1
 
     assert scan_compute_pool._scanners_by_token == {}

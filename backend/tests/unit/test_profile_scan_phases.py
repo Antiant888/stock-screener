@@ -45,7 +45,7 @@ def test_timed_runner_splits_submission_from_the_wait_for_results():
     pending = runner.submit_batch([StockScanCall(symbol="A", kwargs={})])
     assert set(clock.current) == {"compute_submit"}
 
-    assert [outcome.result for outcome in pending.result()] == [{"symbol": "A"}]
+    assert [outcome.result for outcome in pending()] == [{"symbol": "A"}]
     assert set(clock.current) == {"compute_submit", "compute_wait"}
 
 

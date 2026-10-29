@@ -16,6 +16,7 @@ fully wired scanner without rebuilding runtime services.
 
 from __future__ import annotations
 
+import functools
 import itertools
 import logging
 import math
@@ -117,9 +118,9 @@ def _split(calls: Sequence[StockScanCall], parts: int) -> list[Sequence[StockSca
 class ProcessStockScanBatchRunner:
     """Computes scan calls on ``processes`` forked workers, in input order.
 
-    A batch is handed to the workers at submission and collected on
-    ``result()``, so the parent can persist one chunk while they compute the
-    next.
+    A batch is handed to the workers at submission and collected when the
+    returned handle is called, so the parent can persist one chunk while they
+    compute the next.
 
     Any pool failure degrades to in-process computation instead of failing
     the scan: a worker that dies breaks the pool, and every batch not yet
@@ -184,7 +185,9 @@ class ProcessStockScanBatchRunner:
             return self._serial.submit_batch(calls)
 
         batches = _split(calls, self._processes * _BATCHES_PER_PROCESS)
-        return _PendingPoolBatch(self, batches, [self._submit(batch) for batch in batches])
+        return functools.partial(
+            self._collect, batches, [self._submit(batch) for batch in batches]
+        )
 
     def _collect(
         self,
@@ -202,7 +205,7 @@ class ProcessStockScanBatchRunner:
                         exc_info=True,
                     )
                     self._shutdown()
-                outcomes.extend(self._serial.submit_batch(batch).result())
+                outcomes.extend(self._serial.submit_batch(batch)())
             except Exception as exc:
                 # Raised in the parent while waiting (e.g. Celery's soft time
                 # limit), not by the worker: propagate it.
@@ -214,7 +217,7 @@ class ProcessStockScanBatchRunner:
                     "Scan compute batch failed in a worker; recomputing it in-process",
                     exc_info=True,
                 )
-                outcomes.extend(self._serial.submit_batch(batch).result())
+                outcomes.extend(self._serial.submit_batch(batch)())
         return outcomes
 
     def _submit(self, batch: Sequence[StockScanCall]) -> Future:
@@ -236,23 +239,6 @@ class ProcessStockScanBatchRunner:
             for process in list((executor._processes or {}).values()):
                 process.terminate()
         executor.shutdown(wait=True, cancel_futures=True)
-
-
-class _PendingPoolBatch:
-    """Handle on one submitted batch's futures; collected by the runner."""
-
-    def __init__(
-        self,
-        runner: ProcessStockScanBatchRunner,
-        batches: Sequence[Sequence[StockScanCall]],
-        futures: Sequence[Future],
-    ) -> None:
-        self._runner = runner
-        self._batches = batches
-        self._futures = futures
-
-    def result(self) -> list[StockScanOutcome]:
-        return self._runner._collect(self._batches, self._futures)
 
 
 def process_stock_scan_batch_runner(
