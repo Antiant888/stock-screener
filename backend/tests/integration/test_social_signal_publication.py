@@ -130,6 +130,52 @@ def test_newer_generation_fences_delayed_run_and_published_payload_is_immutable(
                 db.commit()
 
 
+def test_publication_closes_every_older_unpublished_live_generation(store):
+    from app.infra.db.models.social_signals import SocialSourceRegistry
+    from app.infra.db.repositories.social_signal_writer import utc
+    w = writer(store)
+    w.create_run("old-running", NOW)
+    work_id = save_success(store, w, "old-running")
+    collected(w, "old-staged")
+    w.prepare_run("old-staged", (row("old-staged"),), NOW)
+    with store.begin() as db:
+        db.get(SocialSourceRegistry, 1).mode = "validation"
+    collected(w, "validation")
+    with store.begin() as db:
+        registry = db.get(SocialSourceRegistry, 1)
+        registry.mode, registry.version = "live", registry.version + 1
+    collected(w, "new", NOW + timedelta(minutes=1))
+    w.prepare_run("new", (row("new"),), NOW + timedelta(minutes=1))
+    collected(w, "newer", NOW + timedelta(minutes=2))
+    with store() as db:
+        version = db.get(SocialSignalRun, "new").registry_version
+
+    assert w.publish("new", version).published
+
+    with store() as db:
+        runs = {run.id: run for run in db.query(SocialSignalRun)}
+        assert {run_id: run.status for run_id, run in runs.items()} == {
+            "old-running": "failed", "old-staged": "failed", "validation": "running",
+            "new": "published", "newer": "running",
+        }
+        for run_id in ("old-running", "old-staged"):
+            assert utc(runs[run_id].completed_at) == NOW
+            assert runs[run_id].application_progress_json["failure"] == {"reason_code": "generation_superseded"}
+            assert set(runs[run_id].application_progress_json["observations"]) == {"1", "2"}
+        assert "failure" not in runs["newer"].application_progress_json
+    # A resume of a closed generation that is mid-analysis stops before it writes.
+    with pytest.raises(ValueError, match="run_not_collecting"):
+        w.select_current_inputs("old-running")
+    with pytest.raises(ValueError, match="run_not_collecting"):
+        w.fail_analysis("old-running", "analysis_failed")
+    with pytest.raises(ValueError, match="publication_generation_superseded"):
+        w.publish("old-staged", version)
+    # Its frozen links remain its manifest for reads and deliberate replays.
+    assert w.read_run_inputs("old-running").work_ids == (work_id,)
+    w.create_replay_run("replay", "old-running", NOW + timedelta(hours=1))
+    assert w.read_run_inputs("replay").replay_manifest.historical_work_ids == (work_id,)
+
+
 def test_mode_change_rejects_prepared_run_and_validation_never_publishes(store):
     from app.infra.db.models.social_signals import SocialSourceRegistry
     w = writer(store)
